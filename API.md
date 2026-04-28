@@ -1,0 +1,195 @@
+# fd0 HTTP API (v1 draft)
+
+Companion to `PROTOCOL.md`. Requests and responses use `application/cbor` with deterministic CBOR (RFC 8949 §4.2.1) unless noted. Authentication is per-request via signed headers; no sessions, no cookies.
+
+---
+
+## 1. Authentication header
+
+```
+Authorization: fd0-sig v1
+    pk=<base64(super_pub)>,
+    nonce=<base64(16 random bytes)>,
+    ts=<unix_seconds>,
+    sig=<base64(signature)>
+
+signed_input = "fd0-http-request-v1" || cbor({
+    method   : <uppercase HTTP method>,
+    path     : <URL path, no query>,
+    query    : { * tstr => tstr },          ; canonical: keys sorted lexicographically;
+                                             ; multi-value keys forbidden in v1
+    ts       : ts,
+    nonce    : nonce,
+    body_sha : SHA-256(request body, or SHA-256("") if empty),
+})
+signature = Ed25519(super_priv, signed_input)
+```
+
+Server checks (in order):
+
+```
+1. |now - ts| ≤ 300 s                    → else 401 stale_ts
+2. (pk, nonce) not seen in last 600 s    → else 401 replay
+3. pk matches a registered user          → else 401 unknown_identity
+4. signature verifies                    → else 401 bad_sig
+5. for scope endpoints: pk ∈ scope.auth_list → else 403 not_authorized
+```
+
+`POST /users` and `GET /users/<shortId>/events` are unauthenticated; the embedded event signature (or the public-fetch nature) provides authentication.
+
+---
+
+## 2. Endpoints
+
+### 2.1 `POST /users` — register identity
+
+```
+Request:
+{ event : UserEvent }                       ; kind = "auth.set", seq = 0
+
+201 Created:
+{
+    shortId  : tstr,                        ; server-assigned, 8 chars
+    event_id : tstr,
+}
+
+Errors:
+  400 bad_event        seq != 0, prev_hash != nil, kind != "auth.set", or invariant
+  400 bad_sig          signature does not verify
+  409 super_pub_taken  user_super_pub already registered
+```
+
+### 2.2 `GET /users/<shortId>/events` — fetch identity chain
+
+Query modes:
+
+- `?since=<seq>`: events with seq ≥ since, ascending.
+- `?latest=true`: only the latest `auth.set` event.
+
+```
+200 OK (since mode):
+{
+    user_super_pub : bstr .size 32,
+    events         : [* UserEvent],
+    chain_tip_seq  : uint,
+    chain_tip_hash : bstr .size 32,
+}
+
+200 OK (latest mode):
+{
+    user_super_pub : bstr .size 32,
+    event          : UserEvent,
+    chain_tip_seq  : uint,
+    chain_tip_hash : bstr .size 32,
+}
+
+404 not_found
+```
+
+### 2.3 `POST /users/<shortId>/events` — append to identity chain
+
+Authenticated. `pk` MUST equal the chain's `user_super_pub`.
+
+```
+Request:
+{ event : UserEvent }                       ; kind = "auth.set", seq > 0
+
+200 OK:
+{ event_id : tstr, seq : uint }
+
+Errors:
+  400 bad_event        schema or kind invariant (e.g., empty active set)
+  400 bad_sig          signature does not verify
+  409 divergence       prev_hash does not match chain tip
+                       (response includes current_tip_seq, current_tip_hash)
+  409 dup              event_id already exists
+```
+
+### 2.4 `POST /sync` — pull, push, discover
+
+Authenticated.
+
+```
+Request:
+{
+    pull : {
+        scopes               : { * tstr => { cursor: { seq: uint, hash: bstr .size 32 / nil } } },
+        limit_per_scope      : uint,             ; default 100, max 1000
+        discover_memberships : bool,             ; optional, default false
+    },
+    push : [* { scope: tstr, event: ScopeEvent }],
+}
+
+200 OK:
+{
+    pull : { * tstr => {
+        tip             : { seq: uint, hash: bstr .size 32 },
+        oek_version_max : uint,
+        events          : [* ScopeEvent],   ; contiguous, ascending from cursor.seq + 1
+    } },
+    memberships : [* {                       ; present iff request.pull.discover_memberships
+        scope_id     : tstr,
+        admit_event  : tstr,                 ; event_id of the member.change op="add" of self
+        oek_version  : uint,
+    }],
+    push : [* PushResult],
+}
+
+PushResult =
+    { accepted: true,  event_id: tstr, seq: uint, scope_id: tstr } /
+    { accepted: false, reason: tstr, ... }
+```
+
+`pull` returns events contiguous from `cursor.seq + 1`. Clients verify the chain link to their stored `cursor.hash` before advancing the cursor.
+
+Push rejection reasons:
+
+| reason                    | optional fields                                                  |
+| ------------------------- | ---------------------------------------------------------------- |
+| `bad_sig`                 |                                                                  |
+| `bad_author`              | (author not in scope.auth_list)                                  |
+| `divergence`              | `current_tip_event_id`, `current_tip_hash`, `current_oek_version_max` |
+| `dup`                     | `existing_event_id`                                              |
+| `bad_kind`                |                                                                  |
+| `stale_oek_version`       | `current_oek_version_max`                                        |
+| `future_oek_version`      | `current_oek_version_max`                                        |
+| `invalid_key_deliveries`  | one of: `missing_recipients`, `extra_recipients`                 |
+| `payload_too_large`       | `limit_bytes`                                                    |
+
+Scope creation has no dedicated endpoint: a scope is created by pushing a `member.change` with `prev_hash=nil`, `op="add"`, `member == author`, and one `KeyDelivery` to the author. The server derives `scope_id = "s_" + base32(truncate_128(SHA-256(event_id)))` and assigns it in the `PushResult`.
+
+### 2.5 `GET /healthz`
+
+```
+200 OK
+Content-Type: text/plain
+Body: "ok"
+```
+
+### 2.6 `GET /version`
+
+```
+200 OK
+Content-Type: application/json
+{
+    "server_version" : "x.y.z",
+    "api_version"    : "v1"
+}
+```
+
+---
+
+## 3. Status codes
+
+| Code | Meaning                                                |
+| ---- | ------------------------------------------------------ |
+| 200  | OK                                                     |
+| 201  | Created                                                |
+| 400  | Malformed body, invariant violation                    |
+| 401  | Auth header invalid, missing, or replayed              |
+| 403  | Authenticated but not authorized for this scope        |
+| 404  | User or scope not found                                |
+| 409  | Divergence, duplicate, or version conflict             |
+| 413  | Payload exceeds limit (`STORAGE.md` §9)                |
+| 429  | Rate limit exceeded (`STORAGE.md` §9)                  |
+| 500  | Server error                                           |

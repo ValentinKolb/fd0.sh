@@ -1,0 +1,32 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editors
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.iml
+
+# Build artifacts
+bin/
+dist/
+build/
+target/
+out/
+
+# Go
+*.test
+*.out
+vendor/
+
+# Local environment
+.env
+.env.local
+.envrc
+
+# fd0 runtime data (in case anyone runs the client from the repo)
+.fd0/
