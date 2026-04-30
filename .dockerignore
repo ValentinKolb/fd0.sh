@@ -1,0 +1,12 @@
+.git
+.github
+.fd0
+*.test
+*.out
+bin/
+dist/
+build/
+*.db
+README.md
+*_test.go
+testdata

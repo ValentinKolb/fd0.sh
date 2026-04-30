@@ -118,7 +118,14 @@ Plain TOML, no secrets. Example:
 
 ```toml
 short_id = "jg379se4"
-sync_servers = ["https://fd0.example.com"]
+
+[sync]
+server    = "https://fd0.example.com"
+interval  = "1h"
+on_unlock = true
+
+[clipboard]
+clear_after_seconds = 30
 ```
 
 `user_super_pub` lives in the vault and in every event of the user chain; it is not duplicated in `config.toml`.
