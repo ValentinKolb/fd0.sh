@@ -62,8 +62,9 @@ func Open(ctx context.Context) (*Session, error) {
 	if err := paths.EnsureDirs(); err != nil {
 		return nil, err
 	}
+	cfg, _ := fdhome.LoadConfig(paths.Config) // missing/bad config → defaults
 	lk := flock.New(paths.Lock)
-	if err := acquireLock(ctx, lk); err != nil {
+	if err := acquireLock(ctx, lk, cfg.Client.LockWait); err != nil {
 		return nil, err
 	}
 	cli := agent.NewClient(paths.AgentSock)
@@ -551,10 +552,15 @@ func sortBytes(s [][]byte) [][]byte {
 	return s
 }
 
-// acquireLock takes the flock with optional retry. FD0_LOCK_WAIT (Go duration
-// format, e.g. "60s") is the upper bound for retry; default is no retry.
-func acquireLock(ctx context.Context, lk *flock.Flock) error {
+// acquireLock takes the flock with optional retry. The retry budget is taken
+// from FD0_LOCK_WAIT env (highest priority) or [client].lock_wait in config
+// (fallback). Both are Go duration strings ("10s", "1m"); empty / zero means
+// fail-fast on contention.
+func acquireLock(ctx context.Context, lk *flock.Flock, configWait string) error {
 	wait := os.Getenv("FD0_LOCK_WAIT")
+	if wait == "" {
+		wait = configWait
+	}
 	if wait == "" {
 		ok, err := lk.TryLock()
 		if err != nil {
@@ -567,7 +573,7 @@ func acquireLock(ctx context.Context, lk *flock.Flock) error {
 	}
 	d, err := time.ParseDuration(wait)
 	if err != nil {
-		return fmt.Errorf("FD0_LOCK_WAIT: %w", err)
+		return fmt.Errorf("lock_wait %q: %w", wait, err)
 	}
 	deadline := time.Now().Add(d)
 	for {

@@ -13,7 +13,15 @@ import (
 type Config struct {
 	ShortID   string          `toml:"short_id"`
 	Sync      SyncConfig      `toml:"sync"`
+	Client    ClientConfig    `toml:"client"`
 	Clipboard ClipboardConfig `toml:"clipboard"`
+}
+
+// ClientConfig collects per-CLI knobs that aren't sync-related.
+type ClientConfig struct {
+	// LockWait is a Go duration string ("10s", "1m"). Empty = fail fast on
+	// flock contention. Overridden by FD0_LOCK_WAIT env when set.
+	LockWait string `toml:"lock_wait"`
 }
 
 // SyncConfig drives the agent-managed background sync.
@@ -37,8 +45,10 @@ func (c SyncConfig) OnUnlockEnabled() bool {
 	return *c.OnUnlock
 }
 
-// ClipboardConfig is reserved for the v1.x clipboard tuning section.
+// ClipboardConfig tunes `fd0 copy`. Read by the CLI when the user does not
+// pass `--clear-after` on the command line.
 type ClipboardConfig struct {
+	// ClearAfterSeconds: 0 = disabled. Default applied by the CLI is 30s.
 	ClearAfterSeconds int `toml:"clear_after_seconds"`
 }
 

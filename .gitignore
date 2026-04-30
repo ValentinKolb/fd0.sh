@@ -30,3 +30,6 @@ vendor/
 
 # fd0 runtime data (in case anyone runs the client from the repo)
 .fd0/
+
+# Local-only working notes
+TODO.md

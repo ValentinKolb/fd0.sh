@@ -75,11 +75,16 @@ server    = "http://127.0.0.1:4048"      # or via FD0_SERVER env
 interval  = "1h"                          # periodic background sync; "" disables
 on_unlock = true                          # sync immediately after unlock
 
+[client]
+lock_wait = "10s"                         # block up to 10s on ~/.fd0/.lock contention; "" = fail fast
+
+[clipboard]
+clear_after_seconds = 30                  # default for `fd0 copy`; 0 disables auto-clear
 ```
 
-The clipboard auto-clear delay is per-call: `fd0 copy NAME --clear-after=30s` (default 30s, set to 0 to disable). A future config-driven default lives under TODO.
+`fd0 copy NAME --clear-after=30s` overrides `[clipboard].clear_after_seconds` per call. Set to `0` to disable auto-clear.
 
-Environment variables override config: `FD0_HOME`, `FD0_SERVER`, `FD0_NO_AGENT`, `FD0_LOCK_WAIT`.
+Environment variables override config: `FD0_HOME`, `FD0_SERVER`, `FD0_LOCK_WAIT`.
 
 ## Server
 

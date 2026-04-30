@@ -17,6 +17,7 @@ import (
 	"github.com/valentinkolb/fd0.sh/internal/agent"
 	"github.com/valentinkolb/fd0.sh/internal/chain"
 	"github.com/valentinkolb/fd0.sh/internal/crypto"
+	"github.com/valentinkolb/fd0.sh/internal/fdhome"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
 )
 
@@ -30,7 +31,12 @@ func RunSync(ctx context.Context, server string) error {
 		server = os.Getenv("FD0_SERVER")
 	}
 	if server == "" {
-		return errors.New("no server configured (--server or FD0_SERVER)")
+		paths, _ := fdhome.Resolve()
+		cfg, _ := fdhome.LoadConfig(paths.Config)
+		server = cfg.Sync.Server
+	}
+	if server == "" {
+		return errors.New("no server configured (--server, FD0_SERVER, or [sync].server)")
 	}
 	s, err := Open(ctx)
 	if err != nil {

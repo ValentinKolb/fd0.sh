@@ -13,6 +13,7 @@ import (
 	"github.com/awnumar/memguard"
 
 	"github.com/valentinkolb/fd0.sh/internal/cli"
+	"github.com/valentinkolb/fd0.sh/internal/fdhome"
 )
 
 // version is overwritten by goreleaser via `-ldflags="-X main.version=..."`.
@@ -35,8 +36,6 @@ type rootCLI struct {
 	Auth     authCmd     `cmd:"" help:"Manage unlock methods (passphrases, future yubikeys)."`
 	Doctor   doctorCmd   `cmd:"" help:"Diagnose vault, chain, and tip-binding consistency."`
 	Version  versionCmd  `cmd:"" help:"Print version and exit."`
-
-	NoAgent bool `name:"no-agent" help:"Disable agent (not implemented in v1)." env:"FD0_NO_AGENT"`
 }
 
 type initCmd struct{}
@@ -51,9 +50,9 @@ type getCmd struct {
 	Raw   bool   `name:"raw" help:"Print value without trailing newline."`
 }
 type copyCmd struct {
-	Name       string        `arg:"" optional:"" help:"Secret name."`
-	Scope      string        `name:"scope" help:"Scope ID."`
-	ClearAfter time.Duration `name:"clear-after" help:"Clear clipboard after this duration (0 = never)." default:"30s"`
+	Name       string `arg:"" optional:"" help:"Secret name."`
+	Scope      string `name:"scope" help:"Scope label or id."`
+	ClearAfter string `name:"clear-after" help:"Override clear delay ('30s', '0' to disable). Default: [clipboard].clear_after_seconds in config, else 30s."`
 }
 type setCmd struct {
 	Name  string `arg:"" help:"Secret name."`
@@ -184,7 +183,11 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 	case "get", "get <name>":
 		return cli.RunGet(ctx, c.Get.Scope, c.Get.Name, c.Get.Raw)
 	case "copy", "copy <name>":
-		return cli.RunCopy(ctx, c.Copy.Scope, c.Copy.Name, c.Copy.ClearAfter)
+		clearAfter, err := resolveClipboardClear(c.Copy.ClearAfter)
+		if err != nil {
+			return err
+		}
+		return cli.RunCopy(ctx, c.Copy.Scope, c.Copy.Name, clearAfter)
 	case "set <name> <value>":
 		return cli.RunSecretSet(ctx, c.Set.Scope, c.Set.Name, c.Set.Value)
 	case "rm <name>":
@@ -235,4 +238,27 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 		return nil
 	}
 	return fmt.Errorf("unknown command %q", kctx.Command())
+}
+
+// resolveClipboardClear returns the effective clear-after duration. Order:
+//
+//	1. CLI flag (--clear-after=...) when non-empty
+//	2. [clipboard].clear_after_seconds from ~/.fd0/config.toml
+//	3. 30s default
+func resolveClipboardClear(flag string) (time.Duration, error) {
+	if flag != "" {
+		d, err := time.ParseDuration(flag)
+		if err != nil {
+			return 0, fmt.Errorf("--clear-after %q: %w", flag, err)
+		}
+		return d, nil
+	}
+	paths, err := fdhome.Resolve()
+	if err == nil {
+		cfg, err := fdhome.LoadConfig(paths.Config)
+		if err == nil && cfg.Clipboard.ClearAfterSeconds > 0 {
+			return time.Duration(cfg.Clipboard.ClearAfterSeconds) * time.Second, nil
+		}
+	}
+	return 30 * time.Second, nil
 }
