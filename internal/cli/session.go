@@ -37,13 +37,6 @@ type Session struct {
 	UserX25519Pub []byte // ed25519 → curve25519, derived once at Open
 	Body          *proto.VaultBody // body.SuperPriv is zeroed (held in agent)
 	UserState     *chain.UserState
-	Scopes        map[string]*ScopeRuntime
-}
-
-// ScopeRuntime is the per-scope replayed state plus the OEK we use for writes.
-type ScopeRuntime struct {
-	State   *chain.ScopeState
-	CurOEK  []byte // 32 B; held in CLI process memory for the duration of the session
 }
 
 // Open acquires the lock, connects to the agent, asks for the redacted body,
@@ -97,7 +90,6 @@ func Open(ctx context.Context) (*Session, error) {
 		UserSuperPub:  gb.UserSuperPub,
 		UserX25519Pub: xPub,
 		Body:          &body,
-		Scopes:        map[string]*ScopeRuntime{},
 	}
 	// Replay user chain and verify tip binding.
 	uctx, err := chain.ReplayUser(paths.UserChain)
@@ -122,49 +114,11 @@ func (agentLockedErr) Error() string { return "agent: locked" }
 
 func errStr(e error) string { return e.Error() }
 
-// Close releases the lock and zeroizes ephemeral state.
+// Close releases the lock.
 func (s *Session) Close() {
-	for _, sr := range s.Scopes {
-		if sr.CurOEK != nil {
-			crypto.Wipe(sr.CurOEK)
-		}
-	}
 	if s.Lock != nil {
 		_ = s.Lock.Unlock()
 	}
-}
-
-// LoadScope replays one scope chain via the agent. It opens our key_delivery
-// (sealed-box) using agent.OpenSeal, derives OEKs, and builds secret_index.
-//
-// X25519 derivation requires super_priv; instead of asking the agent for the
-// scalar (which would expose it), we ask the agent.OpenSeal for every
-// KeyDelivery, which uses the agent's held x25519 priv internally.
-func (s *Session) LoadScope(scopeID string) (*ScopeRuntime, error) {
-	if sr, ok := s.Scopes[scopeID]; ok {
-		return sr, nil
-	}
-	path := s.Paths.ScopeChain(scopeID)
-	st, err := replayScopeViaAgent(path, s.UserSuperPub, s.UserX25519Pub, s.Agent)
-	if err != nil {
-		return nil, err
-	}
-	if st == nil {
-		return nil, fmt.Errorf("scope %s: empty chain", scopeName(s, scopeID))
-	}
-	if st.Left {
-		return nil, fmt.Errorf("scope %s: left", scopeName(s, scopeID))
-	}
-	if st.ScopeID != scopeID {
-		return nil, fmt.Errorf("scope %s: derived id mismatch (%s)", scopeName(s, scopeID), st.ScopeID)
-	}
-	cur, ok := st.OEKs[st.CurrentOEKVer]
-	if !ok {
-		return nil, fmt.Errorf("scope %s: missing current OEK v%d", scopeName(s, scopeID), st.CurrentOEKVer)
-	}
-	sr := &ScopeRuntime{State: st, CurOEK: append([]byte(nil), cur...)}
-	s.Scopes[scopeID] = sr
-	return sr, nil
 }
 
 // AppendScopeEvent persists ev to the scope chain file and (eventually) syncs

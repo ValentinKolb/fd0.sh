@@ -21,6 +21,44 @@ import (
 	"github.com/valentinkolb/fd0.sh/internal/proto"
 )
 
+// pullCursor is the per-scope position we want the server to send events
+// from, in /sync requests. (seq=0, hash=nil) means "send from the
+// genesis"; otherwise the server sends events with seq > Seq whose
+// prev_hash chain-binds to Hash.
+type pullCursor struct {
+	Seq  uint64
+	Hash []byte
+}
+
+// buildSyncRequestBody marshals the CBOR body for POST /sync. The schema
+// (PROTOCOL.md §7) lives here once; four call sites used to inline it
+// with map[string]any literals, which silently typo'd into server-side
+// "missing field" errors.
+//
+// `scopes` maps scope_id → cursor (or empty for a push-only request).
+// `push` is the list of events to push (nil normalised to []any{}).
+// `discover` toggles the server's membership-discovery scan.
+// `limit` is the per-scope event cap (0 = none requested).
+func buildSyncRequestBody(scopes map[string]pullCursor, push []any, discover bool, limit uint64) ([]byte, error) {
+	pulls := make(map[string]any, len(scopes))
+	for sid, c := range scopes {
+		pulls[sid] = map[string]any{
+			"cursor": map[string]any{"seq": c.Seq, "hash": c.Hash},
+		}
+	}
+	if push == nil {
+		push = []any{}
+	}
+	return proto.Marshal(map[string]any{
+		"pull": map[string]any{
+			"scopes":               pulls,
+			"limit_per_scope":      limit,
+			"discover_memberships": discover,
+		},
+		"push": push,
+	})
+}
+
 // RunSync pushes any local-only events to the configured fd0-server and pulls
 // new events from there.
 //
@@ -45,11 +83,9 @@ func RunSync(ctx context.Context, server string) error {
 	defer s.Close()
 
 	// First round-trip: discovery + pull for known scopes + push.
-	pullScopes := map[string]any{}
+	pullScopes := map[string]pullCursor{}
 	for sid, sd := range s.Body.Scopes {
-		pullScopes[sid] = map[string]any{
-			"cursor": map[string]any{"seq": sd.ChainTip.Seq, "hash": sd.ChainTip.Hash},
-		}
+		pullScopes[sid] = pullCursor{Seq: sd.ChainTip.Seq, Hash: sd.ChainTip.Hash}
 	}
 	// Build push: only events whose seq is at or above the per-scope
 	// PushFloor (= "lowest seq we still need to push"). Foreign events
@@ -82,15 +118,7 @@ func RunSync(ctx context.Context, server string) error {
 			pushItems = append(pushItems, map[string]any{"scope": sid, "event": ev})
 		}
 	}
-	req := map[string]any{
-		"pull": map[string]any{
-			"scopes":               pullScopes,
-			"limit_per_scope":      uint64(1000),
-			"discover_memberships": true,
-		},
-		"push": pushItems,
-	}
-	body, err := proto.Marshal(req)
+	body, err := buildSyncRequestBody(pullScopes, pushItems, true, 1000)
 	if err != nil {
 		return err
 	}
@@ -392,19 +420,10 @@ func (s *Session) signedPOST(ctx context.Context, endpoint string, body []byte) 
 // discoverScope pulls a fresh scope from cursor=0, persists its events, and
 // adds it to the vault with the OEK extracted by replay.
 func (s *Session) discoverScope(ctx context.Context, server, scopeID string) error {
-	pullReq := map[string]any{
-		"pull": map[string]any{
-			"scopes": map[string]any{
-				scopeID: map[string]any{
-					"cursor": map[string]any{"seq": uint64(0), "hash": []byte(nil)},
-				},
-			},
-			"limit_per_scope":      uint64(1000),
-			"discover_memberships": false,
-		},
-		"push": []any{},
-	}
-	body, err := proto.Marshal(pullReq)
+	body, err := buildSyncRequestBody(
+		map[string]pullCursor{scopeID: {Seq: 0, Hash: nil}},
+		nil, false, 1000,
+	)
 	if err != nil {
 		return err
 	}
@@ -582,19 +601,10 @@ func (s *Session) fullPullScope(ctx context.Context, server, scopeID string) ([]
 	cursorSeq := uint64(0)
 	cursorHash := []byte(nil) // sentinel: include seq=0 (server fresh-discovery)
 	for round := 0; round < 64; round++ {
-		req := map[string]any{
-			"pull": map[string]any{
-				"scopes": map[string]any{
-					scopeID: map[string]any{
-						"cursor": map[string]any{"seq": cursorSeq, "hash": cursorHash},
-					},
-				},
-				"limit_per_scope":      uint64(pageSize),
-				"discover_memberships": false,
-			},
-			"push": []any{},
-		}
-		body, err := proto.Marshal(req)
+		body, err := buildSyncRequestBody(
+			map[string]pullCursor{scopeID: {Seq: cursorSeq, Hash: cursorHash}},
+			nil, false, pageSize,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -820,10 +830,7 @@ func (s *Session) rebuildAndPushSet(ctx context.Context, server, scopeID string,
 	}
 	// Push the single event.
 	push := []any{map[string]any{"scope": scopeID, "event": ev}}
-	body, err := proto.Marshal(map[string]any{
-		"pull": map[string]any{"scopes": map[string]any{}, "limit_per_scope": uint64(0)},
-		"push": push,
-	})
+	body, err := buildSyncRequestBody(nil, push, false, 0)
 	if err != nil {
 		return false, err
 	}
