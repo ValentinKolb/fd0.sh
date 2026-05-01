@@ -3,6 +3,7 @@ package agent
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"time"
 )
@@ -16,13 +17,31 @@ type Client struct {
 // NewClient resolves the socket path via fdhome.
 func NewClient(sock string) *Client { return &Client{sock: sock} }
 
-// IsRunning quickly probes whether the agent is up by stat'ing the socket.
+// IsRunning probes whether the agent is up. We need TWO checks because
+// a Unix domain socket file persists on disk after the listening process
+// dies (e.g. `kill -9` of fd0-agent leaves the socket inode behind):
+//
+//  1. The path exists and is a socket inode (cheap stat).
+//  2. We can actually connect — i.e. some process is listening.
+//
+// Without (2), `RunUnlock` would see a stale socket, skip the spawn,
+// and then fail with "connection refused" when it tries to talk. (2)
+// uses a tight 200ms timeout so a healthy agent answers quickly while
+// stale sockets don't block the call.
 func (c *Client) IsRunning() bool {
 	st, err := os.Stat(c.sock)
 	if err != nil {
 		return false
 	}
-	return st.Mode()&os.ModeSocket != 0
+	if st.Mode()&os.ModeSocket == 0 {
+		return false
+	}
+	conn, err := net.DialTimeout("unix", c.sock, 200*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 // Status calls OpStatus.

@@ -10,7 +10,9 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/awnumar/memguard"
@@ -67,6 +69,14 @@ func Listen(paths fdhome.Paths, cfg Config) (*Server, error) {
 	}
 	if err := paths.VerifyTight(); err != nil {
 		return nil, err
+	}
+	// Refuse to start if another agent is already serving this home: the
+	// previous behaviour silently rebound the socket, leaving the original
+	// agent running but unreachable (orphan process holding super_priv
+	// mlocked, plus duplicate-state confusion). Detect via PID file +
+	// liveness check; only proceed if the prior agent is truly gone.
+	if alive, oldPID := isPriorAgentAlive(paths.AgentPID); alive {
+		return nil, fmt.Errorf("agent: already running as pid %d (delete %s if you're sure it's dead)", oldPID, paths.AgentPID)
 	}
 	// Stale socket from a crashed agent: unlink if no listener answers.
 	_ = os.Remove(paths.AgentSock)
@@ -554,3 +564,31 @@ func errResp(msg string) *Response { return &Response{Err: msg} }
 
 // SafeExit calls memguard.SafePanic on signals; the Stop helper calls Purge.
 func SafeExit() { memguard.SafePanic(errors.New("agent SafeExit")) }
+
+// isPriorAgentAlive reads the PID file (if any) and probes whether the
+// recorded process is still around. We use signal 0 (no-op) to test
+// liveness without disturbing the process. Returns (alive, pid).
+//
+// On any error (no file, bad content, foreign-owned PID) we conservatively
+// return (false, 0) — the caller will then proceed and replace the socket.
+// The worst-case behaviour is a brief duplicate-agent window during crash
+// recovery, which is no worse than the previous unconditional behaviour.
+func isPriorAgentAlive(pidPath string) (bool, int) {
+	b, err := os.ReadFile(pidPath)
+	if err != nil {
+		return false, 0
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || pid <= 1 {
+		return false, 0
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false, 0
+	}
+	// On Unix, FindProcess always succeeds; signal 0 is the liveness probe.
+	if err := proc.Signal(syscall.Signal(0)); err != nil {
+		return false, 0
+	}
+	return true, pid
+}

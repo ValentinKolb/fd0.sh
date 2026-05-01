@@ -128,8 +128,25 @@ func RunScopeRemoveMember(ctx context.Context, scopeID, memberCardOrLabel string
 	return nil
 }
 
-// RunScopeLeave removes the local user from scopeID and drops the scope
-// locally (chain file unlink + vault prune).
+// RunScopeLeave appends a `member.change op=remove member=self` event to
+// the scope chain and marks the scope as Leaving in the vault. The actual
+// deletion (chain file unlink + vault.Scopes prune) is deferred to the
+// next sync round, which:
+//
+//  1. Pushes the leave event so the server records that we're no longer
+//     a member.
+//  2. On the next pull, the server returns `denied=true` for the scope
+//     (we're not authorised) — the existing drop path then unlinks the
+//     chain file and removes the vault entry.
+//
+// The previous implementation dropped the chain file immediately. That
+// caused the server to re-discover us as a member on the next sync (the
+// leave event was deleted with the file, and the server hadn't been
+// told). Marking + deferring is the only race-free approach that
+// doesn't require synchronous server I/O inside `scope leave`.
+//
+// `scope ls` and the read/write helpers filter out `Leaving` scopes so
+// they appear gone to the user immediately.
 func RunScopeLeave(ctx context.Context, scopeID string) error {
 	s, err := Open(ctx)
 	if err != nil {
@@ -157,16 +174,17 @@ func RunScopeLeave(ctx context.Context, scopeID string) error {
 	if err := chain.AppendScope(s.Paths.ScopeChain(scopeID), ev); err != nil {
 		return err
 	}
-	// Drop scope locally per STORAGE.md §5.3:
-	// 1) unlink chain file 2) drop scope from vault 3) re-seal.
-	if err := os.Remove(s.Paths.ScopeChain(scopeID)); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	delete(s.Body.Scopes, scopeID)
+	// Update vault entry: bump ChainTip past the leave, mark Leaving.
+	prefix, _ := ev.PrevHashInput()
+	tipHash := proto.HashPrefix(prefix)
+	sd := s.Body.Scopes[scopeID]
+	sd.ChainTip = proto.ChainTip{Seq: ev.SignedPrefix.Seq, Hash: tipHash[:]}
+	sd.Leaving = true
+	s.Body.Scopes[scopeID] = sd
 	if err := s.ReSeal(); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "✓ left %s\n", scopeName(nil, scopeID))
+	fmt.Fprintf(os.Stderr, "✓ left %s (will be dropped after next sync)\n", scopeName(nil, scopeID))
 	return nil
 }
 

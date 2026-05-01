@@ -265,11 +265,21 @@ type VaultBody struct {
 // has been re-sealed. On any failure the field stays put → next sync
 // re-pushes the same suffix → server dedups by event_id. The invariant is
 // "PushFloor ≤ true highest pushed seq + 1": never advance speculatively.
+//
+// Leaving is set by `scope leave` to mark a scope whose `member.change
+// op=remove member=self` event has been appended locally but not yet
+// pushed to the server. Sync iterates Leaving scopes specifically so
+// the leave event reaches the server before we drop the local copy
+// (the previous behaviour dropped immediately, losing the leave event
+// and causing the server to re-discover us as a member on next pull).
+// Once the server returns Denied for a Leaving scope, the normal drop
+// path runs.
 type ScopeVaultData struct {
 	Label     string     `cbor:"label,omitempty"`
 	OEKs      []OEKEntry `cbor:"oeks"`
 	ChainTip  ChainTip   `cbor:"chain_tip"`
 	PushFloor uint64     `cbor:"push_floor,omitempty"`
+	Leaving   bool       `cbor:"leaving,omitempty"`
 }
 
 // OEKEntry is one (version, key) pair.

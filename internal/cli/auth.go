@@ -99,18 +99,33 @@ func RunAuthAdd(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Atomicity ordering: vault wrap FIRST, then chain advertisement.
+	//
+	// Rationale (THREATS.md §2 trust boundary):
+	//   - If AddWrap fails: the user-chain has not been mutated; the user
+	//     can simply retry. No half-state.
+	//   - If AddWrap succeeds and chain.AppendUser fails: the vault has an
+	//     orphan wrap whose method_id isn't in the active set. `auth ls`
+	//     won't show it (chain is the source of truth for "what exists"),
+	//     and `fd0 doctor` flags the inconsistency.
+	//   - If we instead did chain first and AddWrap failed, the chain
+	//     would advertise a method with no wrap → unlock with that method
+	//     fails confusingly; the user has no obvious way to recover
+	//     without a doctor-driven cleanup.
+	if err := s.Agent.AddWrap(s.Paths.Vault, newID, proto.AuthPassphrase, pp, newK); err != nil {
+		return err
+	}
 	if err := chain.AppendUser(s.Paths.UserChain, ev); err != nil {
+		// Best-effort rollback: drop the wrap we just added so the vault
+		// returns to a consistent state. If this also fails, doctor will
+		// surface the orphan and the user can run `fd0 auth add` again
+		// (AddWrap is idempotent on duplicate method_id).
+		_ = s.Agent.RemoveWrap(s.Paths.Vault, newID)
 		return err
 	}
 	prefix, _ := ev.PrevHashInput()
 	h := proto.HashPrefix(prefix)
 	s.Body.AuthTip = proto.ChainTip{Seq: ev.Seq, Hash: h[:]}
-
-	// Vault: add wrap. The agent encrypts its cached payload_key under
-	// newK and atomically rewrites the vault file.
-	if err := s.Agent.AddWrap(s.Paths.Vault, newID, proto.AuthPassphrase, pp, newK); err != nil {
-		return err
-	}
 	// Re-seal vault body to push the new auth_tip into the body.
 	if err := s.ReSeal(); err != nil {
 		return err
@@ -159,16 +174,32 @@ func RunAuthRemove(ctx context.Context, methodID string) error {
 	if err != nil {
 		return err
 	}
+	// Atomicity ordering: vault wrap deletion FIRST, then chain
+	// advertisement. THIS IS A SECURITY-CRITICAL ORDERING.
+	//
+	// Rationale: vault.Open iterates wraps independently of the chain.
+	// If we wrote the chain first (announcing the method gone) and then
+	// RemoveWrap failed, an attacker holding the just-revoked credential
+	// could STILL UNLOCK because the wrap remained in vault.enc. By
+	// removing the wrap first we close the credential's effectiveness
+	// before we declare it removed; if chain.AppendUser fails afterwards
+	// the chain still lists the method (so `auth ls` is misleading) but
+	// unlock with that credential will fail at the wrap-decrypt step
+	// (the wrap is gone). The user can re-issue `auth rm` and
+	// RemoveWrap is idempotent on "not found".
+	if err := s.Agent.RemoveWrap(s.Paths.Vault, methodID); err != nil {
+		return err
+	}
 	if err := chain.AppendUser(s.Paths.UserChain, ev); err != nil {
+		// Don't roll back: the wrap removal stays — that was the
+		// security-critical step. Doctor will surface the orphan
+		// chain entry and the user can retry `auth rm` (which is
+		// now idempotent and will just append the chain event).
 		return err
 	}
 	prefix, _ := ev.PrevHashInput()
 	h := proto.HashPrefix(prefix)
 	s.Body.AuthTip = proto.ChainTip{Seq: ev.Seq, Hash: h[:]}
-
-	if err := s.Agent.RemoveWrap(s.Paths.Vault, methodID); err != nil {
-		return err
-	}
 	if err := s.ReSeal(); err != nil {
 		return err
 	}

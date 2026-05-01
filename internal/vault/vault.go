@@ -15,6 +15,7 @@
 package vault
 
 import (
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"os"
@@ -248,6 +249,17 @@ func SaveBody(path string, userSuperPub []byte, body *proto.VaultBody, payloadKe
 // AddWrap encrypts the caller-supplied stable payloadKey under newWrap's
 // UnlockKey, appends it to the on-disk wraps list, and re-encrypts the body
 // (because the body AAD covers the wraps array).
+//
+// Idempotent on duplicate method_id: if a wrap with that method_id already
+// exists AND its payload-key decryption matches under the supplied
+// UnlockKey, the call is a no-op (= success). This supports crash recovery
+// when a previous `auth add` was interrupted between AddWrap and the
+// chain.AppendUser write — retrying must not error.
+//
+// If a wrap with the same method_id exists but with a DIFFERENT
+// UnlockKey (genuine collision: random ulid duplicated, or programmer
+// error), the call still returns an explicit error so we don't silently
+// replace a credential.
 func AddWrap(path string, userSuperPub []byte, body *proto.VaultBody, payloadKey []byte, newWrap WrapInput) error {
 	if len(payloadKey) != 32 || len(newWrap.UnlockKey) != 32 {
 		return errors.New("vault: AddWrap requires 32-byte keys")
@@ -257,9 +269,36 @@ func AddWrap(path string, userSuperPub []byte, body *proto.VaultBody, payloadKey
 		return err
 	}
 	for _, w := range v.WrappedPayloadKeys {
-		if w.MethodID == newWrap.MethodID {
-			return fmt.Errorf("vault: method_id %q already exists", newWrap.MethodID)
+		if w.MethodID != newWrap.MethodID {
+			continue
 		}
+		// Same method_id present already. Verify the existing wrap
+		// decrypts to the same payload_key under the caller's
+		// UnlockKey — if so, this is a retry of an earlier
+		// (interrupted) AddWrap and we treat it as success. If not,
+		// the method_id collides with a different credential; refuse.
+		hdr := proto.WrappedKeyHeader{
+			MethodID: w.MethodID, MethodType: w.MethodType,
+			PublicParams: w.PublicParams, WrapNonce: w.WrapNonce,
+		}
+		hb, err := proto.Marshal(hdr)
+		if err != nil {
+			return err
+		}
+		aad := append([]byte(proto.DomainVaultWrap), userSuperPub...)
+		aad = append(aad, hb...)
+		got, err := crypto.AEADOpen(newWrap.UnlockKey, w.WrapNonce, w.Wrapped, aad)
+		if err != nil {
+			return fmt.Errorf("vault: method_id %q already exists with a different credential", newWrap.MethodID)
+		}
+		// crypto.Wipe handles slices we no longer need.
+		match := len(got) == len(payloadKey) && subtle.ConstantTimeCompare(got, payloadKey) == 1
+		crypto.Wipe(got)
+		if !match {
+			return fmt.Errorf("vault: method_id %q exists but wraps a different payload_key", newWrap.MethodID)
+		}
+		// Truly a no-op retry. Caller's chain step can proceed.
+		return nil
 	}
 	wrapNonce, err := crypto.Nonce12()
 	if err != nil {
@@ -289,6 +328,11 @@ func AddWrap(path string, userSuperPub []byte, body *proto.VaultBody, payloadKey
 
 // RemoveWrap drops the wrap whose method_id matches and re-encrypts the
 // body. Refuses to leave the vault with zero wraps.
+//
+// Idempotent on "method_id not found": this supports crash recovery from
+// an interrupted `auth rm` (where the wrap was removed but the chain
+// append failed). Returning success in that case lets the user retry
+// `auth rm` without manual repair.
 func RemoveWrap(path string, userSuperPub []byte, body *proto.VaultBody, payloadKey []byte, methodID string) error {
 	if len(payloadKey) != 32 {
 		return errors.New("vault: RemoveWrap requires 32-byte payload_key")
@@ -307,7 +351,9 @@ func RemoveWrap(path string, userSuperPub []byte, body *proto.VaultBody, payload
 		newWraps = append(newWraps, w)
 	}
 	if !found {
-		return fmt.Errorf("vault: method_id %q not found", methodID)
+		// Already gone; treat as success so retries after a partial
+		// `auth rm` complete cleanly.
+		return nil
 	}
 	if len(newWraps) == 0 {
 		return errors.New("vault: refusing to remove the last wrap (would lock you out)")

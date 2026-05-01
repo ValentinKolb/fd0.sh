@@ -148,6 +148,17 @@ func RunSync(ctx context.Context, server string) error {
 		if !ok {
 			continue
 		}
+		// Pending-leave: the user has already issued `scope leave` and
+		// we have a local member.change op=remove event queued for push.
+		// Skip the pull processing (which would otherwise replay the
+		// chain, see the local leave, hit the st.Left branch, and drop
+		// the scope before the leave event has reached the server —
+		// triggering a futile re-discovery on the next round). The push
+		// in this same sync round will land the leave; the *next* sync
+		// will get a clean Denied from pull and drop normally.
+		if sd.Leaving {
+			continue
+		}
 		path := s.Paths.ScopeChain(sid)
 		// Snapshot size so we can rollback on replay failure (a malicious
 		// server could otherwise poison the local chain file with bytes

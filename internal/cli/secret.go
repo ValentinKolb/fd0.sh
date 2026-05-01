@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -80,23 +81,28 @@ func RunScopeCreate(ctx context.Context, label string) error {
 	return nil
 }
 
-// RunScopeList prints every subscribed scope.
+// RunScopeList prints every subscribed scope. Scopes that we have left
+// but whose leave event hasn't yet reached the server (Leaving=true)
+// are filtered out — to the user the scope appears already gone.
 func RunScopeList(ctx context.Context) error {
 	s, err := Open(ctx)
 	if err != nil {
 		return err
 	}
 	defer s.Close()
-	if len(s.Body.Scopes) == 0 {
+	visible := make([]string, 0, len(s.Body.Scopes))
+	for id, sd := range s.Body.Scopes {
+		if sd.Leaving {
+			continue
+		}
+		visible = append(visible, id)
+	}
+	if len(visible) == 0 {
 		fmt.Println("(no scopes)")
 		return nil
 	}
-	ids := make([]string, 0, len(s.Body.Scopes))
-	for id := range s.Body.Scopes {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	for _, id := range ids {
+	sort.Strings(visible)
+	for _, id := range visible {
 		sd := s.Body.Scopes[id]
 		label := sd.Label
 		if label == "" {
@@ -108,7 +114,24 @@ func RunScopeList(ctx context.Context) error {
 }
 
 // RunSecretSet adds or updates a secret in the given (or default) scope.
+//
+// If value == "-" the secret value is read from stdin until EOF. A
+// trailing single newline is stripped (so `printf 'foo' | fd0 set X -`
+// and `printf 'foo\n' | fd0 set X -` both store "foo"); embedded newlines
+// are preserved verbatim. This avoids leaking secrets into shell
+// history.
 func RunSecretSet(ctx context.Context, scopeID, name, value string) error {
+	if value == "-" {
+		buf, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return fmt.Errorf("set: read stdin: %w", err)
+		}
+		// Trim a single trailing newline; embedded newlines stay.
+		if n := len(buf); n > 0 && buf[n-1] == '\n' {
+			buf = buf[:n-1]
+		}
+		value = string(buf)
+	}
 	s, err := Open(ctx)
 	if err != nil {
 		return err
@@ -324,7 +347,12 @@ func CollectAllSecrets(ctx context.Context) ([]SecretEntry, *Session, error) {
 		return nil, nil, err
 	}
 	var out []SecretEntry
-	for scopeID := range s.Body.Scopes {
+	for scopeID, sdInit := range s.Body.Scopes {
+		// Skip scopes pending leave: the user has called `scope leave`
+		// but the leave event hasn't yet propagated through sync.
+		if sdInit.Leaving {
+			continue
+		}
 		st, err := s.replayAndCheckScope(scopeID)
 		if err != nil {
 			s.Close()
@@ -460,14 +488,21 @@ func shortScopeID(scopeID string) string {
 //	scopeOrLabel == "s_xxx…"  → exact id match
 //	scopeOrLabel == "work"    → unique label lookup; ambiguous label errors
 func (s *Session) resolveScopeID(scopeOrLabel string) (string, error) {
+	// Filter scopes pending leave from all resolution paths: a scope
+	// the user has just left should appear gone everywhere except in
+	// the sync's push iteration (which uses a different traversal).
+	visible := func(id string, sd proto.ScopeVaultData) bool { return !sd.Leaving }
 	if scopeOrLabel != "" {
 		// Direct id match.
-		if _, ok := s.Body.Scopes[scopeOrLabel]; ok {
+		if sd, ok := s.Body.Scopes[scopeOrLabel]; ok && visible(scopeOrLabel, sd) {
 			return scopeOrLabel, nil
 		}
 		// Label match (case-sensitive). Reject ambiguous labels.
 		var matches []string
 		for id, sd := range s.Body.Scopes {
+			if !visible(id, sd) {
+				continue
+			}
 			if sd.Label == scopeOrLabel {
 				matches = append(matches, id)
 			}
@@ -481,24 +516,35 @@ func (s *Session) resolveScopeID(scopeOrLabel string) (string, error) {
 			return "", fmt.Errorf("label %q matches %d scopes; use scope id", scopeOrLabel, len(matches))
 		}
 	}
-	if len(s.Body.Scopes) == 0 {
+	live := 0
+	var soleID string
+	for id, sd := range s.Body.Scopes {
+		if !visible(id, sd) {
+			continue
+		}
+		live++
+		soleID = id
+	}
+	if live == 0 {
 		return "", fmt.Errorf("no scopes — run `fd0 scope create --label <name>` first")
 	}
-	if len(s.Body.Scopes) == 1 {
-		for id := range s.Body.Scopes {
-			return id, nil
-		}
+	if live == 1 {
+		return soleID, nil
 	}
 	if !IsTTY(os.Stdin) || !IsTTY(os.Stderr) {
-		return "", fmt.Errorf("--scope is required (you have %d scopes)", len(s.Body.Scopes))
+		return "", fmt.Errorf("--scope is required (you have %d scopes)", live)
 	}
 	return s.promptScopePicker()
 }
 
 // promptScopePicker shows a TUI picker over all known scopes.
+// Scopes pending leave (Leaving=true) are filtered out.
 func (s *Session) promptScopePicker() (string, error) {
 	ids := make([]string, 0, len(s.Body.Scopes))
-	for id := range s.Body.Scopes {
+	for id, sd := range s.Body.Scopes {
+		if sd.Leaving {
+			continue
+		}
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)

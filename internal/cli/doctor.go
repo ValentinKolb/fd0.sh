@@ -7,6 +7,7 @@ import (
 	"sort"
 
 	"github.com/valentinkolb/fd0.sh/internal/chain"
+	"github.com/valentinkolb/fd0.sh/internal/vault"
 )
 
 // RunDoctor performs read-only health checks across the local fd0 home.
@@ -114,6 +115,57 @@ func RunDoctor(ctx context.Context) error {
 			visible++
 		}
 		pr("OK", fmt.Sprintf("    %d members, %d secrets", len(st.MemberSet), visible))
+	}
+
+	// Auth method consistency: every vault wrap must match an active
+	// chain method, and every active chain method must have a vault
+	// wrap. Mismatches arise from a crash mid-`auth add`/`auth rm`,
+	// or a deliberately tampered vault. Both are HIGH-severity:
+	//   - Orphan wrap (in vault, not in chain): the credential is
+	//     functional even though the user removed it. Security
+	//     regression.
+	//   - Orphan chain method (in chain, not in vault): the user
+	//     can't unlock with that credential; they think they have
+	//     N methods but really have N-1.
+	fmt.Fprintln(os.Stderr, "auth method consistency")
+	if s.UserState != nil && s.UserState.LatestAuthSet != nil {
+		v, verr := vault.Read(s.Paths.Vault)
+		if verr != nil {
+			pr("ERR", "  cannot read vault for cross-check: "+verr.Error())
+		} else {
+			activeIDs := map[string]string{} // method_id -> method_type
+			for _, m := range s.UserState.LatestAuthSet.Payload.Active {
+				activeIDs[m.MethodID] = m.MethodType
+			}
+			wrapIDs := map[string]string{}
+			for _, w := range v.WrappedPayloadKeys {
+				wrapIDs[w.MethodID] = w.MethodType
+			}
+			// Vault → chain.
+			for mid, mt := range wrapIDs {
+				if _, ok := activeIDs[mid]; !ok {
+					pr("ERR", fmt.Sprintf("  orphan vault wrap: method_id=%s type=%s — recoverable: `fd0 auth rm %s`", mid, mt, mid))
+				}
+			}
+			// Chain → vault.
+			for mid, mt := range activeIDs {
+				if _, ok := wrapIDs[mid]; !ok {
+					pr("ERR", fmt.Sprintf("  orphan chain method: method_id=%s type=%s — credential listed but vault has no wrap", mid, mt))
+				}
+			}
+			if len(wrapIDs) == len(activeIDs) {
+				match := true
+				for mid := range activeIDs {
+					if _, ok := wrapIDs[mid]; !ok {
+						match = false
+						break
+					}
+				}
+				if match {
+					pr("OK", fmt.Sprintf("  %d method(s); chain ↔ vault wraps match", len(activeIDs)))
+				}
+			}
+		}
 	}
 
 	// Orphan files: chain files present that aren't in vault.Scopes.
