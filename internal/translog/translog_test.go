@@ -134,7 +134,7 @@ func TestInclusionRoundTripExhaustive(t *testing.T) {
 	for size := uint64(1); size <= maxSize; size++ {
 		root := MerkleTreeHash(leaves[:size])
 		for idx := uint64(0); idx < size; idx++ {
-			path, err := InclusionProof(leaves, idx, size)
+			path, err := BuildInclusionProof(leaves, idx, size)
 			if err != nil {
 				t.Fatalf("size=%d idx=%d: build proof: %v", size, idx, err)
 			}
@@ -152,7 +152,7 @@ func TestInclusionTamperRejection(t *testing.T) {
 	leaves := leafHashes(7)
 	root := MerkleTreeHash(leaves)
 	const idx = uint64(3)
-	path, _ := InclusionProof(leaves, idx, 7)
+	path, _ := BuildInclusionProof(leaves, idx, 7)
 
 	// Baseline must verify.
 	if err := VerifyInclusion(leaves[idx], idx, 7, path, root); err != nil {
@@ -205,7 +205,7 @@ func TestConsistencyRoundTripExhaustive(t *testing.T) {
 		newRoot := MerkleTreeHash(leaves[:newSize])
 		for oldSize := uint64(0); oldSize <= newSize; oldSize++ {
 			oldRoot := MerkleTreeHash(leaves[:oldSize])
-			proof, err := ConsistencyProof(leaves, oldSize, newSize)
+			proof, err := BuildConsistencyProof(leaves, oldSize, newSize)
 			if err != nil {
 				t.Fatalf("(%d,%d): build: %v", oldSize, newSize, err)
 			}
@@ -260,7 +260,7 @@ func TestConsistencyTamperRejection(t *testing.T) {
 	const oldSize, newSize = uint64(3), uint64(8)
 	oldRoot := MerkleTreeHash(leaves[:oldSize])
 	newRoot := MerkleTreeHash(leaves[:newSize])
-	proof, _ := ConsistencyProof(leaves, oldSize, newSize)
+	proof, _ := BuildConsistencyProof(leaves, oldSize, newSize)
 
 	if err := VerifyConsistency(oldSize, newSize, proof, oldRoot, newRoot); err != nil {
 		t.Fatalf("baseline: %v", err)
@@ -441,7 +441,7 @@ func TestVerifySTHRejectsMalformedHead(t *testing.T) {
 func TestVerifyInclusionExtraElement(t *testing.T) {
 	leaves := leafHashes(4)
 	root := MerkleTreeHash(leaves)
-	path, _ := InclusionProof(leaves, 1, 4)
+	path, _ := BuildInclusionProof(leaves, 1, 4)
 	bad := append(append([][]byte(nil), path...), fixedHash(0xEE))
 	if err := VerifyInclusion(leaves[1], 1, 4, bad, root); err == nil {
 		t.Fatal("inclusion proof with extra element must be rejected")
@@ -455,7 +455,7 @@ func TestVerifyInclusionExtraElement(t *testing.T) {
 func TestVerifyInclusionPermutedPath(t *testing.T) {
 	leaves := leafHashes(8)
 	root := MerkleTreeHash(leaves)
-	path, _ := InclusionProof(leaves, 3, 8) // length-3 path
+	path, _ := BuildInclusionProof(leaves, 3, 8) // length-3 path
 	if len(path) < 2 {
 		t.Skip("need a path with ≥ 2 elements to permute")
 	}
@@ -474,7 +474,7 @@ func TestVerifyConsistencyExtraElement(t *testing.T) {
 	const oldSize, newSize = uint64(3), uint64(8)
 	oldRoot := MerkleTreeHash(leaves[:oldSize])
 	newRoot := MerkleTreeHash(leaves[:newSize])
-	proof, _ := ConsistencyProof(leaves, oldSize, newSize)
+	proof, _ := BuildConsistencyProof(leaves, oldSize, newSize)
 	bad := append(append([][]byte(nil), proof...), fixedHash(0xEE))
 	if err := VerifyConsistency(oldSize, newSize, bad, oldRoot, newRoot); err == nil {
 		t.Fatal("consistency proof with extra element must be rejected")
@@ -490,7 +490,7 @@ func TestVerifyConsistencyShortProofAtBoundary(t *testing.T) {
 	leaves := leafHashes(maxSize)
 	for newSize := uint64(2); newSize <= maxSize; newSize++ {
 		for oldSize := uint64(1); oldSize < newSize; oldSize++ {
-			proof, _ := ConsistencyProof(leaves, oldSize, newSize)
+			proof, _ := BuildConsistencyProof(leaves, oldSize, newSize)
 			if len(proof) == 0 {
 				continue
 			}
@@ -514,7 +514,7 @@ func TestVerifyInclusionShortProofAtBoundary(t *testing.T) {
 	for size := uint64(2); size <= maxSize; size++ {
 		root := MerkleTreeHash(leaves[:size])
 		for idx := uint64(0); idx < size; idx++ {
-			proof, _ := InclusionProof(leaves, idx, size)
+			proof, _ := BuildInclusionProof(leaves, idx, size)
 			if len(proof) == 0 {
 				continue
 			}
@@ -536,7 +536,7 @@ func TestStressLargeTree(t *testing.T) {
 	leaves := leafHashes(n)
 	root := MerkleTreeHash(leaves)
 	for i := uint64(0); i < n; i += 73 {
-		path, err := InclusionProof(leaves, i, n)
+		path, err := BuildInclusionProof(leaves, i, n)
 		if err != nil {
 			t.Fatalf("size=%d idx=%d: build proof: %v", n, i, err)
 		}
@@ -547,7 +547,7 @@ func TestStressLargeTree(t *testing.T) {
 	// And consistency against a few historical sizes.
 	for _, oldSize := range []uint64{1, 2, 3, 99, 500, 999} {
 		oldRoot := MerkleTreeHash(leaves[:oldSize])
-		proof, err := ConsistencyProof(leaves, oldSize, n)
+		proof, err := BuildConsistencyProof(leaves, oldSize, n)
 		if err != nil {
 			t.Fatalf("(%d,%d): build: %v", oldSize, n, err)
 		}
@@ -576,7 +576,7 @@ func TestEquivocationDifferentSizes(t *testing.T) {
 	// A "proof" that uses histB to derive a path — the verifier does not
 	// know either history; it only sees roots and proof bytes. The forged
 	// proof will rebuild rootB but not rootA, so verification fails.
-	forgedProof, _ := ConsistencyProof(histB, 5, 6) // pretend hist A is hist B[:5]
+	forgedProof, _ := BuildConsistencyProof(histB, 5, 6) // pretend hist A is hist B[:5]
 	err := VerifyConsistency(5, 6, forgedProof, rootA, rootB)
 	if err == nil {
 		t.Fatal("equivocation forging passed verification — verifier broken")

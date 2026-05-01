@@ -4,6 +4,7 @@ package store
 
 import (
 	"context"
+	"crypto/ed25519"
 	"database/sql"
 	_ "embed"
 	"errors"
@@ -17,8 +18,16 @@ import (
 var schemaSQL string
 
 // Store wraps a *sql.DB with the SQLite pragmas fd0 requires.
+//
+// translogPriv / translogPub are populated by SetTranslogKey and used
+// by AppendLeaf. Server boot installs them via LoadOrCreateTranslogKey.
+// AppendLeaf without an installed key returns ErrTranslogKeyMissing —
+// callers (server.go) should treat that as a configuration error, not
+// a per-request fault.
 type Store struct {
-	db *sql.DB
+	db           *sql.DB
+	translogPriv ed25519.PrivateKey
+	translogPub  ed25519.PublicKey
 }
 
 // Open initialises the database file and applies the schema.
@@ -103,7 +112,27 @@ type AppendOpts struct {
 	Event       Event
 }
 
-// Append performs the optimistic-CAS append:
+// Append performs the optimistic-CAS append in its own transaction.
+// Equivalent to AppendWithTranslog with no translog hook — kept for
+// callers that don't have a translog key installed (tests, legacy
+// callers).
+func (s *Store) Append(ctx context.Context, o AppendOpts) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := s.appendTx(ctx, tx, o); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// appendTx is the transaction-internal body of Append. Pulled out so
+// AppendWithTranslog can reuse the same atomicity contract while
+// adding the translog leaf in the same tx.
+//
+// Contract:
 //
 //	BEGIN IMMEDIATE
 //	  if !genesis: SELECT tip_hash FROM chains WHERE chain_id = ?
@@ -111,13 +140,7 @@ type AppendOpts struct {
 //	  INSERT INTO events
 //	  if genesis: INSERT INTO chains
 //	  else:       UPDATE chains SET tip_seq, tip_hash, metadata
-//	COMMIT
-func (s *Store) Append(ctx context.Context, o AppendOpts) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
+func (s *Store) appendTx(ctx context.Context, tx *sql.Tx, o AppendOpts) error {
 	// Ensure write isolation; sqlite handles BEGIN IMMEDIATE via the next write.
 	if !o.Genesis {
 		var tip []byte
@@ -133,7 +156,7 @@ func (s *Store) Append(ctx context.Context, o AppendOpts) error {
 			return ErrDivergence
 		}
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO events (chain_id, seq, event_id, prev_hash, kind, cbor, stored_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+	_, err := tx.ExecContext(ctx, `INSERT INTO events (chain_id, seq, event_id, prev_hash, kind, cbor, stored_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		o.ChainID, o.Seq, o.Event.EventID, o.Event.PrevHash, o.Event.Kind, o.Event.CBOR, time.Now().Unix())
 	if err != nil {
 		// modernc returns "constraint failed: UNIQUE constraint failed: events.event_id"
@@ -149,10 +172,7 @@ func (s *Store) Append(ctx context.Context, o AppendOpts) error {
 		_, err = tx.ExecContext(ctx, `UPDATE chains SET tip_seq = ?, tip_hash = ?, metadata = ? WHERE chain_id = ?`,
 			o.Seq, o.NewTipHash, o.NewMetadata, o.ChainID)
 	}
-	if err != nil {
-		return err
-	}
-	return tx.Commit()
+	return err
 }
 
 // EventsSince returns events with seq > since up to limit, ordered by seq asc.

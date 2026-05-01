@@ -268,6 +268,27 @@ func equalHashSlices(a, b []byte) bool {
 	return true
 }
 
+// InclusionProof is the wire form of an inclusion proof per
+// TRANSLOG.md §5.2. The audit path is the leaf-to-root sibling list.
+// `LeafIndex` and `TreeSize` are echoed on the wire so the verifier
+// can self-check the request matches the response without retaining
+// out-of-band state.
+type InclusionProof struct {
+	LeafIndex uint64   `cbor:"leaf_index"`
+	TreeSize  uint64   `cbor:"tree_size"`
+	AuditPath [][]byte `cbor:"audit_path"`
+}
+
+// ConsistencyProof is the wire form of a consistency proof per
+// TRANSLOG.md §5.3. `Nodes` is the RFC 6962 §2.1.2 hash list. Empty
+// nodes is permitted when fromSize == 0 (any tree is consistent with
+// empty) or fromSize == toSize.
+type ConsistencyProof struct {
+	FromSize uint64   `cbor:"from_size"`
+	ToSize   uint64   `cbor:"to_size"`
+	Nodes    [][]byte `cbor:"nodes"`
+}
+
 // ServerInfo is the self-signed pubkey-publication record returned by
 // GET /v1/server-info. Wire format follows TRANSLOG.md §4.2.
 type ServerInfo struct {

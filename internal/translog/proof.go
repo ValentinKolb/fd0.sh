@@ -22,7 +22,7 @@ package translog
 // O(log size) hashes returned; O(size) total work — used by tests and by
 // the storage layer's full-tree fallback path. The hot server path
 // computes proofs incrementally from cached subtree hashes.
-func InclusionProof(leaves [][]byte, index, size uint64) ([][]byte, error) {
+func BuildInclusionProof(leaves [][]byte, index, size uint64) ([][]byte, error) {
 	if index >= size || size > uint64(len(leaves)) {
 		return nil, ErrIndexOutOfRange
 	}
@@ -117,7 +117,7 @@ func VerifyInclusion(leafHash []byte, index, size uint64, path [][]byte, root []
 //     an empty proof. Verifier still validates the new root matches.
 //   - oldSize == newSize: the trees are equal; returns an empty proof.
 //   - oldSize > newSize or newSize > len(leaves): ErrIndexOutOfRange.
-func ConsistencyProof(leaves [][]byte, oldSize, newSize uint64) ([][]byte, error) {
+func BuildConsistencyProof(leaves [][]byte, oldSize, newSize uint64) ([][]byte, error) {
 	if oldSize > newSize || newSize > uint64(len(leaves)) {
 		return nil, ErrIndexOutOfRange
 	}

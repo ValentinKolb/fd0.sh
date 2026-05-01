@@ -36,7 +36,7 @@ func FuzzInclusion(f *testing.F) {
 
 		leaves := makeLeaves(size)
 		root := MerkleTreeHash(leaves)
-		proof, err := InclusionProof(leaves, index, size)
+		proof, err := BuildInclusionProof(leaves, index, size)
 		if err != nil {
 			t.Fatalf("size=%d idx=%d: build: %v", size, index, err)
 		}
@@ -111,7 +111,7 @@ func FuzzConsistency(f *testing.F) {
 		leaves := makeLeaves(newSize)
 		oldRoot := MerkleTreeHash(leaves[:oldSize])
 		newRoot := MerkleTreeHash(leaves[:newSize])
-		proof, err := ConsistencyProof(leaves, oldSize, newSize)
+		proof, err := BuildConsistencyProof(leaves, oldSize, newSize)
 		if err != nil {
 			t.Fatalf("(%d,%d): build: %v", oldSize, newSize, err)
 		}

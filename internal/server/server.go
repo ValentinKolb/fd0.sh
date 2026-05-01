@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/valentinkolb/fd0.sh/internal/server/ratelimit"
 	"github.com/valentinkolb/fd0.sh/internal/server/store"
 	"github.com/valentinkolb/fd0.sh/internal/server/validate"
+	"github.com/valentinkolb/fd0.sh/internal/translog"
 )
 
 // Config configures the server.
@@ -33,6 +35,13 @@ type Config struct {
 	// documented defaults; set RateLimitDisabled to opt out entirely.
 	RateLimit         ratelimit.Config
 	RateLimitDisabled bool
+
+	// TranslogKeyPath is the path to the operator-supplied Ed25519
+	// signing key for transparency-log STHs. If empty, defaults to
+	// `<dir of DBPath>/server-translog.key`. Per TRANSLOG.md §4.1, a
+	// missing file at this path is auto-generated on first boot and
+	// the operator is WARNed to back it up.
+	TranslogKeyPath string
 }
 
 // Server is the HTTP service. New constructs it; ServeHTTP routes requests.
@@ -43,9 +52,16 @@ type Server struct {
 	log    *slog.Logger
 	rl     *ratelimit.Limiter // nil when disabled
 	rlStop context.CancelFunc // cancels the limiter's GC goroutine on Close
+
+	// serverInfo is the cached self-signed pubkey-publication record
+	// returned by GET /v1/server-info. Built once at boot — pubkey +
+	// IssuedAt are static for the server's lifetime, so caching saves
+	// a signature per first-contact request.
+	serverInfo []byte
 }
 
-// New initialises the store and routes.
+// New initialises the store, loads the translog signing key, and wires
+// the routes.
 func New(cfg Config) (*Server, error) {
 	if cfg.MaxBytes == 0 {
 		cfg.MaxBytes = 8 * 1024 * 1024
@@ -57,7 +73,34 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{cfg: cfg, store: st, mux: http.NewServeMux(), log: cfg.Logger}
+	keyPath := cfg.TranslogKeyPath
+	if keyPath == "" {
+		keyPath = filepath.Join(filepath.Dir(cfg.DBPath), "server-translog.key")
+	}
+	priv, pub, err := store.LoadOrCreateTranslogKey(context.Background(), st, keyPath, func(m string) {
+		cfg.Logger.Warn(m)
+	})
+	if err != nil {
+		st.Close()
+		return nil, err
+	}
+	if err := st.SetTranslogKey(priv, pub); err != nil {
+		st.Close()
+		return nil, err
+	}
+	// Pre-compute the cached /v1/server-info bytes so each first-contact
+	// request is one cheap CBOR write rather than a fresh Ed25519 sign.
+	info, err := st.SignServerInfo(uint64(time.Now().Unix()))
+	if err != nil {
+		st.Close()
+		return nil, err
+	}
+	infoBytes, err := proto.Marshal(info)
+	if err != nil {
+		st.Close()
+		return nil, err
+	}
+	s := &Server{cfg: cfg, store: st, mux: http.NewServeMux(), log: cfg.Logger, serverInfo: infoBytes}
 	if !cfg.RateLimitDisabled {
 		var rlCtx context.Context
 		rlCtx, s.rlStop = context.WithCancel(context.Background())
@@ -88,6 +131,15 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /users/{shortId}/events", s.handleFetchUser)
 	s.mux.HandleFunc("POST /users/{shortId}/events", s.handleAppendUser)
 	s.mux.HandleFunc("POST /sync", s.handleSync)
+
+	// Transparency log endpoints (TRANSLOG.md §5). All four are
+	// UNAUTHENTICATED — they expose only commitments to a public log,
+	// and witness archivers (which are not members of any scope) need
+	// to fetch them to detect equivocation.
+	s.mux.HandleFunc("GET /v1/server-info", s.handleServerInfo)
+	s.mux.HandleFunc("GET /v1/sth/{chainId}", s.handleSTH)
+	s.mux.HandleFunc("GET /v1/proof/inclusion", s.handleInclusionProof)
+	s.mux.HandleFunc("GET /v1/proof/consistency", s.handleConsistencyProof)
 }
 
 // ---- handlers ----
@@ -102,6 +154,125 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"server_version": s.cfg.Version,
 		"api_version":    "v1",
+	})
+}
+
+// GET /v1/server-info — publish the cached self-signed pubkey record.
+// Unauthenticated by design; first-contact pinning binds the pubkey
+// to the operator the user trusts (TRANSLOG.md §6.1).
+func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/cbor")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(s.serverInfo)
+}
+
+// GET /v1/sth/{chainId} — current STH for chainId.
+//
+// chainId on the wire is the raw STORAGE.md §2 chain identifier
+// ("user:<shortId>" or "scope:<scope_id>"). Go's mux delivers single
+// path segments verbatim including the colon.
+//
+// Returns 404 if the chain has no events yet (no STH to publish).
+// 400 on a malformed chain_id (catches operator/attacker probing
+// future namespaces).
+func (s *Server) handleSTH(w http.ResponseWriter, r *http.Request) {
+	chainID := r.PathValue("chainId")
+	if !validChainID(chainID) {
+		writeErr(w, http.StatusBadRequest, "bad_chain_id", "")
+		return
+	}
+	sth, err := s.store.CurrentSTH(r.Context(), chainID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "not_found", "")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeCBOR(w, http.StatusOK, sth)
+}
+
+// GET /v1/proof/inclusion?chain_id=X&leaf_index=Y&tree_size=Z
+//
+// All three query parameters are required. tree_size MUST be ≤ the
+// server's current size; leaf_index MUST be < tree_size.
+func (s *Server) handleInclusionProof(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	chainID := q.Get("chain_id")
+	if !validChainID(chainID) {
+		writeErr(w, http.StatusBadRequest, "bad_chain_id", "")
+		return
+	}
+	leafIdx, err := strconv.ParseUint(q.Get("leaf_index"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_leaf_index", err.Error())
+		return
+	}
+	treeSize, err := strconv.ParseUint(q.Get("tree_size"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_tree_size", err.Error())
+		return
+	}
+	path, err := s.store.InclusionProofFor(r.Context(), chainID, leafIdx, treeSize)
+	if errors.Is(err, store.ErrIndexOutOfRange) {
+		writeErr(w, http.StatusBadRequest, "out_of_range", "")
+		return
+	}
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "not_found", "")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeCBOR(w, http.StatusOK, translog.InclusionProof{
+		LeafIndex: leafIdx,
+		TreeSize:  treeSize,
+		AuditPath: path,
+	})
+}
+
+// GET /v1/proof/consistency?chain_id=X&from_size=A&to_size=B
+//
+// Returns the consistency proof from `from_size` to `to_size`. Special
+// cases: from_size == 0 returns an empty proof (any tree is consistent
+// with empty); from_size == to_size returns an empty proof.
+func (s *Server) handleConsistencyProof(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	chainID := q.Get("chain_id")
+	if !validChainID(chainID) {
+		writeErr(w, http.StatusBadRequest, "bad_chain_id", "")
+		return
+	}
+	fromSize, err := strconv.ParseUint(q.Get("from_size"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_from_size", err.Error())
+		return
+	}
+	toSize, err := strconv.ParseUint(q.Get("to_size"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_to_size", err.Error())
+		return
+	}
+	nodes, err := s.store.ConsistencyProofFor(r.Context(), chainID, fromSize, toSize)
+	if errors.Is(err, store.ErrIndexOutOfRange) {
+		writeErr(w, http.StatusBadRequest, "out_of_range", "")
+		return
+	}
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "not_found", "")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeCBOR(w, http.StatusOK, translog.ConsistencyProof{
+		FromSize: fromSize,
+		ToSize:   toSize,
+		Nodes:    nodes,
 	})
 }
 
@@ -155,8 +326,9 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	eventID := proto.EventID(prefix)
-	err = s.store.Append(r.Context(), store.AppendOpts{
-		ChainID:     store.ChainID(store.KindUser, sid),
+	chainID := store.ChainID(store.KindUser, sid)
+	sth, err := s.store.AppendWithTranslog(r.Context(), store.AppendOpts{
+		ChainID:     chainID,
 		Kind:        store.KindUser,
 		Genesis:     true,
 		Seq:         0,
@@ -169,7 +341,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			Kind:     proto.KindAuthSet,
 			CBOR:     cb,
 		},
-	})
+	}, tipHash[:], uint64(time.Now().Unix()))
 	if errors.Is(err, store.ErrDuplicate) {
 		writeErr(w, http.StatusConflict, "dup", "event_id collision")
 		return
@@ -178,7 +350,21 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	writeCBOR(w, http.StatusCreated, map[string]any{"shortId": sid, "event_id": eventID})
+	// Translog payload — genesis is leaf 0 in a tree of size 1.
+	// Server invariant: AppendWithTranslog committed atomically, so
+	// the inclusion proof MUST exist; failure here is internal-error
+	// territory, not a degradable condition.
+	_, incs, _, perr := s.store.ProofsForChain(r.Context(), chainID, []uint64{0}, 0)
+	if perr != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", perr.Error())
+		return
+	}
+	writeCBOR(w, http.StatusCreated, map[string]any{
+		"shortId":         sid,
+		"event_id":        eventID,
+		"sth":             sth,
+		"inclusion_proof": incs[0],
+	})
 }
 
 // GET /users/<shortId>/events
@@ -200,6 +386,15 @@ func (s *Server) handleFetchUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
+	lastSTHSize := uint64(0)
+	if v := q.Get("last_sth_size"); v != "" {
+		n, err := strconv.ParseUint(v, 10, 64)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "bad_last_sth_size", err.Error())
+			return
+		}
+		lastSTHSize = n
+	}
 	if q.Get("latest") == "true" {
 		ev, err := s.store.LatestEvent(r.Context(), chainID)
 		if err != nil {
@@ -211,11 +406,23 @@ func (s *Server) handleFetchUser(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, "bad_event", err.Error())
 			return
 		}
+		sth, incs, cons, perr := s.store.ProofsForChain(r.Context(), chainID, []uint64{ev.Seq}, lastSTHSize)
+		if errors.Is(perr, store.ErrIndexOutOfRange) {
+			writeErr(w, http.StatusBadRequest, "out_of_range", "last_sth_size beyond current tree")
+			return
+		}
+		if perr != nil {
+			writeErr(w, http.StatusInternalServerError, "internal", perr.Error())
+			return
+		}
 		writeCBOR(w, http.StatusOK, map[string]any{
-			"user_super_pub": meta.SuperPub,
-			"event":          dec,
-			"chain_tip_seq":  c.TipSeq,
-			"chain_tip_hash": c.TipHash,
+			"user_super_pub":    meta.SuperPub,
+			"event":             dec,
+			"chain_tip_seq":     c.TipSeq,
+			"chain_tip_hash":    c.TipHash,
+			"sth":               sth,
+			"inclusion_proofs":  incs,
+			"consistency_proof": cons,
 		})
 		return
 	}
@@ -234,6 +441,7 @@ func (s *Server) handleFetchUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := make([]proto.UserEvent, 0, len(rows))
+	leafIndices := make([]uint64, 0, len(rows))
 	for _, e := range rows {
 		var d proto.UserEvent
 		if err := proto.Unmarshal(e.CBOR, &d); err != nil {
@@ -241,12 +449,25 @@ func (s *Server) handleFetchUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		out = append(out, d)
+		leafIndices = append(leafIndices, e.Seq)
+	}
+	sth, incs, cons, perr := s.store.ProofsForChain(r.Context(), chainID, leafIndices, lastSTHSize)
+	if errors.Is(perr, store.ErrIndexOutOfRange) {
+		writeErr(w, http.StatusBadRequest, "out_of_range", "last_sth_size beyond current tree")
+		return
+	}
+	if perr != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", perr.Error())
+		return
 	}
 	writeCBOR(w, http.StatusOK, map[string]any{
-		"user_super_pub": meta.SuperPub,
-		"events":         out,
-		"chain_tip_seq":  c.TipSeq,
-		"chain_tip_hash": c.TipHash,
+		"user_super_pub":    meta.SuperPub,
+		"events":            out,
+		"chain_tip_seq":     c.TipSeq,
+		"chain_tip_hash":    c.TipHash,
+		"sth":               sth,
+		"inclusion_proofs":  incs,
+		"consistency_proof": cons,
 	})
 }
 
@@ -283,7 +504,8 @@ func (s *Server) handleAppendUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Event proto.UserEvent `cbor:"event"`
+		Event       proto.UserEvent `cbor:"event"`
+		LastSTHSize uint64          `cbor:"last_sth_size,omitempty"`
 	}
 	if err := proto.Unmarshal(auth.Body, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad_body", err.Error())
@@ -305,7 +527,7 @@ func (s *Server) handleAppendUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	eventID := proto.EventID(prefix)
-	err = s.store.Append(r.Context(), store.AppendOpts{
+	sth, err := s.store.AppendWithTranslog(r.Context(), store.AppendOpts{
 		ChainID:     chainID,
 		Kind:        store.KindUser,
 		Genesis:     false,
@@ -319,7 +541,7 @@ func (s *Server) handleAppendUser(w http.ResponseWriter, r *http.Request) {
 			Kind:     proto.KindAuthSet,
 			CBOR:     cb,
 		},
-	})
+	}, tipHash[:], uint64(time.Now().Unix()))
 	switch {
 	case errors.Is(err, store.ErrDivergence):
 		writeCBOR(w, http.StatusConflict, map[string]any{
@@ -329,13 +551,54 @@ func (s *Server) handleAppendUser(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	case errors.Is(err, store.ErrDuplicate):
-		writeErr(w, http.StatusConflict, "dup", "")
+		// Dup → fetch the stored event's seq + build STH/proofs so the
+		// client can advance LastSTH atomically (TRANSLOG.md §5.4
+		// "MANDATORY iff accepted or dup"). If the bookkeeping fetch
+		// fails we cannot honor the contract — surface as internal
+		// (NOT a degraded "dup" without proof, codex C3 review).
+		dupSeq, lerr := s.store.EventSeqByID(r.Context(), eventID)
+		if lerr != nil {
+			writeErr(w, http.StatusInternalServerError, "internal", lerr.Error())
+			return
+		}
+		dupSTH, dupIncs, dupCons, perr := s.store.ProofsForChain(r.Context(), chainID, []uint64{dupSeq}, req.LastSTHSize)
+		if errors.Is(perr, store.ErrIndexOutOfRange) {
+			writeErr(w, http.StatusBadRequest, "out_of_range", "last_sth_size beyond current tree")
+			return
+		}
+		if perr != nil {
+			writeErr(w, http.StatusInternalServerError, "internal", perr.Error())
+			return
+		}
+		writeCBOR(w, http.StatusConflict, map[string]any{
+			"reason":            "dup",
+			"event_id":          eventID,
+			"seq":               dupSeq,
+			"sth":               dupSTH,
+			"inclusion_proof":   dupIncs[0],
+			"consistency_proof": dupCons,
+		})
 		return
 	case err != nil:
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	writeCBOR(w, http.StatusOK, map[string]any{"event_id": eventID, "seq": req.Event.Seq})
+	_, incs, cons, perr := s.store.ProofsForChain(r.Context(), chainID, []uint64{req.Event.Seq}, req.LastSTHSize)
+	if errors.Is(perr, store.ErrIndexOutOfRange) {
+		writeErr(w, http.StatusBadRequest, "out_of_range", "last_sth_size beyond current tree")
+		return
+	}
+	if perr != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", perr.Error())
+		return
+	}
+	writeCBOR(w, http.StatusOK, map[string]any{
+		"event_id":          eventID,
+		"seq":               req.Event.Seq,
+		"sth":               sth,
+		"inclusion_proof":   incs[0],
+		"consistency_proof": cons,
+	})
 }
 
 // ---- /sync ----
@@ -352,6 +615,13 @@ type syncPull struct {
 }
 type syncCursor struct {
 	Cursor cursorPos `cbor:"cursor"`
+	// LastSTHSize is the client's most recent persisted translog
+	// tree_size for this scope (TRANSLOG.md §5.4). When > 0 the
+	// server includes a consistency proof from this size to the
+	// current STH in the response. When 0 (or absent) the response
+	// omits the consistency proof — the client must re-pin via the
+	// next round.
+	LastSTHSize uint64 `cbor:"last_sth_size,omitempty"`
 }
 type cursorPos struct {
 	Seq  uint64 `cbor:"seq"`
@@ -360,6 +630,12 @@ type cursorPos struct {
 type pushItem struct {
 	Scope string           `cbor:"scope"` // "" for genesis
 	Event proto.ScopeEvent `cbor:"event"`
+	// LastSTHSize is the client's most recent persisted translog
+	// tree_size for THIS chain (TRANSLOG.md §5.5). The server
+	// returns a synchronous consistency proof in PushResult so the
+	// client can advance LastSTH atomically with the push, without
+	// a follow-up round-trip.
+	LastSTHSize uint64 `cbor:"last_sth_size,omitempty"`
 }
 
 // SyncResp is the response shape.
@@ -375,6 +651,16 @@ type pullScope struct {
 	// Denied is set when the caller is not (or no longer) a member; the
 	// client interprets this as "you've been removed; drop locally".
 	Denied bool `cbor:"denied,omitempty"`
+
+	// Translog data per TRANSLOG.md §5.4. STH is mandatory when not
+	// denied and the chain has at least one event. InclusionProofs is
+	// one proof per element of Events, each against STH.TreeSize.
+	// ConsistencyProof is present iff the request supplied
+	// LastSTHSize > 0 AND that size is strictly less than the
+	// current STH size.
+	STH              *translog.STH               `cbor:"sth,omitempty"`
+	InclusionProofs  []translog.InclusionProof   `cbor:"inclusion_proofs,omitempty"`
+	ConsistencyProof *translog.ConsistencyProof  `cbor:"consistency_proof,omitempty"`
 }
 type tipPos struct {
 	Seq  uint64 `cbor:"seq"`
@@ -394,6 +680,15 @@ type pushResult struct {
 	CurrentTipEventID    string `cbor:"current_tip_event_id,omitempty"`
 	CurrentTipHash       []byte `cbor:"current_tip_hash,omitempty"`
 	CurrentOEKVersionMax uint64 `cbor:"current_oek_version_max,omitempty"`
+
+	// Translog data per TRANSLOG.md §5.4. Present iff Accepted ||
+	// Reason == "dup". InclusionProof covers the just-appended (or
+	// already-present) event at leaf_index = Seq. ConsistencyProof is
+	// present iff the request item supplied LastSTHSize > 0 AND that
+	// size is strictly less than the post-append STH size.
+	STH              *translog.STH              `cbor:"sth,omitempty"`
+	InclusionProof   *translog.InclusionProof   `cbor:"inclusion_proof,omitempty"`
+	ConsistencyProof *translog.ConsistencyProof `cbor:"consistency_proof,omitempty"`
 }
 
 func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
@@ -424,12 +719,28 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 	//   absent from resp.Pull                  → server doesn't have the scope yet
 	for sid, cur := range req.Pull.Scopes {
 		fresh := len(cur.Cursor.Hash) == 0 && cur.Cursor.Seq == 0
-		ps, err := s.pullScope(r.Context(), sid, cur.Cursor.Seq, limit, auth.Pub, fresh)
+		ps, err := s.pullScope(r.Context(), sid, cur.Cursor.Seq, limit, auth.Pub, fresh, cur.LastSTHSize)
 		if err != nil {
-			if errors.Is(err, errNotMember) {
+			switch {
+			case errors.Is(err, errNotMember):
 				resp.Pull[sid] = pullScope{Denied: true}
+			case errors.Is(err, store.ErrNotFound):
+				// Server doesn't have this scope — leave absent from
+				// the response. This is the normal "scope unknown"
+				// case (caller probing an id we never created).
+				s.log.Debug("pull scope absent", "scope", sid)
+			case errors.Is(err, store.ErrIndexOutOfRange):
+				// Caller's last_sth_size > current tree. Hard fail
+				// the request so the client clamps its state.
+				writeErr(w, http.StatusBadRequest, "out_of_range", "last_sth_size beyond current tree for scope "+sid)
+				return
+			default:
+				// Translog or storage error: server invariant break.
+				// 500 so the client retries cleanly rather than acting
+				// on a partially-translog'd response.
+				writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+				return
 			}
-			s.log.Debug("pull scope refused", "scope", sid, "err", err)
 			continue
 		}
 		resp.Pull[sid] = ps
@@ -448,7 +759,7 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 	writeCBOR(w, http.StatusOK, resp)
 }
 
-func (s *Server) pullScope(ctx context.Context, scopeID string, since uint64, limit int, callerPub []byte, fresh bool) (pullScope, error) {
+func (s *Server) pullScope(ctx context.Context, scopeID string, since uint64, limit int, callerPub []byte, fresh bool, lastSTHSize uint64) (pullScope, error) {
 	chainID := store.ChainID(store.KindScope, scopeID)
 	c, err := s.store.GetChain(ctx, chainID)
 	if err != nil {
@@ -477,13 +788,32 @@ func (s *Server) pullScope(ctx context.Context, scopeID string, since uint64, li
 		OEKVersionMax: meta.OEKVersionMax,
 		Events:        make([]proto.ScopeEvent, 0, len(rows)),
 	}
+	leafIndices := make([]uint64, 0, len(rows))
 	for _, e := range rows {
 		var d proto.ScopeEvent
 		if err := proto.Unmarshal(e.CBOR, &d); err != nil {
 			return pullScope{}, err
 		}
 		out.Events = append(out.Events, d)
+		// In our scheme, leaf_index == event.Seq (events are appended
+		// in seq order, leaves grow with the tree).
+		leafIndices = append(leafIndices, e.Seq)
 	}
+	// Translog payload — STH is mandatory whenever the chain has any
+	// events; for empty `events[]` the client still benefits from an
+	// updated STH + consistency proof. Failure here is a server
+	// invariant break (AppendWithTranslog committed atomically), so
+	// surface as an error to the request handler rather than degrade
+	// the response (per TRANSLOG.md §5.4: STH MANDATORY when not denied).
+	sth, incs, cons, perr := s.store.ProofsForChain(ctx, chainID, leafIndices, lastSTHSize)
+	if perr != nil {
+		return pullScope{}, perr
+	}
+	out.STH = sth
+	if len(incs) > 0 {
+		out.InclusionProofs = incs
+	}
+	out.ConsistencyProof = cons
 	return out, nil
 }
 
@@ -534,8 +864,9 @@ func (s *Server) applyPush(ctx context.Context, authorPub []byte, p pushItem) pu
 		scopeID := proto.ScopeID(eventID)
 		if exists, _ := s.eventExists(ctx, eventID); exists {
 			// Seq=0 explicit so the client's PushFloor advance logic works
-			// uniformly across success and dup responses.
-			return pushResult{Accepted: false, Reason: "dup", EventID: eventID, ScopeID: scopeID, Seq: 0}
+			// uniformly across success and dup responses. STH + proofs
+			// also mandatory on dup per TRANSLOG.md §5.4.
+			return s.dupPushResult(ctx, store.ChainID(store.KindScope, scopeID), scopeID, eventID, 0, p.LastSTHSize)
 		}
 		newMeta, err := validate.ScopeEvent(&p.Event, nil, nil, 0)
 		if err != nil {
@@ -548,8 +879,9 @@ func (s *Server) applyPush(ctx context.Context, authorPub []byte, p pushItem) pu
 		mb, _ := proto.Marshal(*newMeta)
 		cb, _ := proto.Marshal(&p.Event)
 		tipHash := proto.HashPrefix(prefix)
-		err = s.store.Append(ctx, store.AppendOpts{
-			ChainID:     store.ChainID(store.KindScope, scopeID),
+		chainID := store.ChainID(store.KindScope, scopeID)
+		sth, err := s.store.AppendWithTranslog(ctx, store.AppendOpts{
+			ChainID:     chainID,
 			Kind:        store.KindScope,
 			Genesis:     true,
 			Seq:         0,
@@ -559,14 +891,33 @@ func (s *Server) applyPush(ctx context.Context, authorPub []byte, p pushItem) pu
 				Seq: 0, EventID: eventID, PrevHash: nil,
 				Kind: proto.KindMemberChange, CBOR: cb,
 			},
-		})
+		}, tipHash[:], uint64(time.Now().Unix()))
 		if errors.Is(err, store.ErrDuplicate) {
-			return pushResult{Accepted: false, Reason: "dup"}
+			// Race: another caller raced us between our exists-probe
+			// and the INSERT. Build a full dup result with STH + proofs.
+			return s.dupPushResult(ctx, chainID, scopeID, eventID, 0, p.LastSTHSize)
 		}
 		if err != nil {
 			return pushResult{Accepted: false, Reason: "internal"}
 		}
-		return pushResult{Accepted: true, EventID: eventID, Seq: 0, ScopeID: scopeID}
+		// Translog payload — genesis is leaf 0 in a tree of size 1.
+		// p.LastSTHSize is typically 0 for genesis (first event ever).
+		_, incs, cons, perr := s.store.ProofsForChain(ctx, chainID, []uint64{0}, p.LastSTHSize)
+		if errors.Is(perr, store.ErrIndexOutOfRange) {
+			return pushResult{Accepted: false, Reason: "out_of_range", ScopeID: scopeID}
+		}
+		if perr != nil {
+			return pushResult{Accepted: false, Reason: "internal", ScopeID: scopeID}
+		}
+		return pushResult{
+			Accepted:         true,
+			EventID:          eventID,
+			Seq:              0,
+			ScopeID:          scopeID,
+			STH:              &sth,
+			InclusionProof:   &incs[0],
+			ConsistencyProof: cons,
+		}
 	}
 	// Successor push.
 	chainID := store.ChainID(store.KindScope, p.Scope)
@@ -578,8 +929,10 @@ func (s *Server) applyPush(ctx context.Context, authorPub []byte, p pushItem) pu
 	prefix, _ := p.Event.PrevHashInput()
 	eventID := proto.EventID(prefix)
 	if exists, _ := s.eventExists(ctx, eventID); exists {
-		// Echo Seq so the client's push-floor advance logic works on dups.
-		return pushResult{Accepted: false, Reason: "dup", EventID: eventID, ScopeID: p.Scope, Seq: sp.Seq}
+		// Echo Seq so the client's push-floor advance logic works on
+		// dups; build STH+proofs so the client can advance LastSTH
+		// atomically (TRANSLOG.md §5.4 mandates them on dup too).
+		return s.dupPushResult(ctx, chainID, p.Scope, eventID, sp.Seq, p.LastSTHSize)
 	}
 	var meta validate.ScopeMeta
 	if err := proto.Unmarshal(c.Metadata, &meta); err != nil {
@@ -592,7 +945,7 @@ func (s *Server) applyPush(ctx context.Context, authorPub []byte, p pushItem) pu
 	tipHash := proto.HashPrefix(prefix)
 	mb, _ := proto.Marshal(*newMeta)
 	cb, _ := proto.Marshal(&p.Event)
-	err = s.store.Append(ctx, store.AppendOpts{
+	sth, err := s.store.AppendWithTranslog(ctx, store.AppendOpts{
 		ChainID:     chainID,
 		Kind:        store.KindScope,
 		Genesis:     false,
@@ -603,7 +956,7 @@ func (s *Server) applyPush(ctx context.Context, authorPub []byte, p pushItem) pu
 			Seq: sp.Seq, EventID: eventID, PrevHash: sp.PrevHash,
 			Kind: sp.Kind, CBOR: cb,
 		},
-	})
+	}, tipHash[:], uint64(time.Now().Unix()))
 	switch {
 	case errors.Is(err, store.ErrDivergence):
 		return pushResult{
@@ -614,11 +967,71 @@ func (s *Server) applyPush(ctx context.Context, authorPub []byte, p pushItem) pu
 			CurrentOEKVersionMax: meta.OEKVersionMax,
 		}
 	case errors.Is(err, store.ErrDuplicate):
-		return pushResult{Accepted: false, Reason: "dup", ScopeID: p.Scope, EventID: eventID}
+		// Race: between our exists() probe and the INSERT another
+		// caller landed the same event_id. Treat as dup.
+		return s.dupPushResult(ctx, chainID, p.Scope, eventID, sp.Seq, p.LastSTHSize)
 	case err != nil:
 		return pushResult{Accepted: false, Reason: "internal", ScopeID: p.Scope}
 	}
-	return pushResult{Accepted: true, EventID: eventID, Seq: sp.Seq, ScopeID: p.Scope}
+	_, incs, cons, perr := s.store.ProofsForChain(ctx, chainID, []uint64{sp.Seq}, p.LastSTHSize)
+	if errors.Is(perr, store.ErrIndexOutOfRange) {
+		return pushResult{Accepted: false, Reason: "out_of_range", ScopeID: p.Scope}
+	}
+	if perr != nil {
+		return pushResult{Accepted: false, Reason: "internal", ScopeID: p.Scope}
+	}
+	return pushResult{
+		Accepted:         true,
+		EventID:          eventID,
+		Seq:              sp.Seq,
+		ScopeID:          p.Scope,
+		STH:              &sth,
+		InclusionProof:   &incs[0],
+		ConsistencyProof: cons,
+	}
+}
+
+// dupPushResult builds a complete pushResult for a "dup" outcome —
+// STH + InclusionProof against the previously-stored event, plus an
+// optional consistency proof. Centralised here because all four
+// dup-detection sites (genesis-exists, successor-exists,
+// successor-race-on-insert, and a hypothetical user-chain dup) need
+// identical output.
+//
+// scopeID is the user-facing ScopeID ("" for user chain or genesis-
+// without-suffix); chainID is the storage-layer chain id.
+//
+// `seqHint` is the seq to use for the InclusionProof leaf_index. For
+// genesis dup we know it's 0 (no chain row yet to look up). For
+// successor dup callers can pass either the request's claimed seq OR
+// the result of EventSeqByID — they must be equal for a real dup, so
+// passing the request's seq is the safer trip-wire.
+func (s *Server) dupPushResult(ctx context.Context, chainID, scopeID, eventID string, seqHint, lastSTHSize uint64) pushResult {
+	// Trust the request's seq for the proof — it MUST match the stored
+	// event's seq for "dup" to be coherent. If the seq came from a
+	// genesis push (seqHint == 0 by construction), this matches too.
+	sth, incs, cons, perr := s.store.ProofsForChain(ctx, chainID, []uint64{seqHint}, lastSTHSize)
+	if perr != nil {
+		// TRANSLOG.md §5.4: STH MANDATORY iff accepted or dup. We
+		// can't satisfy that contract — promote to internal so the
+		// client retries cleanly rather than acting on half-truths.
+		// last_sth_size > current is reported as a separate reason
+		// so the client knows to clamp.
+		if errors.Is(perr, store.ErrIndexOutOfRange) {
+			return pushResult{Accepted: false, Reason: "out_of_range", ScopeID: scopeID, EventID: eventID, Seq: seqHint}
+		}
+		return pushResult{Accepted: false, Reason: "internal", ScopeID: scopeID}
+	}
+	return pushResult{
+		Accepted:         false,
+		Reason:           "dup",
+		ScopeID:          scopeID,
+		EventID:          eventID,
+		Seq:              seqHint,
+		STH:              sth,
+		InclusionProof:   &incs[0],
+		ConsistencyProof: cons,
+	}
 }
 
 // pushReasonFor maps validate errors to API.md §2.4 reason strings.
@@ -747,5 +1160,68 @@ func Run(s *Server) error {
 	}
 	s.log.Info("fd0-server listening", "bind", s.cfg.Bind, "version", s.cfg.Version)
 	return srv.ListenAndServe()
+}
+
+// validChainID enforces the exact STORAGE.md §2 chain-id shape:
+//
+//	user:<shortId>      — shortId is 8 Crockford-base32 chars
+//	scope:<scope_id>    — scope_id is "s_" + 26 lowercase RFC 4648 base32 chars
+//
+// Anything else is rejected at the unauthenticated endpoints. Two reasons:
+//
+//   - Future-proofing: if we add a namespace later (e.g., "witness:"),
+//     a permissive prefix check would accidentally publish data from
+//     it. Strict shape matching makes new namespaces opt-in.
+//   - DoS sanity: rejects multi-MB chain ids that would otherwise hit
+//     the DB query layer; bounded length cap is the floor.
+//
+// Length cap is generous (64 chars) — current shapes max at "scope:s_"
+// + 26 = 34. Caps DOS surface without sweating exact arithmetic.
+func validChainID(s string) bool {
+	if len(s) > 64 {
+		return false
+	}
+	if rest, ok := strings.CutPrefix(s, "user:"); ok {
+		return validShortID(rest)
+	}
+	if rest, ok := strings.CutPrefix(s, "scope:"); ok {
+		return validScopeID(rest)
+	}
+	return false
+}
+
+// validShortID checks the 8-char Crockford-base32 form emitted by
+// newShortID. Charset matches the constant there; if newShortID ever
+// changes, both must move together.
+func validShortID(s string) bool {
+	if len(s) != 8 {
+		return false
+	}
+	for _, c := range s {
+		switch {
+		case c >= '0' && c <= '9':
+		case c >= 'a' && c <= 'z' && c != 'i' && c != 'l' && c != 'o' && c != 'u':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// validScopeID checks the "s_" + 26 lowercase RFC 4648 base32
+// (a-z + 2-7) shape emitted by proto.ScopeID.
+func validScopeID(s string) bool {
+	if len(s) != 28 || !strings.HasPrefix(s, "s_") {
+		return false
+	}
+	for _, c := range s[2:] {
+		switch {
+		case c >= 'a' && c <= 'z':
+		case c >= '2' && c <= '7':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
