@@ -497,3 +497,35 @@ func sortBytes(s [][]byte) [][]byte {
 	}
 	return s
 }
+
+// LocalOnlyEvents returns the events present in `local` but not in
+// `server`, identified by content-addressed event_id. The returned
+// slice preserves local order.
+//
+// Pure: no I/O, no decryption. Used by sync's reconcile path to spot
+// events that were authored locally and never reached the server (the
+// classic divergence case: we wrote a secret while the server was
+// being updated by another device, so our prev_hash doesn't match the
+// new tip and the push is rejected). The cli wraps this with
+// per-event author/kind/decrypt logic to recover the secret bodies.
+//
+// Compaction-aware: a slice-index diff would be wrong when local is
+// compacted (non-contiguous) but server is full. Comparing event_ids
+// is the only correct way; the chain's hash-prefix construction
+// guarantees event_id uniquely identifies an event's payload.
+func LocalOnlyEvents(local, server []proto.ScopeEvent) []proto.ScopeEvent {
+	serverIDs := make(map[string]struct{}, len(server))
+	for _, ev := range server {
+		prefix, _ := ev.PrevHashInput()
+		serverIDs[proto.EventID(prefix)] = struct{}{}
+	}
+	out := make([]proto.ScopeEvent, 0, len(local))
+	for _, ev := range local {
+		prefix, _ := ev.PrevHashInput()
+		if _, onServer := serverIDs[proto.EventID(prefix)]; onServer {
+			continue
+		}
+		out = append(out, ev)
+	}
+	return out
+}

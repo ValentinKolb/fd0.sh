@@ -656,28 +656,33 @@ type pendingSet struct {
 	body *proto.SecretBody
 }
 
-// savePendingLocalSets compares local and server events by content-addressed
-// event_id (slice-index diffs are wrong when local is compacted vs. server
-// is full). Returns decrypted bodies of every local-only secret.set we
-// authored. A local-only member.change surfaces as a conflict.
+// savePendingLocalSets identifies the secret.set events that exist in our
+// local chain but not on the server (== the events we have to rebuild on
+// the new server tip), then decrypts their bodies so the rebuild loop can
+// re-encrypt them under the post-reconcile OEK.
+//
+// The set-diff itself is delegated to chain.LocalOnlyEvents (pure, unit
+// tested in chain). Everything else here is policy: which kinds of
+// local-only events are recoverable vs. fatal.
+//
+// Local-only member.change surfaces as a conflict — projection-level
+// merge isn't implemented (TODO.md v2: three-way merge). The user has
+// to manually reconcile.
 func (s *Session) savePendingLocalSets(scopeID string, serverEvents []proto.ScopeEvent) ([]pendingSet, error) {
-	path := s.Paths.ScopeChain(scopeID)
-	localEvents, err := chain.ReadScopeEvents(path)
+	localPtrs, err := chain.ReadScopeEvents(s.Paths.ScopeChain(scopeID))
 	if err != nil {
 		return nil, err
 	}
-	serverIDs := make(map[string]struct{}, len(serverEvents))
-	for _, ev := range serverEvents {
-		prefix, _ := ev.PrevHashInput()
-		serverIDs[proto.EventID(prefix)] = struct{}{}
+	// chain.ReadScopeEvents returns pointers (decoder ergonomics); the
+	// server-response side is values. Materialise both as values so the
+	// pure helper has a uniform signature.
+	localEvents := make([]proto.ScopeEvent, len(localPtrs))
+	for i, p := range localPtrs {
+		localEvents[i] = *p
 	}
 	sd := s.Body.Scopes[scopeID]
 	var pending []pendingSet
-	for _, ev := range localEvents {
-		prefix, _ := ev.PrevHashInput()
-		if _, onServer := serverIDs[proto.EventID(prefix)]; onServer {
-			continue
-		}
+	for _, ev := range chain.LocalOnlyEvents(localEvents, serverEvents) {
 		if !bytes.Equal(ev.SignedPrefix.Author, s.UserSuperPub) {
 			continue
 		}
@@ -694,7 +699,7 @@ func (s *Session) savePendingLocalSets(scopeID string, serverEvents []proto.Scop
 		if oek == nil {
 			return nil, fmt.Errorf("missing OEK v%d for divergent event", ev.SignedPrefix.OEKVersion)
 		}
-		body, err := decryptSecretBody(ev, oek)
+		body, err := decryptSecretBody(&ev, oek)
 		if err != nil {
 			return nil, err
 		}
