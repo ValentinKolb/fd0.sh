@@ -63,7 +63,7 @@ The tree shape follows RFC 6962 §2: a binary Merkle tree where, for `n > 1` lea
 ```cddl
 TreeHead = {
     chain_id   : tstr,
-    tree_size  : uint .size 8,   ; uint64; number of leaves; 0 ≤ tree_size ≤ 2^63
+    tree_size  : uint .size 8,   ; uint64; number of leaves; 0 ≤ tree_size ≤ 2^63 - 1
     root_hash  : bstr .size 32,  ; empty_root if tree_size == 0
     timestamp  : uint .size 8,   ; uint64 unix seconds (server clock)
 }

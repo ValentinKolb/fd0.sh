@@ -17,6 +17,15 @@ const (
 	DomainVaultWrap          = "fd0-vault-wrap-v1"           // AAD: vault wrapped key
 	DomainRecoveryKey        = "fd0-recovery-key-v1"         // AAD: recovery export
 	DomainSafety             = "fd0-safety-v1"               // safety-number derivation prefix
+
+	// Transparency log (TRANSLOG.md §2). One domain per hash position so a
+	// leaf hash, an inner-node hash, and the empty-tree sentinel are pairwise
+	// distinguishable preimages even at the same byte length.
+	DomainTranslogLeaf       = "fd0-translog-leaf-v1"        // SHA-256 prefix for leaves
+	DomainTranslogNode       = "fd0-translog-node-v1"        // SHA-256 prefix for inner nodes
+	DomainTranslogEmpty      = "fd0-translog-empty-v1"       // SHA-256 input for empty-tree root
+	DomainTranslogSTH        = "fd0-translog-sth-v1"         // STH signature input
+	DomainTranslogServerInfo = "fd0-translog-server-info-v1" // server-info signature input
 )
 
 // Magic strings for on-disk file headers.
