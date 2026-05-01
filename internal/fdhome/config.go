@@ -14,7 +14,20 @@ type Config struct {
 	ShortID   string          `toml:"short_id"`
 	Sync      SyncConfig      `toml:"sync"`
 	Client    ClientConfig    `toml:"client"`
+	Agent     AgentConfig     `toml:"agent"`
 	Clipboard ClipboardConfig `toml:"clipboard"`
+}
+
+// AgentConfig collects fd0-agent lifecycle knobs. Read by the agent when the
+// matching CLI flag / env var are not set. Precedence: flag > env > config >
+// default. Empty strings here mean "fall through to the next layer".
+type AgentConfig struct {
+	// IdleTimeout is a Go duration string ("5m", "30m"). Empty = use default.
+	// Overridden by --idle-timeout flag and FD0_AGENT_IDLE env.
+	IdleTimeout string `toml:"idle_timeout"`
+	// MaxLifetime is a Go duration string ("8h", "24h"). Empty = use default.
+	// Overridden by --max-lifetime flag and FD0_AGENT_MAX_LIFETIME env.
+	MaxLifetime string `toml:"max_lifetime"`
 }
 
 // ClientConfig collects per-CLI knobs that aren't sync-related.

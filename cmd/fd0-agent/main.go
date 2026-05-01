@@ -23,8 +23,11 @@ import (
 var version = "dev"
 
 type cli struct {
-	IdleTimeout string `name:"idle-timeout" help:"Lock after idle." default:"5m" env:"FD0_AGENT_IDLE"`
-	MaxLifetime string `name:"max-lifetime" help:"Lock after max lifetime." default:"8h" env:"FD0_AGENT_MAX_LIFETIME"`
+	// No kong defaults: we can't otherwise distinguish "user passed 5m" from
+	// "kong filled the default in". Resolution layered in main() so config
+	// can take effect when neither flag nor env are set.
+	IdleTimeout string `name:"idle-timeout" help:"Lock after idle (default 5m, or [agent].idle_timeout)." env:"FD0_AGENT_IDLE"`
+	MaxLifetime string `name:"max-lifetime" help:"Lock after max lifetime (default 8h, or [agent].max_lifetime)." env:"FD0_AGENT_MAX_LIFETIME"`
 	Verbose     bool   `name:"verbose" short:"v" help:"Verbose logging." env:"FD0_AGENT_VERBOSE"`
 	Version     bool   `name:"version" help:"Print version and exit."`
 }
@@ -44,17 +47,6 @@ func main() {
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 
-	idle, err := time.ParseDuration(c.IdleTimeout)
-	if err != nil {
-		log.Error("bad idle-timeout", "err", err)
-		os.Exit(2)
-	}
-	maxLife, err := time.ParseDuration(c.MaxLifetime)
-	if err != nil {
-		log.Error("bad max-lifetime", "err", err)
-		os.Exit(2)
-	}
-
 	paths, err := fdhome.Resolve()
 	if err != nil {
 		log.Error("resolve home", "err", err)
@@ -68,6 +60,19 @@ func main() {
 	cfg, err := fdhome.LoadConfig(paths.Config)
 	if err != nil {
 		log.Warn("config: load failed, continuing with defaults", "err", err)
+	}
+
+	// Resolve idle / max-lifetime: flag > env > config > hardcoded default.
+	// Kong already merges flag and env into c.IdleTimeout / c.MaxLifetime.
+	idle, err := resolveDuration(c.IdleTimeout, cfg.Agent.IdleTimeout, 5*time.Minute, "idle-timeout")
+	if err != nil {
+		log.Error("bad idle-timeout", "err", err)
+		os.Exit(2)
+	}
+	maxLife, err := resolveDuration(c.MaxLifetime, cfg.Agent.MaxLifetime, 8*time.Hour, "max-lifetime")
+	if err != nil {
+		log.Error("bad max-lifetime", "err", err)
+		os.Exit(2)
 	}
 	server := cfg.Sync.Server
 	if server == "" {
@@ -117,4 +122,23 @@ func main() {
 		log.Error("serve", "err", err)
 		os.Exit(1)
 	}
+}
+
+// resolveDuration picks a duration from the layered config: a non-empty
+// flagOrEnv (Kong fills this from --flag and matching env) wins, else a
+// non-empty configValue, else the hardcoded fallback. Empty inputs are
+// skipped silently so the user can leave fields out without warnings.
+func resolveDuration(flagOrEnv, configValue string, fallback time.Duration, name string) (time.Duration, error) {
+	pick := flagOrEnv
+	if pick == "" {
+		pick = configValue
+	}
+	if pick == "" {
+		return fallback, nil
+	}
+	d, err := time.ParseDuration(pick)
+	if err != nil {
+		return 0, fmt.Errorf("%s %q: %w", name, pick, err)
+	}
+	return d, nil
 }

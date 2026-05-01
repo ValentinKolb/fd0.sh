@@ -41,6 +41,25 @@ type AuthMethod struct {
 	EncryptedSuperPriv []byte `cbor:"encrypted_super_priv"`
 }
 
+// YubikeyPublicParams is the CBOR struct embedded as `public_params` for an
+// AuthMethod with method_type == "yubikey".
+//
+// Layout rationale: a sealed-box is a libsodium anonymous box (32-byte
+// ephemeral pub || ciphertext). Only the holder of the slot's private key
+// can open it; touching the YubiKey is the proof-of-presence. We embed
+// the slot's X25519 public key alongside so the unlock-side can verify it
+// is talking to the right card before invoking PIV (and to surface a
+// helpful "wrong YubiKey" error rather than a cryptic decrypt failure).
+//
+// SealedKUnlock decrypts to a 32-byte K_unlock that is then used as the
+// AEAD key over WrappedKey.Wrapped (same shape as the passphrase path,
+// just with a different K_unlock derivation).
+type YubikeyPublicParams struct {
+	X25519Pub     []byte `cbor:"x25519_pub"`     // 32-byte slot pubkey
+	SealedKUnlock []byte `cbor:"sealed_k_unlock"` // sealed-box(K_unlock, X25519Pub)
+	Slot          uint8  `cbor:"slot"`            // PIV slot id (default 0x9d)
+}
+
 // SignedInput returns "fd0-user-event-v1" || cbor(UserEvent without signature).
 func (e *UserEvent) SignedInput() ([]byte, error) {
 	body, err := Marshal(userEventSigned{
@@ -239,10 +258,18 @@ type VaultBody struct {
 // ScopeVaultData holds the OEK lineage and the latest accepted chain tip for
 // one scope this client is a member of. Label is a local-only convenience
 // (never sent to the server / never part of any signed input).
+//
+// PushFloor (omitempty, defaults to 0) is the lowest seq we still need to
+// push. Initial state == 0 means "push everything"; we set it to
+// (max accepted seq + 1) only after the server has confirmed and the vault
+// has been re-sealed. On any failure the field stays put → next sync
+// re-pushes the same suffix → server dedups by event_id. The invariant is
+// "PushFloor ≤ true highest pushed seq + 1": never advance speculatively.
 type ScopeVaultData struct {
-	Label    string     `cbor:"label,omitempty"`
-	OEKs     []OEKEntry `cbor:"oeks"`
-	ChainTip ChainTip   `cbor:"chain_tip"`
+	Label     string     `cbor:"label,omitempty"`
+	OEKs      []OEKEntry `cbor:"oeks"`
+	ChainTip  ChainTip   `cbor:"chain_tip"`
+	PushFloor uint64     `cbor:"push_floor,omitempty"`
 }
 
 // OEKEntry is one (version, key) pair.

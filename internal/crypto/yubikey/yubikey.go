@@ -76,3 +76,50 @@ type OpenOptions struct {
 func Default() OpenOptions {
 	return OpenOptions{Slot: SlotKeyManagement}
 }
+
+// EnrollOptions captures the user's choices at `fd0 auth add --yubikey`.
+//
+// PIN, when non-empty, is set on the slot at provisioning time: subsequent
+// unlocks will require the PIN AND a touch. An empty PIN provisions the
+// slot with pin_policy=never, so unlock requires only a touch.
+//
+// Touch is always required regardless of PIN choice — that is the minimum
+// safety bar (without it, malware with USB access could silently exercise
+// the slot).
+type EnrollOptions struct {
+	Slot             SlotID
+	PIN              string // empty = touch-only, no PIN
+	ManagementKey    []byte // empty = use go-piv default management key
+}
+
+// EnrollResult bundles what the agent needs after a successful enrollment.
+type EnrollResult struct {
+	Slot      SlotID
+	X25519Pub []byte // 32-byte slot pubkey, post-generation
+	HasPIN    bool   // mirrors EnrollOptions.PIN != ""
+}
+
+// ValidatePIN performs the input-validation a CLI prompt should apply
+// before invoking Enroll. Yubico PIV PINs must be 6–8 ASCII characters.
+//
+// Pulled out of Enroll so unit tests can hit it without hardware.
+func ValidatePIN(pin string) error {
+	if len(pin) < 6 {
+		return errPINTooShort
+	}
+	if len(pin) > 8 {
+		return errPINTooLong
+	}
+	for _, r := range pin {
+		if r < 0x20 || r > 0x7e {
+			return errPINBadChar
+		}
+	}
+	return nil
+}
+
+var (
+	errPINTooShort = errors.New("yubikey PIN: must be at least 6 characters")
+	errPINTooLong  = errors.New("yubikey PIN: must be at most 8 characters")
+	errPINBadChar  = errors.New("yubikey PIN: only printable ASCII allowed (Yubico PIV constraint)")
+)

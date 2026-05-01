@@ -60,6 +60,18 @@ func Initialize(slot SlotID, pin string, touch TouchPolicy, pinPolicy PinPolicy)
 	return nil, errors.New("yubikey: Initialize pending hardware-day integration")
 }
 
+// Enroll generates the slot key, applies PIN and touch policies, and
+// returns the slot's X25519 public key for upstream use (sealed-box of
+// K_unlock + storage in AuthMethod.PublicParams).
+//
+// Provisional: pending hardware-day integration of the PIV X25519 path
+// (yk.GenerateKey, Metadata, slot policies). For now the call surfaces
+// a clear error so the CLI can route the user back to the passphrase
+// flow rather than half-enrolling and locking them out.
+func Enroll(opts EnrollOptions) (*EnrollResult, error) {
+	return nil, errors.New("yubikey: Enroll pending hardware-day integration (slot generation, PIN/touch policy plumbing). Use --tags=yubikey only on a build that has completed the hardware-day path; see TODO.md.")
+}
+
 // ---- pivWrapper ----
 
 type pivWrapper struct {

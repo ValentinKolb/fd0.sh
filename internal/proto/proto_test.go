@@ -235,6 +235,99 @@ func TestHTTPSignedInputBodyHash(t *testing.T) {
 	}
 }
 
+// ----- VaultBody backwards/forwards compatibility -----
+
+// TestScopeVaultDataPushFloorRoundtrip verifies the new field roundtrips
+// with the rest of the struct when set explicitly.
+func TestScopeVaultDataPushFloorRoundtrip(t *testing.T) {
+	in := ScopeVaultData{
+		Label:     "work",
+		OEKs:      []OEKEntry{{Version: 1, Key: bytes.Repeat([]byte{0xaa}, 32)}},
+		ChainTip:  ChainTip{Seq: 5, Hash: bytes.Repeat([]byte{0xbb}, 32)},
+		PushFloor: 6,
+	}
+	b, err := Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out ScopeVaultData
+	if err := Unmarshal(b, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.PushFloor != 6 {
+		t.Fatalf("PushFloor not preserved: got %d, want 6", out.PushFloor)
+	}
+}
+
+// TestScopeVaultDataPushFloorDefaultsToZero ensures decode of a vault
+// produced by an OLDER fd0 (no push_floor key) yields PushFloor=0,
+// which is the safe "push everything" sentinel — server idempotent dedup
+// makes a one-time full re-push harmless on upgrade.
+//
+// We construct an explicit legacy fixture: a struct shape WITHOUT the
+// PushFloor field, marshal it to CBOR (so the on-wire bytes are exactly
+// what an older fd0 would have written), then decode into the current
+// ScopeVaultData and verify the missing key defaults to zero.
+func TestScopeVaultDataPushFloorDefaultsToZero(t *testing.T) {
+	// Pre-PushFloor on-disk shape — no push_floor key emitted.
+	type legacyScopeVaultData struct {
+		Label    string     `cbor:"label,omitempty"`
+		OEKs     []OEKEntry `cbor:"oeks"`
+		ChainTip ChainTip   `cbor:"chain_tip"`
+	}
+	legacy := legacyScopeVaultData{
+		Label:    "work",
+		OEKs:     []OEKEntry{{Version: 1, Key: bytes.Repeat([]byte{0x11}, 32)}},
+		ChainTip: ChainTip{Seq: 7, Hash: bytes.Repeat([]byte{0x22}, 32)},
+	}
+	wire, err := Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Sanity: the encoded bytes must NOT contain the literal key
+	// "push_floor" — we are simulating a producer that doesn't know
+	// about the field.
+	if bytes.Contains(wire, []byte("push_floor")) {
+		t.Fatal("legacy fixture unexpectedly contains push_floor key")
+	}
+	var out ScopeVaultData
+	if err := Unmarshal(wire, &out); err != nil {
+		t.Fatalf("decode legacy shape into current struct: %v", err)
+	}
+	if out.PushFloor != 0 {
+		t.Fatalf("PushFloor must default to 0 when absent, got %d", out.PushFloor)
+	}
+	if out.Label != "work" || out.ChainTip.Seq != 7 {
+		t.Fatal("other fields must be preserved across legacy→current decode")
+	}
+	if len(out.OEKs) != 1 || out.OEKs[0].Version != 1 {
+		t.Fatal("OEKs must round-trip from legacy shape")
+	}
+}
+
+// TestYubikeyPublicParamsRoundtrip exercises the new struct used by the
+// `auth add --yubikey` flow.
+func TestYubikeyPublicParamsRoundtrip(t *testing.T) {
+	in := YubikeyPublicParams{
+		X25519Pub:     bytes.Repeat([]byte{0x33}, 32),
+		SealedKUnlock: bytes.Repeat([]byte{0x44}, 80),
+		Slot:          0x9d,
+	}
+	b, err := Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out YubikeyPublicParams
+	if err := Unmarshal(b, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(in.X25519Pub, out.X25519Pub) ||
+		!bytes.Equal(in.SealedKUnlock, out.SealedKUnlock) ||
+		in.Slot != out.Slot {
+		t.Fatal("YubikeyPublicParams roundtrip mismatch")
+	}
+}
+
 // ----- Sanity: signed-input domain prefix is preserved -----
 
 func TestUserEventSignedInputHasDomain(t *testing.T) {

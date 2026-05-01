@@ -88,7 +88,7 @@ rm -f "$SERVER_DB" "$SERVER_LOG" "$RECOVERY".alice "$RECOVERY".bob
 rm -rf "$HOME/.fd0-alice-laptop" "$HOME/.fd0-alice-desktop" \
        "$HOME/.fd0-bob-laptop"   "$HOME/.fd0-bob-desktop"
 
-"$FD0_SERVER_BIN" --bind=":${SERVER_PORT}" --db="$SERVER_DB" > "$SERVER_LOG" 2>&1 &
+"$FD0_SERVER_BIN" --bind=":${SERVER_PORT}" --db="$SERVER_DB" --no-ratelimit > "$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 trap 'kill $SERVER_PID 2>/dev/null || true; pkill -f fd0-agent 2>/dev/null || true' EXIT
 sleep 0.5
@@ -121,8 +121,8 @@ unlock_one "$HOME/.fd0-bob-laptop"   "bob-l"
 sleep 0.3
 printf "rec-a\nrec-a\n" | AL recovery export "$RECOVERY".alice >/dev/null
 printf "rec-b\nrec-b\n" | BL recovery export "$RECOVERY".bob   >/dev/null
-printf "rec-a\nalice-d\nalice-d\n" | env FD0_HOME="$HOME/.fd0-alice-desktop" "$FD0" recovery restore "$RECOVERY".alice >/dev/null 2>&1
-printf "rec-b\nbob-d\nbob-d\n"     | env FD0_HOME="$HOME/.fd0-bob-desktop"   "$FD0" recovery restore "$RECOVERY".bob   >/dev/null 2>&1
+printf "rec-a\nalice-d\nalice-d\n" | env FD0_HOME="$HOME/.fd0-alice-desktop" "$FD0" recovery import "$RECOVERY".alice >/dev/null 2>&1
+printf "rec-b\nbob-d\nbob-d\n"     | env FD0_HOME="$HOME/.fd0-bob-desktop"   "$FD0" recovery import "$RECOVERY".bob   >/dev/null 2>&1
 unlock_one "$HOME/.fd0-alice-desktop" "alice-d"
 unlock_one "$HOME/.fd0-bob-desktop"   "bob-d"
 sleep 0.3

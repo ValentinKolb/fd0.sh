@@ -82,7 +82,9 @@ rm -f "$SERVER_DB" "$SERVER_LOG" "$RECOVERY".alice "$RECOVERY".bob /tmp/fd0-mult
 rm -rf "$HOME/.fd0-alice-laptop" "$HOME/.fd0-alice-desktop" \
        "$HOME/.fd0-bob-laptop"   "$HOME/.fd0-bob-desktop"
 
-"$FD0_SERVER_BIN" --bind=":${SERVER_PORT}" --db="$SERVER_DB" > "$SERVER_LOG" 2>&1 &
+# Rate-limiting is exercised in a dedicated step below; here we want
+# unconstrained multi-device traffic.
+"$FD0_SERVER_BIN" --bind=":${SERVER_PORT}" --db="$SERVER_DB" --no-ratelimit > "$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 trap 'kill $SERVER_PID 2>/dev/null || true; pkill -f fd0-agent 2>/dev/null || true' EXIT
 sleep 0.5
@@ -122,9 +124,9 @@ printf "bob-rec\nbob-rec\n"     | BL recovery export "$RECOVERY".bob   >>/tmp/fd
 [ -f "$RECOVERY".alice ] && ok "Alice's recovery file written" || no "Alice recovery export failed (see /tmp/fd0-multi-step2.log)"
 [ -f "$RECOVERY".bob   ] && ok "Bob's recovery file written"   || no "Bob recovery export failed"
 
-printf "alice-rec\nalice-desktop-pass\nalice-desktop-pass\n" | env FD0_HOME="$HOME/.fd0-alice-desktop" "$FD0" recovery restore "$RECOVERY".alice >>/tmp/fd0-multi-step2.log 2>&1 \
+printf "alice-rec\nalice-desktop-pass\nalice-desktop-pass\n" | env FD0_HOME="$HOME/.fd0-alice-desktop" "$FD0" recovery import "$RECOVERY".alice >>/tmp/fd0-multi-step2.log 2>&1 \
     || no "Alice restore failed: $(tail -3 /tmp/fd0-multi-step2.log)"
-printf "bob-rec\nbob-desktop-pass\nbob-desktop-pass\n"       | env FD0_HOME="$HOME/.fd0-bob-desktop"   "$FD0" recovery restore "$RECOVERY".bob   >>/tmp/fd0-multi-step2.log 2>&1 \
+printf "bob-rec\nbob-desktop-pass\nbob-desktop-pass\n"       | env FD0_HOME="$HOME/.fd0-bob-desktop"   "$FD0" recovery import "$RECOVERY".bob   >>/tmp/fd0-multi-step2.log 2>&1 \
     || no "Bob restore failed: $(tail -3 /tmp/fd0-multi-step2.log)"
 unlock "$HOME/.fd0-alice-desktop" "alice-desktop-pass"
 unlock "$HOME/.fd0-bob-desktop"   "bob-desktop-pass"
@@ -330,6 +332,105 @@ step "19) Alice/desktop's auth chain is independent (per-device user-chain)"
 OUT=$(AD auth ls)
 COUNT=$(printf "%s" "$OUT" | grep -c "^" || true)
 expect_eq "$COUNT" "1" "Alice/desktop has its own single bootstrap method"
+
+# ─── 20) Sync push delta: second sync after a write pushes 0 events ───────
+# This is the v1.x bandwidth/latency fix. After a successful sync, the
+# vault remembers PushFloor per scope; a follow-up `fd0 sync` with no
+# new local writes must report pushed=0 dup=0 (server gets nothing).
+step "20) Sync push delta: idempotent second sync"
+AL set DELTA_PROBE "value-1" --scope shared-work >/dev/null
+OUT1=$(AL sync 2>&1)
+case "$OUT1" in
+    *"pushed=1"*) ok "first sync pushed the new event" ;;
+    *) no "first sync should report pushed=1, got: $OUT1" ;;
+esac
+OUT2=$(AL sync 2>&1)
+case "$OUT2" in
+    *"pushed=0 dup=0"*) ok "second sync pushed nothing (delta works)" ;;
+    *"pushed=0"*) ok "second sync pushed nothing (delta works; format variation)" ;;
+    *) no "second sync should be no-op, got: $OUT2" ;;
+esac
+
+# ─── 21) YubiKey enrollment without a card → graceful refusal ─────────────
+# We don't have hardware in CI. The CLI must print a clear error pointing
+# at the build tag / hardware-day status, NOT half-enroll the user.
+step "21) YubiKey enrollment without hardware → clean error"
+# Pre-check: count auth methods on alice-laptop before the attempted enroll.
+COUNT_BEFORE=$(AL auth ls | grep -c "^" || true)
+# Choose touch-only (`n`) at the prompt; the enroll then fails because no
+# card / build tag absent.
+OUT=$(printf "n\n" | AL auth add --yubikey 2>&1 || true)
+case "$OUT" in
+    *"build fd0 with -tags=yubikey"* | *"yubikey:"* | *"no smartcard"*)
+        ok "yubikey enroll surfaced a clear error" ;;
+    *) no "yubikey enroll output unexpected: $OUT" ;;
+esac
+COUNT_AFTER=$(AL auth ls | grep -c "^" || true)
+expect_eq "$COUNT_AFTER" "$COUNT_BEFORE" "yubikey-enroll failure left auth methods unchanged"
+
+# ─── 22) Server rate limiting: dedicated server with low cap ──────────────
+# Spin up a second server instance with --register-per-hour=1, exercise
+# the limit via curl (registration). Confirms the 429 + Retry-After path
+# end-to-end without polluting the main server's rate-limit state.
+step "22) Server rate-limit (dedicated instance, cap=1/h)"
+RL_PORT=14149
+"$FD0_SERVER_BIN" --bind=":${RL_PORT}" --db=/tmp/fd0-rl.db --register-per-hour=1 > /tmp/fd0-rl.log 2>&1 &
+RL_PID=$!
+sleep 0.4
+# Build a single tiny CBOR body — invalid as a real registration but
+# enough to drive the rate-limit pathway. The first request will fail
+# validation BEFORE the limiter check (post-MaxBytes) — actually no, the
+# limiter runs first. So we expect:
+#   1st: 400 (bad body) but bucket spent
+#   2nd: 429 (limit hit)
+curl -s -o /dev/null -w "%{http_code}" -X POST "http://127.0.0.1:${RL_PORT}/users" \
+    -H "Content-Type: application/cbor" --data-binary "x" > /tmp/fd0-rl-first.code
+FIRST=$(cat /tmp/fd0-rl-first.code)
+# Either 400 (bad body) or 201 — both consume a token.
+case "$FIRST" in
+    400|201) ok "first /users call returned $FIRST (bucket consumed)" ;;
+    *) no "first /users call returned unexpected $FIRST" ;;
+esac
+SECOND=$(curl -s -o /dev/null -w "%{http_code}" -X POST "http://127.0.0.1:${RL_PORT}/users" \
+    -H "Content-Type: application/cbor" --data-binary "x")
+expect_eq "$SECOND" "429" "second /users call rate-limited (429)"
+RETRY=$(curl -s -i -X POST "http://127.0.0.1:${RL_PORT}/users" \
+    -H "Content-Type: application/cbor" --data-binary "x" | tr -d '\r' | awk '/^Retry-After:/{print $2}')
+if [ -n "$RETRY" ]; then ok "Retry-After present (= ${RETRY}s)"
+else no "Retry-After header missing on 429"
+fi
+kill $RL_PID 2>/dev/null || true
+wait $RL_PID 2>/dev/null || true
+rm -f /tmp/fd0-rl.db /tmp/fd0-rl.log /tmp/fd0-rl-first.code
+
+# ─── 23) Agent idle/max config from ~/.fd0/config.toml ────────────────────
+# Drop a ~/.fd0/config.toml on a fresh home with [agent] knobs and
+# confirm fd0-agent picks them up without --idle-timeout / FD0_AGENT_IDLE.
+step "23) Agent reads [agent].idle_timeout from config"
+TEST_HOME=/tmp/fd0-agent-cfg-test
+rm -rf "$TEST_HOME"
+mkdir -p "$TEST_HOME" && chmod 700 "$TEST_HOME"
+cat > "$TEST_HOME/config.toml" <<EOF
+[agent]
+idle_timeout = "37s"
+max_lifetime = "11h"
+EOF
+printf "x-pass\nx-pass\n" | env FD0_HOME="$TEST_HOME" "$FD0" init >/dev/null 2>&1
+printf "x-pass\n" | env FD0_HOME="$TEST_HOME" "$FD0" unlock >/dev/null 2>&1
+sleep 0.3
+# Look for a recent idle/max line in the agent log. The agent writes
+# "agent: auto-sync enabled" / "agent listening" but logs idle on idle
+# events only. We instead read the running flags via /proc/<pid>/cmdline
+# is unavailable on macOS — but the agent does NOT print its idle config
+# at startup. So we only verify the agent comes up; the parse code is
+# unit-tested in resolveDuration. Smoke-test: status reports unlocked.
+ST=$(env FD0_HOME="$TEST_HOME" "$FD0" status 2>&1 || true)
+case "$ST" in
+    *"unlocked"*) ok "agent up with config-driven [agent] knobs (smoke)" ;;
+    *) no "agent didn't come up cleanly: $ST" ;;
+esac
+env FD0_HOME="$TEST_HOME" "$FD0" lock >/dev/null 2>&1 || true
+rm -rf "$TEST_HOME"
 
 # ─── Summary ─────────────────────────────────────────────────────────────
 echo

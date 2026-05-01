@@ -95,8 +95,26 @@ func (s *Server) verifyHTTPSig(ctx context.Context, r *http.Request) (*AuthResul
 	if !ok {
 		return nil, http.StatusUnauthorized, errors.New("replay")
 	}
+	// Rate limit applies AFTER signature + replay verification so an attacker
+	// can't burn somebody else's bucket with a forged Authorization header.
+	if s.rl != nil {
+		ident := base64.StdEncoding.EncodeToString(pk)
+		if d := s.rl.AcquireWrite(ident); !d.Allow {
+			return nil, http.StatusTooManyRequests, rateLimitedError{retry: d.Retry}
+		}
+		if d := s.rl.AcquireBytes(ident, len(body)); !d.Allow {
+			return nil, http.StatusTooManyRequests, rateLimitedError{retry: d.Retry}
+		}
+	}
 	return &AuthResult{Pub: pk, Body: body}, 0, nil
 }
+
+// rateLimitedError lets handlers detect rate-limit-driven 429s and emit the
+// Retry-After header without sniffing the message string.
+type rateLimitedError struct{ retry time.Duration }
+
+func (e rateLimitedError) Error() string { return "rate_limited" }
+func (e rateLimitedError) RetryAfter() time.Duration { return e.retry }
 
 // readBody reads the request body without verifying a signature. Used by the
 // two unauthenticated endpoints (POST /users, GET /users/<shortId>/events).

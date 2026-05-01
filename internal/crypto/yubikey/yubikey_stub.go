@@ -13,3 +13,8 @@ func List() ([]string, error) { return nil, ErrNotEnabled }
 func Initialize(slot SlotID, pin string, touch TouchPolicy, pinPolicy PinPolicy) ([]byte, error) {
 	return nil, ErrNotEnabled
 }
+
+// Enroll is the stub equivalent of the on-card enrollment flow. The CLI
+// must report ErrNotEnabled with a human-friendly hint pointing at the
+// `-tags=yubikey` build.
+func Enroll(opts EnrollOptions) (*EnrollResult, error) { return nil, ErrNotEnabled }

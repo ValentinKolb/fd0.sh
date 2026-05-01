@@ -88,7 +88,11 @@ func RunRecoveryExport(ctx context.Context, outPath string) error {
 	return nil
 }
 
-// RunRecoveryRestore bootstraps a fresh fd0 home from a RecoveryFile.
+// RunRecoveryImport bootstraps a fresh fd0 home from a RecoveryFile.
+//
+// Use cases:
+//   - Setting up fd0 on a new device with an existing identity.
+//   - Disaster recovery after losing a device.
 //
 // Refuses if a vault already exists. The new device:
 //  1. Decrypts super_priv from the recovery file with the recovery passphrase.
@@ -99,7 +103,7 @@ func RunRecoveryExport(ctx context.Context, outPath string) error {
 //
 // User MUST then run `fd0 sync` against a server to learn about scopes
 // they were a member of.
-func RunRecoveryRestore(ctx context.Context, inPath string) error {
+func RunRecoveryImport(ctx context.Context, inPath string) error {
 	paths, err := fdhome.Resolve()
 	if err != nil {
 		return err
@@ -187,7 +191,7 @@ func RunRecoveryRestore(ctx context.Context, inPath string) error {
 		return err
 	}
 	// Two-phase commit: if vault.Save fails, drop the half-written user.cbor
-	// so a re-run of `fd0 recovery restore` doesn't refuse on the
+	// so a re-run of `fd0 recovery import` doesn't refuse on the
 	// "user chain already exists" guard.
 	prefix, err := g.PrevHashInput()
 	if err != nil {

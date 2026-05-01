@@ -9,6 +9,7 @@ import (
 	"github.com/alecthomas/kong"
 
 	"github.com/valentinkolb/fd0.sh/internal/server"
+	"github.com/valentinkolb/fd0.sh/internal/server/ratelimit"
 )
 
 // Default port is 0xFD0 = 4048.
@@ -17,6 +18,13 @@ type cli struct {
 	DB      string `name:"db" help:"SQLite path." default:"fd0.db" env:"FD0_DB"`
 	MaxBody int64  `name:"max-body" help:"Max request body bytes." default:"8388608" env:"FD0_MAX_BODY"`
 	Verbose bool   `name:"verbose" short:"v" help:"Verbose logging." env:"FD0_VERBOSE"`
+
+	// Rate limiting. Single-instance only. Negative values disable that
+	// specific class; --no-ratelimit (FD0_RATELIMIT=off) disables all.
+	NoRateLimit          bool `name:"no-ratelimit" help:"Disable rate limiting entirely." env:"FD0_RATELIMIT_OFF"`
+	WritesPerMin         int  `name:"writes-per-min" help:"Authenticated writes/min per identity." default:"60" env:"FD0_RATELIMIT_WRITES_PER_MIN"`
+	BytesPerMin          int  `name:"bytes-per-min" help:"Aggregate request body bytes/min per identity." default:"33554432" env:"FD0_RATELIMIT_BYTES_PER_MIN"`
+	RegisterPerHour      int  `name:"register-per-hour" help:"POST /users registrations/hour per IP." default:"5" env:"FD0_RATELIMIT_REGISTER_PER_HOUR"`
 }
 
 // version is overwritten by goreleaser via `-ldflags="-X main.version=..."`.
@@ -40,6 +48,13 @@ func main() {
 		Version:  version,
 		MaxBytes: c.MaxBody,
 		Logger:   log,
+
+		RateLimitDisabled: c.NoRateLimit,
+		RateLimit: ratelimit.Config{
+			IdentityWritesPerMin: c.WritesPerMin,
+			IdentityBytesPerMin:  c.BytesPerMin,
+			RegisterPerHour:      c.RegisterPerHour,
+		},
 	})
 	if err != nil {
 		log.Error("init", "err", err)

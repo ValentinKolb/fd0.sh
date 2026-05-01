@@ -8,12 +8,14 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/valentinkolb/fd0.sh/internal/proto"
+	"github.com/valentinkolb/fd0.sh/internal/server/ratelimit"
 	"github.com/valentinkolb/fd0.sh/internal/server/store"
 	"github.com/valentinkolb/fd0.sh/internal/server/validate"
 )
@@ -25,14 +27,22 @@ type Config struct {
 	Version  string // server version reported by /version
 	MaxBytes int64  // max request body
 	Logger   *slog.Logger
+
+	// RateLimit applies per-identity / per-IP rate limiting in front of the
+	// authenticated and registration endpoints. Zero values fall back to
+	// documented defaults; set RateLimitDisabled to opt out entirely.
+	RateLimit         ratelimit.Config
+	RateLimitDisabled bool
 }
 
 // Server is the HTTP service. New constructs it; ServeHTTP routes requests.
 type Server struct {
-	cfg   Config
-	store *store.Store
-	mux   *http.ServeMux
-	log   *slog.Logger
+	cfg    Config
+	store  *store.Store
+	mux    *http.ServeMux
+	log    *slog.Logger
+	rl     *ratelimit.Limiter // nil when disabled
+	rlStop context.CancelFunc // cancels the limiter's GC goroutine on Close
 }
 
 // New initialises the store and routes.
@@ -48,13 +58,23 @@ func New(cfg Config) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{cfg: cfg, store: st, mux: http.NewServeMux(), log: cfg.Logger}
+	if !cfg.RateLimitDisabled {
+		var rlCtx context.Context
+		rlCtx, s.rlStop = context.WithCancel(context.Background())
+		s.rl = ratelimit.New(rlCtx, cfg.RateLimit)
+	}
 	s.routes()
 	go s.noncePruner()
 	return s, nil
 }
 
 // Close releases resources.
-func (s *Server) Close() error { return s.store.Close() }
+func (s *Server) Close() error {
+	if s.rlStop != nil {
+		s.rlStop()
+	}
+	return s.store.Close()
+}
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, s.cfg.MaxBytes)
@@ -87,6 +107,13 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 
 // POST /users — accept genesis auth.set, assign shortId.
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+	if s.rl != nil {
+		ip := clientIP(r)
+		if d := s.rl.AcquireRegister(ip); !d.Allow {
+			s.writeRateLimited(w, d.Retry)
+			return
+		}
+	}
 	body, err := readBody(r)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "bad_body", err.Error())
@@ -227,6 +254,11 @@ func (s *Server) handleFetchUser(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAppendUser(w http.ResponseWriter, r *http.Request) {
 	auth, code, err := s.verifyHTTPSig(r.Context(), r)
 	if err != nil {
+		var rle rateLimitedError
+		if errors.As(err, &rle) {
+			s.writeRateLimited(w, rle.RetryAfter())
+			return
+		}
 		writeErr(w, code, "auth", err.Error())
 		return
 	}
@@ -367,6 +399,11 @@ type pushResult struct {
 func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 	auth, code, err := s.verifyHTTPSig(r.Context(), r)
 	if err != nil {
+		var rle rateLimitedError
+		if errors.As(err, &rle) {
+			s.writeRateLimited(w, rle.RetryAfter())
+			return
+		}
 		writeErr(w, code, "auth", err.Error())
 		return
 	}
@@ -496,7 +533,9 @@ func (s *Server) applyPush(ctx context.Context, authorPub []byte, p pushItem) pu
 		eventID := proto.EventID(prefix)
 		scopeID := proto.ScopeID(eventID)
 		if exists, _ := s.eventExists(ctx, eventID); exists {
-			return pushResult{Accepted: false, Reason: "dup", EventID: eventID, ScopeID: scopeID}
+			// Seq=0 explicit so the client's PushFloor advance logic works
+			// uniformly across success and dup responses.
+			return pushResult{Accepted: false, Reason: "dup", EventID: eventID, ScopeID: scopeID, Seq: 0}
 		}
 		newMeta, err := validate.ScopeEvent(&p.Event, nil, nil, 0)
 		if err != nil {
@@ -539,7 +578,8 @@ func (s *Server) applyPush(ctx context.Context, authorPub []byte, p pushItem) pu
 	prefix, _ := p.Event.PrevHashInput()
 	eventID := proto.EventID(prefix)
 	if exists, _ := s.eventExists(ctx, eventID); exists {
-		return pushResult{Accepted: false, Reason: "dup", EventID: eventID, ScopeID: p.Scope}
+		// Echo Seq so the client's push-floor advance logic works on dups.
+		return pushResult{Accepted: false, Reason: "dup", EventID: eventID, ScopeID: p.Scope, Seq: sp.Seq}
 	}
 	var meta validate.ScopeMeta
 	if err := proto.Unmarshal(c.Metadata, &meta); err != nil {
@@ -626,6 +666,30 @@ var errNotMember = errors.New("not a member")
 // stale prior state).
 func (s *Server) eventExists(ctx context.Context, eventID string) (bool, error) {
 	return s.store.EventExists(ctx, eventID)
+}
+
+// writeRateLimited emits a 429 with a Retry-After header. The CBOR body
+// matches the standard error envelope for consistency with the rest of the
+// API.
+func (s *Server) writeRateLimited(w http.ResponseWriter, retry time.Duration) {
+	secs := int(retry.Round(time.Second).Seconds())
+	if secs < 1 {
+		secs = 1
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(secs))
+	writeErr(w, http.StatusTooManyRequests, "rate_limited", "retry after "+strconv.Itoa(secs)+"s")
+}
+
+// clientIP extracts the caller IP for per-IP rate limiting. We deliberately
+// do NOT honour X-Forwarded-For: in the v1 deployment topology fd0-server is
+// reached directly. If you put it behind a trusted proxy, terminate the
+// proxy header there and pass through.
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 func equalBytes(a, b []byte) bool {

@@ -51,21 +51,28 @@ func RunSync(ctx context.Context, server string) error {
 			"cursor": map[string]any{"seq": sd.ChainTip.Seq, "hash": sd.ChainTip.Hash},
 		}
 	}
-	// Build push: every event in every local scope chain. The server
-	// rejects already-known events with `dup`, so over-pushing is safe and
-	// idempotent. v1 keeps this simple; v2 would track last-pushed-seq per
-	// scope to avoid the redundant traffic.
+	// Build push: only events whose seq is at or above the per-scope
+	// PushFloor (= "lowest seq we still need to push"). Foreign events
+	// (authored by another member, fetched via pull) are skipped because
+	// they're already on the server and would yield `bad_author`.
+	//
+	// Bandwidth invariant: PushFloor only advances after the server has
+	// accepted (or de-duped) the corresponding event AND the vault has
+	// been re-sealed. Any failure between push and re-seal leaves the
+	// floor untouched, so the next sync repushes the same suffix; the
+	// server idempotent-dedups by event_id. Worst case is extra traffic;
+	// data loss is impossible by construction.
 	pushItems := []any{}
-	for sid := range s.Body.Scopes {
+	for sid, sd := range s.Body.Scopes {
 		evs, err := chain.ReadScopeEvents(s.Paths.ScopeChain(sid))
 		if err != nil {
 			return err
 		}
 		for _, ev := range evs {
-			// Only push our own events. Foreign events (e.g. those another
-			// member produced and we received via /sync pull) are already on
-			// the server; re-pushing yields `bad_author`.
 			if !bytes.Equal(ev.SignedPrefix.Author, s.UserSuperPub) {
+				continue
+			}
+			if ev.SignedPrefix.Seq < sd.PushFloor {
 				continue
 			}
 			if ev.SignedPrefix.Seq == 0 {
@@ -219,8 +226,18 @@ func RunSync(ctx context.Context, server string) error {
 			continue
 		}
 	}
-	// Summarise push results.
+	// Summarise push results, and advance per-scope PushFloor on
+	// accepted-or-dup'd events.
+	//
+	// Why dup? Because dup means "server already has this event_id".
+	// Mathematically the seq has been pushed (by us, in some earlier round
+	// whose vault flush failed, or by another device). Either way, future
+	// syncs needn't repush; advancing the floor is safe and saves traffic.
+	//
+	// Floor advances monotonically: we never roll backwards even if the
+	// server returns a stale-looking seq from an old retry.
 	pushed, dups, failed := 0, 0, 0
+	floorDirty := false
 	for _, p := range sr.Push {
 		switch {
 		case p.Accepted:
@@ -230,6 +247,31 @@ func RunSync(ctx context.Context, server string) error {
 		default:
 			failed++
 			fmt.Fprintf(os.Stderr, "  push refused: %s\n", p.Reason)
+			continue
+		}
+		if p.ScopeID == "" {
+			continue
+		}
+		sd, ok := s.Body.Scopes[p.ScopeID]
+		if !ok {
+			continue
+		}
+		next := p.Seq + 1
+		if next > sd.PushFloor {
+			sd.PushFloor = next
+			s.Body.Scopes[p.ScopeID] = sd
+			floorDirty = true
+		}
+	}
+	// Persist PushFloor advances NOW (before any reconcile-on-failure path
+	// that may rewrite the chain and update its own ChainTip/PushFloor).
+	// If ReSeal fails here, every floor change in this round is lost; the
+	// next sync re-pushes the same suffix and the server idempotent-dedups.
+	// That's the no-data-loss invariant: floor never advances on disk
+	// without an authoritative server confirmation having already landed.
+	if floorDirty {
+		if err := s.ReSeal(); err != nil {
+			return err
 		}
 	}
 	// Auto-retry: collect scopes whose pushes hit divergence/stale_oek and
@@ -412,6 +454,12 @@ func (s *Session) discoverScope(ctx context.Context, server, scopeID string) err
 		Label:    metaLabelFromIndex(st.SecretIndex),
 		OEKs:     []proto.OEKEntry{{Version: st.CurrentOEKVer, Key: append([]byte(nil), curOEK...)}},
 		ChainTip: proto.ChainTip{Seq: st.TipSeq, Hash: st.TipHash},
+		// We received the entire chain from the server; everything up to
+		// st.TipSeq is "already pushed" from our perspective. Without
+		// this, the next sync would walk the full chain trying to push
+		// foreign events (filtered out anyway by author check, but the
+		// I/O is wasted work).
+		PushFloor: st.TipSeq + 1,
 	}
 	if err := s.ReSeal(); err != nil {
 		return err
@@ -692,6 +740,15 @@ func (s *Session) applyReplayedScope(scopeID string) error {
 	if l := metaLabelFromIndex(st.SecretIndex); l != "" {
 		sd.Label = l
 	}
+	// After a reconcile, the local chain has been rewritten from the
+	// server's authoritative copy. Every event up to and including st.TipSeq
+	// is therefore guaranteed to already exist on the server; the next event
+	// we'd push starts at st.TipSeq+1. Advance the floor so the immediately
+	// following rebuilt secret.sets aren't accompanied by a costly replay
+	// of the entire restored history on every subsequent sync.
+	if next := st.TipSeq + 1; next > sd.PushFloor {
+		sd.PushFloor = next
+	}
 	s.Body.Scopes[scopeID] = sd
 	return s.ReSeal()
 }
@@ -737,6 +794,10 @@ func (s *Session) rebuildAndPushSet(ctx context.Context, server, scopeID string,
 	tipHash := proto.HashPrefix(prefix)
 	sd.ChainTip = proto.ChainTip{Seq: st.TipSeq + 1, Hash: tipHash[:]}
 	s.Body.Scopes[scopeID] = sd
+	// Pre-push: do NOT advance PushFloor yet. The push below may still fail.
+	// The append above is local-only; if the push fails the next sync will
+	// retry it (PushFloor stays at <= sd.ChainTip.Seq+1, and the rebuilt
+	// event's seq matches that, so it's still in scope).
 	if err := s.ReSeal(); err != nil {
 		return false, err
 	}
@@ -762,6 +823,7 @@ func (s *Session) rebuildAndPushSet(ctx context.Context, server, scopeID string,
 		Push []struct {
 			Accepted bool   `cbor:"accepted"`
 			Reason   string `cbor:"reason,omitempty"`
+			Seq      uint64 `cbor:"seq,omitempty"`
 		} `cbor:"push"`
 	}
 	if err := proto.Unmarshal(rb, &sr); err != nil {
@@ -771,7 +833,22 @@ func (s *Session) rebuildAndPushSet(ctx context.Context, server, scopeID string,
 		return false, errors.New("server returned no push result")
 	}
 	r := sr.Push[0]
-	if r.Accepted {
+	if r.Accepted || r.Reason == "dup" {
+		// Persist PushFloor advance: the event with seq=ChainTip.Seq is now
+		// authoritatively on the server (or a retry observed it as already
+		// there), so future syncs needn't push it again.
+		sdNow := s.Body.Scopes[scopeID]
+		if next := sdNow.ChainTip.Seq + 1; next > sdNow.PushFloor {
+			sdNow.PushFloor = next
+			s.Body.Scopes[scopeID] = sdNow
+			if err := s.ReSeal(); err != nil {
+				// ReSeal failure is non-fatal here: the push already
+				// landed on the server; floor staleness only costs a
+				// re-push on the next sync (server dedups). We surface
+				// the error to the caller so it shows up in logs.
+				return true, fmt.Errorf("re-seal after push-floor advance: %w", err)
+			}
+		}
 		return true, nil
 	}
 	if r.Reason == "divergence" || r.Reason == "stale_oek_version" {

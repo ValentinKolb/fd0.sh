@@ -78,13 +78,17 @@ on_unlock = true                          # sync immediately after unlock
 [client]
 lock_wait = "10s"                         # block up to 10s on ~/.fd0/.lock contention; "" = fail fast
 
+[agent]
+idle_timeout = "5m"                       # zeroize super_priv after N idle (default 5m)
+max_lifetime = "8h"                       # hard cap, lock after N regardless of activity (default 8h)
+
 [clipboard]
 clear_after_seconds = 30                  # default for `fd0 copy`; 0 disables auto-clear
 ```
 
 `fd0 copy NAME --clear-after=30s` overrides `[clipboard].clear_after_seconds` per call. Set to `0` to disable auto-clear.
 
-Environment variables override config: `FD0_HOME`, `FD0_SERVER`, `FD0_LOCK_WAIT`.
+Environment variables override config: `FD0_HOME`, `FD0_SERVER`, `FD0_LOCK_WAIT`, `FD0_AGENT_IDLE`, `FD0_AGENT_MAX_LIFETIME`.
 
 ## Server
 
@@ -96,14 +100,14 @@ Flags also available as `FD0_BIND`, `FD0_DB`, `FD0_MAX_BODY`, `FD0_VERBOSE`.
 
 ## Recovery
 
-`super_priv` is the root of identity. Back it up before disaster:
+`super_priv` is the root of identity. Back it up so you can roll out a new device, or recover after losing one:
 
 ```bash
 fd0 recovery export ~/fd0-recovery.cbor   # encrypted under a recovery passphrase
                                           # store offline (paper QR, password manager)
 
 # on a fresh device:
-fd0 recovery restore ~/fd0-recovery.cbor
+fd0 recovery import ~/fd0-recovery.cbor
 fd0 unlock
 fd0 sync                                  # discovers all scopes you were a member of
 ```

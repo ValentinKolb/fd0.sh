@@ -15,6 +15,7 @@ import (
 	"github.com/valentinkolb/fd0.sh/internal/chain"
 	"github.com/valentinkolb/fd0.sh/internal/crypto"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
+	"github.com/valentinkolb/fd0.sh/internal/server/ratelimit"
 )
 
 func newTestServer(t *testing.T) (*Server, *httptest.Server) {
@@ -111,6 +112,171 @@ func TestRegisterAndAppend(t *testing.T) {
 	if r3.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(r3.Body)
 		t.Fatalf("append: %d %s", r3.StatusCode, b)
+	}
+}
+
+// TestRateLimitRegister420 verifies the per-IP register limiter kicks in
+// after the configured budget and produces a Retry-After header.
+func TestRateLimitRegister420(t *testing.T) {
+	dir := t.TempDir()
+	srv, err := New(Config{
+		DBPath:  filepath.Join(dir, "fd0.db"),
+		Version: "test",
+		// 1 register per "hour" — enough to allow the first call and
+		// reject the second.
+		RateLimit: ratelimit.Config{RegisterPerHour: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	mkBody := func(t *testing.T) []byte {
+		pub, priv, err := crypto.GenerateIdentity()
+		if err != nil {
+			t.Fatal(err)
+		}
+		g, err := chain.BuildUserAuthSet(priv, pub, 0, nil, []proto.AuthMethod{{
+			MethodID: "am_x", MethodType: proto.AuthPassphrase,
+			PublicParams: make([]byte, 16), EncryptedSuperPriv: []byte{0xff},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := proto.Marshal(map[string]any{"event": g})
+		return body
+	}
+	// 1st: ok
+	resp, err := http.Post(ts.URL+"/users", "application/cbor", bytes.NewReader(mkBody(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusCreated {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("first register should succeed: %d %s", resp.StatusCode, b)
+	}
+	// 2nd: limited
+	resp2, err := http.Post(ts.URL+"/users", "application/cbor", bytes.NewReader(mkBody(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp2.StatusCode != http.StatusTooManyRequests {
+		b, _ := io.ReadAll(resp2.Body)
+		t.Fatalf("second register should be 429, got %d %s", resp2.StatusCode, b)
+	}
+	if resp2.Header.Get("Retry-After") == "" {
+		t.Fatal("429 must carry Retry-After header")
+	}
+}
+
+// TestRateLimitWritesAfterAuth verifies the per-identity write limiter
+// kicks in on /sync after the configured budget. The limiter is checked
+// AFTER signature verification to prevent attackers from burning a
+// victim's bucket via spoofed Authorization headers — we exercise that
+// by sending well-formed signatures from one identity and confirming the
+// rejection comes back as 429 (not 401).
+func TestRateLimitWritesAfterAuth(t *testing.T) {
+	dir := t.TempDir()
+	srv, err := New(Config{
+		DBPath:  filepath.Join(dir, "fd0.db"),
+		Version: "test",
+		// Allow 2 writes/min; on the 3rd we expect 429.
+		// Bytes budget set very high to avoid that path firing instead.
+		RateLimit: ratelimit.Config{
+			IdentityWritesPerMin: 2,
+			IdentityBytesPerMin:  1 << 30,
+			RegisterPerHour:      100,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	pub, priv, err := crypto.GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	postSync := func() *http.Response {
+		// Empty pull, empty push. Server runs through verifyHTTPSig
+		// (which is where the rate-limit check sits) before noticing
+		// there's nothing to do.
+		body, _ := proto.Marshal(map[string]any{
+			"pull": map[string]any{
+				"scopes":          map[string]any{},
+				"limit_per_scope": uint64(0),
+			},
+			"push": []any{},
+		})
+		req, _ := http.NewRequest("POST", ts.URL+"/sync", bytes.NewReader(body))
+		signRequest(t, req, body, pub, priv)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+	for i := 0; i < 2; i++ {
+		r := postSync()
+		if r.StatusCode != http.StatusOK {
+			b, _ := io.ReadAll(r.Body)
+			t.Fatalf("write %d should succeed within budget: %d %s", i, r.StatusCode, b)
+		}
+		r.Body.Close()
+	}
+	r := postSync()
+	if r.StatusCode != http.StatusTooManyRequests {
+		b, _ := io.ReadAll(r.Body)
+		t.Fatalf("3rd write should be 429, got %d %s", r.StatusCode, b)
+	}
+	if r.Header.Get("Retry-After") == "" {
+		t.Fatal("429 must set Retry-After")
+	}
+	r.Body.Close()
+}
+
+// TestRateLimitDisabled confirms the kill switch.
+func TestRateLimitDisabled(t *testing.T) {
+	dir := t.TempDir()
+	srv, err := New(Config{
+		DBPath:            filepath.Join(dir, "fd0.db"),
+		Version:           "test",
+		RateLimitDisabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	// 20 registrations in a row from the same IP must all succeed when
+	// rate limiting is disabled.
+	for i := 0; i < 20; i++ {
+		pub, priv, err := crypto.GenerateIdentity()
+		if err != nil {
+			t.Fatal(err)
+		}
+		g, err := chain.BuildUserAuthSet(priv, pub, 0, nil, []proto.AuthMethod{{
+			MethodID: "am_x", MethodType: proto.AuthPassphrase,
+			PublicParams: make([]byte, 16), EncryptedSuperPriv: []byte{0xff},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := proto.Marshal(map[string]any{"event": g})
+		resp, err := http.Post(ts.URL+"/users", "application/cbor", bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusCreated {
+			b, _ := io.ReadAll(resp.Body)
+			t.Fatalf("iter %d: %d %s", i, resp.StatusCode, b)
+		}
 	}
 }
 

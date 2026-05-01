@@ -32,7 +32,7 @@ type rootCLI struct {
 	Scope   scopeCmd   `cmd:"" help:"Scope management."`
 	Sync    syncCmd    `cmd:"" help:"Sync with the fd0 server."`
 	Card     cardCmd     `cmd:"" help:"Identity card (export your super_pub for invites)."`
-	Recovery recoveryCmd `cmd:"" help:"Offline backup of super_priv for disaster recovery."`
+	Recovery recoveryCmd `cmd:"" help:"Offline backup of super_priv (for new devices or disaster recovery)."`
 	Auth     authCmd     `cmd:"" help:"Manage unlock methods (passphrases, future yubikeys)."`
 	Doctor   doctorCmd   `cmd:"" help:"Diagnose vault, chain, and tip-binding consistency."`
 	Version  versionCmd  `cmd:"" help:"Print version and exit."`
@@ -115,13 +115,13 @@ type cardRemoveCmd struct {
 }
 
 type recoveryCmd struct {
-	Export  recoveryExportCmd  `cmd:"" help:"Encrypt super_priv to a recovery file."`
-	Restore recoveryRestoreCmd `cmd:"" help:"Bootstrap a fresh device from a recovery file."`
+	Export recoveryExportCmd `cmd:"" help:"Encrypt super_priv to a recovery file."`
+	Import recoveryImportCmd `cmd:"" help:"Bootstrap a fresh device from a recovery file."`
 }
 type recoveryExportCmd struct {
 	Out string `arg:"" name:"out" help:"Output path for the recovery file."`
 }
-type recoveryRestoreCmd struct {
+type recoveryImportCmd struct {
 	In string `arg:"" name:"in" help:"Path to the recovery file."`
 }
 
@@ -134,11 +134,13 @@ type doctorCmd struct{}
 
 type authCmd struct {
 	List   authListCmd   `cmd:"" aliases:"ls" help:"List active auth methods."`
-	Add    authAddCmd    `cmd:"" help:"Add a new passphrase as an additional auth method."`
+	Add    authAddCmd    `cmd:"" help:"Add a new passphrase or YubiKey as an additional auth method."`
 	Remove authRemoveCmd `cmd:"" name:"rm" help:"Remove an auth method by id."`
 }
 type authListCmd struct{}
-type authAddCmd struct{}
+type authAddCmd struct {
+	Yubikey bool `name:"yubikey" help:"Enroll a YubiKey instead of a passphrase."`
+}
 type authRemoveCmd struct {
 	ID string `arg:"" help:"method_id (am_...) — see 'fd0 auth ls'."`
 }
@@ -218,8 +220,8 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 		return cli.RunCardRemove(ctx, c.Card.Remove.Label)
 	case "recovery export <out>":
 		return cli.RunRecoveryExport(ctx, c.Recovery.Export.Out)
-	case "recovery restore <in>":
-		return cli.RunRecoveryRestore(ctx, c.Recovery.Restore.In)
+	case "recovery import <in>":
+		return cli.RunRecoveryImport(ctx, c.Recovery.Import.In)
 	case "sync":
 		if c.Sync.WaitLock != "" {
 			os.Setenv("FD0_LOCK_WAIT", c.Sync.WaitLock)
@@ -230,6 +232,9 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 	case "auth list", "auth ls":
 		return cli.RunAuthList(ctx)
 	case "auth add":
+		if c.Auth.Add.Yubikey {
+			return cli.RunAuthAddYubikey(ctx)
+		}
 		return cli.RunAuthAdd(ctx)
 	case "auth rm <id>":
 		return cli.RunAuthRemove(ctx, c.Auth.Remove.ID)
