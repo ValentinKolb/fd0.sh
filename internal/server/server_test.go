@@ -43,7 +43,7 @@ func TestRegisterAndAppend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g, err := chain.BuildUserAuthSet(priv, pub, 0, nil, []proto.AuthMethod{{
+	g, err := chain.BuildUserAuthSet(chain.LocalSigner{Priv: priv}, pub, 0, nil, []proto.AuthMethod{{
 		MethodID: "am_x", MethodType: proto.AuthPassphrase,
 		PublicParams: make([]byte, 16), EncryptedSuperPriv: []byte{0xff},
 	}})
@@ -94,7 +94,7 @@ func TestRegisterAndAppend(t *testing.T) {
 	// Append a second auth.set (authenticated).
 	prefix, _ := g.PrevHashInput()
 	tipHash := proto.HashPrefix(prefix)
-	e2, err := chain.BuildUserAuthSet(priv, pub, 0, tipHash[:], []proto.AuthMethod{{
+	e2, err := chain.BuildUserAuthSet(chain.LocalSigner{Priv: priv}, pub, 0, tipHash[:], []proto.AuthMethod{{
 		MethodID: "am_y", MethodType: proto.AuthPassphrase,
 		PublicParams: make([]byte, 16), EncryptedSuperPriv: []byte{0xee},
 	}})
@@ -138,7 +138,7 @@ func TestRateLimitRegister420(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		g, err := chain.BuildUserAuthSet(priv, pub, 0, nil, []proto.AuthMethod{{
+		g, err := chain.BuildUserAuthSet(chain.LocalSigner{Priv: priv}, pub, 0, nil, []proto.AuthMethod{{
 			MethodID: "am_x", MethodType: proto.AuthPassphrase,
 			PublicParams: make([]byte, 16), EncryptedSuperPriv: []byte{0xff},
 		}})
@@ -261,7 +261,7 @@ func TestRateLimitDisabled(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		g, err := chain.BuildUserAuthSet(priv, pub, 0, nil, []proto.AuthMethod{{
+		g, err := chain.BuildUserAuthSet(chain.LocalSigner{Priv: priv}, pub, 0, nil, []proto.AuthMethod{{
 			MethodID: "am_x", MethodType: proto.AuthPassphrase,
 			PublicParams: make([]byte, 16), EncryptedSuperPriv: []byte{0xff},
 		}})

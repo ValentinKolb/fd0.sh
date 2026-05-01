@@ -63,7 +63,7 @@ func RunInit(ctx context.Context) error {
 	}
 
 	// Genesis auth.set.
-	g, err := chain.BuildUserAuthSet(priv, pub, 0, nil, []proto.AuthMethod{{
+	g, err := chain.BuildUserAuthSet(chain.LocalSigner{Priv: priv}, pub, 0, nil, []proto.AuthMethod{{
 		MethodID:           methodID,
 		MethodType:         proto.AuthPassphrase,
 		PublicParams:       pp,

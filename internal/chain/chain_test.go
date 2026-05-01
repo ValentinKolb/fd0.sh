@@ -14,7 +14,7 @@ func TestUserChainRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g, err := BuildUserAuthSet(priv, pub, 0, nil, []proto.AuthMethod{{
+	g, err := BuildUserAuthSet(LocalSigner{Priv: priv}, pub, 0, nil, []proto.AuthMethod{{
 		MethodID:           "am_test",
 		MethodType:         proto.AuthPassphrase,
 		PublicParams:       make([]byte, 16),
@@ -36,7 +36,7 @@ func TestUserChainRoundtrip(t *testing.T) {
 		t.Fatalf("bad state: %+v", st)
 	}
 	// Append a second event.
-	e2, err := BuildUserAuthSet(priv, pub, st.TipSeq, st.TipHash, []proto.AuthMethod{{
+	e2, err := BuildUserAuthSet(LocalSigner{Priv: priv}, pub, st.TipSeq, st.TipHash, []proto.AuthMethod{{
 		MethodID:           "am_test2",
 		MethodType:         proto.AuthPassphrase,
 		PublicParams:       make([]byte, 16),
@@ -65,7 +65,7 @@ func TestScopeChainRoundtrip(t *testing.T) {
 	xPub, _ := crypto.EdPubToX25519(pub)
 	xPriv, _ := crypto.EdPrivToX25519(priv)
 
-	gen, oek, scopeID, err := BuildScopeGenesis(priv, pub)
+	gen, oek, scopeID, err := BuildScopeGenesis(LocalSigner{Priv: priv}, pub)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestScopeChainRoundtrip(t *testing.T) {
 			Payload: "AKIA...", Tags: map[string]string{"env": "prod"},
 		},
 	}
-	ev, err := BuildSecretSet(priv, pub, scopeID, st.TipSeq, st.TipHash, oek, st.CurrentOEKVer, body)
+	ev, err := BuildSecretSet(LocalSigner{Priv: priv}, pub, scopeID, st.TipSeq, st.TipHash, oek, st.CurrentOEKVer, body)
 	if err != nil {
 		t.Fatal(err)
 	}

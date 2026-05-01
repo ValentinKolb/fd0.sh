@@ -56,7 +56,7 @@ func (s *Session) writeScopeMeta(scopeID string, fields map[string]string) error
 			Payload:       fields,
 		},
 	}
-	ev, err := buildSecretSetAgent(s.Agent, s.UserSuperPub, scopeID,
+	ev, err := chain.BuildSecretSet(AgentSigner{Agent: s.Agent}, s.UserSuperPub, scopeID,
 		st.TipSeq, st.TipHash, curOEK.Key, curOEK.Version, body)
 	if err != nil {
 		return err

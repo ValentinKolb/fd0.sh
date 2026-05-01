@@ -114,7 +114,7 @@ func RunAuthAddYubikey(ctx context.Context) error {
 		PublicParams:       pp,
 		EncryptedSuperPriv: encSP,
 	})
-	ev, err := buildUserAuthSetAgent(s.Agent, s.UserSuperPub, uctx.TipSeq, uctx.TipHash, newActive)
+	ev, err := chain.BuildUserAuthSet(AgentSigner{Agent: s.Agent}, s.UserSuperPub, uctx.TipSeq, uctx.TipHash, newActive)
 	if err != nil {
 		return err
 	}

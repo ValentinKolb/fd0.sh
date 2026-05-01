@@ -178,7 +178,7 @@ func RunRecoveryImport(ctx context.Context, inPath string) error {
 		return err
 	}
 	// Genesis auth.set on this device.
-	g, err := chain.BuildUserAuthSet(superPriv, rf.UserSuperPub, 0, nil, []proto.AuthMethod{{
+	g, err := chain.BuildUserAuthSet(chain.LocalSigner{Priv: superPriv}, rf.UserSuperPub, 0, nil, []proto.AuthMethod{{
 		MethodID:           methodID,
 		MethodType:         proto.AuthPassphrase,
 		PublicParams:       pp,

@@ -793,7 +793,7 @@ func (s *Session) rebuildAndPushSet(ctx context.Context, server, scopeID string,
 			}
 		}
 	}
-	ev, err := buildSecretSetAgent(s.Agent, s.UserSuperPub, scopeID,
+	ev, err := chain.BuildSecretSet(AgentSigner{Agent: s.Agent}, s.UserSuperPub, scopeID,
 		st.TipSeq, st.TipHash, curOEK.Key, curOEK.Version, p.body)
 	if err != nil {
 		return false, err

@@ -41,7 +41,7 @@ func RunScopeAddMember(ctx context.Context, scopeID, memberCardOrLabel string) e
 	}
 	// Build current projection.
 	proj := projectionFromIndex(st.SecretIndex)
-	ev, newOEK, err := buildMemberChangeAgent(
+	ev, newOEK, err := chain.BuildMemberChange(
 		s.Agent, s.UserSuperPub,
 		scopeID, st.TipSeq, st.TipHash, st.CurrentOEKVer,
 		proto.OpAdd, memberPub, st.MemberSet, proj,
@@ -102,7 +102,7 @@ func RunScopeRemoveMember(ctx context.Context, scopeID, memberCardOrLabel string
 			base64.StdEncoding.EncodeToString(memberPub)[:12], scopeName(s, scopeID))
 	}
 	proj := projectionFromIndex(st.SecretIndex)
-	ev, newOEK, err := buildMemberChangeAgent(
+	ev, newOEK, err := chain.BuildMemberChange(
 		s.Agent, s.UserSuperPub,
 		scopeID, st.TipSeq, st.TipHash, st.CurrentOEKVer,
 		proto.OpRemove, memberPub, st.MemberSet, proj,
@@ -163,7 +163,7 @@ func RunScopeLeave(ctx context.Context, scopeID string) error {
 	}
 	// Build the event with op=remove, member=self.
 	proj := projectionFromIndex(st.SecretIndex)
-	ev, _, err := buildMemberChangeAgent(
+	ev, _, err := chain.BuildMemberChange(
 		s.Agent, s.UserSuperPub,
 		scopeID, st.TipSeq, st.TipHash, st.CurrentOEKVer,
 		proto.OpRemove, s.UserSuperPub, st.MemberSet, proj,

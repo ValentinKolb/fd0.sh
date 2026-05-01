@@ -198,6 +198,19 @@ func (o AgentOpener) Open(sealed []byte) ([]byte, error) {
 	return o.Agent.OpenSeal(sealed)
 }
 
+// AgentSigner is the production chain.Signer: it forwards Sign over the
+// agent's IPC, so super_priv stays mlocked inside fd0-agent.
+//
+// Pairs with chain.LocalSigner (in-process, raw Ed25519 priv) used by
+// tests and by the brief init / recovery windows where super_priv is
+// in-process before the agent has it.
+type AgentSigner struct{ Agent *agent.Client }
+
+// Sign implements chain.Signer.
+func (s AgentSigner) Sign(payload []byte) ([]byte, error) {
+	return s.Agent.Sign(payload)
+}
+
 // replayScopeViaAgent is the agent-routed entry into chain.ReplayScope.
 // Kept as a thin wrapper at the cli layer so the four call sites
 // (LoadScope, sync, doctor, replayAndCheckScope) stay short.

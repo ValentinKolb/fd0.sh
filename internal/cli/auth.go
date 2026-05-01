@@ -95,7 +95,7 @@ func RunAuthAdd(ctx context.Context) error {
 		PublicParams:       pp,
 		EncryptedSuperPriv: encSP,
 	})
-	ev, err := buildUserAuthSetAgent(s.Agent, s.UserSuperPub, uctx.TipSeq, uctx.TipHash, newActive)
+	ev, err := chain.BuildUserAuthSet(AgentSigner{Agent: s.Agent}, s.UserSuperPub, uctx.TipSeq, uctx.TipHash, newActive)
 	if err != nil {
 		return err
 	}
@@ -170,7 +170,7 @@ func RunAuthRemove(ctx context.Context, methodID string) error {
 	if len(newActive) == 0 {
 		return errors.New("refuse to remove the last auth method (would lock you out forever)")
 	}
-	ev, err := buildUserAuthSetAgent(s.Agent, s.UserSuperPub, uctx.TipSeq, uctx.TipHash, newActive)
+	ev, err := chain.BuildUserAuthSet(AgentSigner{Agent: s.Agent}, s.UserSuperPub, uctx.TipSeq, uctx.TipHash, newActive)
 	if err != nil {
 		return err
 	}

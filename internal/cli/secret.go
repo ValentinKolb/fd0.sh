@@ -39,7 +39,7 @@ func RunScopeCreate(ctx context.Context, label string) error {
 	// We need ed25519.PrivateKey for signing — but we don't have it. Use the
 	// agent's Sign over the SignedInput. We construct the event via a
 	// signing variant.
-	ev, oek, scopeID, err := buildScopeGenesisAgent(s.Agent, pubKey)
+	ev, oek, scopeID, err := chain.BuildScopeGenesis(AgentSigner{Agent: s.Agent}, pubKey)
 	if err != nil {
 		return err
 	}
@@ -201,7 +201,7 @@ func RunSecretSet(ctx context.Context, scopeID, name, value string) error {
 			Tags:          map[string]string{},
 		},
 	}
-	ev, err := buildSecretSetAgent(s.Agent, s.UserSuperPub, scopeID, st.TipSeq, st.TipHash, curOEK.Key, curOEK.Version, body)
+	ev, err := chain.BuildSecretSet(AgentSigner{Agent: s.Agent}, s.UserSuperPub, scopeID, st.TipSeq, st.TipHash, curOEK.Key, curOEK.Version, body)
 	if err != nil {
 		return err
 	}
@@ -418,7 +418,7 @@ func RunSecretRemove(ctx context.Context, scopeID, name string) error {
 		}
 	}
 	body := &proto.SecretBody{ID: sid, Record: nil}
-	ev, err := buildSecretSetAgent(s.Agent, s.UserSuperPub, scopeID,
+	ev, err := chain.BuildSecretSet(AgentSigner{Agent: s.Agent}, s.UserSuperPub, scopeID,
 		st.TipSeq, st.TipHash, curOEK.Key, curOEK.Version, body)
 	if err != nil {
 		return err
