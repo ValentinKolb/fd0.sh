@@ -26,6 +26,7 @@ const (
 	DomainTranslogEmpty      = "fd0-translog-empty-v1"       // SHA-256 input for empty-tree root
 	DomainTranslogSTH        = "fd0-translog-sth-v1"         // STH signature input
 	DomainTranslogServerInfo = "fd0-translog-server-info-v1" // server-info signature input
+	DomainServerFingerprint  = "fd0-server-fingerprint-v1"   // user-facing fingerprint over (URL, pubkey)
 )
 
 // Magic strings for on-disk file headers.

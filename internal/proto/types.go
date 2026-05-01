@@ -253,6 +253,30 @@ type VaultBody struct {
 	AuthTip          ChainTip                  `cbor:"auth_tip"`
 	Scopes           map[string]ScopeVaultData `cbor:"scopes"`
 	PinnedIdentities map[string]PinnedIdentity `cbor:"pinned_identities"`
+
+	// PinnedServers maps normalised server URL → PinnedServer record.
+	// First-contact pinning ceremony per TRANSLOG.md §6.1: the user
+	// fingerprints the server's translog signing pubkey out-of-band
+	// before any STHs from that server are accepted. A subsequent
+	// /v1/server-info that returns a different pub for the same URL
+	// is rejected with "pinned-key-mismatch" (TRANSLOG.md §6.4).
+	// omitempty for legacy-vault decoding.
+	PinnedServers map[string]PinnedServer `cbor:"pinned_servers,omitempty"`
+
+	// LastSTHUser is the most recently verified STH for the user
+	// chain, stored as deterministic CBOR over translog.STH (raw
+	// bytes to avoid an import cycle proto ↔ translog). Anchors the
+	// next sync's consistency check (TRANSLOG.md §6.2/§6.3).
+	// omitempty for legacy decoding.
+	LastSTHUser []byte `cbor:"last_sth_user,omitempty"`
+}
+
+// PinnedServer is one entry in VaultBody.PinnedServers. The map key is
+// the normalised server URL; the struct holds only the bytes the user
+// actually agreed to via the safety-number ceremony.
+type PinnedServer struct {
+	ServerPub []byte `cbor:"server_pub"`
+	PinnedAt  uint64 `cbor:"pinned_at"`
 }
 
 // ScopeVaultData holds the OEK lineage and the latest accepted chain tip for
@@ -280,6 +304,14 @@ type ScopeVaultData struct {
 	ChainTip  ChainTip   `cbor:"chain_tip"`
 	PushFloor uint64     `cbor:"push_floor,omitempty"`
 	Leaving   bool       `cbor:"leaving,omitempty"`
+
+	// LastSTH is the most recently verified STH for this scope's
+	// translog, stored as deterministic CBOR over translog.STH (raw
+	// bytes to avoid an import cycle proto ↔ translog). Persisted
+	// only AFTER the client verified the response's STH signature,
+	// inclusion proofs, and (when supplied) consistency proof from
+	// the prior LastSTH. omitempty for legacy decoding.
+	LastSTH []byte `cbor:"last_sth,omitempty"`
 }
 
 // OEKEntry is one (version, key) pair.

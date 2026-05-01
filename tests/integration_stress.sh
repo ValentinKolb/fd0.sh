@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+
+# Translog (TRANSLOG.md §6.1) requires explicit opt-in for non-TTY pinning.
+# Tests run unattended → enable auto-pin so the first /sync can land the pin.
+export FD0_AUTO_PIN=1
 # fd0 multi-device stress / convergence test.
 #
 #   bash tests/integration_stress.sh                    # 100 iters, seed 1337

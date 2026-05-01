@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+
+# Translog (TRANSLOG.md §6.1) requires explicit opt-in for non-TTY pinning.
+# Tests run unattended → enable auto-pin so the first /sync can land the pin.
+export FD0_AUTO_PIN=1
 # fd0 filesystem-boundary integration test.
 #
 # Verifies fd0 behaves correctly when the underlying filesystem misbehaves:

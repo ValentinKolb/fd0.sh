@@ -19,15 +19,23 @@ import (
 	"github.com/valentinkolb/fd0.sh/internal/crypto"
 	"github.com/valentinkolb/fd0.sh/internal/fdhome"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
+	"github.com/valentinkolb/fd0.sh/internal/translog"
 )
 
 // pullCursor is the per-scope position we want the server to send events
 // from, in /sync requests. (seq=0, hash=nil) means "send from the
 // genesis"; otherwise the server sends events with seq > Seq whose
 // prev_hash chain-binds to Hash.
+//
+// LastSTHSize anchors the translog consistency check (TRANSLOG.md §5.4).
+// Zero = no anchor yet (fresh subscription) → server omits the
+// consistency proof. Non-zero = client demands a consistency proof
+// from this size to the current STH; client will refuse to advance
+// LastSTH if the proof doesn't verify.
 type pullCursor struct {
-	Seq  uint64
-	Hash []byte
+	Seq         uint64
+	Hash        []byte
+	LastSTHSize uint64
 }
 
 // buildSyncRequestBody marshals the CBOR body for POST /sync. The schema
@@ -39,12 +47,20 @@ type pullCursor struct {
 // `push` is the list of events to push (nil normalised to []any{}).
 // `discover` toggles the server's membership-discovery scan.
 // `limit` is the per-scope event cap (0 = none requested).
+//
+// Each scope entry's LastSTHSize and each push item's LastSTHSize ride
+// on the wire as `last_sth_size` (CBOR omitempty when 0). The server
+// echoes consistency proofs only when these are > 0.
 func buildSyncRequestBody(scopes map[string]pullCursor, push []any, discover bool, limit uint64) ([]byte, error) {
 	pulls := make(map[string]any, len(scopes))
 	for sid, c := range scopes {
-		pulls[sid] = map[string]any{
+		entry := map[string]any{
 			"cursor": map[string]any{"seq": c.Seq, "hash": c.Hash},
 		}
+		if c.LastSTHSize > 0 {
+			entry["last_sth_size"] = c.LastSTHSize
+		}
+		pulls[sid] = entry
 	}
 	if push == nil {
 		push = []any{}
@@ -57,6 +73,54 @@ func buildSyncRequestBody(scopes map[string]pullCursor, push []any, discover boo
 		},
 		"push": push,
 	})
+}
+
+// pushItemFor returns a map[string]any wire-form of a single push event
+// with optional last_sth_size for synchronous consistency proof. Used
+// by every push-side call site (RunSync, pushRebuiltEvent) so the
+// last_sth_size omitempty rule is enforced in one place.
+func pushItemFor(scope string, ev *proto.ScopeEvent, lastSTHSize uint64) map[string]any {
+	out := map[string]any{"scope": scope, "event": ev}
+	if lastSTHSize > 0 {
+		out["last_sth_size"] = lastSTHSize
+	}
+	return out
+}
+
+// leafHashAtSeq reads the local scope chain file and returns the leaf
+// hash for the event at `seq`. Used by the push-side translog verifier
+// to confirm the server's inclusion proof matches our pushed event
+// bytes. A mismatch means the server is claiming our slot for some
+// other event — refuse to advance LastSTH.
+func (s *Session) leafHashAtSeq(scopeID string, seq uint64) ([]byte, error) {
+	evs, err := chain.ReadScopeEvents(s.Paths.ScopeChain(scopeID))
+	if err != nil {
+		return nil, err
+	}
+	for _, ev := range evs {
+		if ev.SignedPrefix.Seq != seq {
+			continue
+		}
+		prefix, err := ev.PrevHashInput()
+		if err != nil {
+			return nil, err
+		}
+		return translog.LeafHashOfPrevInput(prefix), nil
+	}
+	return nil, fmt.Errorf("scope %s: no local event at seq %d", scopeID, seq)
+}
+
+// scopeLastSTHSize returns the persisted LastSTH tree_size for a scope,
+// or 0 if absent / undecodable. The CBOR-level errors are not surfaced
+// here — a corrupt LastSTH downgrades to "no anchor" rather than
+// failing the sync, since a verified next response will overwrite it
+// anyway. doctor surfaces decode failures as warnings.
+func scopeLastSTHSize(sd proto.ScopeVaultData) uint64 {
+	sth, _ := DecodeSTH(sd.LastSTH)
+	if sth == nil {
+		return 0
+	}
+	return sth.Head.TreeSize
 }
 
 // RunSync pushes any local-only events to the configured fd0-server and pulls
@@ -82,10 +146,33 @@ func RunSync(ctx context.Context, server string) error {
 	}
 	defer s.Close()
 
+	// First-contact pinning: ensure (server URL, server pubkey) is in
+	// the vault before any STH from this server is trusted. Subsequent
+	// rounds short-circuit (the pin is persistent across syncs).
+	pinnedPub, err := s.EnsurePinnedServer(ctx, server)
+	if err != nil {
+		return err
+	}
+
+	// Snapshot pre-sync LastSTH per scope. Both pull AND push
+	// consistency proofs in this round are relative to the request's
+	// last_sth_size, which we computed from the pre-sync state. After
+	// pull processing succeeds we update sd.LastSTH; without this
+	// snapshot the push verify would compare the server's "from K"
+	// proof against an "from N (post-pull)" anchor and falsely reject.
+	preSyncLastSTH := map[string]*translog.STH{}
+	for sid, sd := range s.Body.Scopes {
+		preSyncLastSTH[sid], _ = DecodeSTH(sd.LastSTH)
+	}
+
 	// First round-trip: discovery + pull for known scopes + push.
 	pullScopes := map[string]pullCursor{}
 	for sid, sd := range s.Body.Scopes {
-		pullScopes[sid] = pullCursor{Seq: sd.ChainTip.Seq, Hash: sd.ChainTip.Hash}
+		pullScopes[sid] = pullCursor{
+			Seq:         sd.ChainTip.Seq,
+			Hash:        sd.ChainTip.Hash,
+			LastSTHSize: scopeLastSTHSize(sd),
+		}
 	}
 	// Build push: only events whose seq is at or above the per-scope
 	// PushFloor (= "lowest seq we still need to push"). Foreign events
@@ -104,6 +191,7 @@ func RunSync(ctx context.Context, server string) error {
 		if err != nil {
 			return err
 		}
+		lastSize := scopeLastSTHSize(sd)
 		for _, ev := range evs {
 			if !bytes.Equal(ev.SignedPrefix.Author, s.UserSuperPub) {
 				continue
@@ -111,11 +199,11 @@ func RunSync(ctx context.Context, server string) error {
 			if ev.SignedPrefix.Seq < sd.PushFloor {
 				continue
 			}
+			scopeRef := sid
 			if ev.SignedPrefix.Seq == 0 {
-				pushItems = append(pushItems, map[string]any{"scope": "", "event": ev})
-				continue
+				scopeRef = ""
 			}
-			pushItems = append(pushItems, map[string]any{"scope": sid, "event": ev})
+			pushItems = append(pushItems, pushItemFor(scopeRef, ev, lastSize))
 		}
 	}
 	body, err := buildSyncRequestBody(pullScopes, pushItems, true, 1000)
@@ -140,20 +228,26 @@ func RunSync(ctx context.Context, server string) error {
 				Seq  uint64 `cbor:"seq"`
 				Hash []byte `cbor:"hash"`
 			} `cbor:"tip"`
-			OEKVersionMax uint64             `cbor:"oek_version_max"`
-			Events        []proto.ScopeEvent `cbor:"events"`
-			Denied        bool               `cbor:"denied,omitempty"`
+			OEKVersionMax    uint64                     `cbor:"oek_version_max"`
+			Events           []proto.ScopeEvent         `cbor:"events"`
+			Denied           bool                       `cbor:"denied,omitempty"`
+			STH              *translog.STH              `cbor:"sth,omitempty"`
+			InclusionProofs  []translog.InclusionProof  `cbor:"inclusion_proofs,omitempty"`
+			ConsistencyProof *translog.ConsistencyProof `cbor:"consistency_proof,omitempty"`
 		} `cbor:"pull"`
 		Memberships []struct {
 			ScopeID    string `cbor:"scope_id"`
 			OEKVersion uint64 `cbor:"oek_version"`
 		} `cbor:"memberships"`
 		Push []struct {
-			Accepted bool   `cbor:"accepted"`
-			Reason   string `cbor:"reason,omitempty"`
-			ScopeID  string `cbor:"scope_id,omitempty"`
-			Seq      uint64 `cbor:"seq,omitempty"`
-			EventID  string `cbor:"event_id,omitempty"`
+			Accepted         bool                       `cbor:"accepted"`
+			Reason           string                     `cbor:"reason,omitempty"`
+			ScopeID          string                     `cbor:"scope_id,omitempty"`
+			Seq              uint64                     `cbor:"seq,omitempty"`
+			EventID          string                     `cbor:"event_id,omitempty"`
+			STH              *translog.STH              `cbor:"sth,omitempty"`
+			InclusionProof   *translog.InclusionProof   `cbor:"inclusion_proof,omitempty"`
+			ConsistencyProof *translog.ConsistencyProof `cbor:"consistency_proof,omitempty"`
 		} `cbor:"push"`
 	}
 	if err := proto.Unmarshal(rb, &sr); err != nil {
@@ -187,6 +281,29 @@ func RunSync(ctx context.Context, server string) error {
 		if sd.Leaving {
 			continue
 		}
+		// Translog verification: hard-fail BEFORE any local state
+		// mutation. Server invariant per TRANSLOG.md §5.4: STH is
+		// mandatory whenever a non-denied response carries chain
+		// data. Inclusion proofs cover ps.Events one-for-one,
+		// leaf_index == event.Seq for each. Consistency proof covers
+		// our PRE-SYNC LastSTH → server's current STH (not the
+		// just-updated LastSTH — see snapshot rationale at top).
+		priorSTH := preSyncLastSTH[sid]
+		leafHashes := make([][]byte, 0, len(ps.Events))
+		leafIndices := make([]uint64, 0, len(ps.Events))
+		for i := range ps.Events {
+			prefix, err := ps.Events[i].PrevHashInput()
+			if err != nil {
+				return fmt.Errorf("translog: leaf hash for scope %s: %w", sid, err)
+			}
+			leafHashes = append(leafHashes, translog.LeafHashOfPrevInput(prefix))
+			leafIndices = append(leafIndices, ps.Events[i].SignedPrefix.Seq)
+		}
+		expectedChainID := "scope:" + sid
+		if err := VerifyTranslogResponse(pinnedPub, expectedChainID, ps.STH, priorSTH, ps.InclusionProofs, leafIndices, leafHashes, ps.ConsistencyProof); err != nil {
+			return fmt.Errorf("scope %s: %w", sid, err)
+		}
+
 		path := s.Paths.ScopeChain(sid)
 		// Snapshot size so we can rollback on replay failure (a malicious
 		// server could otherwise poison the local chain file with bytes
@@ -234,6 +351,15 @@ func RunSync(ctx context.Context, server string) error {
 		// Refresh shared label from _meta if present.
 		if l := metaLabelFromIndex(st.SecretIndex); l != "" {
 			sd.Label = l
+		}
+		// Persist the verified STH as the new anchor. Verification
+		// already passed above; we couldn't reach this line otherwise.
+		if ps.STH != nil {
+			encoded, err := EncodeSTH(*ps.STH)
+			if err != nil {
+				return fmt.Errorf("encode LastSTH for scope %s: %w", sid, err)
+			}
+			sd.LastSTH = encoded
 		}
 		s.Body.Scopes[sid] = sd
 		dirty = true
@@ -286,12 +412,39 @@ func RunSync(ctx context.Context, server string) error {
 		if !ok {
 			continue
 		}
+		// Translog verification per accepted/dup result. STH +
+		// InclusionProof are MANDATORY on accepted/dup per
+		// TRANSLOG.md §5.4 — missing them is a server protocol
+		// violation; refuse to advance.
+		if p.STH == nil || p.InclusionProof == nil {
+			return fmt.Errorf("scope %s push: %w (server returned %s without STH/inclusion proof)",
+				p.ScopeID, ErrSTHMissing, p.Reason)
+		}
+		leafHash, lerr := s.leafHashAtSeq(p.ScopeID, p.Seq)
+		if lerr != nil {
+			return fmt.Errorf("scope %s push verify: %w", p.ScopeID, lerr)
+		}
+		// Use the PRE-SYNC LastSTH for the consistency anchor — the
+		// request's last_sth_size was based on the pre-sync state.
+		// The pull-side update of sd.LastSTH happened in this same
+		// round and is irrelevant to the push proof.
+		priorSTH := preSyncLastSTH[p.ScopeID]
+		expectedChainID := "scope:" + p.ScopeID
+		if err := VerifyTranslogResponse(pinnedPub, expectedChainID, p.STH, priorSTH, []translog.InclusionProof{*p.InclusionProof}, []uint64{p.Seq}, [][]byte{leafHash}, p.ConsistencyProof); err != nil {
+			return fmt.Errorf("scope %s push verify: %w", p.ScopeID, err)
+		}
+		encoded, err := EncodeSTH(*p.STH)
+		if err != nil {
+			return fmt.Errorf("encode LastSTH: %w", err)
+		}
+		sd.LastSTH = encoded
+		floorDirty = true
 		next := p.Seq + 1
 		if next > sd.PushFloor {
 			sd.PushFloor = next
-			s.Body.Scopes[p.ScopeID] = sd
 			floorDirty = true
 		}
+		s.Body.Scopes[p.ScopeID] = sd
 	}
 	// Persist PushFloor advances NOW (before any reconcile-on-failure path
 	// that may rewrite the chain and update its own ChainTip/PushFloor).
@@ -436,9 +589,12 @@ func (s *Session) discoverScope(ctx context.Context, server, scopeID string) err
 				Seq  uint64 `cbor:"seq"`
 				Hash []byte `cbor:"hash"`
 			} `cbor:"tip"`
-			OEKVersionMax uint64             `cbor:"oek_version_max"`
-			Events        []proto.ScopeEvent `cbor:"events"`
-			Denied        bool               `cbor:"denied,omitempty"`
+			OEKVersionMax    uint64                     `cbor:"oek_version_max"`
+			Events           []proto.ScopeEvent         `cbor:"events"`
+			Denied           bool                       `cbor:"denied,omitempty"`
+			STH              *translog.STH              `cbor:"sth,omitempty"`
+			InclusionProofs  []translog.InclusionProof  `cbor:"inclusion_proofs,omitempty"`
+			ConsistencyProof *translog.ConsistencyProof `cbor:"consistency_proof,omitempty"`
 		} `cbor:"pull"`
 	}
 	if err := proto.Unmarshal(rb, &sr); err != nil {
@@ -447,6 +603,27 @@ func (s *Session) discoverScope(ctx context.Context, server, scopeID string) err
 	ps, ok := sr.Pull[scopeID]
 	if !ok || len(ps.Events) == 0 {
 		return errors.New("server returned no events for scope")
+	}
+	// Translog verify the discovered chain BEFORE writing to disk.
+	// priorSTH is nil — fresh subscription, no anchor. STH MUST be
+	// present and inclusion proofs MUST cover every event.
+	pinnedPub, err := s.PinnedServerPub(server)
+	if err != nil {
+		return err
+	}
+	leafHashes := make([][]byte, 0, len(ps.Events))
+	leafIndices := make([]uint64, 0, len(ps.Events))
+	for i := range ps.Events {
+		prefix, perr := ps.Events[i].PrevHashInput()
+		if perr != nil {
+			return fmt.Errorf("translog: leaf hash for discovered scope %s: %w", scopeID, perr)
+		}
+		leafHashes = append(leafHashes, translog.LeafHashOfPrevInput(prefix))
+		leafIndices = append(leafIndices, ps.Events[i].SignedPrefix.Seq)
+	}
+	expectedChainID := "scope:" + scopeID
+	if err := VerifyTranslogResponse(pinnedPub, expectedChainID, ps.STH, nil, ps.InclusionProofs, leafIndices, leafHashes, ps.ConsistencyProof); err != nil {
+		return fmt.Errorf("discover %s: %w", scopeID, err)
 	}
 	path := s.Paths.ScopeChain(scopeID)
 	for _, ev := range ps.Events {
@@ -472,6 +649,12 @@ func (s *Session) discoverScope(ctx context.Context, server, scopeID string) err
 		_ = os.Remove(path)
 		return fmt.Errorf("no current OEK after replay")
 	}
+	// Persist verified STH as the initial LastSTH for this scope.
+	encodedSTH, err := EncodeSTH(*ps.STH)
+	if err != nil {
+		_ = os.Remove(path)
+		return fmt.Errorf("encode initial LastSTH: %w", err)
+	}
 	s.Body.Scopes[scopeID] = proto.ScopeVaultData{
 		Label:    metaLabelFromIndex(st.SecretIndex),
 		OEKs:     []proto.OEKEntry{{Version: st.CurrentOEKVer, Key: append([]byte(nil), curOEK...)}},
@@ -482,6 +665,7 @@ func (s *Session) discoverScope(ctx context.Context, server, scopeID string) err
 		// foreign events (filtered out anyway by author check, but the
 		// I/O is wasted work).
 		PushFloor: st.TipSeq + 1,
+		LastSTH:   encodedSTH,
 	}
 	if err := s.ReSeal(); err != nil {
 		return err
@@ -545,7 +729,7 @@ func readAll(r interface{ Read(p []byte) (int, error) }) ([]byte, error) {
 // chance.
 func (s *Session) reconcileAndRepush(ctx context.Context, server, scopeID string, maxRetries int) error {
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		serverEvents, err := s.fullPullScope(ctx, server, scopeID)
+		serverEvents, finalSTH, err := s.fullPullScope(ctx, server, scopeID)
 		if err != nil {
 			return err
 		}
@@ -567,6 +751,21 @@ func (s *Session) reconcileAndRepush(ctx context.Context, server, scopeID string
 				_ = os.WriteFile(path, backup, 0o600)
 			}
 			return fmt.Errorf("reconcile replay failed: %w", err)
+		}
+		// Persist the verified-on-pull final STH as the new anchor.
+		// fullPullScope already verified its signature + per-page
+		// inclusion proofs; we just have to store it. Skip if the
+		// scope was dropped (st.Left handled inside applyReplayedScope).
+		if sd, still := s.Body.Scopes[scopeID]; still && finalSTH != nil {
+			encoded, eerr := EncodeSTH(*finalSTH)
+			if eerr != nil {
+				return fmt.Errorf("encode reconcile LastSTH: %w", eerr)
+			}
+			sd.LastSTH = encoded
+			s.Body.Scopes[scopeID] = sd
+			if rerr := s.ReSeal(); rerr != nil {
+				return fmt.Errorf("persist reconcile LastSTH: %w", rerr)
+			}
 		}
 		// If we were removed, pending sets are moot.
 		if _, still := s.Body.Scopes[scopeID]; !still {
@@ -617,9 +816,19 @@ func (s *Session) reconcileAndRepush(ctx context.Context, server, scopeID string
 // fullPullScope pages through the entire scope chain from seq=0. The server
 // caps each response at 1000 events (API.md §2.4), so we loop until the
 // returned tip equals the last event's hash.
-func (s *Session) fullPullScope(ctx context.Context, server, scopeID string) ([]proto.ScopeEvent, error) {
+//
+// Translog: each page's STH is verified against the pinned server pub
+// + inclusion proofs against that page's events. The final STH (= the
+// one covering all returned events) is returned to the caller for
+// persistence as the new LastSTH after the reconcile commits.
+func (s *Session) fullPullScope(ctx context.Context, server, scopeID string) ([]proto.ScopeEvent, *translog.STH, error) {
+	pinnedPub, err := s.PinnedServerPub(server)
+	if err != nil {
+		return nil, nil, err
+	}
 	const pageSize = 1000
 	var all []proto.ScopeEvent
+	var finalSTH *translog.STH
 	cursorSeq := uint64(0)
 	cursorHash := []byte(nil) // sentinel: include seq=0 (server fresh-discovery)
 	for round := 0; round < 64; round++ {
@@ -628,19 +837,19 @@ func (s *Session) fullPullScope(ctx context.Context, server, scopeID string) ([]
 			nil, false, pageSize,
 		)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		resp, err := s.signedPOST(ctx, server+"/sync", body)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		rb, err := readAll(resp.Body)
 		resp.Body.Close()
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if resp.StatusCode != 200 {
-			return nil, fmt.Errorf("full pull %s: %s", scopeID, resp.Status)
+			return nil, nil, fmt.Errorf("full pull %s: %s", scopeID, resp.Status)
 		}
 		var sr struct {
 			Pull map[string]struct {
@@ -648,20 +857,45 @@ func (s *Session) fullPullScope(ctx context.Context, server, scopeID string) ([]
 					Seq  uint64 `cbor:"seq"`
 					Hash []byte `cbor:"hash"`
 				} `cbor:"tip"`
-				Events []proto.ScopeEvent `cbor:"events"`
-				Denied bool               `cbor:"denied,omitempty"`
+				Events           []proto.ScopeEvent         `cbor:"events"`
+				Denied           bool                       `cbor:"denied,omitempty"`
+				STH              *translog.STH              `cbor:"sth,omitempty"`
+				InclusionProofs  []translog.InclusionProof  `cbor:"inclusion_proofs,omitempty"`
+				ConsistencyProof *translog.ConsistencyProof `cbor:"consistency_proof,omitempty"`
 			} `cbor:"pull"`
 		}
 		if err := proto.Unmarshal(rb, &sr); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		ps, ok := sr.Pull[scopeID]
 		if !ok {
-			return nil, errors.New("server returned no pull entry for scope")
+			return nil, nil, errors.New("server returned no pull entry for scope")
 		}
 		if ps.Denied {
-			return nil, errors.New("denied: not a member")
+			return nil, nil, errors.New("denied: not a member")
 		}
+		// Per-page translog verify. priorSTH is nil because we
+		// don't carry an anchor across pages — the STH must verify
+		// independently per page (and the final page's STH is what
+		// we persist).
+		leafHashes := make([][]byte, 0, len(ps.Events))
+		leafIndices := make([]uint64, 0, len(ps.Events))
+		for i := range ps.Events {
+			prefix, perr := ps.Events[i].PrevHashInput()
+			if perr != nil {
+				return nil, nil, fmt.Errorf("translog: leaf hash on full pull: %w", perr)
+			}
+			leafHashes = append(leafHashes, translog.LeafHashOfPrevInput(prefix))
+			leafIndices = append(leafIndices, ps.Events[i].SignedPrefix.Seq)
+		}
+		expectedChainID := "scope:" + scopeID
+		if err := VerifyTranslogResponse(pinnedPub, expectedChainID, ps.STH, nil, ps.InclusionProofs, leafIndices, leafHashes, ps.ConsistencyProof); err != nil {
+			return nil, nil, fmt.Errorf("full pull %s: %w", scopeID, err)
+		}
+		if ps.STH != nil {
+			finalSTH = ps.STH
+		}
+
 		all = append(all, ps.Events...)
 		if len(ps.Events) == 0 || ps.Events[len(ps.Events)-1].SignedPrefix.Seq >= ps.Tip.Seq {
 			// We've reached the server's reported tip; verify last event's
@@ -670,10 +904,10 @@ func (s *Session) fullPullScope(ctx context.Context, server, scopeID string) ([]
 				lastPrefix, _ := all[len(all)-1].PrevHashInput()
 				lastHash := proto.HashPrefix(lastPrefix)
 				if !bytes.Equal(lastHash[:], ps.Tip.Hash) {
-					return nil, fmt.Errorf("server tip hash mismatch")
+					return nil, nil, fmt.Errorf("server tip hash mismatch")
 				}
 			}
-			return all, nil
+			return all, finalSTH, nil
 		}
 		// Advance cursor and loop.
 		cursorSeq = ps.Events[len(ps.Events)-1].SignedPrefix.Seq
@@ -681,7 +915,7 @@ func (s *Session) fullPullScope(ctx context.Context, server, scopeID string) ([]
 		h := proto.HashPrefix(lastPrefix)
 		cursorHash = h[:]
 	}
-	return nil, fmt.Errorf("full pull %s: page limit exceeded", scopeID)
+	return nil, nil, fmt.Errorf("full pull %s: page limit exceeded", scopeID)
 }
 
 // pendingEvent is one local-only event we need to rebuild on the new server
@@ -929,10 +1163,29 @@ func (s *Session) rebuildAndPushMemberChange(ctx context.Context, server, scopeI
 //     reconcile (server-tip moved again).
 //   - (false, err) : transport error or terminal "refused" reason.
 func (s *Session) pushRebuiltEvent(ctx context.Context, server, scopeID string, ev *proto.ScopeEvent) (bool, error) {
-	push := []any{map[string]any{"scope": scopeID, "event": ev}}
+	// Snapshot pre-push LastSTH for the consistency anchor: the
+	// request's last_sth_size is read here, server's consistency
+	// proof is relative to it. Reading after a successful push would
+	// see the just-updated LastSTH and verify wrong (same root cause
+	// as the RunSync snapshot pattern).
+	sdPre := s.Body.Scopes[scopeID]
+	preSTH, _ := DecodeSTH(sdPre.LastSTH)
+	preSize := uint64(0)
+	if preSTH != nil {
+		preSize = preSTH.Head.TreeSize
+	}
+
+	push := []any{pushItemFor(scopeID, ev, preSize)}
 	body, err := buildSyncRequestBody(nil, push, false, 0)
 	if err != nil {
 		return false, err
+	}
+	// Server pin must already be installed in the vault by the
+	// outer RunSync. Reconcile-on-conflict only runs after a
+	// successful first round, so the pin lookup is a map read.
+	pinnedPub, perr := s.PinnedServerPub(server)
+	if perr != nil {
+		return false, perr
 	}
 	resp, err := s.signedPOST(ctx, server+"/sync", body)
 	if err != nil {
@@ -945,9 +1198,12 @@ func (s *Session) pushRebuiltEvent(ctx context.Context, server, scopeID string, 
 	}
 	var sr struct {
 		Push []struct {
-			Accepted bool   `cbor:"accepted"`
-			Reason   string `cbor:"reason,omitempty"`
-			Seq      uint64 `cbor:"seq,omitempty"`
+			Accepted         bool                       `cbor:"accepted"`
+			Reason           string                     `cbor:"reason,omitempty"`
+			Seq              uint64                     `cbor:"seq,omitempty"`
+			STH              *translog.STH              `cbor:"sth,omitempty"`
+			InclusionProof   *translog.InclusionProof   `cbor:"inclusion_proof,omitempty"`
+			ConsistencyProof *translog.ConsistencyProof `cbor:"consistency_proof,omitempty"`
 		} `cbor:"push"`
 	}
 	if err := proto.Unmarshal(rb, &sr); err != nil {
@@ -958,20 +1214,38 @@ func (s *Session) pushRebuiltEvent(ctx context.Context, server, scopeID string, 
 	}
 	r := sr.Push[0]
 	if r.Accepted || r.Reason == "dup" {
-		// Persist PushFloor advance: the event with seq=ChainTip.Seq is now
-		// authoritatively on the server (or a retry observed it as already
-		// there), so future syncs needn't push it again.
+		// Translog verify before persisting any state. STH +
+		// InclusionProof are MANDATORY on accepted/dup per
+		// TRANSLOG.md §5.4 — missing them is a server protocol
+		// violation; refuse to advance.
+		if r.STH == nil || r.InclusionProof == nil {
+			return false, fmt.Errorf("scope %s rebuilt-push: %w (server returned %s without STH/inclusion proof)",
+				scopeID, ErrSTHMissing, r.Reason)
+		}
+		leafHash, lerr := s.leafHashAtSeq(scopeID, r.Seq)
+		if lerr != nil {
+			return false, fmt.Errorf("scope %s rebuilt-push verify: %w", scopeID, lerr)
+		}
+		expectedChainID := "scope:" + scopeID
+		if err := VerifyTranslogResponse(pinnedPub, expectedChainID, r.STH, preSTH, []translog.InclusionProof{*r.InclusionProof}, []uint64{r.Seq}, [][]byte{leafHash}, r.ConsistencyProof); err != nil {
+			return false, fmt.Errorf("scope %s rebuilt-push verify: %w", scopeID, err)
+		}
 		sdNow := s.Body.Scopes[scopeID]
+		encoded, eerr := EncodeSTH(*r.STH)
+		if eerr != nil {
+			return false, fmt.Errorf("encode LastSTH: %w", eerr)
+		}
+		sdNow.LastSTH = encoded
 		if next := sdNow.ChainTip.Seq + 1; next > sdNow.PushFloor {
 			sdNow.PushFloor = next
-			s.Body.Scopes[scopeID] = sdNow
-			if err := s.ReSeal(); err != nil {
-				// ReSeal failure is non-fatal here: the push already
-				// landed on the server; floor staleness only costs a
-				// re-push on the next sync (server dedups). Surface so
-				// it shows up in logs.
-				return true, fmt.Errorf("re-seal after push-floor advance: %w", err)
-			}
+		}
+		s.Body.Scopes[scopeID] = sdNow
+		if err := s.ReSeal(); err != nil {
+			// ReSeal failure is non-fatal here: the push already
+			// landed on the server; floor staleness only costs a
+			// re-push on the next sync (server dedups). Surface so
+			// it shows up in logs.
+			return true, fmt.Errorf("re-seal after push-floor advance: %w", err)
 		}
 		return true, nil
 	}
