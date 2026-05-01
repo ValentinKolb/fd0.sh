@@ -333,21 +333,22 @@ func RunSync(ctx context.Context, server string) error {
 // compacted-mode user-chain replay; until then we keep history.
 func (s *Session) compactAfterSync() {
 	for sid := range s.Body.Scopes {
-		// Build the live event-id set for this scope from the in-memory
-		// secret_index. Any secret.set whose event_id is in this set is
-		// kept; older secret.sets for the same id are dropped.
 		st, err := replayScopeViaAgent(s.Paths.ScopeChain(sid), s.UserSuperPub, s.UserX25519Pub, s.Agent)
 		if err != nil || st == nil {
 			continue
 		}
-		live := map[string]struct{}{}
-		for _, cur := range st.SecretIndex {
-			if cur.EventID != "" {
-				live[cur.EventID] = struct{}{}
-			}
+		// chain.CompactScope derives the live event-id set from the
+		// post-replay snapshot (st.SecretIndex). It refuses to compact
+		// if the snapshot is stale relative to the chain file, so a
+		// silent-drop bug here would surface as an error.
+		changed, dropped, err := chain.CompactScope(s.Paths.ScopeChain(sid), st)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  ↳ compact %s skipped: %v\n", shortScopeID(sid), err)
+			continue
 		}
-		if changed, err := chain.CompactScope(s.Paths.ScopeChain(sid), live); err == nil && changed {
-			fmt.Fprintf(os.Stderr, "  ↳ compacted scope %s\n", shortScopeID(sid))
+		if changed {
+			fmt.Fprintf(os.Stderr, "  ↳ compacted scope %s (dropped %d superseded set(s))\n",
+				shortScopeID(sid), len(dropped))
 		}
 	}
 }
