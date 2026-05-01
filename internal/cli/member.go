@@ -55,7 +55,7 @@ func RunScopeAddMember(ctx context.Context, scopeID, memberCardOrLabel string) e
 	prefix, _ := ev.PrevHashInput()
 	tipHash := proto.HashPrefix(prefix)
 	sd := s.Body.Scopes[scopeID]
-	sd.OEKs = append(sd.OEKs, proto.OEKEntry{Version: ev.SignedPrefix.OEKVersion, Key: append([]byte(nil), newOEK...)})
+	sd.OEKs = upsertOEK(sd.OEKs, ev.SignedPrefix.OEKVersion, newOEK)
 	sd.ChainTip = proto.ChainTip{Seq: ev.SignedPrefix.Seq, Hash: tipHash[:]}
 	s.Body.Scopes[scopeID] = sd
 	if err := s.ReSeal(); err != nil {
@@ -116,7 +116,7 @@ func RunScopeRemoveMember(ctx context.Context, scopeID, memberCardOrLabel string
 	prefix, _ := ev.PrevHashInput()
 	tipHash := proto.HashPrefix(prefix)
 	sd := s.Body.Scopes[scopeID]
-	sd.OEKs = append(sd.OEKs, proto.OEKEntry{Version: ev.SignedPrefix.OEKVersion, Key: append([]byte(nil), newOEK...)})
+	sd.OEKs = upsertOEK(sd.OEKs, ev.SignedPrefix.OEKVersion, newOEK)
 	sd.ChainTip = proto.ChainTip{Seq: ev.SignedPrefix.Seq, Hash: tipHash[:]}
 	s.Body.Scopes[scopeID] = sd
 	if err := s.ReSeal(); err != nil {

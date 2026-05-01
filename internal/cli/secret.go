@@ -151,16 +151,7 @@ func RunSecretSet(ctx context.Context, scopeID, name, value string) error {
 	if mm := chain.CompareScopeTip(scopeID, sd.ChainTip, st); mm != nil && mm.Direction == "ahead" {
 		sd.ChainTip = proto.ChainTip{Seq: st.TipSeq, Hash: st.TipHash}
 		if k, ok := st.OEKs[st.CurrentOEKVer]; ok {
-			has := false
-			for _, e := range sd.OEKs {
-				if e.Version == st.CurrentOEKVer {
-					has = true
-					break
-				}
-			}
-			if !has {
-				sd.OEKs = append(sd.OEKs, proto.OEKEntry{Version: st.CurrentOEKVer, Key: append([]byte(nil), k...)})
-			}
+			sd.OEKs = upsertOEK(sd.OEKs, st.CurrentOEKVer, k)
 		}
 		s.Body.Scopes[scopeID] = sd
 		if err := s.ReSeal(); err != nil {

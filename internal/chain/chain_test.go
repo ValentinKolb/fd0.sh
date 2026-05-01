@@ -339,6 +339,38 @@ func TestCompactScopeNoOpWhenAlreadyMinimal(t *testing.T) {
 	}
 }
 
+// TestRebaseMemberChangeMeaningful covers the four cells of the
+// rebase-decision truth table used by sync reconcile: a divergent
+// member.change is re-emitted only if it would still produce a
+// meaningful state change against the post-replay member set.
+func TestRebaseMemberChangeMeaningful(t *testing.T) {
+	a := bytes.Repeat([]byte{0xAA}, 32)
+	b := bytes.Repeat([]byte{0xBB}, 32)
+	cases := []struct {
+		name    string
+		running [][]byte
+		op      string
+		target  []byte
+		want    bool
+	}{
+		{"add target absent → re-emit", [][]byte{a}, proto.OpAdd, b, true},
+		{"add target present → drop", [][]byte{a, b}, proto.OpAdd, b, false},
+		{"remove target present → re-emit", [][]byte{a, b}, proto.OpRemove, b, true},
+		{"remove target absent → drop", [][]byte{a}, proto.OpRemove, b, false},
+		{"unknown op → drop", [][]byte{a}, "garbage", b, false},
+		{"empty running, add → re-emit", nil, proto.OpAdd, a, true},
+		{"empty running, remove → drop", nil, proto.OpRemove, a, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := RebaseMemberChangeMeaningful(tc.running, tc.op, tc.target)
+			if got != tc.want {
+				t.Fatalf("RebaseMemberChangeMeaningful: got %v want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestLocalOnlyEventsPreservesOrder ensures the returned slice keeps
 // local-side ordering — sync's reconcile rebuilds events in this
 // order, so a shuffle would change the rebuilt seq sequence.

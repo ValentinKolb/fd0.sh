@@ -424,6 +424,34 @@ func PostMutationSet(prior [][]byte, target []byte, op string) [][]byte {
 	return postMutationSet(prior, target, op)
 }
 
+// RebaseMemberChangeMeaningful answers "is a local-only member.change still
+// worth re-emitting after the server's authoritative chain has been replayed
+// onto the running member set?" Used by the sync reconcile path to decide
+// whether to drop or rebuild a divergent member.change.
+//
+// Semantic rebase:
+//
+//	op=add,    target ∈ running → drop (someone else added them, or we did)
+//	op=add,    target ∉ running → re-emit (legitimate add against new state)
+//	op=remove, target ∈ running → re-emit (legitimate remove against new state)
+//	op=remove, target ∉ running → drop (someone else removed them, or we did)
+//
+// Why no "removes win" priority for an add+remove conflict on the same
+// target: with a peer-to-peer member set, "remove X" and "add X" by two
+// members are independent acts. The post-replay running set already
+// reflects whichever landed first; a rebased peer event simply applies on
+// top — same semantics as a fresh `scope add-member` issued today.
+func RebaseMemberChangeMeaningful(running [][]byte, op string, target []byte) bool {
+	in := memberContains(running, target)
+	switch op {
+	case proto.OpAdd:
+		return !in
+	case proto.OpRemove:
+		return in
+	}
+	return false
+}
+
 // ---- helpers for member sets (private) ----
 
 func memberContains(set [][]byte, key []byte) bool {

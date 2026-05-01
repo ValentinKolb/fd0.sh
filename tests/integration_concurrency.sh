@@ -223,13 +223,141 @@ wait "$PA" 2>/dev/null || true
 wait "$PB" 2>/dev/null || true
 AL sync >/dev/null 2>&1; AD sync >/dev/null 2>&1
 AL sync >/dev/null 2>&1; AD sync >/dev/null 2>&1
-AL_M=$(AL scope members work 2>&1 | sort)
-AD_M=$(AD scope members work 2>&1 | sort)
+# Strip the leading "* " / "  " self-marker from `scope members` output;
+# the marker is per-device by design and would falsify a strict-text diff
+# even when the member sets are identical.
+norm_members() { sed -e 's/^[* ] //' | sort; }
+AL_M=$(AL scope members work 2>&1 | norm_members)
+AD_M=$(AD scope members work 2>&1 | norm_members)
 [ "$AL_M" = "$AD_M" ] \
     && ok "alice-l and alice-d converge on member set" \
     || no "DIVERGENT member sets"
+COUNT=$(printf "%s\n" "$AL_M" | grep -c . || true)
+[ "$COUNT" -eq 3 ] && ok "member set has 3 entries (alice, bob, carol)" \
+    || no "expected 3 members, got $COUNT — $AL_M"
 env FD0_HOME="$HOME_CL" "$FD0" lock >/dev/null 2>&1
 rm -rf "$HOME_CL"
+
+# ─── C9b. Concurrent disjoint adds (three-way merge) ─────────────────────
+step "C9b) Both alice devices add DIFFERENT members concurrently"
+HOME_DL=$HOME/.fd0-conc-dl
+HOME_EL=$HOME/.fd0-conc-el
+mkfd0 "$HOME_DL"; mkfd0 "$HOME_EL"
+printf "dave-pass\ndave-pass\n" | env FD0_HOME="$HOME_DL" "$FD0" init >/dev/null 2>&1
+printf "eve-pass\neve-pass\n"   | env FD0_HOME="$HOME_EL" "$FD0" init >/dev/null 2>&1
+printf "dave-pass\n" | env FD0_HOME="$HOME_DL" "$FD0" unlock >/dev/null 2>&1
+printf "eve-pass\n"  | env FD0_HOME="$HOME_EL" "$FD0" unlock >/dev/null 2>&1
+sleep 0.2
+DC=$(env FD0_HOME="$HOME_DL" "$FD0" card export)
+EC=$(env FD0_HOME="$HOME_EL" "$FD0" card export)
+AL card import "$DC" --label dave --yes >/dev/null
+AL card import "$EC" --label eve  --yes >/dev/null
+AD card import "$DC" --label dave --yes >/dev/null
+AD card import "$EC" --label eve  --yes >/dev/null
+( AL scope add-member dave --scope work >/dev/null 2>&1 ) & PA=$!
+( AD scope add-member eve  --scope work >/dev/null 2>&1 ) & PB=$!
+wait "$PA" 2>/dev/null || true
+wait "$PB" 2>/dev/null || true
+AL sync >/dev/null 2>&1; AD sync >/dev/null 2>&1
+AL sync >/dev/null 2>&1; AD sync >/dev/null 2>&1
+AL_M=$(AL scope members work 2>&1 | norm_members)
+AD_M=$(AD scope members work 2>&1 | norm_members)
+[ "$AL_M" = "$AD_M" ] \
+    && ok "alice-l and alice-d converge after disjoint adds" \
+    || no "DIVERGENT — al='$AL_M' ad='$AD_M'"
+COUNT=$(printf "%s\n" "$AL_M" | grep -c . || true)
+[ "$COUNT" -eq 5 ] && ok "member set has 5 entries (alice, bob, carol, dave, eve)" \
+    || no "expected 5 members after disjoint adds, got $COUNT"
+# Bob (other identity) should also see dave + eve eventually.
+BL sync >/dev/null 2>&1
+BL_M=$(BL scope members work 2>&1 | norm_members)
+[ "$BL_M" = "$AL_M" ] \
+    && ok "bob converges on the same member set" \
+    || no "BL DIVERGENT — bl='$BL_M' al='$AL_M'"
+env FD0_HOME="$HOME_DL" "$FD0" lock >/dev/null 2>&1
+env FD0_HOME="$HOME_EL" "$FD0" lock >/dev/null 2>&1
+rm -rf "$HOME_DL" "$HOME_EL"
+
+# ─── C9c. Concurrent remove + secret.set on same device pair ─────────────
+step "C9c) AL removes a member while AD writes a secret"
+# Setup a fresh victim member to remove.
+HOME_FL=$HOME/.fd0-conc-fl
+mkfd0 "$HOME_FL"
+printf "frank-pass\nfrank-pass\n" | env FD0_HOME="$HOME_FL" "$FD0" init >/dev/null 2>&1
+printf "frank-pass\n" | env FD0_HOME="$HOME_FL" "$FD0" unlock >/dev/null 2>&1
+sleep 0.2
+FC=$(env FD0_HOME="$HOME_FL" "$FD0" card export)
+AL card import "$FC" --label frank --yes >/dev/null
+AD card import "$FC" --label frank --yes >/dev/null
+AL scope add-member frank --scope work >/dev/null
+AL sync >/dev/null 2>&1; AD sync >/dev/null 2>&1
+# Now race remove vs write.
+( AL scope remove-member frank --scope work >/dev/null 2>&1 ) & PA=$!
+( AD set RACE_KEY race-value --scope work >/dev/null 2>&1 ) & PB=$!
+wait "$PA" 2>/dev/null || true
+wait "$PB" 2>/dev/null || true
+AL sync >/dev/null 2>&1; AD sync >/dev/null 2>&1
+AL sync >/dev/null 2>&1; AD sync >/dev/null 2>&1
+AL_M=$(AL scope members work 2>&1 | norm_members)
+AD_M=$(AD scope members work 2>&1 | norm_members)
+[ "$AL_M" = "$AD_M" ] \
+    && ok "AL and AD converge after remove+set race" \
+    || no "DIVERGENT — al='$AL_M' ad='$AD_M'"
+RACE=$(AL get RACE_KEY --scope work --raw 2>/dev/null)
+[ "$RACE" = "race-value" ] \
+    && ok "AD's racing secret survived the reconcile" \
+    || no "RACE_KEY missing or wrong: '$RACE'"
+# Frank must actually be gone — the remove must have stuck.
+FRANK_PUB=$(env FD0_HOME="$HOME_FL" "$FD0" card export | sed -n 's|^fd0://card/||p' | sed 's|;.*||')
+case "$AL_M" in
+    *"$FRANK_PUB"*) no "frank still in member set after remove" ;;
+    *) ok "frank is gone after concurrent remove+set" ;;
+esac
+env FD0_HOME="$HOME_FL" "$FD0" lock >/dev/null 2>&1
+rm -rf "$HOME_FL"
+
+# ─── C9d. Stale-OEK regression: dropped no-op + later secret.set ─────────
+# Two devices concurrently add the SAME new member (carol). One is dropped
+# as a no-op on rebase (RebaseMemberChangeMeaningful=false). The dropped
+# device has a stale OEK from its failed local member.change. The next
+# secret.set MUST encrypt under the AUTHORITATIVE OEK (from server replay),
+# not the stale one — otherwise BL (the third member) cannot decrypt.
+# This regression caught a vault.OEKs append-vs-upsert bug where the stale
+# OEK was retained and used for subsequent secret.sets.
+step "C9d) After member.change drops as no-op, peers must decrypt the next secret"
+HOME_GL=$HOME/.fd0-conc-gl
+mkfd0 "$HOME_GL"
+printf "gail-pass\ngail-pass\n" | env FD0_HOME="$HOME_GL" "$FD0" init >/dev/null 2>&1
+printf "gail-pass\n" | env FD0_HOME="$HOME_GL" "$FD0" unlock >/dev/null 2>&1
+sleep 0.2
+GC=$(env FD0_HOME="$HOME_GL" "$FD0" card export)
+AL card import "$GC" --label gail --yes >/dev/null
+AD card import "$GC" --label gail --yes >/dev/null
+( AL scope add-member gail --scope work >/dev/null 2>&1 ) & PA=$!
+( AD scope add-member gail --scope work >/dev/null 2>&1 ) & PB=$!
+wait "$PA" 2>/dev/null || true
+wait "$PB" 2>/dev/null || true
+AL sync >/dev/null 2>&1; AD sync >/dev/null 2>&1
+AL sync >/dev/null 2>&1; AD sync >/dev/null 2>&1
+# Now whichever lost the race has a dropped pending member.change. Both
+# write a secret each from each side.
+AL set OEK_PROBE_AL "from-AL" --scope work >/dev/null
+AD set OEK_PROBE_AD "from-AD" --scope work >/dev/null
+AL sync >/dev/null 2>&1; AD sync >/dev/null 2>&1
+AL sync >/dev/null 2>&1; AD sync >/dev/null 2>&1
+BL sync >/dev/null 2>&1
+# BL (a third peer) must decrypt both. If either side encrypted under a
+# stale OEK, BL's get fails or returns garbage.
+GOT_AL=$(BL get OEK_PROBE_AL --scope work --raw 2>/dev/null)
+GOT_AD=$(BL get OEK_PROBE_AD --scope work --raw 2>/dev/null)
+[ "$GOT_AL" = "from-AL" ] \
+    && ok "BL decrypts AL's post-rebase secret (no stale OEK from AL)" \
+    || no "AL stale OEK: BL got '$GOT_AL'"
+[ "$GOT_AD" = "from-AD" ] \
+    && ok "BL decrypts AD's post-rebase secret (no stale OEK from AD)" \
+    || no "AD stale OEK: BL got '$GOT_AD'"
+env FD0_HOME="$HOME_GL" "$FD0" lock >/dev/null 2>&1
+rm -rf "$HOME_GL"
 
 # ─── C10. Doctor on all surviving devices ────────────────────────────────
 step "C10) doctor on all devices"

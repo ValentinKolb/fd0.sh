@@ -229,16 +229,7 @@ func RunSync(ctx context.Context, server string) error {
 		}
 		sd.ChainTip = proto.ChainTip{Seq: st.TipSeq, Hash: st.TipHash}
 		if k, ok := st.OEKs[st.CurrentOEKVer]; ok {
-			has := false
-			for _, e := range sd.OEKs {
-				if e.Version == st.CurrentOEKVer {
-					has = true
-					break
-				}
-			}
-			if !has {
-				sd.OEKs = append(sd.OEKs, proto.OEKEntry{Version: st.CurrentOEKVer, Key: append([]byte(nil), k...)})
-			}
+			sd.OEKs = upsertOEK(sd.OEKs, st.CurrentOEKVer, k)
 		}
 		// Refresh shared label from _meta if present.
 		if l := metaLabelFromIndex(st.SecretIndex); l != "" {
@@ -535,23 +526,31 @@ func readAll(r interface{ Read(p []byte) (int, error) }) ([]byte, error) {
 }
 
 // reconcileAndRepush handles a divergence-on-push by:
-//   1. Fetching the full server chain (cursor=0, inclusive) for scope.
-//   2. Diffing against the local chain to find the divergence point.
-//   3. Saving local-only `secret.set` events authored by us as pending sets.
-//   4. Overwriting the local chain with the server's authoritative copy.
-//   5. Rebuilding the pending sets on top of the new tip and pushing them.
-//
-// member.change conflicts are surfaced — they require user judgement.
+//  1. Fetching the full server chain (cursor=0, inclusive) for scope.
+//  2. Saving every local-only event authored by us as a pendingEvent —
+//     either a secret.set (decrypted body cached) or a member.change
+//     (op + target captured for three-way merge).
+//  3. Overwriting the local chain with the server's authoritative copy.
+//  4. Replaying to derive the post-merge running state (member set, OEK).
+//  5. Rebuilding each pending event in original chain order on top of
+//     the new tip:
+//     - secret.set → re-encrypt under the post-replay OEK and push.
+//     - member.change → semantic rebase via
+//     chain.RebaseMemberChangeMeaningful; drop on no-op, otherwise
+//     emit a fresh member.change (rotates OEK) and push.
 //
 // Retries the whole loop up to maxRetries before returning an error.
+// Each retry restarts from a fresh server pull, so a rebuilt event that
+// races a third party (yet another concurrent push) gets another
+// chance.
 func (s *Session) reconcileAndRepush(ctx context.Context, server, scopeID string, maxRetries int) error {
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		serverEvents, err := s.fullPullScope(ctx, server, scopeID)
 		if err != nil {
 			return err
 		}
-		// Save local-only pending sets BEFORE we rewrite the chain.
-		pending, err := s.savePendingLocalSets(scopeID, serverEvents)
+		// Save local-only pending events BEFORE we rewrite the chain.
+		pending, err := s.savePendingLocalEvents(scopeID, serverEvents)
 		if err != nil {
 			return err
 		}
@@ -573,21 +572,44 @@ func (s *Session) reconcileAndRepush(ctx context.Context, server, scopeID string
 		if _, still := s.Body.Scopes[scopeID]; !still {
 			return nil
 		}
-		// Rebuild pending sets on the new tip.
-		failed := 0
+		// Rebuild pending events on the new tip, in their original
+		// chain order. member.changes rotate the OEK and feed the
+		// running state for any subsequent secret.sets in the same
+		// rebuild pass; rebuildAndPushSet picks up the new OEK via
+		// replayAndCheckScope before encrypting.
+		//
+		// If any single rebuild hits a fresh divergence we BREAK
+		// immediately and let the outer loop restart from
+		// fullPullScope+replaceLocalChain. Continuing past a `!ok`
+		// would build subsequent events on top of a locally-appended
+		// but server-rejected predecessor, guaranteeing a cascade of
+		// further divergences and inflating stale-OEK exposure.
+		diverged := false
 		for _, p := range pending {
-			ok, err := s.rebuildAndPushSet(ctx, server, scopeID, p)
-			if err != nil {
-				return err
+			var (
+				ok   bool
+				rerr error
+			)
+			switch p.kind {
+			case proto.KindSecretSet:
+				ok, rerr = s.rebuildAndPushSet(ctx, server, scopeID, p)
+			case proto.KindMemberChange:
+				ok, rerr = s.rebuildAndPushMemberChange(ctx, server, scopeID, p)
+			default:
+				return fmt.Errorf("reconcile: unknown pending kind %q", p.kind)
+			}
+			if rerr != nil {
+				return rerr
 			}
 			if !ok {
-				failed++
+				diverged = true
+				break
 			}
 		}
-		if failed == 0 {
+		if !diverged {
 			return nil
 		}
-		// Some rebuilds hit divergence again — loop.
+		// Diverged — outer loop will refresh server state and retry.
 	}
 	return fmt.Errorf("scope %s: still diverging after %d retries", shortScopeID(scopeID), maxRetries)
 }
@@ -662,24 +684,36 @@ func (s *Session) fullPullScope(ctx context.Context, server, scopeID string) ([]
 	return nil, fmt.Errorf("full pull %s: page limit exceeded", scopeID)
 }
 
-// pendingSet is one secret.set we built locally but failed to push.
-type pendingSet struct {
-	body *proto.SecretBody
+// pendingEvent is one local-only event we need to rebuild on the new server
+// tip after a divergence. Discriminated by `kind`:
+//
+//   - kind == KindSecretSet : `body` carries the decrypted SecretBody so the
+//     rebuild loop can re-encrypt under the post-reconcile OEK.
+//   - kind == KindMemberChange : `op` (add|remove) and `target` carry the
+//     intent so the rebuild loop can re-emit a fresh member.change against
+//     the post-replay member set (three-way merge — STORAGE.md §5.3).
+type pendingEvent struct {
+	kind   string
+	body   *proto.SecretBody // KindSecretSet
+	op     string            // KindMemberChange
+	target []byte            // KindMemberChange
 }
 
-// savePendingLocalSets identifies the secret.set events that exist in our
-// local chain but not on the server (== the events we have to rebuild on
-// the new server tip), then decrypts their bodies so the rebuild loop can
-// re-encrypt them under the post-reconcile OEK.
+// savePendingLocalEvents identifies events that exist in our local chain
+// but not on the server (the events we authored after the divergence
+// point) and packages them for the rebuild loop. Two recoverable kinds:
+//
+//   - secret.set: decrypt body under the OEK era it was sealed with so we
+//     can re-encrypt against the post-reconcile OEK.
+//   - member.change: capture op + target so we can re-emit a fresh
+//     member.change against the post-replay running state (three-way
+//     merge). chain.RebaseMemberChangeMeaningful decides at rebuild time
+//     whether the rebased event is still meaningful.
 //
 // The set-diff itself is delegated to chain.LocalOnlyEvents (pure, unit
-// tested in chain). Everything else here is policy: which kinds of
-// local-only events are recoverable vs. fatal.
-//
-// Local-only member.change surfaces as a conflict — projection-level
-// merge isn't implemented (TODO.md v2: three-way merge). The user has
-// to manually reconcile.
-func (s *Session) savePendingLocalSets(scopeID string, serverEvents []proto.ScopeEvent) ([]pendingSet, error) {
+// tested in chain). Foreign events (authored by another member yet
+// somehow local-only — should never happen in practice) are skipped.
+func (s *Session) savePendingLocalEvents(scopeID string, serverEvents []proto.ScopeEvent) ([]pendingEvent, error) {
 	localPtrs, err := chain.ReadScopeEvents(s.Paths.ScopeChain(scopeID))
 	if err != nil {
 		return nil, err
@@ -692,29 +726,37 @@ func (s *Session) savePendingLocalSets(scopeID string, serverEvents []proto.Scop
 		localEvents[i] = *p
 	}
 	sd := s.Body.Scopes[scopeID]
-	var pending []pendingSet
+	var pending []pendingEvent
 	for _, ev := range chain.LocalOnlyEvents(localEvents, serverEvents) {
 		if !bytes.Equal(ev.SignedPrefix.Author, s.UserSuperPub) {
 			continue
 		}
-		if ev.SignedPrefix.Kind != proto.KindSecretSet {
-			return nil, fmt.Errorf("member.change conflict on scope %s — manual reconcile required", shortScopeID(scopeID))
-		}
-		var oek []byte
-		for _, e := range sd.OEKs {
-			if e.Version == ev.SignedPrefix.OEKVersion {
-				oek = e.Key
-				break
+		switch ev.SignedPrefix.Kind {
+		case proto.KindSecretSet:
+			var oek []byte
+			for _, e := range sd.OEKs {
+				if e.Version == ev.SignedPrefix.OEKVersion {
+					oek = e.Key
+					break
+				}
 			}
+			if oek == nil {
+				return nil, fmt.Errorf("missing OEK v%d for divergent event", ev.SignedPrefix.OEKVersion)
+			}
+			body, err := decryptSecretBody(&ev, oek)
+			if err != nil {
+				return nil, err
+			}
+			pending = append(pending, pendingEvent{kind: proto.KindSecretSet, body: body})
+		case proto.KindMemberChange:
+			pending = append(pending, pendingEvent{
+				kind:   proto.KindMemberChange,
+				op:     ev.SignedPrefix.Payload.Op,
+				target: append([]byte(nil), ev.SignedPrefix.Payload.Member...),
+			})
+		default:
+			return nil, fmt.Errorf("unexpected local-only event kind %q on scope %s", ev.SignedPrefix.Kind, shortScopeID(scopeID))
 		}
-		if oek == nil {
-			return nil, fmt.Errorf("missing OEK v%d for divergent event", ev.SignedPrefix.OEKVersion)
-		}
-		body, err := decryptSecretBody(&ev, oek)
-		if err != nil {
-			return nil, err
-		}
-		pending = append(pending, pendingSet{body: body})
 	}
 	return pending, nil
 }
@@ -753,16 +795,7 @@ func (s *Session) applyReplayedScope(scopeID string) error {
 	sd := s.Body.Scopes[scopeID]
 	sd.ChainTip = proto.ChainTip{Seq: st.TipSeq, Hash: st.TipHash}
 	if k, ok := st.OEKs[st.CurrentOEKVer]; ok {
-		has := false
-		for _, e := range sd.OEKs {
-			if e.Version == st.CurrentOEKVer {
-				has = true
-				break
-			}
-		}
-		if !has {
-			sd.OEKs = append(sd.OEKs, proto.OEKEntry{Version: st.CurrentOEKVer, Key: append([]byte(nil), k...)})
-		}
+		sd.OEKs = upsertOEK(sd.OEKs, st.CurrentOEKVer, k)
 	}
 	if l := metaLabelFromIndex(st.SecretIndex); l != "" {
 		sd.Label = l
@@ -782,7 +815,7 @@ func (s *Session) applyReplayedScope(scopeID string) error {
 
 // rebuildAndPushSet appends a fresh secret.set built on the current tip and
 // pushes it. Returns (false, nil) on a fresh divergence (caller retries).
-func (s *Session) rebuildAndPushSet(ctx context.Context, server, scopeID string, p pendingSet) (bool, error) {
+func (s *Session) rebuildAndPushSet(ctx context.Context, server, scopeID string, p pendingEvent) (bool, error) {
 	st, err := s.replayAndCheckScope(scopeID)
 	if err != nil {
 		return false, err
@@ -828,7 +861,74 @@ func (s *Session) rebuildAndPushSet(ctx context.Context, server, scopeID string,
 	if err := s.ReSeal(); err != nil {
 		return false, err
 	}
-	// Push the single event.
+	return s.pushRebuiltEvent(ctx, server, scopeID, ev)
+}
+
+// rebuildAndPushMemberChange rebases a divergent local-only member.change
+// onto the post-replay running member set (three-way merge), pushes it,
+// and updates the local OEK ring. Symmetric to rebuildAndPushSet but
+// rotates the OEK and persists a fresh OEKEntry — same as a normal
+// `scope add-member` / `remove-member` would.
+//
+// Returns:
+//   - (true, nil)  on accept/dup, or when the rebase is a semantic no-op
+//     (drop without pushing — see chain.RebaseMemberChangeMeaningful).
+//   - (false, nil) on fresh divergence/stale_oek_version (caller retries).
+//   - (false, err) on terminal failure.
+func (s *Session) rebuildAndPushMemberChange(ctx context.Context, server, scopeID string, p pendingEvent) (bool, error) {
+	st, err := s.replayAndCheckScope(scopeID)
+	if err != nil {
+		return false, err
+	}
+	// Semantic rebase: drop if the running state already matches our intent.
+	if !chain.RebaseMemberChangeMeaningful(st.MemberSet, p.op, p.target) {
+		shortPub := base64.StdEncoding.EncodeToString(p.target)
+		if len(shortPub) > 12 {
+			shortPub = shortPub[:12]
+		}
+		fmt.Fprintf(os.Stderr, "  ↳ rebase: %s op=%s target=%s… now a no-op, dropped\n",
+			shortScopeID(scopeID), p.op, shortPub)
+		return true, nil
+	}
+	// Re-emit against the post-replay tip + member set. New OEK is rotated
+	// inside BuildMemberChange and must be installed in the vault BEFORE
+	// the push (so a successful push doesn't strand secrets unable to
+	// decrypt against the just-promoted era).
+	proj := projectionFromIndex(st.SecretIndex)
+	ev, newOEK, err := chain.BuildMemberChange(
+		AgentSigner{Agent: s.Agent}, s.UserSuperPub,
+		scopeID, st.TipSeq, st.TipHash, st.CurrentOEKVer,
+		p.op, p.target, st.MemberSet, proj,
+	)
+	if err != nil {
+		return false, err
+	}
+	if err := chain.AppendScope(s.Paths.ScopeChain(scopeID), ev); err != nil {
+		return false, err
+	}
+	prefix, _ := ev.PrevHashInput()
+	tipHash := proto.HashPrefix(prefix)
+	sd := s.Body.Scopes[scopeID]
+	sd.OEKs = upsertOEK(sd.OEKs, ev.SignedPrefix.OEKVersion, newOEK)
+	sd.ChainTip = proto.ChainTip{Seq: ev.SignedPrefix.Seq, Hash: tipHash[:]}
+	s.Body.Scopes[scopeID] = sd
+	if err := s.ReSeal(); err != nil {
+		return false, err
+	}
+	return s.pushRebuiltEvent(ctx, server, scopeID, ev)
+}
+
+// pushRebuiltEvent posts a single locally-appended event to the server
+// and reconciles the response. Shared between rebuildAndPushSet and
+// rebuildAndPushMemberChange — both want the same accept/dup/divergence
+// disposition and the same PushFloor advance.
+//
+// Contract:
+//   - (true, nil)  : accepted or de-duplicated; PushFloor advanced.
+//   - (false, nil) : divergence / stale_oek_version → caller loops the
+//     reconcile (server-tip moved again).
+//   - (false, err) : transport error or terminal "refused" reason.
+func (s *Session) pushRebuiltEvent(ctx context.Context, server, scopeID string, ev *proto.ScopeEvent) (bool, error) {
 	push := []any{map[string]any{"scope": scopeID, "event": ev}}
 	body, err := buildSyncRequestBody(nil, push, false, 0)
 	if err != nil {
@@ -868,8 +968,8 @@ func (s *Session) rebuildAndPushSet(ctx context.Context, server, scopeID string,
 			if err := s.ReSeal(); err != nil {
 				// ReSeal failure is non-fatal here: the push already
 				// landed on the server; floor staleness only costs a
-				// re-push on the next sync (server dedups). We surface
-				// the error to the caller so it shows up in logs.
+				// re-push on the next sync (server dedups). Surface so
+				// it shows up in logs.
 				return true, fmt.Errorf("re-seal after push-floor advance: %w", err)
 			}
 		}
@@ -901,6 +1001,25 @@ func decryptSecretBody(ev *proto.ScopeEvent, oek []byte) (*proto.SecretBody, err
 		return nil, err
 	}
 	return &body, nil
+}
+
+// upsertOEK inserts (version, key) into ring or replaces the existing entry
+// for that version. The "replace" branch matters: a failed local
+// member.change push leaves a stale OEK at version v in the vault. When the
+// authoritative server-chain replay later returns a different bytewise key
+// at the same version, the stale entry MUST be overwritten — otherwise
+// rebuildAndPushSet (which looks up the current OEK by version in the vault
+// ring) would encrypt subsequent secret.sets under the stale key, and peers
+// would silently fail to decrypt them. The defensive upsert matches the
+// invariant "vault.OEKs is authoritative for the most recent replay".
+func upsertOEK(ring []proto.OEKEntry, version uint64, key []byte) []proto.OEKEntry {
+	for i, e := range ring {
+		if e.Version == version {
+			ring[i].Key = append([]byte(nil), key...)
+			return ring
+		}
+	}
+	return append(ring, proto.OEKEntry{Version: version, Key: append([]byte(nil), key...)})
 }
 
 // fileSize returns the size of path or 0 if missing.
