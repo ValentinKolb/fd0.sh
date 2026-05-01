@@ -71,7 +71,7 @@ func RunDoctor(ctx context.Context) error {
 	for _, sid := range scopeIDs {
 		sd := s.Body.Scopes[sid]
 		fmt.Fprintf(os.Stderr, "  %s\n", scopeName(s, sid))
-		st, err := replayScopeViaAgent(s.Paths.ScopeChain(sid), s.UserSuperPub, s.Agent)
+		st, err := replayScopeViaAgent(s.Paths.ScopeChain(sid), s.UserSuperPub, s.UserX25519Pub, s.Agent)
 		if err != nil {
 			pr("ERR", fmt.Sprintf("    replay failed: %v", err))
 			continue

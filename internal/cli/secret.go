@@ -308,7 +308,7 @@ func secretToString(p any) string {
 // Returns chain.ErrRollback when the local chain is behind/diverged vs.
 // the vault binding.
 func (s *Session) replayAndCheckScope(scopeID string) (*chain.ScopeState, error) {
-	st, err := replayScopeViaAgent(s.Paths.ScopeChain(scopeID), s.UserSuperPub, s.Agent)
+	st, err := replayScopeViaAgent(s.Paths.ScopeChain(scopeID), s.UserSuperPub, s.UserX25519Pub, s.Agent)
 	if err != nil {
 		return nil, err
 	}

@@ -74,7 +74,7 @@ func TestScopeChainRoundtrip(t *testing.T) {
 	if err := AppendScope(p, gen); err != nil {
 		t.Fatal(err)
 	}
-	st, err := ReplayScope(p, pub, xPub, xPriv)
+	st, err := ReplayScope(p, pub, xPub, LocalOpener{Pub: xPub, Priv: xPriv})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestScopeChainRoundtrip(t *testing.T) {
 	if err := AppendScope(p, ev); err != nil {
 		t.Fatal(err)
 	}
-	st, err = ReplayScope(p, pub, xPub, xPriv)
+	st, err = ReplayScope(p, pub, xPub, LocalOpener{Pub: xPub, Priv: xPriv})
 	if err != nil {
 		t.Fatalf("replay after secret.set: %v", err)
 	}

@@ -173,7 +173,7 @@ func RunSync(ctx context.Context, server string) error {
 				return err
 			}
 		}
-		st, err := replayScopeViaAgent(path, s.UserSuperPub, s.Agent)
+		st, err := replayScopeViaAgent(path, s.UserSuperPub, s.UserX25519Pub, s.Agent)
 		if err != nil {
 			// Roll back, then reconcile: the most common cause is a local
 			// write that occurred while the server already advanced past
@@ -336,7 +336,7 @@ func (s *Session) compactAfterSync() {
 		// Build the live event-id set for this scope from the in-memory
 		// secret_index. Any secret.set whose event_id is in this set is
 		// kept; older secret.sets for the same id are dropped.
-		st, err := replayScopeViaAgent(s.Paths.ScopeChain(sid), s.UserSuperPub, s.Agent)
+		st, err := replayScopeViaAgent(s.Paths.ScopeChain(sid), s.UserSuperPub, s.UserX25519Pub, s.Agent)
 		if err != nil || st == nil {
 			continue
 		}
@@ -447,7 +447,7 @@ func (s *Session) discoverScope(ctx context.Context, server, scopeID string) err
 			return err
 		}
 	}
-	st, err := replayScopeViaAgent(path, s.UserSuperPub, s.Agent)
+	st, err := replayScopeViaAgent(path, s.UserSuperPub, s.UserX25519Pub, s.Agent)
 	if err != nil {
 		_ = os.Remove(path)
 		return fmt.Errorf("replay rejected: %w", err)
@@ -722,7 +722,7 @@ func (s *Session) replaceLocalChain(scopeID string, events []proto.ScopeEvent) e
 // (chain_tip, OEKs, label). Drops the scope on leave.
 func (s *Session) applyReplayedScope(scopeID string) error {
 	path := s.Paths.ScopeChain(scopeID)
-	st, err := replayScopeViaAgent(path, s.UserSuperPub, s.Agent)
+	st, err := replayScopeViaAgent(path, s.UserSuperPub, s.UserX25519Pub, s.Agent)
 	if err != nil {
 		return err
 	}
@@ -875,7 +875,7 @@ func decryptSecretBody(ev *proto.ScopeEvent, oek []byte) (*proto.SecretBody, err
 	if len(sp.Payload.EncBody) < 12 {
 		return nil, errors.New("bad enc_body")
 	}
-	aad, err := bodyAADAgent(ev)
+	aad, err := chain.BodyAAD(ev)
 	if err != nil {
 		return nil, err
 	}

@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	"github.com/valentinkolb/fd0.sh/internal/agent"
+	"github.com/valentinkolb/fd0.sh/internal/chain"
 	"github.com/valentinkolb/fd0.sh/internal/crypto"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
 )
@@ -73,7 +74,7 @@ func buildSecretSetAgent(ag *agent.Client, superPub []byte, scopeID string, prev
 			OEKVersion: oekVersion,
 		},
 	}
-	aad, err := bodyAADAgent(ev)
+	aad, err := chain.BodyAAD(ev)
 	if err != nil {
 		return nil, err
 	}
@@ -146,7 +147,7 @@ func buildMemberChangeAgent(
 	if err != nil {
 		return nil, nil, err
 	}
-	post := postMutationSet(priorMembers, target, op)
+	post := chain.PostMutationSet(priorMembers, target, op)
 	kds := make([]proto.KeyDelivery, 0, len(post))
 	for _, m := range post {
 		x, err := crypto.EdPubToX25519(m)

@@ -9,16 +9,49 @@ import (
 	"github.com/valentinkolb/fd0.sh/internal/proto"
 )
 
+// Opener decrypts a libsodium sealed-box that was sealed to this principal's
+// X25519 public key. Used by ReplayScope to open per-event key_deliveries
+// without binding the replay logic to a specific source of the X25519 priv.
+//
+// Implementations:
+//   - LocalOpener (this package): in-process, holds the raw X25519 keypair.
+//     Used by chain unit tests and any offline tool that already holds
+//     super_priv in plaintext.
+//   - cli.AgentOpener: forwards Open over the agent IPC, so super_priv
+//     stays mlocked inside fd0-agent and never crosses the fd0 process.
+//
+// One adapter would have meant a hypothetical seam; two real adapters means
+// the seam is earning its keep.
+type Opener interface {
+	Open(sealed []byte) ([]byte, error)
+}
+
+// LocalOpener is the in-process Opener. Pub and Priv are 32-byte X25519
+// keys; Priv is the sensitive material — callers should wipe it when done.
+type LocalOpener struct {
+	Pub  []byte
+	Priv []byte
+}
+
+// Open implements Opener.
+func (o LocalOpener) Open(sealed []byte) ([]byte, error) {
+	plain, ok := crypto.OpenAnonymous(sealed, o.Pub, o.Priv)
+	if !ok {
+		return nil, errors.New("open_anonymous failed")
+	}
+	return plain, nil
+}
+
 // ScopeState is the post-replay state of one scope chain.
 type ScopeState struct {
 	ScopeID       string
-	MemberSet     [][]byte                   // super_pubs, sorted by bytes
-	OEKs          map[uint64][]byte          // version → 32B key
+	MemberSet     [][]byte // super_pubs, sorted by bytes
+	OEKs          map[uint64][]byte // version → 32B key
 	CurrentOEKVer uint64
-	SecretIndex   map[string]ScopeSecret     // secret_id → latest record
+	SecretIndex   map[string]ScopeSecret // secret_id → latest record
 	TipSeq        uint64
 	TipHash       []byte
-	Left          bool                       // true if a remove-self event was observed
+	Left          bool // true if a remove-self event was observed
 }
 
 // ScopeSecret is one entry in secret_index.
@@ -27,10 +60,31 @@ type ScopeSecret struct {
 	Record  *proto.SecretRecord // nil = tombstone
 }
 
-// ReplayScope verifies every event in path. ownSuperPub is the local user's
-// Ed25519 public key; ownX25519Priv is its X25519 scalar (derived once from
-// super_priv, kept in a Secret).
-func ReplayScope(path string, ownSuperPub []byte, ownX25519Pub, ownX25519Priv []byte) (*ScopeState, error) {
+// ReplayScope verifies every event in path and returns the post-replay state.
+//
+// Parameters:
+//   - path: scope chain file
+//   - ownSuperPub: local user's Ed25519 public key (used for member-set
+//     checks and to detect "we left this scope")
+//   - ownX25519Pub: ownSuperPub mapped onto Curve25519 (used to find OUR
+//     key_delivery on each member.change event)
+//   - opener: decrypts the sealed-box from key_deliveries when we are a
+//     recipient. The lookup is done here in replay (pure list scan); the
+//     Open call is the only I/O the replay performs, so the rest of the
+//     code path stays testable in isolation.
+//
+// Compacted-chain handling (STORAGE.md §5.4): if the chain has a gap in
+// `seq` between two events, we set `incomplete` for the affected event.
+// While `incomplete` is true, projection-content integrity checks are
+// skipped — the local secret_index is by definition incomplete past a
+// gap, so a content comparison would false-positive. `incomplete` clears
+// on the next member.change that successfully populates secret_index.
+//
+// Pre-admit handling: if a member.change event has no key_delivery
+// addressed to us (we joined later in the chain), we advance MemberSet
+// and OEKVersion only; projection decryption is skipped. Our admit
+// event's projection is the authoritative re-establishment.
+func ReplayScope(path string, ownSuperPub, ownX25519Pub []byte, opener Opener) (*ScopeState, error) {
 	events, err := ReadScopeEvents(path)
 	if err != nil {
 		return nil, err
@@ -43,47 +97,33 @@ func ReplayScope(path string, ownSuperPub []byte, ownX25519Pub, ownX25519Priv []
 		SecretIndex: make(map[string]ScopeSecret),
 	}
 	var prevHash []byte
+	incomplete := false
 	for i, ev := range events {
 		sp := &ev.SignedPrefix
-		// Envelope checks common to all events.
+		gap := false
+		// Envelope checks.
 		if i == 0 {
-			if sp.Kind != proto.KindMemberChange || sp.Payload.Op != proto.OpAdd {
-				return nil, errors.New("scope[0]: genesis must be member.change op=add")
+			if err := verifyScopeGenesis(ev, st); err != nil {
+				return nil, fmt.Errorf("scope[0]: %w", err)
 			}
-			if sp.Scope != nil {
-				return nil, errors.New("scope[0]: genesis scope must be nil")
-			}
-			if len(sp.PrevHash) != 0 || sp.Seq != 0 {
-				return nil, errors.New("scope[0]: bad genesis prev_hash/seq")
-			}
-			if !bytes.Equal(sp.Author, sp.Payload.Member) {
-				return nil, errors.New("scope[0]: genesis author must equal member")
-			}
-			// Derive scope_id from the genesis event_id (PROTOCOL.md §1.3).
-			prefix, err := ev.PrevHashInput()
-			if err != nil {
-				return nil, err
-			}
-			st.ScopeID = proto.ScopeID(proto.EventID(prefix))
 		} else {
 			if sp.Scope == nil || *sp.Scope != st.ScopeID {
 				return nil, fmt.Errorf("scope[%d]: scope mismatch", i)
 			}
 			if sp.Seq != st.TipSeq+1 {
-				return nil, fmt.Errorf("scope[%d]: seq=%d, expected %d", i, sp.Seq, st.TipSeq+1)
+				gap = true
+				incomplete = true
 			}
-			if !bytes.Equal(sp.PrevHash, prevHash) {
+			if !gap && !bytes.Equal(sp.PrevHash, prevHash) {
 				return nil, fmt.Errorf("scope[%d]: prev_hash mismatch", i)
 			}
 			if !memberContains(st.MemberSet, sp.Author) {
 				return nil, fmt.Errorf("scope[%d]: author not in member set", i)
 			}
 		}
-		// Author == signer.
 		if !bytes.Equal(sp.Author, ev.Signature.SignerPubkey) {
 			return nil, fmt.Errorf("scope[%d]: signer != author", i)
 		}
-		// Signature verifies.
 		si, err := ev.SignedInput()
 		if err != nil {
 			return nil, err
@@ -94,12 +134,34 @@ func ReplayScope(path string, ownSuperPub []byte, ownX25519Pub, ownX25519Priv []
 		// Per-kind apply.
 		switch sp.Kind {
 		case proto.KindMemberChange:
-			leave, err := applyMemberChange(st, ev, ownSuperPub, ownX25519Pub, ownX25519Priv)
+			// Open OUR key_delivery if present. Replay does the I/O
+			// (single Open call) so applyMemberChange stays pure
+			// (testable with fixture OEKs, no Opener needed).
+			sealed := findOurKeyDelivery(ev, ownX25519Pub)
+			var oekPlain []byte
+			if sealed != nil {
+				p, err := opener.Open(sealed)
+				if err != nil {
+					return nil, fmt.Errorf("scope[%d]: open key_delivery: %w", i, err)
+				}
+				if len(p) != 32 {
+					return nil, fmt.Errorf("scope[%d]: OEK length != 32", i)
+				}
+				oekPlain = p
+			}
+			leave, err := applyMemberChange(st, ev, ownSuperPub, oekPlain, incomplete)
 			if err != nil {
 				return nil, fmt.Errorf("scope[%d]: %w", i, err)
 			}
 			if leave {
 				st.Left = true
+			}
+			// After a successful projection-populating apply,
+			// secret_index is the authoritative snapshot for the
+			// current OEK era again. Clear incomplete so subsequent
+			// member.changes get full integrity checks.
+			if !leave {
+				incomplete = false
 			}
 		case proto.KindSecretSet:
 			if err := applySecretSet(st, ev); err != nil {
@@ -124,83 +186,118 @@ func ReplayScope(path string, ownSuperPub []byte, ownX25519Pub, ownX25519Priv []
 	return st, nil
 }
 
-// applyMemberChange validates op/recipients, decrypts our key_delivery if we
-// were a recipient, and decrypts/verifies the projection.
+// verifyScopeGenesis runs the genesis-only checks of ReplayScope. Pulled
+// out so the per-event loop is shorter.
+func verifyScopeGenesis(ev *proto.ScopeEvent, st *ScopeState) error {
+	sp := &ev.SignedPrefix
+	if sp.Kind != proto.KindMemberChange || sp.Payload.Op != proto.OpAdd {
+		return errors.New("genesis must be member.change op=add")
+	}
+	if sp.Scope != nil {
+		return errors.New("genesis scope must be nil")
+	}
+	if len(sp.PrevHash) != 0 || sp.Seq != 0 {
+		return errors.New("bad genesis prev_hash/seq")
+	}
+	if !bytes.Equal(sp.Author, sp.Payload.Member) {
+		return errors.New("genesis author must equal member")
+	}
+	prefix, err := ev.PrevHashInput()
+	if err != nil {
+		return err
+	}
+	st.ScopeID = proto.ScopeID(proto.EventID(prefix))
+	return nil
+}
+
+// findOurKeyDelivery returns the sealed-box from key_deliveries whose
+// recipient_pubkey matches ownX25519Pub, or nil if none match. The lookup
+// is a pure data scan — no I/O — so it stays in the replay loop alongside
+// the per-event validation.
+func findOurKeyDelivery(ev *proto.ScopeEvent, ownX25519Pub []byte) []byte {
+	for _, kd := range ev.SignedPrefix.KeyDeliveries {
+		if bytes.Equal(kd.RecipientPubkey, ownX25519Pub) {
+			return kd.Sealed
+		}
+	}
+	return nil
+}
+
+// applyMemberChange validates op/recipients, decrypts and verifies the
+// projection if we are a recipient, and updates st in place. Pure: takes
+// the pre-opened OEK plaintext (oekPlain) instead of an Opener.
 //
-// Returns leave=true if this event removes us from the scope.
-func applyMemberChange(st *ScopeState, ev *proto.ScopeEvent, ownSuperPub, ownX25519Pub, ownX25519Priv []byte) (bool, error) {
+// Cases handled:
+//  1. We are removed (op=remove member=self) → return leave=true.
+//  2. Empty post-mutation set (last member removed) → tombstone-advance,
+//     no OEK installation.
+//  3. We have no key_delivery (oekPlain == nil) → pre-admit event during
+//     discovery; advance MemberSet+OEKVersion, skip projection.
+//  4. Full processing: decrypt projection, verify content (unless we're
+//     the new admit or the chain is past a gap), install OEK + new
+//     secret_index.
+//
+// `compacted=true` skips the projection-content integrity check: the
+// local secret_index is incomplete past a chain gap (STORAGE.md §5.4),
+// so projection-vs-index comparison would false-positive.
+func applyMemberChange(st *ScopeState, ev *proto.ScopeEvent, ownSuperPub, oekPlain []byte, compacted bool) (bool, error) {
 	sp := &ev.SignedPrefix
 	pl := &sp.Payload
 	if pl.Op != proto.OpAdd && pl.Op != proto.OpRemove {
 		return false, fmt.Errorf("member.change: bad op %q", pl.Op)
 	}
-	// Validate post-mutation member set vs. recipients.
 	want := postMutationSet(st.MemberSet, pl.Member, pl.Op)
 	got := recipientSet(sp.KeyDeliveries)
 	if !sameSet(want, got) {
 		return false, errors.New("member.change: key_deliveries don't match post-mutation set")
 	}
-	// OEK version monotonic by exactly +1.
 	if sp.OEKVersion != st.CurrentOEKVer+1 {
 		return false, fmt.Errorf("member.change: bad oek_version=%d, expected %d", sp.OEKVersion, st.CurrentOEKVer+1)
 	}
-	// If this is op=remove of self: short-circuit, no decrypt needed.
+	// Case 1: we are being removed.
 	if pl.Op == proto.OpRemove && bytes.Equal(pl.Member, ownSuperPub) {
 		return true, nil
 	}
-	// Find our key_delivery (recipient_pubkey is X25519, so compare by it).
+	// Case 2: empty post-set (last member removed → tombstone scope).
 	if len(want) == 0 {
-		// Last member removed: tombstone scope; no OEK to install.
 		st.MemberSet = want
 		st.CurrentOEKVer = sp.OEKVersion
 		return false, nil
 	}
-	var oek []byte
-	for _, kd := range sp.KeyDeliveries {
-		if bytes.Equal(kd.RecipientPubkey, ownX25519Pub) {
-			plain, ok := crypto.OpenAnonymous(kd.Sealed, ownX25519Pub, ownX25519Priv)
-			if !ok {
-				return false, errors.New("member.change: cannot open our key_delivery")
-			}
-			if len(plain) != 32 {
-				return false, errors.New("member.change: OEK length != 32")
-			}
-			oek = plain
-			break
-		}
+	// Case 3: we have no key_delivery → pre-admit event during discovery.
+	if oekPlain == nil {
+		st.MemberSet = want
+		st.CurrentOEKVer = sp.OEKVersion
+		return false, nil
 	}
-	if oek == nil {
-		// We are not a recipient. Either we are not a member at this point
-		// (server bug — author would have been rejected) or we just left.
-		// Treat as fatal.
-		return false, errors.New("member.change: not a recipient")
-	}
-	// Decrypt enc_projection.
+	// Case 4: full processing.
 	if len(pl.EncProjection) < 12 {
 		return false, errors.New("member.change: bad enc_projection")
 	}
-	aad, err := projectionAAD(ev)
+	aad, err := ProjectionAAD(ev)
 	if err != nil {
 		return false, err
 	}
-	plain, err := crypto.AEADOpen(oek, pl.EncProjection[:12], pl.EncProjection[12:], aad)
+	plain, err := crypto.AEADOpen(oekPlain, pl.EncProjection[:12], pl.EncProjection[12:], aad)
 	if err != nil {
 		return false, fmt.Errorf("member.change: decrypt projection: %w", err)
 	}
+	defer crypto.Wipe(plain)
 	var proj proto.MemberProjection
 	if err := proto.Unmarshal(plain, &proj); err != nil {
 		return false, fmt.Errorf("member.change: decode projection: %w", err)
 	}
-	// Projection verification (PROTOCOL.md §4.5 steps 3–4). Skipped on first
-	// admit of self (no prior local state to compare against).
+	// Projection verification (PROTOCOL.md §4.5 steps 3–4): every
+	// non-tombstone in our index must appear byte-identically in the
+	// projection, and the projection must not inject unknown ids.
+	// Skipped for our own admit event (no prior local state) and past
+	// chain gaps (incomplete local state would false-positive).
 	weAreNewMember := bytes.Equal(pl.Member, ownSuperPub) && pl.Op == proto.OpAdd
-	if !weAreNewMember {
+	if !weAreNewMember && !compacted {
 		projIDs := map[string]*proto.SecretRecord{}
-		for _, s := range proj.Secrets {
-			projIDs[s.ID] = s.Record
+		for _, sec := range proj.Secrets {
+			projIDs[sec.ID] = sec.Record
 		}
-		// Every non-tombstone in our index must be in the projection with
-		// byte-identical record bytes.
 		for id, cur := range st.SecretIndex {
 			if cur.Record == nil {
 				continue
@@ -215,9 +312,6 @@ func applyMemberChange(st *ScopeState, ev *proto.ScopeEvent, ownSuperPub, ownX25
 				return false, fmt.Errorf("projection mismatch for id %s", id)
 			}
 		}
-		// Reject IDs that appear in the projection but not in our index
-		// (would let an inviter inject extra secrets). Tombstones in the
-		// projection (Record=nil) are allowed.
 		for id, rec := range projIDs {
 			if rec == nil {
 				continue
@@ -228,20 +322,22 @@ func applyMemberChange(st *ScopeState, ev *proto.ScopeEvent, ownSuperPub, ownX25
 		}
 	}
 	// Install OEK and replace state.
-	keyCopy := append([]byte(nil), oek...)
-	st.OEKs[sp.OEKVersion] = keyCopy
+	st.OEKs[sp.OEKVersion] = append([]byte(nil), oekPlain...)
 	st.CurrentOEKVer = sp.OEKVersion
 	st.MemberSet = want
 	st.SecretIndex = make(map[string]ScopeSecret, len(proj.Secrets))
-	for _, s := range proj.Secrets {
-		st.SecretIndex[s.ID] = ScopeSecret{Record: s.Record}
+	for _, sec := range proj.Secrets {
+		st.SecretIndex[sec.ID] = ScopeSecret{Record: sec.Record}
 	}
-	crypto.Wipe(oek)
-	crypto.Wipe(plain)
+	crypto.Wipe(oekPlain)
 	return false, nil
 }
 
-// applySecretSet decrypts enc_body under the current OEK and updates the index.
+// applySecretSet decrypts enc_body under the current OEK and updates the
+// index. Silently no-ops when the OEK version isn't held locally —
+// happens during discovery when we receive pre-admit events whose OEK
+// era predates our admit. Our admit's projection is authoritative for
+// those secrets.
 func applySecretSet(st *ScopeState, ev *proto.ScopeEvent) error {
 	sp := &ev.SignedPrefix
 	if len(sp.KeyDeliveries) != 0 {
@@ -252,12 +348,13 @@ func applySecretSet(st *ScopeState, ev *proto.ScopeEvent) error {
 	}
 	oek, ok := st.OEKs[sp.OEKVersion]
 	if !ok {
-		return fmt.Errorf("secret.set: missing OEK v%d", sp.OEKVersion)
+		// Pre-admit: skip silently, the admit event's projection covers it.
+		return nil
 	}
 	if len(sp.Payload.EncBody) < 12 {
 		return errors.New("secret.set: bad enc_body")
 	}
-	aad, err := bodyAAD(ev)
+	aad, err := BodyAAD(ev)
 	if err != nil {
 		return err
 	}
@@ -270,7 +367,6 @@ func applySecretSet(st *ScopeState, ev *proto.ScopeEvent) error {
 	if err := proto.Unmarshal(plain, &body); err != nil {
 		return fmt.Errorf("secret.set: decode body: %w", err)
 	}
-	// Compute event_id for index reference (debug/observability).
 	prefix, err := ev.PrevHashInput()
 	if err != nil {
 		return err
@@ -282,10 +378,14 @@ func applySecretSet(st *ScopeState, ev *proto.ScopeEvent) error {
 	return nil
 }
 
-// projectionAAD = DomainEvent || cbor(SignedPrefix without payload.enc_projection).
-// PROTOCOL.md §1.1 mandates a domain string on every AEAD AAD; we use the
-// same DomainEvent the signature carries.
-func projectionAAD(ev *proto.ScopeEvent) ([]byte, error) {
+// ProjectionAAD returns the AAD used for AEAD-sealing the member.change
+// enc_projection: DomainEvent || cbor(SignedPrefix with payload reduced
+// to {op, member}).
+//
+// Exported because the cli builds projections too (encryptProjection in
+// cli/build.go). Sharing the AAD constructor enforces that writer and
+// reader agree byte-for-byte on the AAD shape.
+func ProjectionAAD(ev *proto.ScopeEvent) ([]byte, error) {
 	sp := ev.SignedPrefix
 	sp.Payload = proto.Payload{
 		Op:     ev.SignedPrefix.Payload.Op,
@@ -298,8 +398,13 @@ func projectionAAD(ev *proto.ScopeEvent) ([]byte, error) {
 	return append([]byte(proto.DomainEvent), body...), nil
 }
 
-// bodyAAD = DomainEvent || cbor(SignedPrefix without payload.enc_body).
-func bodyAAD(ev *proto.ScopeEvent) ([]byte, error) {
+// BodyAAD returns the AAD used for AEAD-sealing the secret.set enc_body:
+// DomainEvent || cbor(SignedPrefix with payload cleared).
+//
+// Exported for the cli's secret.set builder and decrypt helper. Same
+// rationale as ProjectionAAD: one constructor, no chance of writer and
+// reader drifting.
+func BodyAAD(ev *proto.ScopeEvent) ([]byte, error) {
 	sp := ev.SignedPrefix
 	sp.Payload = proto.Payload{}
 	body, err := proto.Marshal(sp)
@@ -309,7 +414,17 @@ func bodyAAD(ev *proto.ScopeEvent) ([]byte, error) {
 	return append([]byte(proto.DomainEvent), body...), nil
 }
 
-// ---- helpers for member sets ----
+// PostMutationSet returns the member set after applying op (add|remove)
+// of target to prior. Exported because the cli's member.change builder
+// needs the same computation when constructing key_deliveries.
+//
+// For op=add of an already-present member, returns prior unchanged
+// (caller is expected to have pre-validated).
+func PostMutationSet(prior [][]byte, target []byte, op string) [][]byte {
+	return postMutationSet(prior, target, op)
+}
+
+// ---- helpers for member sets (private) ----
 
 func memberContains(set [][]byte, key []byte) bool {
 	for _, k := range set {
@@ -349,15 +464,13 @@ func recipientSet(kds []proto.KeyDelivery) [][]byte {
 	return sortBytes(out)
 }
 
-// sameSet compares two sorted sets of pubkeys. Note: postMutationSet contains
-// Ed25519 pubs; recipientSet contains X25519 pubs. They are NOT directly
-// comparable. The caller (applyMemberChange) maps Ed25519→X25519 before the
-// compare.
+// sameSet compares the post-mutation member set (Ed25519 pubs) against
+// the recipient set (X25519 pubs). The Ed25519 keys are mapped onto
+// Curve25519 before comparison.
 func sameSet(a, b [][]byte) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	// a is sorted Ed25519 pubs; map each to X25519 then compare.
 	aX := make([][]byte, 0, len(a))
 	for _, p := range a {
 		x, err := crypto.EdPubToX25519(p)

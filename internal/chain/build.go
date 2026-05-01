@@ -100,7 +100,7 @@ func BuildSecretSet(superPriv ed25519.PrivateKey, superPub []byte, scopeID strin
 			OEKVersion: oekVersion,
 		},
 	}
-	aad, err := bodyAAD(ev)
+	aad, err := BodyAAD(ev)
 	if err != nil {
 		return nil, err
 	}
