@@ -121,10 +121,21 @@ type GetBodyResp struct {
 }
 
 // UnlockReq supplies a credential to open the vault at VaultPath.
+//
+// UserChainPath is the path to the user.cbor chain file. The agent
+// uses it during unlock for a rollback-detection check: after
+// AEAD-decrypt of the vault body, the agent compares
+// `body.AuthTip` against the live chain's tip; a mismatch means the
+// vault file has been rolled back relative to the (signed,
+// append-only) chain — likely a revoked-credential resurrection
+// attempt — and the agent refuses to cache super_priv (codex audit:
+// 🔴 vault.go:68). Empty string disables the check (back-compat
+// for old callers; emit a warning when this happens).
 type UnlockReq struct {
-	VaultPath  string `cbor:"vault_path"`
-	MethodType string `cbor:"method_type"` // "passphrase" | "yubikey"
-	Passphrase []byte `cbor:"passphrase,omitempty"`
+	VaultPath     string `cbor:"vault_path"`
+	UserChainPath string `cbor:"user_chain_path,omitempty"`
+	MethodType    string `cbor:"method_type"` // "passphrase" | "yubikey"
+	Passphrase    []byte `cbor:"passphrase,omitempty"`
 }
 
 // UnlockResp returns the redacted VaultBody (super_priv replaced with zeros).

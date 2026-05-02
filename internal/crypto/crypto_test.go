@@ -145,7 +145,10 @@ func TestAEADBadKeySize(t *testing.T) {
 func TestArgon2idKAT(t *testing.T) {
 	pass := []byte("anchor-password")
 	salt := []byte("anchor-salt-0123") // 16 B
-	got := DeriveKey(pass, salt, Argon2Params{M: 32 * 1024, T: 2, P: 1})
+	got, err := DeriveKey(pass, salt, Argon2Params{M: 32 * 1024, T: 2, P: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
 	const wantHex = "7f229af6faa7bd12a15e06fc2e7143bd1b1243a7e95bae0cabd4d69afd775c43"
 	if hex.EncodeToString(got) != wantHex {
 		t.Fatalf("Argon2id KAT mismatch:\n  got  %x\n  want %s", got, wantHex)
@@ -155,8 +158,14 @@ func TestArgon2idKAT(t *testing.T) {
 func TestArgon2idDeterministic(t *testing.T) {
 	pass := []byte("correct horse battery staple")
 	salt := bytes.Repeat([]byte{0xab}, 16)
-	a := DeriveKey(pass, salt, DefaultArgon2)
-	b := DeriveKey(pass, salt, DefaultArgon2)
+	a, err := DeriveKey(pass, salt, DefaultArgon2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := DeriveKey(pass, salt, DefaultArgon2)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !bytes.Equal(a, b) {
 		t.Fatal("Argon2id not deterministic for identical inputs")
 	}
@@ -164,13 +173,65 @@ func TestArgon2idDeterministic(t *testing.T) {
 		t.Fatalf("expected 32-byte key, got %d", len(a))
 	}
 	// Different password → different key.
-	if c := DeriveKey([]byte("other"), salt, DefaultArgon2); bytes.Equal(a, c) {
+	c, err := DeriveKey([]byte("other"), salt, DefaultArgon2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(a, c) {
 		t.Fatal("different password produced same key")
 	}
 	// Different salt → different key.
 	otherSalt := bytes.Repeat([]byte{0xcd}, 16)
-	if c := DeriveKey(pass, otherSalt, DefaultArgon2); bytes.Equal(a, c) {
+	d, err := DeriveKey(pass, otherSalt, DefaultArgon2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(a, d) {
 		t.Fatal("different salt produced same key")
+	}
+}
+
+// TestArgon2idValidationRejectsBadParams locks in the codex 🔴 fix:
+// caller-supplied Argon2 params from an untrusted vault header
+// MUST be rejected with an error (not a panic / OOM).
+func TestArgon2idValidationRejectsBadParams(t *testing.T) {
+	pass := []byte("x")
+	salt := []byte("anchor-salt-0123")
+	bad := []Argon2Params{
+		{M: 32 * 1024, T: 0, P: 1},        // T==0 would panic in argon2.IDKey
+		{M: 32 * 1024, T: 2, P: 0},        // P==0 likewise
+		{M: 0, T: 2, P: 1},                // M too small
+		{M: 8 * 1024, T: 2, P: 1},         // M below MinArgon2
+		{M: 1024 * 1024 * 4, T: 2, P: 1},  // M above MaxArgon2 (4 GiB)
+		{M: 32 * 1024, T: 1024, P: 1},     // T above MaxArgon2
+		{M: 32 * 1024, T: 2, P: 64},       // P above MaxArgon2
+	}
+	for i, p := range bad {
+		if _, err := DeriveKey(pass, salt, p); err == nil {
+			t.Errorf("case %d: DeriveKey accepted bad params %+v", i, p)
+		}
+	}
+}
+
+// TestEdPrivToX25519NoCapLeak locks in the codex 🔴 fix: the
+// returned scalar must NOT alias an internal SHA-512 buffer with
+// extra capacity holding the Ed25519 prefix.
+func TestEdPrivToX25519NoCapLeak(t *testing.T) {
+	_, priv, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	x, err := EdPrivToX25519(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cap(x) != len(x) {
+		t.Fatalf("EdPrivToX25519 result has cap %d > len %d — caller could re-slice to read SHA-512 prefix", cap(x), len(x))
+	}
+	// Re-slicing to capacity must NOT yield additional bytes.
+	full := x[:cap(x)]
+	if len(full) != 32 {
+		t.Fatalf("re-slice to cap returned %d bytes (want 32)", len(full))
 	}
 }
 

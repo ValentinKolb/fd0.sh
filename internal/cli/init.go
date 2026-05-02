@@ -53,7 +53,10 @@ func RunInit(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	unlockKey := crypto.DeriveKey(pass, salt, crypto.DefaultArgon2)
+	unlockKey, err := crypto.DeriveKey(pass, salt, crypto.DefaultArgon2)
+	if err != nil {
+		return fmt.Errorf("derive K_unlock: %w", err)
+	}
 	defer crypto.Wipe(unlockKey)
 
 	methodID := "am_" + ulid.Make().String()
@@ -128,7 +131,7 @@ func RunUnlock(ctx context.Context, agentBin string) error {
 		return err
 	}
 	defer crypto.Wipe(pass)
-	if _, err := cli.Unlock(paths.Vault, proto.AuthPassphrase, pass); err != nil {
+	if _, err := cli.Unlock(paths.Vault, paths.UserChain, proto.AuthPassphrase, pass); err != nil {
 		return err
 	}
 	fmt.Fprintln(os.Stderr, "✓ vault unlocked")

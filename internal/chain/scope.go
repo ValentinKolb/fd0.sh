@@ -100,7 +100,6 @@ func ReplayScope(path string, ownSuperPub, ownX25519Pub []byte, opener Opener) (
 	incomplete := false
 	for i, ev := range events {
 		sp := &ev.SignedPrefix
-		gap := false
 		// Envelope checks.
 		if i == 0 {
 			if err := verifyScopeGenesis(ev, st); err != nil {
@@ -110,12 +109,24 @@ func ReplayScope(path string, ownSuperPub, ownX25519Pub []byte, opener Opener) (
 			if sp.Scope == nil || *sp.Scope != st.ScopeID {
 				return nil, fmt.Errorf("scope[%d]: scope mismatch", i)
 			}
-			if sp.Seq != st.TipSeq+1 {
-				gap = true
+			// SECURITY (codex audit 🔴 scope.go:113): forward-only
+			// monotonicity. The previous gap-tolerant code accepted
+			// any sp.Seq != TipSeq+1 (incl. ==TipSeq or <TipSeq) as
+			// "compaction gap" and skipped the prev_hash check. A
+			// tampered local file could re-replay older signed
+			// events out of order, then close with the real
+			// vault-bound tip so CompareScopeTip still passes while
+			// SecretIndex contains stale data. Only sp.Seq > TipSeq+1
+			// is a legitimate compaction-induced forward gap.
+			switch {
+			case sp.Seq <= st.TipSeq:
+				return nil, fmt.Errorf("scope[%d]: non-monotone seq=%d (tip=%d)", i, sp.Seq, st.TipSeq)
+			case sp.Seq == st.TipSeq+1:
+				if !bytes.Equal(sp.PrevHash, prevHash) {
+					return nil, fmt.Errorf("scope[%d]: prev_hash mismatch", i)
+				}
+			default: // sp.Seq > TipSeq+1 — forward gap (compacted prefix)
 				incomplete = true
-			}
-			if !gap && !bytes.Equal(sp.PrevHash, prevHash) {
-				return nil, fmt.Errorf("scope[%d]: prev_hash mismatch", i)
 			}
 			if !memberContains(st.MemberSet, sp.Author) {
 				return nil, fmt.Errorf("scope[%d]: author not in member set", i)
@@ -246,6 +257,28 @@ func applyMemberChange(st *ScopeState, ev *proto.ScopeEvent, ownSuperPub, oekPla
 	if pl.Op != proto.OpAdd && pl.Op != proto.OpRemove {
 		return false, fmt.Errorf("member.change: bad op %q", pl.Op)
 	}
+	if len(pl.Member) == 0 {
+		return false, errors.New("member.change: empty member pubkey")
+	}
+	// SECURITY (codex audit 🔴 scope.go:249): no-op membership
+	// changes MUST be rejected. add of an existing member or
+	// remove of a non-member are both protocol violations and the
+	// previous code accepted them silently. The downstream
+	// `weAreNewMember` check (which skips projection verification
+	// for the new admit) would then fire for an EXISTING member
+	// whose author re-added themselves, letting an insider bypass
+	// projection-content integrity and inject arbitrary entries.
+	isMember := memberContains(st.MemberSet, pl.Member)
+	switch pl.Op {
+	case proto.OpAdd:
+		if isMember {
+			return false, fmt.Errorf("member.change: redundant add of existing member %x", pl.Member[:8])
+		}
+	case proto.OpRemove:
+		if !isMember {
+			return false, fmt.Errorf("member.change: remove of non-member %x", pl.Member[:8])
+		}
+	}
 	want := postMutationSet(st.MemberSet, pl.Member, pl.Op)
 	got := recipientSet(sp.KeyDeliveries)
 	if !sameSet(want, got) {
@@ -322,12 +355,34 @@ func applyMemberChange(st *ScopeState, ev *proto.ScopeEvent, ownSuperPub, oekPla
 		}
 	}
 	// Install OEK and replace state.
+	//
+	// SECURITY (subagent audit 🟡): the deferred crypto.Wipe(plain)
+	// at the top of this function will zero `plain` after we
+	// return. The decoded *SecretRecord objects in proj.Secrets
+	// may share byte buffers with `plain` (CBOR decoders are
+	// allowed to alias). Storing them directly into st.SecretIndex
+	// would leave dangling pointers into a wiped buffer the moment
+	// the function returns. We defensively re-marshal + re-decode
+	// each record into a fresh, independently-allocated *Record
+	// before installing.
 	st.OEKs[sp.OEKVersion] = append([]byte(nil), oekPlain...)
 	st.CurrentOEKVer = sp.OEKVersion
 	st.MemberSet = want
 	st.SecretIndex = make(map[string]ScopeSecret, len(proj.Secrets))
 	for _, sec := range proj.Secrets {
-		st.SecretIndex[sec.ID] = ScopeSecret{Record: sec.Record}
+		if sec.Record == nil {
+			st.SecretIndex[sec.ID] = ScopeSecret{}
+			continue
+		}
+		buf, mErr := proto.Marshal(sec.Record)
+		if mErr != nil {
+			return false, fmt.Errorf("member.change: re-marshal projection secret %s: %w", sec.ID, mErr)
+		}
+		var fresh proto.SecretRecord
+		if uErr := proto.Unmarshal(buf, &fresh); uErr != nil {
+			return false, fmt.Errorf("member.change: re-decode projection secret %s: %w", sec.ID, uErr)
+		}
+		st.SecretIndex[sec.ID] = ScopeSecret{Record: &fresh}
 	}
 	crypto.Wipe(oekPlain)
 	return false, nil

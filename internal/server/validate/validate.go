@@ -46,8 +46,15 @@ func UserEvent(ev *proto.UserEvent, prior *UserMeta, priorTipHash []byte, priorT
 		}
 	}
 	if prior == nil {
-		if ev.Seq != 0 || len(ev.PrevHash) != 0 {
-			return errors.New("auth.set genesis: bad seq/prev_hash")
+		// SECURITY (codex audit 🔴 validate.go:49): protocol
+		// requires CBOR nil (0xf6) for genesis prev_hash, NOT an
+		// empty byte string (0x40). The previous `len(...) != 0`
+		// check accepted both, letting non-canonical clients
+		// store events that fail signature verification under
+		// strict canonicalisation. PrevHash == nil is the only
+		// valid genesis encoding.
+		if ev.Seq != 0 || ev.PrevHash != nil {
+			return errors.New("auth.set genesis: bad seq/prev_hash (must be CBOR nil)")
 		}
 	} else {
 		if ev.Seq != priorTipSeq+1 {
@@ -94,8 +101,18 @@ func ScopeEvent(ev *proto.ScopeEvent, prior *ScopeMeta, priorTipHash []byte, pri
 		if sp.Kind != proto.KindMemberChange || sp.Payload.Op != proto.OpAdd {
 			return nil, errors.New("scope: genesis must be member.change op=add")
 		}
-		if sp.Seq != 0 || len(sp.PrevHash) != 0 {
-			return nil, errors.New("scope: genesis bad seq/prev_hash")
+		// SECURITY (codex audit 🔴 validate.go:91): scope genesis
+		// MUST have signed_prefix.scope == nil per PROTOCOL.md;
+		// the previous code didn't enforce that, allowing the
+		// server to store a protocol-invalid genesis where the
+		// scope field was a non-nil placeholder. Reject.
+		if sp.Scope != nil {
+			return nil, errors.New("scope: genesis signed_prefix.scope must be nil")
+		}
+		// SECURITY (codex audit 🔴 validate.go:97): same nil-vs-
+		// empty-bytes hazard as auth.set genesis.
+		if sp.Seq != 0 || sp.PrevHash != nil {
+			return nil, errors.New("scope: genesis bad seq/prev_hash (must be CBOR nil)")
 		}
 		if !bytes.Equal(sp.Payload.Member, sp.Author) {
 			return nil, errors.New("scope: genesis member must equal author")

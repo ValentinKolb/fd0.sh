@@ -101,7 +101,14 @@ func Open(v *proto.VaultFile, resolvers []MethodResolver) (OpenResult, error) {
 // Save re-seals the vault. wraps lists every (method, public_params,
 // unlock_key) the new vault should be unlockable by — typically one entry per
 // active AuthMethod. A fresh payload_key is generated per save.
+//
+// SECURITY: empty wraps would write a vault that no auth method can
+// open — silently bricking the user. Reject before encrypting
+// (codex audit: 🟡).
 func Save(path string, userSuperPub []byte, body *proto.VaultBody, wraps []WrapInput) error {
+	if len(wraps) == 0 {
+		return errors.New("vault: refusing to save with empty wrap list (would be unlockable by nobody)")
+	}
 	plain, err := proto.Marshal(body)
 	if err != nil {
 		return err
@@ -198,6 +205,19 @@ type WrapInput struct {
 // fresh ciphertext (we regenerate body_nonce). That keeps the AEAD safe
 // without perturbing wrap entries (which would invalidate K_unlocks the
 // agent doesn't hold for non-active methods).
+//
+// SECURITY: this path keeps `payloadKey` STABLE across saves. The
+// codex audit (🔴) flagged that PROTOCOL.md previously claimed
+// "fresh payload_key per save" provides forward secrecy, but that
+// property is unattainable here without re-wrapping under EVERY
+// auth method's K_unlock — which the agent does not hold (only the
+// currently-active method's). The spec was amended to acknowledge:
+// fresh payload_key happens on credential rotation (Save), routine
+// updates (SaveBody) keep the stable key. An attacker who recovers
+// BOTH an old vault snapshot AND the K_unlock for any active wrap
+// can decrypt all subsequent body snapshots until the next
+// credential rotation. v2 may add a per-body DEK chain to close
+// this gap without per-save user interaction.
 func SaveBody(path string, userSuperPub []byte, body *proto.VaultBody, payloadKey []byte) error {
 	if len(payloadKey) != 32 {
 		return errors.New("vault: SaveBody requires 32-byte payload_key")
@@ -483,11 +503,23 @@ func atomicWrite(path string, data []byte) error {
 	if err := os.Rename(tmp, path); err != nil {
 		return err
 	}
-	// fsync parent so the rename is durable.
+	// fsync parent so the rename is durable across power-loss.
+	// Codex audit (🟡): the previous version swallowed Open/Sync/
+	// Close errors, so atomicWrite could report success after
+	// rename even though the directory entry was not durable —
+	// violating the STORAGE.md crash-safety contract.
 	dir := filepath.Dir(path)
-	if d, err := os.Open(dir); err == nil {
-		_ = d.Sync()
-		_ = d.Close()
+	d, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("vault: open parent dir for fsync: %w", err)
+	}
+	syncErr := d.Sync()
+	closeErr := d.Close()
+	if syncErr != nil {
+		return fmt.Errorf("vault: fsync parent dir: %w", syncErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("vault: close parent dir: %w", closeErr)
 	}
 	return nil
 }

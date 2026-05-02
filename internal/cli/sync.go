@@ -160,6 +160,14 @@ func RunSync(ctx context.Context, server string) error {
 	if err != nil {
 		return err
 	}
+	// Codex audit fix (🔴 auth.go:87 + cli/sync.go:131): the server
+	// requires user_super_pub be registered via POST /users before
+	// honouring any authenticated request. Wire the registration
+	// here so first-time users see no "unregistered_pk" rejection.
+	// Idempotent on subsequent syncs (PinnedServer.Registered cache).
+	if err := s.EnsureUserRegistered(ctx, server); err != nil {
+		return fmt.Errorf("user registration: %w", err)
+	}
 
 	// Snapshot pre-sync LastSTH per scope. Both pull AND push
 	// consistency proofs in this round are relative to the request's

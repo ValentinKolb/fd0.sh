@@ -28,7 +28,10 @@ func TestAgentRoundtrip(t *testing.T) {
 	pass := []byte("secret-pass")
 	salt, _ := crypto.RandomBytes(16)
 	pp, _ := vault.NewPassphraseParams(salt, crypto.DefaultArgon2)
-	uk := crypto.DeriveKey(pass, salt, crypto.DefaultArgon2)
+	uk, err := crypto.DeriveKey(pass, salt, crypto.DefaultArgon2)
+	if err != nil {
+		t.Fatal(err)
+	}
 	body := &proto.VaultBody{
 		SuperPriv: priv,
 		AuthTip:   proto.ChainTip{},
@@ -60,7 +63,7 @@ func TestAgentRoundtrip(t *testing.T) {
 		t.Fatal("expected locked")
 	}
 	// Unlock.
-	ur, err := cli.Unlock(paths.Vault, proto.AuthPassphrase, pass)
+	ur, err := cli.Unlock(paths.Vault, paths.UserChain, proto.AuthPassphrase, pass)
 	if err != nil {
 		t.Fatal(err)
 	}

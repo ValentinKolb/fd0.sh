@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -59,6 +60,12 @@ type Server struct {
 	// a signature per first-contact request.
 	serverInfo []byte
 }
+
+// Store exposes the underlying *store.Store for tests and tooling
+// that need to seed registration/data without going through HTTP.
+// Production callers should use the HTTP API; this accessor exists
+// so tests can call s.Store().RegisterUser(...) etc.
+func (s *Server) Store() *store.Store { return s.store }
 
 // New initialises the store, loads the translog signing key, and wires
 // the routes.
@@ -301,6 +308,18 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad_event", err.Error())
 		return
 	}
+	// SECURITY (codex audit 🔴 server.go:279): a given user_super_pub
+	// MUST register at most once. Without this check the same key
+	// could enroll many shortIds, splitting the user's identity
+	// across the server's view in a way that breaks deduplication
+	// downstream.
+	if exists, err := s.store.IsUserRegistered(r.Context(), req.Event.UserSuperPub); err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	} else if exists {
+		writeErr(w, http.StatusConflict, "super_pub_taken", "user_super_pub is already registered")
+		return
+	}
 	// Allocate a fresh shortId. Retry on collision (extremely unlikely).
 	var sid string
 	for tries := 0; tries < 8; tries++ {
@@ -348,6 +367,19 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	// Record the (super_pub, short_id) binding so the auth middleware
+	// can recognise this user on subsequent authenticated requests.
+	// If this fails AFTER the chain commit, log loud (the chain is
+	// already on disk; manual repair via re-running registration
+	// won't work because of the IsUserRegistered check above — but
+	// repair via direct DB insert is straightforward for an
+	// operator who can read the server log).
+	if regErr := s.store.RegisterUser(r.Context(), req.Event.UserSuperPub, sid); regErr != nil {
+		s.log.Error("server: chain committed but users-table insert failed",
+			"err", regErr, "short_id", sid, "super_pub_prefix", fmt.Sprintf("%x", req.Event.UserSuperPub[:8]))
+		writeErr(w, http.StatusInternalServerError, "internal", "users-table insert failed; server-side repair required")
 		return
 	}
 	// Translog payload — genesis is leaf 0 in a tree of size 1.
@@ -677,6 +709,7 @@ type pushResult struct {
 	Seq                  uint64 `cbor:"seq,omitempty"`
 	ScopeID              string `cbor:"scope_id,omitempty"`
 	Reason               string `cbor:"reason,omitempty"`
+	Detail               string `cbor:"detail,omitempty"`
 	CurrentTipEventID    string `cbor:"current_tip_event_id,omitempty"`
 	CurrentTipHash       []byte `cbor:"current_tip_hash,omitempty"`
 	CurrentOEKVersionMax uint64 `cbor:"current_oek_version_max,omitempty"`
@@ -921,6 +954,21 @@ func (s *Server) applyPush(ctx context.Context, authorPub []byte, p pushItem) pu
 	}
 	// Successor push.
 	chainID := store.ChainID(store.KindScope, p.Scope)
+	// SECURITY (codex audit 🔴 server.go:923): the OUTER push frame
+	// names a scope, but the SIGNED event also embeds the scope
+	// (signed_prefix.scope). They MUST agree — without this check,
+	// an attacker could submit a signed event for chain X under
+	// the framing of chain Y, getting it stored on Y where the
+	// signature still verifies (the signature covers the embedded
+	// scope, which says X). Bind the two together explicitly.
+	if p.Event.SignedPrefix.Scope == nil || *p.Event.SignedPrefix.Scope != p.Scope {
+		var got string
+		if p.Event.SignedPrefix.Scope != nil {
+			got = *p.Event.SignedPrefix.Scope
+		}
+		return pushResult{Accepted: false, Reason: "scope_mismatch", ScopeID: p.Scope,
+			Detail: fmt.Sprintf("event signed_prefix.scope=%q, push frame scope=%q", got, p.Scope)}
+	}
 	c, err := s.store.GetChain(ctx, chainID)
 	if err != nil {
 		return pushResult{Accepted: false, Reason: "not_found", ScopeID: p.Scope}

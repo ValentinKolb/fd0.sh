@@ -13,6 +13,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"io"
 
 	"filippo.io/edwards25519"
@@ -76,6 +77,15 @@ func EdPubToX25519(edPub []byte) ([]byte, error) {
 //
 // The libsodium derivation hashes the 32-byte seed with SHA-512, clamps the
 // first 32 bytes, and returns those as the X25519 scalar.
+//
+// SECURITY: returns a fresh 32-byte slice with zero-byte cap padding —
+// `h[:32]` would have shared the underlying 64-byte SHA-512 buffer with
+// cap 64, letting any caller re-slice to `[:64]` and read the
+// Ed25519 prefix bytes (h[32:64]). Combined with any signature
+// produced by the same private key, an attacker could recover the
+// signing scalar (codex audit: signature subagent finding 🔴).
+// We additionally wipe the full SHA-512 buffer before returning so
+// the prefix never lingers in memory the caller can reach.
 func EdPrivToX25519(edPriv []byte) ([]byte, error) {
 	if len(edPriv) != ed25519.PrivateKeySize {
 		return nil, errors.New("crypto: bad ed25519 private key length")
@@ -85,7 +95,14 @@ func EdPrivToX25519(edPriv []byte) ([]byte, error) {
 	h[0] &= 248
 	h[31] &= 127
 	h[31] |= 64
-	return h[:32], nil
+	out := make([]byte, 32)
+	copy(out, h[:32])
+	// Zero the entire SHA-512 buffer (incl. the Ed25519 prefix) so
+	// no caller-reachable memory holds the unredacted hash.
+	for i := range h {
+		h[i] = 0
+	}
+	return out, nil
 }
 
 // ---- AEAD: AES-256-GCM ----
@@ -141,9 +158,49 @@ type Argon2Params struct {
 // 64 MiB / 3 passes / 1 lane is OWASP's mid-tier recommendation for Argon2id.
 var DefaultArgon2 = Argon2Params{M: 64 * 1024, T: 3, P: 1}
 
-// DeriveKey runs Argon2id and returns 32 bytes.
-func DeriveKey(password, salt []byte, p Argon2Params) []byte {
-	return argon2.IDKey(password, salt, p.T, p.M, p.P, 32)
+// MinArgon2 / MaxArgon2 bound the Argon2id parameter ranges
+// DeriveKey will accept. Anything outside these bounds is treated as
+// adversarial input (a tampered vault header, a forged recovery
+// file, or a downgrade attempt) and rejected — protecting both
+// against panics (T=0 / P=0 inside argon2.IDKey) and against
+// memory-exhaustion DoS (huge M).
+//
+// The minimums are deliberately lower than DefaultArgon2 so we can
+// still accept legitimate older vaults written with weaker params,
+// but they still require enough work to be useful as a KDF. The
+// maximums cap memory at ~1 GiB and iterations / parallelism at
+// values no honest implementation should exceed.
+var (
+	MinArgon2 = Argon2Params{M: 16 * 1024, T: 1, P: 1}        // 16 MiB / 1 pass / 1 lane
+	MaxArgon2 = Argon2Params{M: 1024 * 1024, T: 16, P: 16}    // 1 GiB / 16 passes / 16 lanes
+)
+
+// ValidateArgon2 checks the supplied params are within accepted
+// bounds. Returned errors are descriptive so the caller can surface
+// them to operators looking at corrupt-vault diagnostics.
+func ValidateArgon2(p Argon2Params) error {
+	if p.M < MinArgon2.M || p.M > MaxArgon2.M {
+		return fmt.Errorf("crypto: argon2 memory %d KiB out of accepted range [%d, %d]", p.M, MinArgon2.M, MaxArgon2.M)
+	}
+	if p.T < MinArgon2.T || p.T > MaxArgon2.T {
+		return fmt.Errorf("crypto: argon2 iterations %d out of accepted range [%d, %d]", p.T, MinArgon2.T, MaxArgon2.T)
+	}
+	if p.P < MinArgon2.P || p.P > MaxArgon2.P {
+		return fmt.Errorf("crypto: argon2 parallelism %d out of accepted range [%d, %d]", p.P, MinArgon2.P, MaxArgon2.P)
+	}
+	return nil
+}
+
+// DeriveKey runs Argon2id and returns 32 bytes. Validates the
+// parameter set first — caller-supplied params can come from
+// untrusted vault / recovery file headers, where T=0 or P=0 would
+// panic inside argon2.IDKey and a huge M would OOM the process
+// (codex review: 🔴).
+func DeriveKey(password, salt []byte, p Argon2Params) ([]byte, error) {
+	if err := ValidateArgon2(p); err != nil {
+		return nil, err
+	}
+	return argon2.IDKey(password, salt, p.T, p.M, p.P, 32), nil
 }
 
 // ---- Sealed-box (libsodium crypto_box_seal) ----

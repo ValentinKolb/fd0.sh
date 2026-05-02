@@ -48,7 +48,10 @@ func RunRecoveryExport(ctx context.Context, outPath string) error {
 	if err != nil {
 		return err
 	}
-	kRecovery := crypto.DeriveKey(pass, salt, crypto.DefaultArgon2)
+	kRecovery, err := crypto.DeriveKey(pass, salt, crypto.DefaultArgon2)
+	if err != nil {
+		return fmt.Errorf("derive K_recovery: %w", err)
+	}
 	defer crypto.Wipe(kRecovery)
 	// AEAD over super_priv with AAD = "fd0-recovery-key-v1" || user_super_pub
 	aad := append([]byte(proto.DomainRecoveryKey), s.UserSuperPub...)
@@ -136,9 +139,12 @@ func RunRecoveryImport(ctx context.Context, inPath string) error {
 		return err
 	}
 	defer crypto.Wipe(pass)
-	kRecovery := crypto.DeriveKey(pass, rf.Salt, crypto.Argon2Params{
+	kRecovery, err := crypto.DeriveKey(pass, rf.Salt, crypto.Argon2Params{
 		M: rf.Argon2Params.M, T: rf.Argon2Params.T, P: rf.Argon2Params.P,
 	})
+	if err != nil {
+		return fmt.Errorf("recovery: %w", err)
+	}
 	defer crypto.Wipe(kRecovery)
 	aad := append([]byte(proto.DomainRecoveryKey), rf.UserSuperPub...)
 	superPriv, err := crypto.AEADOpen(kRecovery, rf.Nonce, rf.EncryptedSuperPriv, aad)
@@ -170,7 +176,10 @@ func RunRecoveryImport(ctx context.Context, inPath string) error {
 	if err != nil {
 		return err
 	}
-	unlockKey := crypto.DeriveKey(newPass, salt, crypto.DefaultArgon2)
+	unlockKey, err := crypto.DeriveKey(newPass, salt, crypto.DefaultArgon2)
+	if err != nil {
+		return fmt.Errorf("derive K_unlock: %w", err)
+	}
 	defer crypto.Wipe(unlockKey)
 	methodID := "am_" + ulid.Make().String()
 	encSP, err := vault.EncryptSuperPriv(superPriv, rf.UserSuperPub, methodID, unlockKey)

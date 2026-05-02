@@ -404,7 +404,9 @@ Re-seal:
 5. Zeroize payload_key and content from memory.
 ```
 
-A fresh `payload_key` per save provides per-version forward secrecy: an attacker who recovers an old vault file and the unlock credential learns content as of that snapshot, not future content.
+A fresh `payload_key` is generated on credential rotation (i.e. on each call that re-wraps for every auth method: `init`, `recovery import`, and the `auth add`/`auth rm` paths that rebuild every wrap). The agent's routine body-only re-saves keep the cached `payload_key` stable across saves — rotating it per-save would require every auth method's `K_unlock`, which the agent does not hold for non-active methods.
+
+Forward-secrecy bound: an attacker who recovers BOTH an old vault snapshot AND a K_unlock for any active wrap can decrypt all subsequent body snapshots until the next credential rotation. Closing this gap without per-save user interaction (e.g. via a per-body DEK chain) is reserved for v2.
 
 If a crash leaves the vault behind the latest chain event, the next open self-heals: `replay_chain` (`STORAGE.md` §4) verifies each event in full before installing any new OEK.
 

@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"io"
@@ -369,6 +370,11 @@ func TestRateLimitWritesAfterAuth(t *testing.T) {
 
 	pub, priv, err := crypto.GenerateIdentity()
 	if err != nil {
+		t.Fatal(err)
+	}
+	// Register pub as a known user so the auth middleware accepts
+	// signed requests (codex audit fix: server.IsUserRegistered).
+	if err := srv.Store().RegisterUser(context.Background(), pub, "test_short_id"); err != nil {
 		t.Fatal(err)
 	}
 	postSync := func() *http.Response {

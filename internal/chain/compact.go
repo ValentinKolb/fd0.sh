@@ -7,28 +7,19 @@ import (
 	"github.com/valentinkolb/fd0.sh/internal/proto"
 )
 
-// CompactUser keeps only the latest auth.set in path. The local prev_hash
-// chain becomes non-contiguous after compaction; verification falls back on
-// per-event signatures and the vault tip binding (STORAGE.md §5.4).
+// CompactUser is currently DISABLED.
 //
-// Returns true if the file was rewritten.
+// Codex audit (🟡 chain/compact.go:15): the original implementation
+// rewrote user.cbor to the latest event, but ReplayUser requires
+// events[0].Seq == 0 (chain/user.go:37) — any compacted non-genesis
+// user chain becomes unreplayable, locking the user out of their
+// own vault. There is no caller of this function in v1, so we keep
+// the symbol but make it a loud error to prevent future callers
+// from re-introducing the bug. Compaction support for the user
+// chain is reserved for v2 once a "compacted prefix" segment with
+// a verifiable hash of replaced ops is specified (TODO.md).
 func CompactUser(path string) (bool, error) {
-	events, err := ReadUserEvents(path)
-	if err != nil || len(events) <= 1 {
-		return false, err
-	}
-	cb, err := proto.Marshal(events[len(events)-1])
-	if err != nil {
-		return false, err
-	}
-	pre, err := fileSizeOf(path)
-	if err != nil {
-		return false, err
-	}
-	if int64(len(cb)) >= pre {
-		return false, nil
-	}
-	return true, WriteAll(path, [][]byte{cb})
+	return false, fmt.Errorf("chain.CompactUser is disabled in v1: ReplayUser requires events[0].Seq==0; compacting %s would orphan the chain", path)
 }
 
 // CompactScope rewrites path to drop superseded secret.set events.

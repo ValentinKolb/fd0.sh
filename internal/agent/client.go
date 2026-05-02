@@ -53,10 +53,12 @@ func (c *Client) Status() (*StatusResp, error) {
 	return r.Status, nil
 }
 
-// Unlock calls OpUnlock.
-func (c *Client) Unlock(vaultPath, methodType string, passphrase []byte) (*UnlockResp, error) {
+// Unlock calls OpUnlock. userChainPath is REQUIRED for the
+// rollback-detection check on the agent side; pass an empty string
+// only in tests that don't care.
+func (c *Client) Unlock(vaultPath, userChainPath, methodType string, passphrase []byte) (*UnlockResp, error) {
 	r, err := c.do(&Request{Op: OpUnlock, Unlock: &UnlockReq{
-		VaultPath: vaultPath, MethodType: methodType, Passphrase: passphrase,
+		VaultPath: vaultPath, UserChainPath: userChainPath, MethodType: methodType, Passphrase: passphrase,
 	}})
 	if err != nil {
 		return nil, err

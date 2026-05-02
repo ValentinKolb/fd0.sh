@@ -29,6 +29,18 @@ CREATE TABLE IF NOT EXISTS auth_nonces (
 
 CREATE INDEX IF NOT EXISTS auth_nonces_by_ts ON auth_nonces(ts);
 
+-- Registered users. Codex audit (🔴 auth.go:87, server.go:279):
+-- without this table, authenticated endpoints accepted any
+-- self-signed pk (anyone could call /sync without registering)
+-- AND POST /users could register the same user_super_pub multiple
+-- times under different shortIds. The PRIMARY KEY (super_pub) +
+-- UNIQUE (short_id) close both.
+CREATE TABLE IF NOT EXISTS users (
+    super_pub     BLOB    PRIMARY KEY CHECK (length(super_pub) = 32),
+    short_id      TEXT    NOT NULL UNIQUE,
+    registered_at INTEGER NOT NULL
+);
+
 -- Transparency log per TRANSLOG.md §7.2.
 --
 -- translog_nodes stores every "complete aligned subtree" hash. A subtree

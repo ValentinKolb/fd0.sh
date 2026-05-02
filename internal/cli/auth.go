@@ -77,7 +77,10 @@ func RunAuthAdd(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	newK := crypto.DeriveKey(pass, salt, crypto.DefaultArgon2)
+	newK, err := crypto.DeriveKey(pass, salt, crypto.DefaultArgon2)
+	if err != nil {
+		return fmt.Errorf("derive K_unlock: %w", err)
+	}
 	defer crypto.Wipe(newK)
 	newID := "am_" + ulid.Make().String()
 

@@ -274,6 +274,49 @@ func (s *Store) PruneNonces(ctx context.Context, ttlSecs int64) error {
 	return err
 }
 
+// RegisterUser inserts a (super_pub, short_id) row. Returns
+// ErrDuplicate if super_pub or short_id is already taken (codex
+// audit 🔴 server.go:279: super_pub_taken was previously not
+// enforced, so the same user_super_pub could register many shortIds).
+func (s *Store) RegisterUser(ctx context.Context, superPub []byte, shortID string) error {
+	if len(superPub) != 32 {
+		return errors.New("store: super_pub must be 32 bytes")
+	}
+	if shortID == "" {
+		return errors.New("store: short_id must not be empty")
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO users (super_pub, short_id, registered_at) VALUES (?, ?, ?)`,
+		superPub, shortID, time.Now().Unix(),
+	)
+	if err != nil && isUnique(err) {
+		return ErrDuplicate
+	}
+	return err
+}
+
+// IsUserRegistered returns true iff super_pub appears in the users
+// table. Codex audit (🔴 auth.go:87): every authenticated endpoint
+// MUST check this before honouring a request — otherwise a self-
+// signed pk that never went through POST /users could call /sync
+// and create scopes.
+func (s *Store) IsUserRegistered(ctx context.Context, superPub []byte) (bool, error) {
+	if len(superPub) != 32 {
+		return false, nil
+	}
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT 1 FROM users WHERE super_pub = ? LIMIT 1`, superPub,
+	).Scan(&n)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // ---- helpers ----
 
 func bytesEqual(a, b []byte) bool {

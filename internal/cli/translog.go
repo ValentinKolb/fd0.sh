@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/valentinkolb/fd0.sh/internal/chain"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
 	"github.com/valentinkolb/fd0.sh/internal/translog"
 )
@@ -221,6 +222,76 @@ func pinningPrompt(canonical string, pub []byte) error {
 		return errors.New("server pinning refused by user")
 	}
 	return nil
+}
+
+// EnsureUserRegistered ensures the local user_super_pub is known to
+// `serverURL` (codex audit 🔴 auth.go:87 + cli/sync.go:131). After
+// the genesis user.cbor event, this POSTs it to /users — the server
+// records (super_pub, short_id) and accepts subsequent /sync calls
+// from this key.
+//
+// Idempotent: if the server already has us (HTTP 409 super_pub_taken)
+// we treat that as success. Persists `Registered=true` on the
+// PinnedServer entry so subsequent syncs skip the round-trip.
+//
+// NOTE: this is the bare-minimum fix for v1. Full user-chain sync
+// (propagating subsequent auth.set events from `auth add`/`auth rm`
+// to the server) is a v1.x follow-up tracked in TODO.md.
+func (s *Session) EnsureUserRegistered(ctx context.Context, serverURL string) error {
+	canonical, err := NormalizeServerURL(serverURL)
+	if err != nil {
+		return err
+	}
+	pinned, ok := s.Body.PinnedServers[canonical]
+	if ok && pinned.Registered {
+		return nil
+	}
+	// Read the genesis user event from the local user chain.
+	events, err := chain.ReadUserEvents(s.Paths.UserChain)
+	if err != nil {
+		return fmt.Errorf("registration: read user chain: %w", err)
+	}
+	if len(events) == 0 {
+		return errors.New("registration: user chain empty (run `fd0 init` first)")
+	}
+	body, err := proto.Marshal(map[string]any{"event": events[0]})
+	if err != nil {
+		return fmt.Errorf("registration: marshal: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, canonical+"/users", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/cbor")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("registration: POST /users: %w", err)
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusCreated:
+		// Fresh registration — server accepted the genesis.
+	case http.StatusConflict:
+		// Could be `super_pub_taken` (already registered, fine) or
+		// `dup` (event_id collision — also already registered). Either
+		// way we're idempotently registered.
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if !strings.Contains(string(respBody), "super_pub_taken") &&
+			!strings.Contains(string(respBody), "dup") {
+			return fmt.Errorf("registration: 409 with unexpected reason: %s", respBody)
+		}
+	default:
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("registration: POST /users: %s: %s", resp.Status, respBody)
+	}
+	// Persist Registered=true so future syncs skip the round-trip.
+	if s.Body.PinnedServers == nil {
+		s.Body.PinnedServers = map[string]proto.PinnedServer{}
+	}
+	pinned = s.Body.PinnedServers[canonical]
+	pinned.Registered = true
+	s.Body.PinnedServers[canonical] = pinned
+	return s.ReSeal()
 }
 
 // fetchServerInfo issues an unauthenticated GET /v1/server-info to

@@ -2,6 +2,7 @@ package crypto
 
 import (
 	"crypto/subtle"
+	"runtime"
 
 	"github.com/awnumar/memguard"
 )
@@ -69,9 +70,18 @@ func (s *Secret) Equal(other []byte) bool {
 	return subtle.ConstantTimeCompare(s.buf.Bytes(), other) == 1
 }
 
-// Wipe zeroizes a []byte. Best-effort; the compiler may still keep copies.
+// Wipe zeroizes a []byte. Best-effort; the compiler may still keep
+// copies elsewhere.
+//
+// SECURITY: the trailing runtime.KeepAlive prevents the optimiser
+// from eliminating the entire loop as dead-store-on-dead-slice
+// (codex audit: 🔴). Without it, modern Go inliners may notice the
+// slice is never read after Wipe and skip the zeroing entirely,
+// leaving passphrases / private keys / OEKs in heap memory until
+// GC sweeps.
 func Wipe(b []byte) {
 	for i := range b {
 		b[i] = 0
 	}
+	runtime.KeepAlive(b)
 }

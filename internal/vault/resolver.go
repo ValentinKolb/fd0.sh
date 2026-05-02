@@ -56,6 +56,12 @@ func (r YubikeyResolver) UnlockKey(publicParams []byte) ([]byte, error) {
 func (PassphraseResolver) MethodType() string { return proto.AuthPassphrase }
 
 // UnlockKey implements vault.MethodResolver.
+//
+// SECURITY: validates Argon2 params from the (untrusted) vault
+// header before invoking the KDF. Without this, a tampered or
+// corrupted vault could supply T=0 / P=0 (panics inside argon2.IDKey)
+// or a huge M (process OOM during unlock). DeriveKey now bounds
+// these via crypto.ValidateArgon2 (codex audit: 🔴).
 func (r PassphraseResolver) UnlockKey(publicParams []byte) ([]byte, error) {
 	if len(publicParams) < 16 {
 		return nil, errors.New("passphrase: bad public_params")
@@ -65,7 +71,7 @@ func (r PassphraseResolver) UnlockKey(publicParams []byte) ([]byte, error) {
 	if err := proto.Unmarshal(publicParams[16:], &p); err != nil {
 		return nil, err
 	}
-	return crypto.DeriveKey(r.Passphrase, salt, crypto.Argon2Params{M: p.M, T: p.T, P: p.P}), nil
+	return crypto.DeriveKey(r.Passphrase, salt, crypto.Argon2Params{M: p.M, T: p.T, P: p.P})
 }
 
 // NewPassphraseParams builds public_params (salt(16) || cbor(Argon2Params)).

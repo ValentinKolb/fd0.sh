@@ -48,8 +48,40 @@ func Resolve() (Paths, error) {
 }
 
 // ScopeChain returns the chain path for a given scope_id.
+//
+// SECURITY (codex audit 🔴 fdhome.go:51): scopeID is validated
+// against STORAGE.md's `s_[a-z2-7]{26}` pattern before being joined
+// with the chain directory. Without this, a hostile peer (or a
+// corrupted local index) could feed a path traversal segment like
+// `../../etc/passwd` and ScopeChain would silently produce a path
+// outside p.Chains. Returns an empty string on invalid input — the
+// caller should detect and refuse rather than open the empty path.
 func (p Paths) ScopeChain(scopeID string) string {
+	if !ValidScopeID(scopeID) {
+		return ""
+	}
 	return filepath.Join(p.Chains, scopeID+".cbor")
+}
+
+// ValidScopeID returns true iff s matches the spec's exact
+// "scope id" shape: prefix `s_` then 26 chars from base32-Crockford
+// (lower) without padding, no separators. Does NOT enforce a
+// checksum — callers that need cryptographic identity bind via
+// proto.ScopeID(genesis_event_id).
+func ValidScopeID(s string) bool {
+	if len(s) != 28 || s[0] != 's' || s[1] != '_' {
+		return false
+	}
+	for i := 2; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z':
+		case c >= '2' && c <= '7':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // EnsureDirs creates Home and Chains with mode 0700 (user-only). The 0700

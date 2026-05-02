@@ -274,9 +274,15 @@ type VaultBody struct {
 // PinnedServer is one entry in VaultBody.PinnedServers. The map key is
 // the normalised server URL; the struct holds only the bytes the user
 // actually agreed to via the safety-number ceremony.
+//
+// Registered records whether THIS user has already POSTed their
+// genesis user event to /users on this server. Set true after the
+// first successful (or `super_pub_taken`-409) registration round.
+// Used to avoid pointless POSTs on every sync.
 type PinnedServer struct {
-	ServerPub []byte `cbor:"server_pub"`
-	PinnedAt  uint64 `cbor:"pinned_at"`
+	ServerPub  []byte `cbor:"server_pub"`
+	PinnedAt   uint64 `cbor:"pinned_at"`
+	Registered bool   `cbor:"registered,omitempty"`
 }
 
 // ScopeVaultData holds the OEK lineage and the latest accepted chain tip for

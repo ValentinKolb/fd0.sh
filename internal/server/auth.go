@@ -87,6 +87,17 @@ func (s *Server) verifyHTTPSig(ctx context.Context, r *http.Request) (*AuthResul
 	if !crypto.Verify(pk, si, sig) {
 		return nil, http.StatusUnauthorized, errors.New("bad_sig")
 	}
+	// SECURITY (codex audit 🔴 auth.go:87): authenticated endpoints
+	// MUST verify pk corresponds to a registered user. Without this
+	// check, anyone could self-sign a key, call /sync, and create
+	// scopes on the server. Registration happens via POST /users.
+	registered, err := s.store.IsUserRegistered(ctx, pk)
+	if err != nil {
+		return nil, http.StatusInternalServerError, err
+	}
+	if !registered {
+		return nil, http.StatusUnauthorized, errors.New("unregistered_pk")
+	}
 	// Replay window via auth_nonces.
 	ok, err := s.store.CheckAndInsertNonce(ctx, pk, nonce, ts)
 	if err != nil {

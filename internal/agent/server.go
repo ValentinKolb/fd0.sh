@@ -17,6 +17,7 @@ import (
 
 	"github.com/awnumar/memguard"
 
+	"github.com/valentinkolb/fd0.sh/internal/chain"
 	"github.com/valentinkolb/fd0.sh/internal/crypto"
 	"github.com/valentinkolb/fd0.sh/internal/fdhome"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
@@ -255,6 +256,42 @@ func (s *Server) handleUnlock(u *UnlockReq) *Response {
 		return errResp(err.Error())
 	}
 	body := res.Body
+
+	// SECURITY: rollback-detection (codex audit 🔴). The vault file
+	// is mutable storage; the user.cbor chain is append-only and
+	// every entry is signed. If an attacker rolls back vault.enc to
+	// an older snapshot (e.g. one where a now-revoked credential
+	// was still active), the older vault still decrypts cleanly and
+	// the agent would otherwise cache super_priv under the revoked
+	// credential. Compare body.AuthTip against the live chain tip;
+	// mismatch ⇒ refuse.
+	if u.UserChainPath != "" {
+		st, rerr := chain.ReplayUser(u.UserChainPath)
+		if rerr != nil {
+			crypto.Wipe(res.UnlockKey)
+			crypto.Wipe(res.PayloadKey)
+			return errResp(fmt.Sprintf("vault: replay user chain for rollback check: %v", rerr))
+		}
+		// st == nil means "no user chain yet" (file missing or
+		// empty). For a freshly-`init`'d vault this is fine; for a
+		// vault that has gone through `auth add` etc, body.AuthTip
+		// would be non-zero, and a missing chain is a rollback.
+		var liveSeq uint64
+		var liveHash []byte
+		if st != nil {
+			liveSeq = st.TipSeq
+			liveHash = st.TipHash
+		}
+		if liveSeq != body.AuthTip.Seq || !bytes.Equal(liveHash, body.AuthTip.Hash) {
+			crypto.Wipe(res.UnlockKey)
+			crypto.Wipe(res.PayloadKey)
+			return errResp(fmt.Sprintf(
+				"vault: ROLLBACK DETECTED — vault auth_tip (seq=%d) does not match user chain tip (seq=%d); refusing to unlock with potentially revoked credentials",
+				body.AuthTip.Seq, liveSeq,
+			))
+		}
+	}
+
 	if len(body.SuperPriv) != ed25519.PrivateKeySize {
 		crypto.Wipe(res.UnlockKey)
 		crypto.Wipe(res.PayloadKey)

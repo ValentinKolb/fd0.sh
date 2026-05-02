@@ -20,7 +20,10 @@ func TestVaultRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	unlock := crypto.DeriveKey(pass, salt, crypto.DefaultArgon2)
+	unlock, err := crypto.DeriveKey(pass, salt, crypto.DefaultArgon2)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	body := &proto.VaultBody{
 		SuperPriv: priv,
@@ -76,7 +79,10 @@ func TestAddWrapIdempotentOnRetry(t *testing.T) {
 	pub, priv, _ := crypto.GenerateIdentity()
 	salt, _ := crypto.RandomBytes(16)
 	pp, _ := NewPassphraseParams(salt, crypto.DefaultArgon2)
-	uk := crypto.DeriveKey([]byte("pass1"), salt, crypto.DefaultArgon2)
+	uk, err := crypto.DeriveKey([]byte("pass1"), salt, crypto.DefaultArgon2)
+	if err != nil {
+		t.Fatal(err)
+	}
 	body := &proto.VaultBody{
 		SuperPriv: priv,
 		AuthTip:   proto.ChainTip{Seq: 0, Hash: bytes.Repeat([]byte{0xAA}, 32)},
@@ -94,7 +100,10 @@ func TestAddWrapIdempotentOnRetry(t *testing.T) {
 	}
 	salt2, _ := crypto.RandomBytes(16)
 	pp2, _ := NewPassphraseParams(salt2, crypto.DefaultArgon2)
-	uk2 := crypto.DeriveKey([]byte("pass2"), salt2, crypto.DefaultArgon2)
+	uk2, err := crypto.DeriveKey([]byte("pass2"), salt2, crypto.DefaultArgon2)
+	if err != nil {
+		t.Fatal(err)
+	}
 	// First add succeeds.
 	if err := AddWrap(p, pub, body, res.PayloadKey, WrapInput{
 		MethodID: "am_b", MethodType: proto.AuthPassphrase, PublicParams: pp2, UnlockKey: uk2,
@@ -108,7 +117,10 @@ func TestAddWrapIdempotentOnRetry(t *testing.T) {
 		t.Fatalf("idempotent retry must succeed, got %v", err)
 	}
 	// Retry with the SAME method_id but a DIFFERENT UnlockKey: must error.
-	uk3 := crypto.DeriveKey([]byte("pass3"), salt2, crypto.DefaultArgon2)
+	uk3, err := crypto.DeriveKey([]byte("pass3"), salt2, crypto.DefaultArgon2)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := AddWrap(p, pub, body, res.PayloadKey, WrapInput{
 		MethodID: "am_b", MethodType: proto.AuthPassphrase, PublicParams: pp2, UnlockKey: uk3,
 	}); err == nil {
@@ -125,10 +137,16 @@ func TestRemoveWrapIdempotentOnNotFound(t *testing.T) {
 	pub, priv, _ := crypto.GenerateIdentity()
 	salt, _ := crypto.RandomBytes(16)
 	pp, _ := NewPassphraseParams(salt, crypto.DefaultArgon2)
-	uk := crypto.DeriveKey([]byte("pass1"), salt, crypto.DefaultArgon2)
+	uk, err := crypto.DeriveKey([]byte("pass1"), salt, crypto.DefaultArgon2)
+	if err != nil {
+		t.Fatal(err)
+	}
 	salt2, _ := crypto.RandomBytes(16)
 	pp2, _ := NewPassphraseParams(salt2, crypto.DefaultArgon2)
-	uk2 := crypto.DeriveKey([]byte("pass2"), salt2, crypto.DefaultArgon2)
+	uk2, err := crypto.DeriveKey([]byte("pass2"), salt2, crypto.DefaultArgon2)
+	if err != nil {
+		t.Fatal(err)
+	}
 	body := &proto.VaultBody{
 		SuperPriv: priv,
 		AuthTip:   proto.ChainTip{Seq: 0, Hash: bytes.Repeat([]byte{0xAA}, 32)},
