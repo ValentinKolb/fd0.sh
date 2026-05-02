@@ -111,6 +111,9 @@ func AEADOpen(key, nonce, ct, aad []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(nonce) != gcm.NonceSize() {
+		return nil, errors.New("crypto: bad nonce size")
+	}
 	return gcm.Open(nil, nonce, ct, aad)
 }
 
