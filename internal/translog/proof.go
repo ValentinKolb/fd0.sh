@@ -58,6 +58,9 @@ func inclusionPath(leaves [][]byte, index uint64) [][]byte {
 // the rightmost subtree is incomplete (e.g., size=3 has L2 alone at
 // the rightmost position, promoted past one level without a sibling).
 func VerifyInclusion(leafHash []byte, index, size uint64, path [][]byte, root []byte) error {
+	if size > maxTreeSize {
+		return ErrInclusionProofInvalid
+	}
 	if index >= size || len(leafHash) != HashSize || len(root) != HashSize {
 		return ErrInclusionProofInvalid
 	}
@@ -178,6 +181,9 @@ func subproof(leaves [][]byte, m uint64, b bool) [][]byte {
 func VerifyConsistency(oldSize, newSize uint64, proof [][]byte, oldRoot, newRoot []byte) error {
 	if oldSize > newSize {
 		return ErrSizeRegression
+	}
+	if newSize > maxTreeSize {
+		return ErrConsistencyProofInvalid
 	}
 	if len(oldRoot) != HashSize || len(newRoot) != HashSize {
 		return ErrConsistencyProofInvalid

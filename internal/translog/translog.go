@@ -173,7 +173,15 @@ func (h *TreeHead) SignedInput() ([]byte, error) {
 // RootHash matches a real tree). The caller — usually the storage layer
 // in translog/store — is responsible for building head from a real
 // incremental tree state. SignSTH is purely the cryptographic step.
+//
+// SECURITY (codex audit 🟡 translog.go:176): validates priv length
+// upfront to avoid an ed25519.Sign panic on caller error. Without
+// this, a 0-byte or wrong-size key crashes the process instead of
+// returning a clean error.
 func SignSTH(priv ed25519.PrivateKey, head TreeHead) (STH, error) {
+	if len(priv) != ed25519.PrivateKeySize {
+		return STH{}, errors.New("translog.SignSTH: priv must be 64 bytes")
+	}
 	si, err := head.SignedInput()
 	if err != nil {
 		return STH{}, err
@@ -311,6 +319,9 @@ type serverInfoSigned struct {
 // field is set to proto.DomainTranslogServerInfo; the signature covers
 // "fd0-translog-server-info-v1" || cbor({server_pub, issued_at}).
 func SignServerInfo(priv ed25519.PrivateKey, issuedAt uint64) (ServerInfo, error) {
+	if len(priv) != ed25519.PrivateKeySize {
+		return ServerInfo{}, errors.New("translog.SignServerInfo: priv must be 64 bytes")
+	}
 	pub := priv.Public().(ed25519.PublicKey)
 	body, err := proto.Marshal(serverInfoSigned{
 		ServerPub: pub,

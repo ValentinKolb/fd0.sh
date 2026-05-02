@@ -45,10 +45,18 @@ func (c *Client) IsRunning() bool {
 }
 
 // Status calls OpStatus.
+//
+// SECURITY (codex audit 🟡 client.go:53): every accessor below
+// validates the expected response arm is non-nil before
+// dereferencing. A malformed / old / hostile agent response could
+// otherwise return nil and panic at the caller.
 func (c *Client) Status() (*StatusResp, error) {
 	r, err := c.do(&Request{Op: OpStatus})
 	if err != nil {
 		return nil, err
+	}
+	if r.Status == nil {
+		return nil, errors.New("agent: malformed Status response")
 	}
 	return r.Status, nil
 }
@@ -63,6 +71,9 @@ func (c *Client) Unlock(vaultPath, userChainPath, methodType string, passphrase 
 	if err != nil {
 		return nil, err
 	}
+	if r.Unlock == nil {
+		return nil, errors.New("agent: malformed Unlock response")
+	}
 	return r.Unlock, nil
 }
 
@@ -75,6 +86,9 @@ func (c *Client) Sign(payload []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if r.Sign == nil {
+		return nil, errors.New("agent: malformed Sign response")
+	}
 	return r.Sign.Signature, nil
 }
 
@@ -84,6 +98,9 @@ func (c *Client) OpenSeal(sealed []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if r.OpenSeal == nil {
+		return nil, errors.New("agent: malformed OpenSeal response")
+	}
 	return r.OpenSeal.Plain, nil
 }
 
@@ -92,6 +109,9 @@ func (c *Client) GetBody() (*GetBodyResp, error) {
 	r, err := c.do(&Request{Op: OpGetBody})
 	if err != nil {
 		return nil, err
+	}
+	if r.GetBody == nil {
+		return nil, errors.New("agent: malformed GetBody response")
 	}
 	return r.GetBody, nil
 }
@@ -104,6 +124,9 @@ func (c *Client) RecoveryExport(unlockKey, salt, nonce, userSuperPub []byte) ([]
 	}})
 	if err != nil {
 		return nil, err
+	}
+	if r.RecoveryExport == nil {
+		return nil, errors.New("agent: malformed RecoveryExport response")
 	}
 	_ = salt // salt lives in the RecoveryFile header; not needed by the agent
 	return r.RecoveryExport.Encrypted, nil
@@ -126,6 +149,9 @@ func (c *Client) EncryptSuperPriv(unlockKey []byte, methodID string) ([]byte, er
 	}})
 	if err != nil {
 		return nil, err
+	}
+	if r.EncryptSuperPriv == nil {
+		return nil, errors.New("agent: malformed EncryptSuperPriv response")
 	}
 	return r.EncryptSuperPriv.EncryptedSuperPriv, nil
 }

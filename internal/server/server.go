@@ -54,8 +54,9 @@ type Server struct {
 	store  *store.Store
 	mux    *http.ServeMux
 	log    *slog.Logger
-	rl     *ratelimit.Limiter // nil when disabled
-	rlStop context.CancelFunc // cancels the limiter's GC goroutine on Close
+	rl        *ratelimit.Limiter // nil when disabled
+	rlStop    context.CancelFunc // cancels the limiter's GC goroutine on Close
+	pruneStop context.CancelFunc // cancels the noncePruner goroutine on Close
 
 	// serverInfo is the cached self-signed pubkey-publication record
 	// returned by GET /v1/server-info. Built once at boot — pubkey +
@@ -117,12 +118,21 @@ func New(cfg Config) (*Server, error) {
 		s.rl = ratelimit.New(rlCtx, cfg.RateLimit)
 	}
 	s.routes()
-	go s.noncePruner()
+	// SECURITY (codex audit 🟡 server.go:110): noncePruner now
+	// terminates on Close(). Previously it kept ticking against
+	// a closed DB after Close, logging warnings forever and
+	// leaking a goroutine.
+	pruneCtx, pruneCancel := context.WithCancel(context.Background())
+	s.pruneStop = pruneCancel
+	go s.noncePruner(pruneCtx)
 	return s, nil
 }
 
 // Close releases resources.
 func (s *Server) Close() error {
+	if s.pruneStop != nil {
+		s.pruneStop()
+	}
 	if s.rlStop != nil {
 		s.rlStop()
 	}
@@ -470,7 +480,11 @@ func (s *Server) handleFetchUser(w http.ResponseWriter, r *http.Request) {
 		}
 		since = n
 	}
-	rows, err := s.store.EventsSince(r.Context(), chainID, since, 1000)
+	// SECURITY (codex audit 🟡 server.go:438): API.md §2.2 says
+	// `?since=<seq>` returns events with seq ≥ since (inclusive),
+	// but EventsSince was exclusive. With since=0 the genesis
+	// (seq=0) was silently skipped. Use the inclusive variant.
+	rows, err := s.store.EventsSinceInclusive(r.Context(), chainID, since, 1000, true)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
@@ -741,6 +755,23 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 	var req SyncReq
 	if err := proto.Unmarshal(auth.Body, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad_body", err.Error())
+		return
+	}
+	// SECURITY (codex audit 🟡 server.go:720+756): cap the per-
+	// request work so one signed body cannot trigger unbounded
+	// DB / proof lookups under one rate-limit token. 256 scopes
+	// + 1024 push items per request is an order-of-magnitude
+	// above any realistic v1 client and well below DoS thresholds.
+	const maxPullScopes = 256
+	const maxPushItems = 1024
+	if len(req.Pull.Scopes) > maxPullScopes {
+		writeErr(w, http.StatusRequestEntityTooLarge, "too_many_pull_scopes",
+			fmt.Sprintf("%d > %d", len(req.Pull.Scopes), maxPullScopes))
+		return
+	}
+	if len(req.Push) > maxPushItems {
+		writeErr(w, http.StatusRequestEntityTooLarge, "too_many_push_items",
+			fmt.Sprintf("%d > %d", len(req.Push), maxPushItems))
 		return
 	}
 	resp := SyncResp{Pull: map[string]pullScope{}}
@@ -1187,15 +1218,21 @@ func newShortID() string {
 }
 
 // noncePruner runs once a minute and trims expired auth_nonces.
-func (s *Server) noncePruner() {
+// Terminates when ctx is canceled (Server.Close).
+func (s *Server) noncePruner(ctx context.Context) {
 	t := time.NewTicker(time.Minute)
 	defer t.Stop()
-	for range t.C {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if err := s.store.PruneNonces(ctx, nonceTTLSecs); err != nil {
-			s.log.Warn("prune nonces", "err", err)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			pctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			if err := s.store.PruneNonces(pctx, nonceTTLSecs); err != nil {
+				s.log.Warn("prune nonces", "err", err)
+			}
+			cancel()
 		}
-		cancel()
 	}
 }
 

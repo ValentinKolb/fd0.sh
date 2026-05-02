@@ -368,6 +368,12 @@ func (w *Witness) emitEquivocationEvidence(ctx context.Context, serverURL, chain
 
 // fetchSTH issues GET /v1/sth/{chain_id}. The server endpoint is
 // unauthenticated by spec (TRANSLOG.md §5).
+//
+// SECURITY (codex audit 🟡 witness.go:353): bound the read at
+// 1 MiB. A malicious pinned server could otherwise OOM the witness
+// by streaming an unbounded body before CBOR limits applied.
+const maxTranslogResponseBytes = 1 << 20
+
 func (w *Witness) fetchSTH(ctx context.Context, serverURL, chainID string) (translog.STH, error) {
 	endpoint := serverURL + "/v1/sth/" + url.PathEscape(chainID)
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
@@ -382,7 +388,7 @@ func (w *Witness) fetchSTH(ctx context.Context, serverURL, chainID string) (tran
 	if resp.StatusCode != http.StatusOK {
 		return translog.STH{}, fmt.Errorf("GET /v1/sth/%s: %s", chainID, resp.Status)
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTranslogResponseBytes))
 	if err != nil {
 		return translog.STH{}, err
 	}
@@ -409,7 +415,7 @@ func (w *Witness) fetchConsistencyProof(ctx context.Context, serverURL, chainID 
 	if resp.StatusCode != http.StatusOK {
 		return translog.ConsistencyProof{}, fmt.Errorf("GET /v1/proof/consistency: %s", resp.Status)
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTranslogResponseBytes))
 	if err != nil {
 		return translog.ConsistencyProof{}, err
 	}
@@ -470,6 +476,15 @@ func (w *Witness) VerifyArchive(ctx context.Context) (errs, equivs int, err erro
 					"tree_size", size, "err", verr)
 				errs++
 			}
+		}
+		// Codex audit (🟡 witness.go:417): rows.Err() must be
+		// checked AFTER iteration. A cursor / context / SQLite
+		// error after a partial scan would otherwise let
+		// VerifyArchive report a clean archive while it actually
+		// stopped early.
+		if rerr := rows.Err(); rerr != nil {
+			rows.Close()
+			return errs, equivs, rerr
 		}
 		rows.Close()
 		if sr.HasEquivAt {

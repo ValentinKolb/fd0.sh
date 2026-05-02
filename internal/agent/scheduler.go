@@ -93,7 +93,13 @@ func (s *Scheduler) runOnce(reason string) {
 		}
 		bin = p
 	}
-	cmd := exec.Command(bin, "sync", "--wait-lock=60s")
+	// SECURITY (codex audit 🟡 scheduler.go:96): hard cap auto-sync
+	// duration. Without it, a hung `fd0 sync` (network stall, etc)
+	// kept `s.running` true forever and suppressed all future
+	// scheduled or on-unlock syncs.
+	syncCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(syncCtx, bin, "sync", "--wait-lock=60s")
 	cmd.Env = append(os.Environ(),
 		"FD0_HOME="+s.cfg.Home,
 		"FD0_SERVER="+s.cfg.Server,

@@ -22,6 +22,11 @@ func Spawn(binPath, logPath string) error {
 	}
 	cmd := exec.Command(binPath)
 	cmd.Stdin = nil
+	// SECURITY (codex audit 🟡 spawn.go:26): close the log file in
+	// the parent after Start() so the parent's FD count stays
+	// clean. The child inherits via Stdout/Stderr; the parent's
+	// dup is no longer needed.
+	var logFile *os.File
 	if logPath != "" {
 		f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 		if err != nil {
@@ -29,9 +34,16 @@ func Spawn(binPath, logPath string) error {
 		}
 		cmd.Stdout = f
 		cmd.Stderr = f
+		logFile = f
 	}
 	if err := cmd.Start(); err != nil {
+		if logFile != nil {
+			logFile.Close()
+		}
 		return fmt.Errorf("agent: spawn: %w", err)
+	}
+	if logFile != nil {
+		_ = logFile.Close() // child still has it via fork
 	}
 	go func() { _ = cmd.Wait() }()
 	return nil
