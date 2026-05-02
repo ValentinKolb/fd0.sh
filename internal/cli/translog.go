@@ -367,6 +367,52 @@ func EncodeSTH(sth translog.STH) ([]byte, error) {
 	return proto.Marshal(sth)
 }
 
+// VerifyAndCrossCheck wraps VerifyTranslogResponse with a witness
+// cross-check call when wcc is non-nil. Centralised here so every
+// sync code path that trusts a server STH gets the same protection
+// without duplicating the witness wiring.
+//
+// wcc may be nil — callers pass nil when the client config has no
+// [[witness]] entries OR min_cosigns=0. Both checks happen before
+// any state is committed, so a witness rejection reaches the
+// caller before vault writes.
+func VerifyAndCrossCheck(
+	ctx context.Context,
+	wcc *WitnessCheckClient,
+	serverURL string,
+	pinnedPub ed25519.PublicKey,
+	expectedChainID string,
+	sth *translog.STH,
+	priorSTH *translog.STH,
+	inclusionProofs []translog.InclusionProof,
+	expectedLeafIndices []uint64,
+	eventLeafHashes [][]byte,
+	consistency *translog.ConsistencyProof,
+) error {
+	if err := VerifyTranslogResponse(pinnedPub, expectedChainID, sth, priorSTH, inclusionProofs, expectedLeafIndices, eventLeafHashes, consistency); err != nil {
+		return err
+	}
+	if wcc != nil && sth != nil {
+		// Codex fix #5: normalise the server URL once before the
+		// cross-check. Pinning canonicalises (lowercase host, no
+		// trailing slash); the witness archive uses whatever it
+		// was configured with, which is also expected to be the
+		// canonical form. A trailing slash or mixed-case host on
+		// `serverURL` here would silently 404 every cross-check
+		// and the threshold (codex fix #3 hardened) would fail
+		// loudly — but normalising here also avoids the noisy
+		// failure for honest URL drift.
+		canon, err := NormalizeServerURL(serverURL)
+		if err != nil {
+			return fmt.Errorf("witness cross-check: %w", err)
+		}
+		if err := wcc.CrossCheckSTH(ctx, canon, pinnedPub, *sth); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // DecodeSTH parses a CBOR-encoded STH from the vault. Returns nil on
 // empty input (no anchor yet — fresh chain or legacy vault) so the
 // caller can treat "no proof" and "missing field" identically.

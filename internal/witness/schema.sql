@@ -5,17 +5,31 @@
 -- coexist as equivocation evidence — DetectEquivocationAt surfaces
 -- such pairs by counting distinct root_hash per (server, chain, size).
 CREATE TABLE IF NOT EXISTS witness_sths (
-    server_url   TEXT    NOT NULL,
-    chain_id     TEXT    NOT NULL,
-    tree_size    INTEGER NOT NULL,
-    root_hash    BLOB    NOT NULL CHECK (length(root_hash) = 32),
-    timestamp    INTEGER NOT NULL,
-    signature    BLOB    NOT NULL CHECK (length(signature) = 64),
-    fetched_at   INTEGER NOT NULL,
+    server_url        TEXT    NOT NULL,
+    chain_id          TEXT    NOT NULL,
+    tree_size         INTEGER NOT NULL,
+    root_hash         BLOB    NOT NULL CHECK (length(root_hash) = 32),
+    timestamp         INTEGER NOT NULL,
+    signature         BLOB    NOT NULL CHECK (length(signature) = 64),
+    fetched_at        INTEGER NOT NULL,
+    -- witness_signature: ed25519 cosign by THIS witness over
+    -- ("fd0-witness-cosign-v1" || cbor({sth, server_url})). NULL
+    -- only on rows from before the cosign keypair was provisioned.
+    witness_signature BLOB             CHECK (witness_signature IS NULL OR length(witness_signature) = 64),
     PRIMARY KEY (server_url, chain_id, tree_size, root_hash)
 );
 CREATE INDEX IF NOT EXISTS witness_sths_size
     ON witness_sths(server_url, chain_id, tree_size);
+
+-- The witness's own cosign pubkey, cached so a startup mismatch
+-- with the on-disk keyfile is FATAL (operator pointing at the wrong
+-- DB or having swapped only one side would silently invalidate
+-- every client's witness pin). Single row (id=1) by convention.
+CREATE TABLE IF NOT EXISTS witness_keypair (
+    id        INTEGER PRIMARY KEY CHECK (id = 1),
+    pub       BLOB    NOT NULL CHECK (length(pub) = 32),
+    pinned_at INTEGER NOT NULL
+);
 
 -- Operator-supplied pubkey pin per server URL. Single row per URL;
 -- a rotation requires deleting the row first (ceremony).

@@ -165,15 +165,21 @@ type ArchiveResult struct {
 // error). After insert, queries the table for any other row at the
 // same tree_size with a different root and reports equivocation.
 //
+// `witnessSig` is the witness's own cosign over the STH (may be nil
+// for back-compat with archives migrated from earlier v1 builds).
+//
 // Caller is expected to have ALREADY verified sth.Signature against
 // the pinned pubkey; Insert does not re-verify (the storage layer is
 // crypto-blind, the polling layer is crypto-aware).
-func (s *Store) Insert(ctx context.Context, serverURL string, sth translog.STH, fetchedAt int64) (ArchiveResult, error) {
+func (s *Store) Insert(ctx context.Context, serverURL string, sth translog.STH, fetchedAt int64, witnessSig []byte) (ArchiveResult, error) {
+	if witnessSig != nil && len(witnessSig) != ed25519.SignatureSize {
+		return ArchiveResult{}, fmt.Errorf("witness.Insert: witnessSig must be %d bytes or nil", ed25519.SignatureSize)
+	}
 	res, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO witness_sths (server_url, chain_id, tree_size, root_hash, timestamp, signature, fetched_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT OR IGNORE INTO witness_sths (server_url, chain_id, tree_size, root_hash, timestamp, signature, fetched_at, witness_signature)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		serverURL, sth.Head.ChainID, int64(sth.Head.TreeSize), sth.Head.RootHash,
-		int64(sth.Head.Timestamp), sth.Signature, fetchedAt,
+		int64(sth.Head.Timestamp), sth.Signature, fetchedAt, witnessSig,
 	)
 	if err != nil {
 		return ArchiveResult{}, err
@@ -188,6 +194,92 @@ func (s *Store) Insert(ctx context.Context, serverURL string, sth translog.STH, 
 		return ArchiveResult{Stored: stored}, err
 	}
 	return ArchiveResult{Stored: stored, EquivocationDetected: equiv}, nil
+}
+
+// LookupAt returns the cosigned STH archived at exactly
+// (server, chain, tree_size). If the archive holds MULTIPLE distinct
+// roots at that size — the smoking gun of same-size equivocation —
+// LookupAt returns ErrEquivocationAtSize so the HTTP layer surfaces
+// a 409 instead of silently picking one branch (codex fix #2).
+// Without this, the API could mask the divergent root and feed the
+// branch that matches the malicious server back to the client.
+//
+// Used by the witness's HTTP handler when a client asks
+// `GET /v1/witness/sth/<server>/<chain>?tree_size=N`.
+func (s *Store) LookupAt(ctx context.Context, serverURL, chainID string, treeSize uint64) (translog.STH, []byte, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT root_hash, timestamp, signature, witness_signature
+		   FROM witness_sths
+		  WHERE server_url = ? AND chain_id = ? AND tree_size = ?
+		  ORDER BY fetched_at DESC`,
+		serverURL, chainID, int64(treeSize),
+	)
+	if err != nil {
+		return translog.STH{}, nil, err
+	}
+	defer rows.Close()
+	type row struct {
+		root []byte
+		ts   int64
+		sig  []byte
+		wsig []byte
+	}
+	var collected []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.root, &r.ts, &r.sig, &r.wsig); err != nil {
+			return translog.STH{}, nil, err
+		}
+		collected = append(collected, r)
+	}
+	if err := rows.Err(); err != nil {
+		return translog.STH{}, nil, err
+	}
+	if len(collected) == 0 {
+		return translog.STH{}, nil, ErrNoSTH
+	}
+	// Multi-root detection: if any two rows at this size have
+	// different root hashes, the witness is holding equivocation
+	// evidence and MUST NOT serve a cosigned branch (it would let
+	// a colluding server match either branch the client sees).
+	for i := 1; i < len(collected); i++ {
+		if !equalBytes(collected[i].root, collected[0].root) {
+			return translog.STH{}, nil, ErrEquivocationAtSize
+		}
+	}
+	r := collected[0]
+	return translog.STH{
+		Head: translog.TreeHead{
+			ChainID:   chainID,
+			TreeSize:  uint64(treeSize),
+			RootHash:  r.root,
+			Timestamp: uint64(r.ts),
+		},
+		Signature: r.sig,
+	}, r.wsig, nil
+}
+
+// LatestSTHWithCosign is LatestSTH + the cosign over that row.
+// Used by the witness HTTP handler for the "no tree_size given"
+// (latest) query path.
+//
+// Same-size equivocation at the LATEST size is also surfaced as
+// ErrEquivocationAtSize: returning either branch would mask the
+// archive's own contradictory state.
+func (s *Store) LatestSTHWithCosign(ctx context.Context, serverURL, chainID string) (translog.STH, []byte, error) {
+	var maxSize sql.NullInt64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT MAX(tree_size) FROM witness_sths
+		   WHERE server_url = ? AND chain_id = ?`,
+		serverURL, chainID,
+	).Scan(&maxSize)
+	if err != nil {
+		return translog.STH{}, nil, err
+	}
+	if !maxSize.Valid {
+		return translog.STH{}, nil, ErrNoSTH
+	}
+	return s.LookupAt(ctx, serverURL, chainID, uint64(maxSize.Int64))
 }
 
 // DetectEquivocationAt returns true iff witness_sths has two or more
@@ -346,9 +438,10 @@ func (s *Store) CountConsistencyFailures(ctx context.Context, serverURL, chainID
 
 // Sentinels.
 var (
-	ErrNotPinned   = errors.New("witness: server not pinned")
-	ErrNoSTH       = errors.New("witness: no STH archived for this chain yet")
-	ErrPinMismatch = errors.New("witness: server already pinned with a different pubkey — operator must unpin first to rotate")
+	ErrNotPinned          = errors.New("witness: server not pinned")
+	ErrNoSTH              = errors.New("witness: no STH archived for this chain yet")
+	ErrPinMismatch        = errors.New("witness: server already pinned with a different pubkey — operator must unpin first to rotate")
+	ErrEquivocationAtSize = errors.New("witness: archive holds multiple distinct roots at this tree_size — equivocation evidence")
 )
 
 func equalBytes(a, b []byte) bool {

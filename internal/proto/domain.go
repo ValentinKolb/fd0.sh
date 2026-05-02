@@ -27,6 +27,13 @@ const (
 	DomainTranslogSTH        = "fd0-translog-sth-v1"         // STH signature input
 	DomainTranslogServerInfo = "fd0-translog-server-info-v1" // server-info signature input
 	DomainServerFingerprint  = "fd0-server-fingerprint-v1"   // user-facing fingerprint over (URL, pubkey)
+
+	// Witness cosign (TRANSLOG.md §10). A witness cosigns an STH it
+	// observed at a specific server, binding the cosign to BOTH the
+	// STH bytes AND the server URL the witness fetched it from. This
+	// prevents replay across servers (a witness signature for chain
+	// X@server1 must not validate as a cosign for chain X@server2).
+	DomainWitnessCosign = "fd0-witness-cosign-v1"
 )
 
 // Magic strings for on-disk file headers.

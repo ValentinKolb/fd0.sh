@@ -13,8 +13,10 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -28,6 +30,8 @@ import (
 type cli struct {
 	Config  string `name:"config" short:"c" help:"Witness config TOML." default:"/etc/fd0-witness.toml" env:"FD0_WITNESS_CONFIG"`
 	DB      string `name:"db" help:"Witness archive SQLite path." default:"/var/lib/fd0-witness/witness.db" env:"FD0_WITNESS_DB"`
+	Key     string `name:"key" help:"Witness cosign key path (ed25519 64-byte seed||pub). Empty = legacy passive-archiver mode (no cosign, no HTTP)." default:"" env:"FD0_WITNESS_KEY"`
+	Bind    string `name:"bind" help:"HTTP server bind address for client cross-check (empty = no HTTP server). Requires --key." default:"" env:"FD0_WITNESS_BIND"`
 	Verbose bool   `name:"verbose" short:"v" help:"Verbose logging."`
 
 	Run    runCmd    `cmd:"" default:"1" help:"Start the polling daemon (default)."`
@@ -72,23 +76,66 @@ func main() {
 	}
 	defer store.Close()
 
+	// Provision the witness's own cosign keypair only when --key
+	// is given. Without a key the witness runs in legacy
+	// passive-archiver mode (no cosign, no HTTP server) — exactly
+	// the v1.0 OPTIONAL profile from TRANSLOG.md §10.
+	var (
+		cosignPriv ed25519.PrivateKey
+		cosignPub  ed25519.PublicKey
+	)
+	if c.Key != "" {
+		bgCtx := context.Background()
+		cosignPriv, cosignPub, err = witness.LoadOrCreateWitnessKey(bgCtx, store, c.Key, func(msg string) {
+			fmt.Fprintln(os.Stderr, msg)
+		})
+		if err != nil {
+			log.Error("witness keypair", "err", err)
+			os.Exit(2)
+		}
+		log.Info("witness cosign key loaded", "pub_hex", fmt.Sprintf("%x", cosignPub))
+	} else if c.Bind != "" {
+		log.Error("--bind requires --key (HTTP server has no cosign key to expose)")
+		os.Exit(2)
+	}
+
 	w := witness.New(store, cfg, log)
+	w.CosignPriv = cosignPriv
 
 	switch kctx.Command() {
 	case "run":
-		runDaemon(w, log)
+		runDaemon(w, cosignPub, c.Bind, log)
 	case "status":
 		runStatus(w)
 	case "verify":
 		runVerify(w, log)
 	default:
-		runDaemon(w, log)
+		runDaemon(w, cosignPub, c.Bind, log)
 	}
 }
 
-func runDaemon(w *witness.Witness, log *slog.Logger) {
+func runDaemon(w *witness.Witness, cosignPub ed25519.PublicKey, bind string, log *slog.Logger) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+
+	// Optional HTTP server for client cross-check (TRANSLOG.md §8.3).
+	// Requires --key (validated above). Absent --bind the witness
+	// runs in legacy "passive archiver" mode.
+	if bind != "" {
+		hs := &witness.HTTPServer{
+			Store:      w.Store,
+			WitnessPub: cosignPub,
+			Log:        log,
+		}
+		go func() {
+			log.Info("witness http server up", "bind", bind)
+			if err := hs.ListenAndServe(bind); err != nil && err != http.ErrServerClosed {
+				log.Error("witness http server", "err", err)
+				cancel()
+			}
+		}()
+	}
+
 	if err := w.Run(ctx); err != nil && err != context.Canceled {
 		log.Error("witness run", "err", err)
 		os.Exit(1)

@@ -19,12 +19,18 @@ import (
 // instance handles many (server_url, chain_id) pairs configured by
 // the operator. Run() starts the polling loop; PollOnce drives a
 // single round (used by tests + the manual `verify` command).
+//
+// CosignPriv is the witness's own ed25519 cosign keypair (TRANSLOG.md
+// §10). When non-nil, every successfully-verified STH is also signed
+// and the cosign is persisted alongside the row. May be nil in unit
+// tests that don't exercise the cosign protocol.
 type Witness struct {
-	Store  *Store
-	HTTP   *http.Client
-	Log    *slog.Logger
-	Now    func() time.Time // injectable for tests
-	Config Config
+	Store      *Store
+	HTTP       *http.Client
+	Log        *slog.Logger
+	Now        func() time.Time // injectable for tests
+	Config     Config
+	CosignPriv ed25519.PrivateKey
 }
 
 // New constructs a Witness with sensible defaults. cfg drives the
@@ -179,43 +185,84 @@ func (w *Witness) pollOne(ctx context.Context, t Target, chainID string) {
 			"server", t.ServerURL, "requested_chain", chainID, "sth_chain", sth.Head.ChainID)
 		return
 	}
+	// Compute the cosign once — the STH has already passed sig +
+	// chain_id binding checks, so attesting "I saw this STH from
+	// this server" is honest regardless of any prior-STH comparison
+	// outcomes below.
+	cosign, cerr := w.signCosign(t.ServerURL, sth)
+	if cerr != nil {
+		// Cosign is purely additive — log and proceed without it
+		// rather than dropping the archive entry.
+		w.Log.Warn("witness: cosign skipped", "server", t.ServerURL, "chain", chainID, "err", cerr)
+		cosign = nil
+	}
+
 	prior, err := w.Store.LatestSTH(ctx, t.ServerURL, chainID)
 	switch {
 	case errors.Is(err, ErrNoSTH):
 		// First contact for this (server, chain). Archive directly.
-		res, ierr := w.Store.Insert(ctx, t.ServerURL, sth, w.Now().Unix())
+		res, ierr := w.Store.Insert(ctx, t.ServerURL, sth, w.Now().Unix(), cosign)
 		if ierr != nil {
 			w.Log.Error("witness: archive failed", "err", ierr)
 			return
 		}
 		w.Log.Info("witness: first STH archived",
 			"server", t.ServerURL, "chain", chainID,
-			"tree_size", sth.Head.TreeSize, "stored", res.Stored)
+			"tree_size", sth.Head.TreeSize, "stored", res.Stored, "cosigned", cosign != nil)
 		return
 	case err != nil:
 		w.Log.Error("witness: store lookup failed", "err", err)
 		return
 	}
 	// Compare against prior.
-	w.compareAndArchive(ctx, t, chainID, pub, prior, sth)
+	w.compareAndArchive(ctx, t, chainID, pub, prior, sth, cosign)
+}
+
+// signCosign produces a witness cosign over (sth, serverURL) using
+// w.CosignPriv. Returns (nil, nil) when no key is configured — the
+// caller treats that as "no cosign for this row".
+func (w *Witness) signCosign(serverURL string, sth translog.STH) ([]byte, error) {
+	if w.CosignPriv == nil {
+		return nil, nil
+	}
+	wsth, err := translog.SignWitnessedSTH(w.CosignPriv, sth, serverURL)
+	if err != nil {
+		return nil, err
+	}
+	return wsth.WitnessSig, nil
 }
 
 // compareAndArchive contains the prior-vs-new STH decision tree.
-// Pulled out so tests can drive it directly without HTTP.
-func (w *Witness) compareAndArchive(ctx context.Context, t Target, chainID string, pub ed25519.PublicKey, prior, sth translog.STH) {
+// Pulled out so tests can drive it directly without HTTP. `cosign`
+// is the witness's signature over (sth, t.ServerURL); may be nil
+// if no cosign key is configured or signing failed.
+//
+// SECURITY: a cosign attests "I observed this STH AND its growth
+// from my prior STH was consistent". Any growth-side failure
+// (regression, fetch-fail, verify-fail) MUST archive the STH as
+// evidence WITHOUT a cosign — otherwise the witness becomes a
+// signing oracle for inconsistent forks and a malicious server
+// can launder fork evidence into client-acceptable confirmation.
+func (w *Witness) compareAndArchive(ctx context.Context, t Target, chainID string, pub ed25519.PublicKey, prior, sth translog.STH, cosign []byte) {
 	switch {
 	case sth.Head.TreeSize < prior.Head.TreeSize:
 		// Regression: server is publishing a smaller tree than we
-		// previously witnessed. Hard equivocation signal.
-		w.Log.Error("witness: TREE_SIZE REGRESSION",
+		// previously witnessed. Hard equivocation signal — DO NOT
+		// cosign (codex fix #1).
+		w.Log.Error("witness: TREE_SIZE REGRESSION (cosign withheld)",
 			"server", t.ServerURL, "chain", chainID,
 			"prior_size", prior.Head.TreeSize, "new_size", sth.Head.TreeSize)
-		_, _ = w.Store.Insert(ctx, t.ServerURL, sth, w.Now().Unix())
+		_, _ = w.Store.Insert(ctx, t.ServerURL, sth, w.Now().Unix(), nil)
 
 	case sth.Head.TreeSize == prior.Head.TreeSize:
 		// Same size. Either same root (idempotent) or different
-		// (equivocation).
-		res, err := w.Store.Insert(ctx, t.ServerURL, sth, w.Now().Unix())
+		// (equivocation). We DO cosign here — same-size repolls of
+		// an unchanged head are routine, and even when the new row
+		// is part of equivocation evidence the cosign on each
+		// branch is itself the proof artifact (publishing two
+		// validly-cosigned WitnessedSTHs at the same size with
+		// different roots is the smoking gun).
+		res, err := w.Store.Insert(ctx, t.ServerURL, sth, w.Now().Unix(), cosign)
 		if err != nil {
 			w.Log.Error("witness: archive failed", "err", err)
 			return
@@ -225,19 +272,19 @@ func (w *Witness) compareAndArchive(ctx context.Context, t Target, chainID strin
 		}
 
 	default: // sth.Head.TreeSize > prior.Head.TreeSize
-		// Tree grew — fetch consistency proof and verify.
+		// Tree grew — fetch consistency proof and verify. Only the
+		// FULLY-VERIFIED growth gets cosigned. Failed-consistency
+		// rows are still archived (so audit can find them) but
+		// without the cosign, so the HTTP endpoint will return 404
+		// for that size and downstream clients can't be tricked
+		// into counting an inconsistent growth as confirmation.
 		now := w.Now().Unix()
 		proof, err := w.fetchConsistencyProof(ctx, t.ServerURL, chainID, prior.Head.TreeSize, sth.Head.TreeSize)
 		if err != nil {
-			// Per TRANSLOG.md §8.1 step 3: missing/refused proof
-			// endpoint = ERROR + archive both STHs as evidence.
-			// Persist the new STH AND a durable consistency-failure
-			// row so audit/verify finds the failed-edge after log
-			// rotation (codex C5 review #1).
-			w.Log.Error("witness: fetch consistency proof failed — archiving STH as unverified-growth evidence",
+			w.Log.Error("witness: fetch consistency proof failed — archiving STH as unverified-growth evidence (cosign withheld)",
 				"server", t.ServerURL, "chain", chainID,
 				"from", prior.Head.TreeSize, "to", sth.Head.TreeSize, "err", err)
-			_, _ = w.Store.Insert(ctx, t.ServerURL, sth, now)
+			_, _ = w.Store.Insert(ctx, t.ServerURL, sth, now, nil)
 			_ = w.Store.RecordConsistencyFailure(ctx, t.ServerURL, chainID,
 				prior.Head.TreeSize, prior.Head.RootHash,
 				sth.Head.TreeSize, sth.Head.RootHash,
@@ -245,17 +292,17 @@ func (w *Witness) compareAndArchive(ctx context.Context, t Target, chainID strin
 			return
 		}
 		if err := translog.VerifyConsistency(prior.Head.TreeSize, sth.Head.TreeSize, proof.Nodes, prior.Head.RootHash, sth.Head.RootHash); err != nil {
-			w.Log.Error("witness: CONSISTENCY PROOF FAILED — possible server rewrite or different-size fork",
+			w.Log.Error("witness: CONSISTENCY PROOF FAILED — possible server rewrite or different-size fork (cosign withheld)",
 				"server", t.ServerURL, "chain", chainID,
 				"from_size", prior.Head.TreeSize, "to_size", sth.Head.TreeSize, "err", err)
-			_, _ = w.Store.Insert(ctx, t.ServerURL, sth, now)
+			_, _ = w.Store.Insert(ctx, t.ServerURL, sth, now, nil)
 			_ = w.Store.RecordConsistencyFailure(ctx, t.ServerURL, chainID,
 				prior.Head.TreeSize, prior.Head.RootHash,
 				sth.Head.TreeSize, sth.Head.RootHash,
 				"verify_failed", now)
 			return
 		}
-		res, err := w.Store.Insert(ctx, t.ServerURL, sth, now)
+		res, err := w.Store.Insert(ctx, t.ServerURL, sth, now, cosign)
 		if err != nil {
 			w.Log.Error("witness: archive failed", "err", err)
 			return
@@ -263,7 +310,7 @@ func (w *Witness) compareAndArchive(ctx context.Context, t Target, chainID strin
 		if res.Stored {
 			w.Log.Info("witness: STH advanced + verified",
 				"server", t.ServerURL, "chain", chainID,
-				"prior_size", prior.Head.TreeSize, "new_size", sth.Head.TreeSize)
+				"prior_size", prior.Head.TreeSize, "new_size", sth.Head.TreeSize, "cosigned", cosign != nil)
 		}
 	}
 }

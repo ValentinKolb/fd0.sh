@@ -11,11 +11,40 @@ import (
 // Config is the user-editable ~/.fd0/config.toml. All fields are optional;
 // missing files / fields fall back to documented defaults.
 type Config struct {
-	ShortID   string          `toml:"short_id"`
-	Sync      SyncConfig      `toml:"sync"`
-	Client    ClientConfig    `toml:"client"`
-	Agent     AgentConfig     `toml:"agent"`
-	Clipboard ClipboardConfig `toml:"clipboard"`
+	ShortID   string           `toml:"short_id"`
+	Sync      SyncConfig       `toml:"sync"`
+	Client    ClientConfig     `toml:"client"`
+	Agent     AgentConfig      `toml:"agent"`
+	Clipboard ClipboardConfig  `toml:"clipboard"`
+	Witnesses []WitnessConfig  `toml:"witness"`        // [[witness]] entries
+	WitnessP  WitnessPolicy    `toml:"witness_policy"` // global cross-check policy
+}
+
+// WitnessConfig is one configured witness the client trusts. Per
+// TRANSLOG.md §10 the witness pubkey is operator-pinned (no TOFU)
+// because witnesses are operational identities, not peer-to-peer.
+type WitnessConfig struct {
+	URL    string `toml:"url"`
+	PubHex string `toml:"pub"` // hex ed25519 pubkey
+}
+
+// WitnessPolicy expresses the cross-check policy: how many cosigns
+// the client requires per sync round.
+//
+// MinCosigns is INDEPENDENT of len(Witnesses): the operator can
+// configure 3 witnesses but require only 2 matching cosigns,
+// leaving headroom for a single witness outage. A lagging or
+// unreachable witness simply doesn't contribute, so MinCosigns is
+// the absolute floor — there is no "lag tolerance" knob that
+// silently lowers it (codex fix #3 hardened this against the
+// timing-game attack where an adversary could DOS witnesses to
+// drive the threshold to zero).
+//
+// Default policy (MinCosigns=0) DISABLES cross-check entirely; this
+// matches the v1 OPTIONAL spec stance and lets single-user installs
+// run without any witness infrastructure.
+type WitnessPolicy struct {
+	MinCosigns int `toml:"min_cosigns"`
 }
 
 // AgentConfig collects fd0-agent lifecycle knobs. Read by the agent when the
@@ -92,4 +121,13 @@ func (c Config) SyncIntervalDuration() time.Duration {
 		return 0
 	}
 	return d
+}
+
+// WitnessCrossCheckEnabled returns true iff the client should
+// perform cross-check on every sync. Disabled when no witnesses are
+// configured OR MinCosigns is zero. Either knob can disable it
+// independently — operators turning min_cosigns to 0 temporarily
+// shouldn't have to also delete every [[witness]] block.
+func (c Config) WitnessCrossCheckEnabled() bool {
+	return len(c.Witnesses) > 0 && c.WitnessP.MinCosigns > 0
 }

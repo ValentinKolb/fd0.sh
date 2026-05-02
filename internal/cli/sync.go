@@ -132,13 +132,20 @@ func RunSync(ctx context.Context, server string) error {
 	if server == "" {
 		server = os.Getenv("FD0_SERVER")
 	}
+	paths, _ := fdhome.Resolve()
+	cfg, _ := fdhome.LoadConfig(paths.Config)
 	if server == "" {
-		paths, _ := fdhome.Resolve()
-		cfg, _ := fdhome.LoadConfig(paths.Config)
 		server = cfg.Sync.Server
 	}
 	if server == "" {
 		return errors.New("no server configured (--server, FD0_SERVER, or [sync].server)")
+	}
+	// Build the witness cross-check client BEFORE opening the
+	// session. A bad [[witness]] config should fail loudly, not get
+	// hidden behind the unlock prompt.
+	wcc, err := NewWitnessCheckClient(cfg)
+	if err != nil {
+		return fmt.Errorf("witness config: %w", err)
 	}
 	s, err := Open(ctx)
 	if err != nil {
@@ -300,7 +307,7 @@ func RunSync(ctx context.Context, server string) error {
 			leafIndices = append(leafIndices, ps.Events[i].SignedPrefix.Seq)
 		}
 		expectedChainID := "scope:" + sid
-		if err := VerifyTranslogResponse(pinnedPub, expectedChainID, ps.STH, priorSTH, ps.InclusionProofs, leafIndices, leafHashes, ps.ConsistencyProof); err != nil {
+		if err := VerifyAndCrossCheck(ctx, wcc, server, pinnedPub, expectedChainID, ps.STH, priorSTH, ps.InclusionProofs, leafIndices, leafHashes, ps.ConsistencyProof); err != nil {
 			return fmt.Errorf("scope %s: %w", sid, err)
 		}
 
@@ -327,7 +334,7 @@ func RunSync(ctx context.Context, server string) error {
 			// them as pending sets, rewriting the chain to the server's
 			// authoritative copy, and rebuilding pendings on top.
 			_ = os.Truncate(path, preSize)
-			if rerr := s.reconcileAndRepush(ctx, server, sid, 3); rerr != nil {
+			if rerr := s.reconcileAndRepush(ctx, wcc, server, sid, 3); rerr != nil {
 				return fmt.Errorf("sync: replay %s rejected; reconcile failed: %w", sid, rerr)
 			}
 			dirty = true
@@ -377,7 +384,7 @@ func RunSync(ctx context.Context, server string) error {
 		if _, known := s.Body.Scopes[m.ScopeID]; known {
 			continue
 		}
-		if err := s.discoverScope(ctx, server, m.ScopeID); err != nil {
+		if err := s.discoverScope(ctx, wcc, server, m.ScopeID); err != nil {
 			fmt.Fprintf(os.Stderr, "  skip discover %s: %v\n", m.ScopeID, err)
 			continue
 		}
@@ -430,7 +437,7 @@ func RunSync(ctx context.Context, server string) error {
 		// round and is irrelevant to the push proof.
 		priorSTH := preSyncLastSTH[p.ScopeID]
 		expectedChainID := "scope:" + p.ScopeID
-		if err := VerifyTranslogResponse(pinnedPub, expectedChainID, p.STH, priorSTH, []translog.InclusionProof{*p.InclusionProof}, []uint64{p.Seq}, [][]byte{leafHash}, p.ConsistencyProof); err != nil {
+		if err := VerifyAndCrossCheck(ctx, wcc, server, pinnedPub, expectedChainID, p.STH, priorSTH, []translog.InclusionProof{*p.InclusionProof}, []uint64{p.Seq}, [][]byte{leafHash}, p.ConsistencyProof); err != nil {
 			return fmt.Errorf("scope %s push verify: %w", p.ScopeID, err)
 		}
 		encoded, err := EncodeSTH(*p.STH)
@@ -474,7 +481,7 @@ func RunSync(ctx context.Context, server string) error {
 		}
 		retried, retryFailed := 0, 0
 		for sid := range conflictScopes {
-			if err := s.reconcileAndRepush(ctx, server, sid, 3); err != nil {
+			if err := s.reconcileAndRepush(ctx, wcc, server, sid, 3); err != nil {
 				fmt.Fprintf(os.Stderr, "  reconcile %s: %v\n", shortScopeID(sid), err)
 				retryFailed++
 				continue
@@ -562,8 +569,9 @@ func (s *Session) signedPOST(ctx context.Context, endpoint string, body []byte) 
 }
 
 // discoverScope pulls a fresh scope from cursor=0, persists its events, and
-// adds it to the vault with the OEK extracted by replay.
-func (s *Session) discoverScope(ctx context.Context, server, scopeID string) error {
+// adds it to the vault with the OEK extracted by replay. `wcc` is the
+// witness cross-check client (nil = cross-check disabled).
+func (s *Session) discoverScope(ctx context.Context, wcc *WitnessCheckClient, server, scopeID string) error {
 	body, err := buildSyncRequestBody(
 		map[string]pullCursor{scopeID: {Seq: 0, Hash: nil}},
 		nil, false, 1000,
@@ -622,7 +630,7 @@ func (s *Session) discoverScope(ctx context.Context, server, scopeID string) err
 		leafIndices = append(leafIndices, ps.Events[i].SignedPrefix.Seq)
 	}
 	expectedChainID := "scope:" + scopeID
-	if err := VerifyTranslogResponse(pinnedPub, expectedChainID, ps.STH, nil, ps.InclusionProofs, leafIndices, leafHashes, ps.ConsistencyProof); err != nil {
+	if err := VerifyAndCrossCheck(ctx, wcc, server, pinnedPub, expectedChainID, ps.STH, nil, ps.InclusionProofs, leafIndices, leafHashes, ps.ConsistencyProof); err != nil {
 		return fmt.Errorf("discover %s: %w", scopeID, err)
 	}
 	path := s.Paths.ScopeChain(scopeID)
@@ -727,9 +735,9 @@ func readAll(r interface{ Read(p []byte) (int, error) }) ([]byte, error) {
 // Each retry restarts from a fresh server pull, so a rebuilt event that
 // races a third party (yet another concurrent push) gets another
 // chance.
-func (s *Session) reconcileAndRepush(ctx context.Context, server, scopeID string, maxRetries int) error {
+func (s *Session) reconcileAndRepush(ctx context.Context, wcc *WitnessCheckClient, server, scopeID string, maxRetries int) error {
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		serverEvents, finalSTH, err := s.fullPullScope(ctx, server, scopeID)
+		serverEvents, finalSTH, err := s.fullPullScope(ctx, wcc, server, scopeID)
 		if err != nil {
 			return err
 		}
@@ -791,9 +799,9 @@ func (s *Session) reconcileAndRepush(ctx context.Context, server, scopeID string
 			)
 			switch p.kind {
 			case proto.KindSecretSet:
-				ok, rerr = s.rebuildAndPushSet(ctx, server, scopeID, p)
+				ok, rerr = s.rebuildAndPushSet(ctx, wcc, server, scopeID, p)
 			case proto.KindMemberChange:
-				ok, rerr = s.rebuildAndPushMemberChange(ctx, server, scopeID, p)
+				ok, rerr = s.rebuildAndPushMemberChange(ctx, wcc, server, scopeID, p)
 			default:
 				return fmt.Errorf("reconcile: unknown pending kind %q", p.kind)
 			}
@@ -821,7 +829,7 @@ func (s *Session) reconcileAndRepush(ctx context.Context, server, scopeID string
 // + inclusion proofs against that page's events. The final STH (= the
 // one covering all returned events) is returned to the caller for
 // persistence as the new LastSTH after the reconcile commits.
-func (s *Session) fullPullScope(ctx context.Context, server, scopeID string) ([]proto.ScopeEvent, *translog.STH, error) {
+func (s *Session) fullPullScope(ctx context.Context, wcc *WitnessCheckClient, server, scopeID string) ([]proto.ScopeEvent, *translog.STH, error) {
 	pinnedPub, err := s.PinnedServerPub(server)
 	if err != nil {
 		return nil, nil, err
@@ -889,7 +897,7 @@ func (s *Session) fullPullScope(ctx context.Context, server, scopeID string) ([]
 			leafIndices = append(leafIndices, ps.Events[i].SignedPrefix.Seq)
 		}
 		expectedChainID := "scope:" + scopeID
-		if err := VerifyTranslogResponse(pinnedPub, expectedChainID, ps.STH, nil, ps.InclusionProofs, leafIndices, leafHashes, ps.ConsistencyProof); err != nil {
+		if err := VerifyAndCrossCheck(ctx, wcc, server, pinnedPub, expectedChainID, ps.STH, nil, ps.InclusionProofs, leafIndices, leafHashes, ps.ConsistencyProof); err != nil {
 			return nil, nil, fmt.Errorf("full pull %s: %w", scopeID, err)
 		}
 		if ps.STH != nil {
@@ -1049,7 +1057,7 @@ func (s *Session) applyReplayedScope(scopeID string) error {
 
 // rebuildAndPushSet appends a fresh secret.set built on the current tip and
 // pushes it. Returns (false, nil) on a fresh divergence (caller retries).
-func (s *Session) rebuildAndPushSet(ctx context.Context, server, scopeID string, p pendingEvent) (bool, error) {
+func (s *Session) rebuildAndPushSet(ctx context.Context, wcc *WitnessCheckClient, server, scopeID string, p pendingEvent) (bool, error) {
 	st, err := s.replayAndCheckScope(scopeID)
 	if err != nil {
 		return false, err
@@ -1095,7 +1103,7 @@ func (s *Session) rebuildAndPushSet(ctx context.Context, server, scopeID string,
 	if err := s.ReSeal(); err != nil {
 		return false, err
 	}
-	return s.pushRebuiltEvent(ctx, server, scopeID, ev)
+	return s.pushRebuiltEvent(ctx, wcc, server, scopeID, ev)
 }
 
 // rebuildAndPushMemberChange rebases a divergent local-only member.change
@@ -1109,7 +1117,7 @@ func (s *Session) rebuildAndPushSet(ctx context.Context, server, scopeID string,
 //     (drop without pushing — see chain.RebaseMemberChangeMeaningful).
 //   - (false, nil) on fresh divergence/stale_oek_version (caller retries).
 //   - (false, err) on terminal failure.
-func (s *Session) rebuildAndPushMemberChange(ctx context.Context, server, scopeID string, p pendingEvent) (bool, error) {
+func (s *Session) rebuildAndPushMemberChange(ctx context.Context, wcc *WitnessCheckClient, server, scopeID string, p pendingEvent) (bool, error) {
 	st, err := s.replayAndCheckScope(scopeID)
 	if err != nil {
 		return false, err
@@ -1149,7 +1157,7 @@ func (s *Session) rebuildAndPushMemberChange(ctx context.Context, server, scopeI
 	if err := s.ReSeal(); err != nil {
 		return false, err
 	}
-	return s.pushRebuiltEvent(ctx, server, scopeID, ev)
+	return s.pushRebuiltEvent(ctx, wcc, server, scopeID, ev)
 }
 
 // pushRebuiltEvent posts a single locally-appended event to the server
@@ -1162,7 +1170,7 @@ func (s *Session) rebuildAndPushMemberChange(ctx context.Context, server, scopeI
 //   - (false, nil) : divergence / stale_oek_version → caller loops the
 //     reconcile (server-tip moved again).
 //   - (false, err) : transport error or terminal "refused" reason.
-func (s *Session) pushRebuiltEvent(ctx context.Context, server, scopeID string, ev *proto.ScopeEvent) (bool, error) {
+func (s *Session) pushRebuiltEvent(ctx context.Context, wcc *WitnessCheckClient, server, scopeID string, ev *proto.ScopeEvent) (bool, error) {
 	// Snapshot pre-push LastSTH for the consistency anchor: the
 	// request's last_sth_size is read here, server's consistency
 	// proof is relative to it. Reading after a successful push would
@@ -1227,7 +1235,7 @@ func (s *Session) pushRebuiltEvent(ctx context.Context, server, scopeID string, 
 			return false, fmt.Errorf("scope %s rebuilt-push verify: %w", scopeID, lerr)
 		}
 		expectedChainID := "scope:" + scopeID
-		if err := VerifyTranslogResponse(pinnedPub, expectedChainID, r.STH, preSTH, []translog.InclusionProof{*r.InclusionProof}, []uint64{r.Seq}, [][]byte{leafHash}, r.ConsistencyProof); err != nil {
+		if err := VerifyAndCrossCheck(ctx, wcc, server, pinnedPub, expectedChainID, r.STH, preSTH, []translog.InclusionProof{*r.InclusionProof}, []uint64{r.Seq}, [][]byte{leafHash}, r.ConsistencyProof); err != nil {
 			return false, fmt.Errorf("scope %s rebuilt-push verify: %w", scopeID, err)
 		}
 		sdNow := s.Body.Scopes[scopeID]

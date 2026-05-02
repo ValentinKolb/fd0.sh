@@ -1,0 +1,233 @@
+package cli
+
+import (
+	"context"
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/valentinkolb/fd0.sh/internal/fdhome"
+	"github.com/valentinkolb/fd0.sh/internal/proto"
+	"github.com/valentinkolb/fd0.sh/internal/translog"
+)
+
+// ErrWitnessEquivocation is returned when ANY configured witness
+// presents a cosigned STH whose root_hash differs from the
+// server-provided STH at the same tree_size. This is the
+// equivocation-detected case from TRANSLOG.md §11; the client MUST
+// refuse to advance.
+var ErrWitnessEquivocation = errors.New("witness cross-check: equivocation detected (server's STH disagrees with witness cosign)")
+
+// ErrWitnessInsufficientCosigns is returned when fewer than
+// MinCosigns witnesses produced a matching cosign. Distinguished
+// from ErrWitnessEquivocation: this one is "couldn't get enough
+// confirmation" while the other is "got contradictory evidence".
+var ErrWitnessInsufficientCosigns = errors.New("witness cross-check: insufficient matching cosigns")
+
+// WitnessCheckClient cross-checks server-provided STHs against
+// configured witnesses. Constructed once per sync round; reused
+// across the per-chain verification calls so a single
+// misconfiguration doesn't surface six different ways.
+type WitnessCheckClient struct {
+	HTTP     *http.Client
+	Policy   fdhome.WitnessPolicy
+	Pinned   []pinnedWitness
+	LogF     func(format string, args ...any) // optional debug hook
+}
+
+// pinnedWitness pre-decodes the operator-supplied hex pubkey so the
+// hot path (one fetch per sync per witness) doesn't do hex parsing.
+type pinnedWitness struct {
+	URL string
+	Pub ed25519.PublicKey
+}
+
+// NewWitnessCheckClient builds a client from a Config. Returns nil
+// when cross-check is disabled (no [[witness]] entries OR
+// MinCosigns == 0). A nil client is the well-defined "no-op" — the
+// caller checks for nil and skips the cross-check.
+//
+// Errors only on hard config problems (bad hex, wrong key length).
+// Empty/disabled config is NOT an error.
+func NewWitnessCheckClient(cfg fdhome.Config) (*WitnessCheckClient, error) {
+	if !cfg.WitnessCrossCheckEnabled() {
+		return nil, nil
+	}
+	pinned := make([]pinnedWitness, 0, len(cfg.Witnesses))
+	for i, w := range cfg.Witnesses {
+		if w.URL == "" {
+			return nil, fmt.Errorf("[[witness]] #%d: url is required", i)
+		}
+		raw, err := hex.DecodeString(strings.TrimSpace(w.PubHex))
+		if err != nil {
+			return nil, fmt.Errorf("[[witness]] %s: pub hex decode: %w", w.URL, err)
+		}
+		if len(raw) != ed25519.PublicKeySize {
+			return nil, fmt.Errorf("[[witness]] %s: pub must be 32 bytes (got %d)", w.URL, len(raw))
+		}
+		pinned = append(pinned, pinnedWitness{
+			URL: strings.TrimRight(w.URL, "/"),
+			Pub: ed25519.PublicKey(raw),
+		})
+	}
+	if cfg.WitnessP.MinCosigns > len(pinned) {
+		return nil, fmt.Errorf("witness_policy.min_cosigns=%d exceeds configured witness count %d",
+			cfg.WitnessP.MinCosigns, len(pinned))
+	}
+	return &WitnessCheckClient{
+		HTTP:   &http.Client{Timeout: 10 * time.Second},
+		Policy: cfg.WitnessP,
+		Pinned: pinned,
+	}, nil
+}
+
+// CrossCheckSTH consults every configured witness for a cosign at
+// `sth.Head.TreeSize` for the given (serverURL, sth.Head.ChainID)
+// and decides whether the policy threshold is met.
+//
+// Decision matrix (per witness):
+//
+//   - HTTP 200 + cosign verifies + roots match     → matching cosign (+1)
+//   - HTTP 200 + cosign verifies + roots differ    → EQUIVOCATION → return immediately
+//   - HTTP 200 + cosign verifies + chain_id differs → bad-cosign (skip)
+//   - HTTP 200 + cosign verify fails               → bad-cosign (skip)
+//   - HTTP 409 (witness archive holds multi-root)  → EQUIVOCATION → return immediately
+//   - HTTP 404 (witness lagging or no cosign yet)  → no-confirmation (skip)
+//   - any other transport error                    → unreachable (skip)
+//
+// MinCosigns is the ABSOLUTE floor — lag, unreachability, and
+// bad-cosign all count equally as "this witness did not confirm".
+// There is no policy knob that lowers the threshold based on
+// observed witness behavior, because such a knob lets an attacker
+// who can DOS witnesses also lower the cross-check bar to zero
+// (codex fix #3).
+//
+// Equivocation (whether cross-witness or within a single witness
+// archive) always rejects regardless of policy.
+func (c *WitnessCheckClient) CrossCheckSTH(ctx context.Context, serverURL string, serverPub ed25519.PublicKey, sth translog.STH) error {
+	if c == nil || c.Policy.MinCosigns <= 0 {
+		return nil
+	}
+	matching := 0
+	var skipReasons []string
+	for _, w := range c.Pinned {
+		out, err := c.fetchWitnessedSTH(ctx, w.URL, serverURL, sth.Head.ChainID, sth.Head.TreeSize)
+		switch {
+		case errors.Is(err, errWitnessEquivocation):
+			// Codex fix #2: witness archive itself holds the
+			// smoking gun. Refuse to advance immediately.
+			return fmt.Errorf("%w: chain=%s size=%d witness=%s reports multi-root archive",
+				ErrWitnessEquivocation, sth.Head.ChainID, sth.Head.TreeSize, w.URL)
+		case errors.Is(err, errWitnessNotObserved):
+			skipReasons = append(skipReasons, fmt.Sprintf("%s: not-observed", w.URL))
+			continue
+		case err != nil:
+			skipReasons = append(skipReasons, fmt.Sprintf("%s: unreachable(%v)", w.URL, err))
+			continue
+		}
+		// Cryptographic verification: cosign must be valid AND
+		// embedded STH must verify under the SAME server pub the
+		// client uses. Without this a hostile witness could sign
+		// anything.
+		// Codex fix #4: VerifyWitnessedSTH now requires the
+		// expected chain_id. A cosign for a sibling chain on the
+		// same server with the same (size, root) is rejected
+		// inside the verifier, so the cli code path can't forget
+		// the check.
+		if err := translog.VerifyWitnessedSTH(serverPub, w.Pub, serverURL, sth.Head.ChainID, out); err != nil {
+			skipReasons = append(skipReasons, fmt.Sprintf("%s: bad-cosign(%v)", w.URL, err))
+			continue
+		}
+		if out.STH.Head.TreeSize != sth.Head.TreeSize {
+			// Witness gave a row at a DIFFERENT tree_size despite
+			// our explicit ?tree_size=N. Don't count it (the
+			// witness is misbehaving).
+			skipReasons = append(skipReasons, fmt.Sprintf("%s: size-drift(want=%d got=%d)", w.URL, sth.Head.TreeSize, out.STH.Head.TreeSize))
+			continue
+		}
+		if !equalBytes(out.STH.Head.RootHash, sth.Head.RootHash) {
+			return fmt.Errorf("%w: chain=%s size=%d server_root=%x witness=%s witness_root=%x",
+				ErrWitnessEquivocation, sth.Head.ChainID, sth.Head.TreeSize,
+				sth.Head.RootHash, w.URL, out.STH.Head.RootHash)
+		}
+		matching++
+	}
+	if matching < c.Policy.MinCosigns {
+		return fmt.Errorf("%w: got %d matching, need %d for chain=%s size=%d (%s)",
+			ErrWitnessInsufficientCosigns, matching, c.Policy.MinCosigns,
+			sth.Head.ChainID, sth.Head.TreeSize, strings.Join(skipReasons, "; "))
+	}
+	return nil
+}
+
+// Internal sentinels for HTTP outcomes; the policy logic only
+// special-cases these two so every other transport / decode
+// failure collapses to a generic "unreachable" error.
+var (
+	errWitnessNotObserved = errors.New("witness has not observed this size")
+	errWitnessEquivocation = errors.New("witness archive holds multiple distinct roots at this size")
+)
+
+func (c *WitnessCheckClient) fetchWitnessedSTH(ctx context.Context, witnessURL, serverURL, chainID string, treeSize uint64) (translog.WitnessedSTH, error) {
+	endpoint := fmt.Sprintf("%s/v1/witness/sth/%s/%s?tree_size=%d",
+		witnessURL,
+		encodeServerURL(serverURL),
+		chainID,
+		treeSize,
+	)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return translog.WitnessedSTH{}, err
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return translog.WitnessedSTH{}, err
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK:
+		// fall through to body decode
+	case http.StatusNotFound:
+		return translog.WitnessedSTH{}, errWitnessNotObserved
+	case http.StatusConflict:
+		// 409 = witness's own archive holds multi-root evidence
+		// (codex fix #2). Caller surfaces this as equivocation.
+		return translog.WitnessedSTH{}, errWitnessEquivocation
+	default:
+		return translog.WitnessedSTH{}, fmt.Errorf("witness returned HTTP %s", resp.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return translog.WitnessedSTH{}, err
+	}
+	var w translog.WitnessedSTH
+	if err := proto.Unmarshal(body, &w); err != nil {
+		return translog.WitnessedSTH{}, fmt.Errorf("decode WitnessedSTH: %w", err)
+	}
+	return w, nil
+}
+
+// encodeServerURL is base64.RawURLEncoding (no padding, path-safe).
+// Identical to witness.EncodeServerURL on the server side; we
+// inline rather than import to keep the cli package leaf-only.
+func encodeServerURL(raw string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+}
+
+func equalBytes(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
