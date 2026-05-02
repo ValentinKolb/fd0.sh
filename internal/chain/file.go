@@ -115,7 +115,15 @@ func readRawEvents(path string) ([][]byte, error) {
 			// Truncate ONLY on partial-tail (unexpected EOF inside the last
 			// item). Any other error indicates mid-file corruption — bubble
 			// up so the caller can investigate without silent data loss.
-			if errors.Is(err, io.ErrUnexpectedEOF) {
+			//
+			// SECURITY (adversarial test): tail-truncate ONLY fires after at
+			// least one event decoded successfully. Without this guard, a
+			// chain file corrupted from byte 0 (e.g. an attacker overwriting
+			// the file with a single garbage byte) would parse as zero events
+			// + tail truncated, leading callers to treat the scope as
+			// "fresh" and silently re-fetch from the server — losing local-
+			// only events that were never pushed. Require prev > 0 OR raise.
+			if errors.Is(err, io.ErrUnexpectedEOF) && prev > 0 {
 				if prev < len(data) {
 					if terr := os.Truncate(path, int64(prev)); terr != nil {
 						return nil, fmt.Errorf("chain: truncate partial tail: %w", terr)

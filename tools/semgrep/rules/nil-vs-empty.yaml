@@ -1,0 +1,27 @@
+rules:
+  - id: fd0-genesis-prev-hash-nil-check
+    languages: [go]
+    severity: ERROR
+    message: |
+      `len(ev.PrevHash) != 0` accepts BOTH a CBOR nil (0xf6) and
+      an empty byte string (0x40), but PROTOCOL.md mandates CBOR
+      nil for genesis prev_hash. Use `ev.PrevHash != nil` instead.
+
+      Real bug: internal/server/validate/validate.go genesis
+      events accepted empty bytes (non-canonical), letting a
+      protocol-violating client store events that fail strict
+      signature verification later.
+    patterns:
+      - pattern-either:
+          - pattern: |
+              if $E.Seq != 0 || len($E.PrevHash) != 0 {
+                  ...
+              }
+          - pattern: |
+              if $E.Seq != 0 || len($PRE.PrevHash) != 0 {
+                  ...
+              }
+          - pattern: len($E.PrevHash) != 0
+      - pattern-not-inside: |
+          // Codex audit ...
+          ...

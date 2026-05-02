@@ -1,0 +1,45 @@
+rules:
+  - id: fd0-slice-cap-leak-from-sha512
+    languages: [go]
+    severity: ERROR
+    message: |
+      Returning `h[:N]` where h is a SHA-512 result leaks the
+      remaining bytes via cap(). A caller can re-slice to [:64]
+      and read the unredacted prefix. Use `append([]byte(nil),
+      h[:N]...)` or `make([]byte, N)` + copy to return a fresh
+      slice with cap == len.
+
+      Real bug: internal/crypto/crypto.go EdPrivToX25519 returned
+      h[:32] from a sha512Sum buffer; callers could re-slice to
+      read the Ed25519 SHA-512 prefix and recover the signing
+      scalar.
+    pattern-either:
+      - pattern: |
+          $H := sha512Sum(...)
+          ...
+          return $H[:$N], ...
+      - pattern: |
+          $H := sha512Sum(...)
+          ...
+          return $H[:$N]
+
+  - id: fd0-slice-cap-leak-generic
+    languages: [go]
+    severity: WARNING
+    message: |
+      Returning a slice of a larger fixed-size buffer can leak
+      bytes via cap(). Verify cap == len for any function returning
+      []byte from a Sum256 / Sum512 / array literal. Best practice:
+      copy into a fresh slice before returning.
+    patterns:
+      - pattern-either:
+          - pattern: return $X[:32]
+          - pattern: return $X[:32], ...
+      - pattern-not: return append([]byte(nil), $X[:32]...)
+      - pattern-not: return make([]byte, ...)
+      - metavariable-pattern:
+          metavariable: $X
+          patterns:
+            - pattern-either:
+                - pattern: $H
+                - pattern: $H.Sum(...)

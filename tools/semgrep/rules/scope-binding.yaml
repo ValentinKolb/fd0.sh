@@ -1,0 +1,30 @@
+rules:
+  - id: fd0-server-push-without-scope-binding
+    languages: [go]
+    severity: ERROR
+    message: |
+      Server push handlers MUST verify that the SIGNED event's
+      `signed_prefix.scope` matches the OUTER push frame's
+      scope. Without this binding, an event signed for chain X
+      could be stored on chain Y where the signature still
+      verifies (it covers the embedded scope, which says X).
+
+      Real bug: internal/server/server.go push successor branch
+      lacked the binding check. Now explicit:
+        if p.Event.SignedPrefix.Scope == nil ||
+           *p.Event.SignedPrefix.Scope != p.Scope { ... }
+    patterns:
+      - pattern-either:
+          - pattern: |
+              chainID := store.ChainID(store.KindScope, $S.Scope)
+              ...
+              s.store.Append(...)
+          - pattern: |
+              chainID := store.ChainID(store.KindScope, $S.Scope)
+              ...
+              s.store.AppendWithTranslog(...)
+      - pattern-not-inside: |
+          if $S.Event.SignedPrefix.Scope == nil || ... {
+              ...
+          }
+          ...

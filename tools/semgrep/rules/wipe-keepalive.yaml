@@ -1,0 +1,31 @@
+rules:
+  - id: fd0-wipe-without-keepalive
+    languages: [go]
+    severity: ERROR
+    message: |
+      crypto.Wipe(b) without a subsequent runtime.KeepAlive(b)
+      can be elided by the optimiser when `b` is a dead slice.
+      The result: passphrases / private keys / OEKs stay in heap
+      memory until GC.
+
+      Real bug: internal/crypto/secret.go Wipe was a plain
+      zeroing loop with no KeepAlive. Modern Go inliners notice
+      the slice is never read after Wipe and skip the zeroing
+      entirely.
+
+      The crypto.Wipe helper itself now ends with KeepAlive, so
+      callers using `crypto.Wipe(b)` are safe. This rule catches
+      hand-rolled zeroing loops that bypass crypto.Wipe.
+    pattern-either:
+      - pattern: |
+          for $I := range $B {
+              $B[$I] = 0
+          }
+      - pattern: |
+          for $I, _ := range $B {
+              $B[$I] = 0
+          }
+    pattern-not-inside: |
+      func Wipe(...) {
+        ...
+      }

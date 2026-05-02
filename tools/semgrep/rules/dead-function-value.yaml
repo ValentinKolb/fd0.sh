@@ -1,0 +1,22 @@
+rules:
+  - id: fd0-discarded-function-value
+    languages: [go]
+    severity: ERROR
+    message: |
+      `_ = pkg.Func` discards a function VALUE — the function
+      is never called. If you intended to invoke the function
+      use `pkg.Func()` instead.
+
+      Real bug: cmd/fd0-agent/main.go shutdown handler had
+      `_ = memguard.Purge` (no parens) instead of
+      `memguard.Purge()`. memguard buffers were never wiped on
+      graceful shutdown.
+    patterns:
+      - pattern-either:
+          - pattern: _ = $PKG.$FUNC
+      - pattern-not: _ = $PKG.$FUNC()
+      - metavariable-pattern:
+          metavariable: $FUNC
+          patterns:
+            - pattern-not-regex: '^[A-Z][a-zA-Z0-9_]*Type$'
+            - pattern-not-regex: '^[A-Z][a-zA-Z0-9_]*Const$'

@@ -1,0 +1,35 @@
+rules:
+  - id: fd0-scope-id-path-join-without-validation
+    languages: [go]
+    severity: ERROR
+    message: |
+      filepath.Join with a `scopeID` segment without first calling
+      `fdhome.ValidScopeID(scopeID)` lets a hostile peer (or
+      corrupted local index) feed `../etc/passwd` and silently
+      escape the chains directory.
+
+      Real bug: internal/fdhome/fdhome.go ScopeChain trusted raw
+      input. Now validates against `s_[a-z2-7]{26}` first. Any
+      other code path that joins a scope_id with a directory must
+      do the same.
+    patterns:
+      - pattern-either:
+          - pattern: filepath.Join($DIR, $SID + ".cbor")
+          - pattern: filepath.Join($DIR, $SID, ...)
+      - pattern-not-inside: |
+          if !fdhome.ValidScopeID($SID) {
+              ...
+          }
+          ...
+      - pattern-not-inside: |
+          if fdhome.ValidScopeID($SID) {
+              ...
+          }
+      - metavariable-pattern:
+          metavariable: $SID
+          patterns:
+            - pattern-either:
+                - pattern: scopeID
+                - pattern: $S.ScopeID
+                - pattern: $S.scope
+                - pattern: scope

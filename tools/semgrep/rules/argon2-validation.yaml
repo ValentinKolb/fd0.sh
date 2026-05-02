@@ -1,0 +1,18 @@
+rules:
+  - id: fd0-argon2-without-validation
+    languages: [go]
+    severity: ERROR
+    message: |
+      argon2.IDKey called directly bypasses crypto.ValidateArgon2.
+      Caller-supplied params from untrusted vault headers /
+      recovery files can panic (T=0 / P=0) or OOM (huge M). Use
+      crypto.DeriveKey, which validates first.
+
+      Real bug: internal/crypto/crypto.go DeriveKey previously
+      passed params straight through. Now wrapped with
+      ValidateArgon2.
+    pattern: argon2.IDKey(...)
+    pattern-not-inside: |
+      func DeriveKey(...) ([]byte, error) {
+          ...
+      }

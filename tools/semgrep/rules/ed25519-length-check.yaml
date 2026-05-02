@@ -1,0 +1,36 @@
+rules:
+  - id: fd0-ed25519-sign-without-length-check
+    languages: [go]
+    severity: WARNING
+    message: |
+      ed25519.Sign panics on a wrong-size private key. If `priv`
+      can come from an untrusted source (vault header, network
+      response, file with mixed origin) validate len(priv) ==
+      ed25519.PrivateKeySize first to return a clean error
+      instead of crashing.
+
+      Real bug: internal/translog/translog.go SignSTH and
+      SignServerInfo lacked length checks. Codex audit added
+      explicit `if len(priv) != ed25519.PrivateKeySize` gates.
+    pattern: ed25519.Sign($PRIV, ...)
+    pattern-not-inside: |
+      if len($PRIV) != ed25519.PrivateKeySize {
+          ...
+      }
+      ...
+
+  - id: fd0-ed25519-verify-without-length-check
+    languages: [go]
+    severity: WARNING
+    message: |
+      ed25519.Verify panics on a wrong-size public key. Validate
+      len(pub) == ed25519.PublicKeySize first.
+
+      Note: crypto.Verify wraps this with the length check; this
+      rule catches direct ed25519.Verify calls that bypass it.
+    pattern: ed25519.Verify($PUB, ...)
+    pattern-not-inside: |
+      if len($PUB) != ed25519.PublicKeySize {
+          ...
+      }
+      ...
