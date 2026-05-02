@@ -53,13 +53,22 @@ type pinnedWitness struct {
 // MinCosigns == 0). A nil client is the well-defined "no-op" — the
 // caller checks for nil and skips the cross-check.
 //
-// Errors only on hard config problems (bad hex, wrong key length).
-// Empty/disabled config is NOT an error.
+// Errors only on hard config problems (bad hex, wrong key length,
+// duplicate (URL, pub) tuples). Empty/disabled config is NOT an
+// error.
+//
+// SECURITY: duplicate witness entries are REJECTED at config-load
+// rather than deduped silently. Counting the same witness twice
+// would let an operator typo or a malicious config edit inflate
+// the cross-check quorum: with one real witness duplicated to look
+// like two, min_cosigns=2 would be satisfied by a single matching
+// response. Loud rejection forces the operator to fix the config.
 func NewWitnessCheckClient(cfg fdhome.Config) (*WitnessCheckClient, error) {
 	if !cfg.WitnessCrossCheckEnabled() {
 		return nil, nil
 	}
 	pinned := make([]pinnedWitness, 0, len(cfg.Witnesses))
+	seen := make(map[string]int, len(cfg.Witnesses)) // key → first-occurrence index
 	for i, w := range cfg.Witnesses {
 		if w.URL == "" {
 			return nil, fmt.Errorf("[[witness]] #%d: url is required", i)
@@ -71,10 +80,18 @@ func NewWitnessCheckClient(cfg fdhome.Config) (*WitnessCheckClient, error) {
 		if len(raw) != ed25519.PublicKeySize {
 			return nil, fmt.Errorf("[[witness]] %s: pub must be 32 bytes (got %d)", w.URL, len(raw))
 		}
-		pinned = append(pinned, pinnedWitness{
-			URL: strings.TrimRight(w.URL, "/"),
-			Pub: ed25519.PublicKey(raw),
-		})
+		canonURL := strings.TrimRight(w.URL, "/")
+		// Dedupe key: BOTH url and pub must match before we call it
+		// a duplicate. Two different witness operators could happen
+		// to share a URL prefix in a misconfigured proxy setup;
+		// requiring pub-match makes the rule explicit.
+		dedupKey := canonURL + "|" + hex.EncodeToString(raw)
+		if first, dup := seen[dedupKey]; dup {
+			return nil, fmt.Errorf("[[witness]] #%d duplicates [[witness]] #%d (url=%s, same pub) — duplicate entries would inflate the cross-check quorum",
+				i, first, canonURL)
+		}
+		seen[dedupKey] = i
+		pinned = append(pinned, pinnedWitness{URL: canonURL, Pub: ed25519.PublicKey(raw)})
 	}
 	if cfg.WitnessP.MinCosigns > len(pinned) {
 		return nil, fmt.Errorf("witness_policy.min_cosigns=%d exceeds configured witness count %d",
