@@ -11,9 +11,12 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/valentinkolb/fd0.sh/internal/proto"
@@ -1197,6 +1200,13 @@ func (s *Server) noncePruner() {
 }
 
 // Run starts an http.Server bound to cfg.Bind and blocks.
+//
+// SECURITY (codex audit 🔴 cmd/fd0-server/main.go:64): handles
+// SIGINT/SIGTERM for graceful Shutdown. Without this, SIGTERM
+// (the default kill signal sent by Docker / systemd / kubectl)
+// would abort in-flight requests AND skip the deferred srv.Close()
+// in the caller, leaving the SQLite WAL with un-checkpointed
+// pages and dropping the cancellable noncePruner goroutine.
 func Run(s *Server) error {
 	srv := &http.Server{
 		Addr:              s.cfg.Bind,
@@ -1206,8 +1216,27 @@ func Run(s *Server) error {
 		WriteTimeout:      60 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
-	s.log.Info("fd0-server listening", "bind", s.cfg.Bind, "version", s.cfg.Version)
-	return srv.ListenAndServe()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	errCh := make(chan error, 1)
+	go func() {
+		s.log.Info("fd0-server listening", "bind", s.cfg.Bind, "version", s.cfg.Version)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			errCh <- err
+			return
+		}
+		errCh <- nil
+	}()
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+		s.log.Info("fd0-server: signal received, shutting down")
+		shutCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutCtx)
+		return <-errCh
+	}
 }
 
 // validChainID enforces the exact STORAGE.md §2 chain-id shape:

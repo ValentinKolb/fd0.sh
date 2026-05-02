@@ -80,7 +80,11 @@ func (s *Server) verifyHTTPSig(ctx context.Context, r *http.Request) (*AuthResul
 		}
 		qmap[k] = vs[0]
 	}
-	si, err := proto.HTTPSignedInput(r.Method, r.URL.Path, qmap, uint64(ts), nonce, body)
+	// SECURITY (signature subagent audit 🔴): bind the signature to
+	// THIS server's pubkey. A request signed for server-A cannot
+	// be replayed against server-B because the signed input
+	// includes server-A's pub which doesn't match server-B's.
+	si, err := proto.HTTPSignedInput(r.Method, r.URL.Path, qmap, uint64(ts), nonce, body, []byte(s.store.TranslogPub()))
 	if err != nil {
 		return nil, http.StatusBadRequest, err
 	}

@@ -40,7 +40,7 @@ func newTestServer(t *testing.T) (*Server, *httptest.Server) {
 }
 
 func TestRegisterAndAppend(t *testing.T) {
-	_, ts := newTestServer(t)
+	srv, ts := newTestServer(t)
 	pub, priv, err := crypto.GenerateIdentity()
 	if err != nil {
 		t.Fatal(err)
@@ -106,7 +106,7 @@ func TestRegisterAndAppend(t *testing.T) {
 	body2, _ := proto.Marshal(map[string]any{"event": e2})
 	url := ts.URL + "/users/" + reg.ShortID + "/events"
 	req, _ := http.NewRequest("POST", url, bytes.NewReader(body2))
-	signRequest(t, req, body2, pub, priv)
+	signRequest(t, srv, req, body2, pub, priv)
 	r3, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -233,7 +233,7 @@ func TestTranslogEndpoints(t *testing.T) {
 	body2, _ := proto.Marshal(map[string]any{"event": e2, "last_sth_size": uint64(1)})
 	url := ts.URL + "/users/" + reg.ShortID + "/events"
 	req, _ := http.NewRequest("POST", url, bytes.NewReader(body2))
-	signRequest(t, req, body2, pub, priv)
+	signRequest(t, srv, req, body2, pub, priv)
 	r5, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -389,7 +389,7 @@ func TestRateLimitWritesAfterAuth(t *testing.T) {
 			"push": []any{},
 		})
 		req, _ := http.NewRequest("POST", ts.URL+"/sync", bytes.NewReader(body))
-		signRequest(t, req, body, pub, priv)
+		signRequest(t, srv, req, body, pub, priv)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -457,7 +457,9 @@ func TestRateLimitDisabled(t *testing.T) {
 }
 
 // signRequest computes fd0-sig and sets the Authorization header.
-func signRequest(t *testing.T, r *http.Request, body, pub, priv []byte) {
+// serverPub is the receiving server's translog pubkey; the signed
+// input includes it to defeat cross-server replay.
+func signRequest(t *testing.T, srv *Server, r *http.Request, body, pub, priv []byte) {
 	t.Helper()
 	nonce := make([]byte, 16)
 	_, _ = rand.Read(nonce)
@@ -466,7 +468,8 @@ func signRequest(t *testing.T, r *http.Request, body, pub, priv []byte) {
 	for k, vs := range r.URL.Query() {
 		qmap[k] = vs[0]
 	}
-	si, err := proto.HTTPSignedInput(r.Method, r.URL.Path, qmap, ts, nonce, body)
+	srvPub := srv.Store().TranslogPub()
+	si, err := proto.HTTPSignedInput(r.Method, r.URL.Path, qmap, ts, nonce, body, []byte(srvPub))
 	if err != nil {
 		t.Fatal(err)
 	}

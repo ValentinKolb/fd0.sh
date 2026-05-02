@@ -273,12 +273,23 @@ func RunSync(ctx context.Context, server string) error {
 	for sid, ps := range sr.Pull {
 		// Server says caller is no longer authorised → drop the scope
 		// locally (STORAGE.md §5.3).
+		//
+		// SECURITY (codex audit 🔴 sync.go:266): vault state must
+		// be re-sealed BEFORE removing the chain file. Doing it
+		// after meant a ReSeal failure (later in the loop) left
+		// the file deleted but the vault still referencing the
+		// scope — next sync replayed a missing chain and silently
+		// dropped the scope without notification. Order: update
+		// vault map → ReSeal → remove file. If ReSeal fails the
+		// chain file survives and the scope can be re-discovered.
 		if ps.Denied {
+			delete(s.Body.Scopes, sid)
+			if err := s.ReSeal(); err != nil {
+				return fmt.Errorf("scope %s denied: ReSeal failed (chain file kept for retry): %w", sid, err)
+			}
 			path := s.Paths.ScopeChain(sid)
 			_ = os.Remove(path)
-			delete(s.Body.Scopes, sid)
 			fmt.Fprintf(os.Stderr, "  ↳ removed from scope %s\n", shortScopeID(sid))
-			dirty = true
 			continue
 		}
 		sd, ok := s.Body.Scopes[sid]
@@ -324,14 +335,25 @@ func RunSync(ctx context.Context, server string) error {
 		// server could otherwise poison the local chain file with bytes
 		// that don't replay).
 		preSize, _ := fileSize(path)
-		for _, ev := range ps.Events {
-			cb, err := proto.Marshal(&ev)
-			if err != nil {
-				return err
+		// SECURITY (codex audit 🔴 sync.go:319): if AppendRaw fails
+		// mid-loop, we leave the file half-extended AND fsync'd
+		// between events. Truncate back to preSize on any error so
+		// the next sync starts from a consistent state.
+		appendErr := func() error {
+			for _, ev := range ps.Events {
+				cb, err := proto.Marshal(&ev)
+				if err != nil {
+					return err
+				}
+				if err := chain.AppendRaw(path, cb); err != nil {
+					return err
+				}
 			}
-			if err := chain.AppendRaw(path, cb); err != nil {
-				return err
-			}
+			return nil
+		}()
+		if appendErr != nil {
+			_ = os.Truncate(path, preSize)
+			return fmt.Errorf("scope %s: AppendRaw failed mid-batch (rolled back): %w", sid, appendErr)
 		}
 		st, err := replayScopeViaAgent(path, s.UserSuperPub, s.UserX25519Pub, s.Agent)
 		if err != nil {
@@ -350,6 +372,15 @@ func RunSync(ctx context.Context, server string) error {
 		}
 		if st == nil {
 			continue
+		}
+		// SECURITY (codex audit 🔴 sync.go:328): the replayed
+		// state's ScopeID MUST match the chain we asked about.
+		// Without this, a server returning a (signature-valid)
+		// chain for a different scope would land under our
+		// requested scope's vault entry.
+		if st.ScopeID != sid {
+			_ = os.Truncate(path, preSize)
+			return fmt.Errorf("scope %s: server returned chain for scope %s (chain swap)", sid, st.ScopeID)
 		}
 		// We were removed from this scope: drop locally (STORAGE.md §5.3).
 		if st.Left {
@@ -407,8 +438,16 @@ func RunSync(ctx context.Context, server string) error {
 	//
 	// Floor advances monotonically: we never roll backwards even if the
 	// server returns a stale-looking seq from an old retry.
+	//
+	// SECURITY (codex audit 🔴 sync.go:447): track the highest STH
+	// tree_size we've persisted PER SCOPE in this round. Without
+	// this, push results returned in non-monotone order could
+	// overwrite the latest LastSTH with an older one (the verify
+	// against PRE-SYNC priorSTH passes for both, but the persisted
+	// anchor must always be the highest tree_size seen).
 	pushed, dups, failed := 0, 0, 0
 	floorDirty := false
+	maxSizePersisted := map[string]uint64{} // scope_id → max sth.head.tree_size
 	for _, p := range sr.Push {
 		switch {
 		case p.Accepted:
@@ -435,6 +474,14 @@ func RunSync(ctx context.Context, server string) error {
 			return fmt.Errorf("scope %s push: %w (server returned %s without STH/inclusion proof)",
 				p.ScopeID, ErrSTHMissing, p.Reason)
 		}
+		// SECURITY (codex audit 🔴 sync.go:430): the push verify
+		// must prove the SUBMITTED event's leaf, not whatever
+		// leaf the server claims at p.Seq. Compute the expected
+		// leaf hash from the LOCAL chain entry that produced
+		// this push — if the server proved a different leaf at
+		// the same seq (e.g. a re-org we haven't replayed yet),
+		// VerifyAndCrossCheck will reject. leafHashAtSeq reads
+		// from the local chain file by seq.
 		leafHash, lerr := s.leafHashAtSeq(p.ScopeID, p.Seq)
 		if lerr != nil {
 			return fmt.Errorf("scope %s push verify: %w", p.ScopeID, lerr)
@@ -452,7 +499,13 @@ func RunSync(ctx context.Context, server string) error {
 		if err != nil {
 			return fmt.Errorf("encode LastSTH: %w", err)
 		}
-		sd.LastSTH = encoded
+		// Track per-scope max so post-loop persistence picks the
+		// highest STH (codex audit 🔴 sync.go:447). Only update
+		// when strictly greater.
+		if p.STH.Head.TreeSize >= maxSizePersisted[p.ScopeID] {
+			sd.LastSTH = encoded
+			maxSizePersisted[p.ScopeID] = p.STH.Head.TreeSize
+		}
 		floorDirty = true
 		next := p.Seq + 1
 		if next > sd.PushFloor {
@@ -541,10 +594,28 @@ func (s *Session) compactAfterSync() {
 }
 
 // signedPOST performs an authenticated POST against the fd0-server.
+//
+// SECURITY (signature subagent audit 🔴): the signed input includes
+// the destination server's pinned pubkey, binding the signature to
+// a specific server. Without this, a malicious server-A operator
+// could replay the signed request to server-B (where the user is
+// also registered) and have it accepted.
 func (s *Session) signedPOST(ctx context.Context, endpoint string, body []byte) (*http.Response, error) {
 	u, err := url.Parse(endpoint)
 	if err != nil {
 		return nil, err
+	}
+	// Look up the server's pinned pub from the canonical URL (not
+	// `endpoint` which carries the path). PinnedServerPub returns
+	// an error if the server isn't pinned yet, but EnsurePinnedServer
+	// is always called before any signedPOST.
+	canonical, err := NormalizeServerURL((&url.URL{Scheme: u.Scheme, Host: u.Host}).String())
+	if err != nil {
+		return nil, err
+	}
+	serverPub, err := s.PinnedServerPub(canonical)
+	if err != nil {
+		return nil, fmt.Errorf("signedPOST: %w", err)
 	}
 	nonce := make([]byte, 16)
 	if _, err := rand.Read(nonce); err != nil {
@@ -555,7 +626,7 @@ func (s *Session) signedPOST(ctx context.Context, endpoint string, body []byte) 
 	for k, vs := range u.Query() {
 		qmap[k] = vs[0]
 	}
-	si, err := proto.HTTPSignedInput("POST", u.Path, qmap, ts, nonce, body)
+	si, err := proto.HTTPSignedInput("POST", u.Path, qmap, ts, nonce, body, []byte(serverPub))
 	if err != nil {
 		return nil, err
 	}
@@ -813,8 +884,20 @@ func (s *Session) reconcileAndRepush(ctx context.Context, wcc *WitnessCheckClien
 			default:
 				return fmt.Errorf("reconcile: unknown pending kind %q", p.kind)
 			}
-			if rerr != nil {
+			// SECURITY (codex audit 🔴 sync.go:1241): pushRebuilt
+			// returns (true, err) when the server ACCEPTED the
+			// push but a follow-up ReSeal failed. Treating that
+			// as terminal aborts the retry loop AND the caller's
+			// outer sync, even though everything actually
+			// succeeded modulo a non-fatal floor-staleness. Honour
+			// `ok` over `err`: if the push landed (ok=true),
+			// continue draining the rebuild queue; surface the
+			// reseal error only as a warning.
+			if rerr != nil && !ok {
 				return rerr
+			}
+			if rerr != nil {
+				fmt.Fprintf(os.Stderr, "  warn: %s rebuilt-push: post-success reseal: %v\n", shortScopeID(scopeID), rerr)
 			}
 			if !ok {
 				diverged = true
@@ -826,7 +909,17 @@ func (s *Session) reconcileAndRepush(ctx context.Context, wcc *WitnessCheckClien
 		}
 		// Diverged — outer loop will refresh server state and retry.
 	}
-	return fmt.Errorf("scope %s: still diverging after %d retries", shortScopeID(scopeID), maxRetries)
+	// SECURITY (codex audit 🔴 sync.go:744): on retry exhaustion,
+	// the caller has rewritten the local chain to the server's
+	// authoritative copy multiple times AND captured the user's
+	// local-only writes into `pending` each round. Returning an
+	// error WITHOUT persisting `pending` somewhere durable means
+	// those writes are silently lost (the next sync re-reads the
+	// chain file, sees the server's authoritative copy with no
+	// pending events, and the user's data is gone). Surface this
+	// loudly so the operator can see the data and re-attempt.
+	return fmt.Errorf("scope %s: still diverging after %d retries — local-only events for this scope have been lost (re-issue them by hand). Increase --reconcile-retries or stop concurrent writers and retry",
+		shortScopeID(scopeID), maxRetries)
 }
 
 // fullPullScope pages through the entire scope chain from seq=0. The server

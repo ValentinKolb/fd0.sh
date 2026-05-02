@@ -108,13 +108,13 @@ func (s *Store) PinnedPub(ctx context.Context, serverURL string) (ed25519.Public
 
 // LatestSTH returns the highest-tree_size STH archived for
 // (server_url, chain_id), or ErrNoSTH if the witness has never
-// observed this chain.
+// observed this chain. Includes rows archived without a cosign
+// (e.g., legacy archives, post-consistency-fail evidence rows).
+// For the consistency-proof trust anchor inside the poll loop,
+// use LatestVerifiedSTH instead.
 //
 // "Highest by tree_size" rather than "most recently fetched" so the
 // consistency-proof anchor matches the prover's notion of progress.
-// Two same-size rows with different roots both appear in storage;
-// LatestSTH returns one of them — the equivocation discriminator
-// runs separately via DetectEquivocationAt.
 func (s *Store) LatestSTH(ctx context.Context, serverURL, chainID string) (translog.STH, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT tree_size, root_hash, timestamp, signature
@@ -194,6 +194,45 @@ func (s *Store) Insert(ctx context.Context, serverURL string, sth translog.STH, 
 		return ArchiveResult{Stored: stored}, err
 	}
 	return ArchiveResult{Stored: stored, EquivocationDetected: equiv}, nil
+}
+
+// LatestVerifiedSTH is LatestSTH but filters to rows that carry a
+// witness cosign. Used by the poll loop as the trust anchor for
+// the next consistency proof — without filtering, a previous
+// consistency-fail evidence row (cosign withheld per codex audit
+// witness.go:255) would become the prior, and the next poll could
+// verify post-fork growth and cosign it, laundering an
+// inconsistent history past the last verified STH.
+func (s *Store) LatestVerifiedSTH(ctx context.Context, serverURL, chainID string) (translog.STH, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT tree_size, root_hash, timestamp, signature
+		   FROM witness_sths
+		  WHERE server_url = ? AND chain_id = ? AND witness_signature IS NOT NULL
+		  ORDER BY tree_size DESC LIMIT 1`,
+		serverURL, chainID,
+	)
+	var (
+		size int64
+		root []byte
+		ts   int64
+		sig  []byte
+	)
+	err := row.Scan(&size, &root, &ts, &sig)
+	if errors.Is(err, sql.ErrNoRows) {
+		return translog.STH{}, ErrNoSTH
+	}
+	if err != nil {
+		return translog.STH{}, err
+	}
+	return translog.STH{
+		Head: translog.TreeHead{
+			ChainID:   chainID,
+			TreeSize:  uint64(size),
+			RootHash:  root,
+			Timestamp: uint64(ts),
+		},
+		Signature: sig,
+	}, nil
 }
 
 // LookupAt returns the cosigned STH archived at exactly

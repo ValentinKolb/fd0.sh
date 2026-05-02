@@ -197,7 +197,20 @@ func (w *Witness) pollOne(ctx context.Context, t Target, chainID string) {
 		cosign = nil
 	}
 
-	prior, err := w.Store.LatestSTH(ctx, t.ServerURL, chainID)
+	// Trust anchor for the next consistency proof. When this
+	// witness has a cosign key, prefer the latest VERIFIED+
+	// COSIGNED row — a non-cosigned consistency-fail evidence
+	// row must NOT become the anchor (codex audit 🔴 witness.go:200,
+	// the "fork laundering" path). Without a cosign key (legacy
+	// passive-archive mode), no row is ever cosigned, so the
+	// laundering risk doesn't apply and we fall back to the plain
+	// LatestSTH semantics.
+	var prior translog.STH
+	if w.CosignPriv != nil {
+		prior, err = w.Store.LatestVerifiedSTH(ctx, t.ServerURL, chainID)
+	} else {
+		prior, err = w.Store.LatestSTH(ctx, t.ServerURL, chainID)
+	}
 	switch {
 	case errors.Is(err, ErrNoSTH):
 		// First contact for this (server, chain). Archive directly.
@@ -252,7 +265,14 @@ func (w *Witness) compareAndArchive(ctx context.Context, t Target, chainID strin
 		w.Log.Error("witness: TREE_SIZE REGRESSION (cosign withheld)",
 			"server", t.ServerURL, "chain", chainID,
 			"prior_size", prior.Head.TreeSize, "new_size", sth.Head.TreeSize)
-		_, _ = w.Store.Insert(ctx, t.ServerURL, sth, w.Now().Unix(), nil)
+		// SECURITY (codex audit 🔴 witness.go:255): evidence
+		// writes MUST surface their errors. Swallowing them lets
+		// disk-full / DB-lock / context-cancel drop equivocation
+		// evidence while logs imply it was archived.
+		if _, ierr := w.Store.Insert(ctx, t.ServerURL, sth, w.Now().Unix(), nil); ierr != nil {
+			w.Log.Error("witness: FAILED to archive regression evidence",
+				"server", t.ServerURL, "chain", chainID, "err", ierr)
+		}
 
 	case sth.Head.TreeSize == prior.Head.TreeSize:
 		// Same size. Either same root (idempotent) or different
@@ -284,22 +304,34 @@ func (w *Witness) compareAndArchive(ctx context.Context, t Target, chainID strin
 			w.Log.Error("witness: fetch consistency proof failed — archiving STH as unverified-growth evidence (cosign withheld)",
 				"server", t.ServerURL, "chain", chainID,
 				"from", prior.Head.TreeSize, "to", sth.Head.TreeSize, "err", err)
-			_, _ = w.Store.Insert(ctx, t.ServerURL, sth, now, nil)
-			_ = w.Store.RecordConsistencyFailure(ctx, t.ServerURL, chainID,
+			if _, ierr := w.Store.Insert(ctx, t.ServerURL, sth, now, nil); ierr != nil {
+				w.Log.Error("witness: FAILED to archive unverified-growth evidence",
+					"server", t.ServerURL, "chain", chainID, "err", ierr)
+			}
+			if rerr := w.Store.RecordConsistencyFailure(ctx, t.ServerURL, chainID,
 				prior.Head.TreeSize, prior.Head.RootHash,
 				sth.Head.TreeSize, sth.Head.RootHash,
-				"fetch_failed", now)
+				"fetch_failed", now); rerr != nil {
+				w.Log.Error("witness: FAILED to record consistency-fetch failure",
+					"server", t.ServerURL, "chain", chainID, "err", rerr)
+			}
 			return
 		}
 		if err := translog.VerifyConsistency(prior.Head.TreeSize, sth.Head.TreeSize, proof.Nodes, prior.Head.RootHash, sth.Head.RootHash); err != nil {
 			w.Log.Error("witness: CONSISTENCY PROOF FAILED — possible server rewrite or different-size fork (cosign withheld)",
 				"server", t.ServerURL, "chain", chainID,
 				"from_size", prior.Head.TreeSize, "to_size", sth.Head.TreeSize, "err", err)
-			_, _ = w.Store.Insert(ctx, t.ServerURL, sth, now, nil)
-			_ = w.Store.RecordConsistencyFailure(ctx, t.ServerURL, chainID,
+			if _, ierr := w.Store.Insert(ctx, t.ServerURL, sth, now, nil); ierr != nil {
+				w.Log.Error("witness: FAILED to archive consistency-fail evidence",
+					"server", t.ServerURL, "chain", chainID, "err", ierr)
+			}
+			if rerr := w.Store.RecordConsistencyFailure(ctx, t.ServerURL, chainID,
 				prior.Head.TreeSize, prior.Head.RootHash,
 				sth.Head.TreeSize, sth.Head.RootHash,
-				"verify_failed", now)
+				"verify_failed", now); rerr != nil {
+				w.Log.Error("witness: FAILED to record consistency-verify failure",
+					"server", t.ServerURL, "chain", chainID, "err", rerr)
+			}
 			return
 		}
 		res, err := w.Store.Insert(ctx, t.ServerURL, sth, now, cosign)

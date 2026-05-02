@@ -79,7 +79,17 @@ func Listen(paths fdhome.Paths, cfg Config) (*Server, error) {
 	if alive, oldPID := isPriorAgentAlive(paths.AgentPID); alive {
 		return nil, fmt.Errorf("agent: already running as pid %d (delete %s if you're sure it's dead)", oldPID, paths.AgentPID)
 	}
-	// Stale socket from a crashed agent: unlink if no listener answers.
+	// SECURITY (codex audit 🔴 server.go:82): if the PID file is
+	// missing/corrupt/stale BUT an old agent is still listening
+	// on the socket, the previous code would silently unlink the
+	// socket and bind a new listener — orphaning the old agent
+	// (still holding super_priv mlocked) AND starting a duplicate.
+	// Probe the socket; fail if anything answers.
+	if probeAgentSocket(paths.AgentSock) {
+		return nil, fmt.Errorf("agent: another process is listening on %s but %s is missing/stale; remove the socket only if you're sure no agent is running",
+			paths.AgentSock, paths.AgentPID)
+	}
+	// Stale socket from a crashed agent: safe to unlink (no listener).
 	_ = os.Remove(paths.AgentSock)
 	l, err := net.Listen("unix", paths.AgentSock)
 	if err != nil {
@@ -89,8 +99,16 @@ func Listen(paths fdhome.Paths, cfg Config) (*Server, error) {
 		l.Close()
 		return nil, err
 	}
-	// Write PID file (best-effort; consumed by `fd0 status`/`fd0 lock`).
-	_ = os.WriteFile(paths.AgentPID, []byte(strconv.Itoa(os.Getpid())), 0o600)
+	// SECURITY (codex audit 🟡 server.go:92): treat PID file write
+	// failure as fatal. Without it, future agent invocations
+	// can't detect we're running and may start duplicates (which
+	// hits the orphan-agent bug above). Cleanup listener+socket
+	// on failure so we don't leave them dangling.
+	if err := os.WriteFile(paths.AgentPID, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+		l.Close()
+		_ = os.Remove(paths.AgentSock)
+		return nil, fmt.Errorf("agent: write PID file %s: %w", paths.AgentPID, err)
+	}
 	s := &Server{
 		cfg:       cfg,
 		paths:     paths,
@@ -338,6 +356,13 @@ func (s *Server) handleUnlock(u *UnlockReq) *Response {
 	if err != nil {
 		s.mu.Unlock()
 		return errResp(err.Error())
+	}
+	// SECURITY (codex audit 🟡 server.go:305): wipe any prior
+	// redactedBody before overwriting. The "redacted" body still
+	// contains OEKs and other sensitive scope data; repeated
+	// unlocks would leave old buffers in heap memory until GC.
+	if s.redactedBody != nil {
+		crypto.Wipe(s.redactedBody)
 	}
 	s.redactedBody = rb
 	s.mu.Unlock()
@@ -628,4 +653,21 @@ func isPriorAgentAlive(pidPath string) (bool, int) {
 		return false, 0
 	}
 	return true, pid
+}
+
+// probeAgentSocket returns true iff something is currently listening
+// on `path`. Used in Listen() to detect the bug-class where the PID
+// file is missing/stale but an old agent is still serving requests
+// — unlinking the socket then would orphan the old agent (still
+// holding super_priv mlocked) and start a duplicate.
+func probeAgentSocket(path string) bool {
+	if _, err := os.Stat(path); err != nil {
+		return false
+	}
+	c, err := net.DialTimeout("unix", path, 200*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	c.Close()
+	return true
 }

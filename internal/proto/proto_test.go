@@ -204,21 +204,20 @@ func TestDomainSeparatorsDisjoint(t *testing.T) {
 
 func TestHTTPSignedInputStable(t *testing.T) {
 	q := map[string]string{"b": "2", "a": "1"}
-	a, err := HTTPSignedInput("POST", "/sync", q, 1700000000, []byte{1, 2, 3, 4}, []byte("body"))
+	srvPub := bytes.Repeat([]byte{0xAB}, 32)
+	a, err := HTTPSignedInput("POST", "/sync", q, 1700000000, []byte{1, 2, 3, 4}, []byte("body"), srvPub)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Re-issue with map keys in opposite insertion order.
 	q2 := map[string]string{"a": "1", "b": "2"}
-	b, err := HTTPSignedInput("POST", "/sync", q2, 1700000000, []byte{1, 2, 3, 4}, []byte("body"))
+	b, err := HTTPSignedInput("POST", "/sync", q2, 1700000000, []byte{1, 2, 3, 4}, []byte("body"), srvPub)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(a, b) {
 		t.Fatal("HTTPSignedInput is not key-order stable")
 	}
-	// Method-case matters: lowercase should be normalised to uppercase.
-	c, err := HTTPSignedInput("post", "/sync", q, 1700000000, []byte{1, 2, 3, 4}, []byte("body"))
+	c, err := HTTPSignedInput("post", "/sync", q, 1700000000, []byte{1, 2, 3, 4}, []byte("body"), srvPub)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,10 +227,24 @@ func TestHTTPSignedInputStable(t *testing.T) {
 }
 
 func TestHTTPSignedInputBodyHash(t *testing.T) {
-	a, _ := HTTPSignedInput("GET", "/x", nil, 1, []byte{}, []byte("hello"))
-	b, _ := HTTPSignedInput("GET", "/x", nil, 1, []byte{}, []byte("hellp"))
+	srvPub := bytes.Repeat([]byte{0xCD}, 32)
+	a, _ := HTTPSignedInput("GET", "/x", nil, 1, []byte{}, []byte("hello"), srvPub)
+	b, _ := HTTPSignedInput("GET", "/x", nil, 1, []byte{}, []byte("hellp"), srvPub)
 	if bytes.Equal(a, b) {
 		t.Fatal("body change must change signed input")
+	}
+}
+
+// TestHTTPSignedInputServerPubBinding locks the codex 🔴 fix:
+// changing server_pub MUST yield a different signed input so a
+// signature for server-A cannot be replayed against server-B.
+func TestHTTPSignedInputServerPubBinding(t *testing.T) {
+	pubA := bytes.Repeat([]byte{0x01}, 32)
+	pubB := bytes.Repeat([]byte{0x02}, 32)
+	a, _ := HTTPSignedInput("POST", "/sync", nil, 1700000000, []byte{1}, []byte("body"), pubA)
+	b, _ := HTTPSignedInput("POST", "/sync", nil, 1700000000, []byte{1}, []byte("body"), pubB)
+	if bytes.Equal(a, b) {
+		t.Fatal("server_pub binding broken — same signed input across servers")
 	}
 }
 

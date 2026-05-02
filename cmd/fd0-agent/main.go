@@ -33,7 +33,14 @@ type cli struct {
 }
 
 func main() {
-	memguard.CatchInterrupt() // Wipe on SIGINT/SIGTERM.
+	// SECURITY (codex audit 🔴 cmd/fd0-agent/main.go:36): do NOT
+	// call memguard.CatchInterrupt — it installs its own signal
+	// handler that races our graceful-shutdown handler below. On
+	// the race CatchInterrupt's os.Exit fires first, bypassing
+	// `defer srv.Close()` and leaving stale agent.sock + agent.pid
+	// behind (subsequent agent invocations then refuse to start).
+	// We explicitly call memguard.Purge() inside our own shutdown
+	// goroutine instead.
 	defer memguard.Purge()
 	var c cli
 	kong.Parse(&c, kong.Name("fd0-agent"))
@@ -114,7 +121,7 @@ func main() {
 		log.Info("agent: shutdown")
 		cancel()
 		srv.Close()
-		_ = memguard.Purge
+		memguard.Purge() // explicit; was a no-op before (`_ = memguard.Purge`).
 	}()
 
 	log.Info("fd0-agent listening", "sock", paths.AgentSock)
