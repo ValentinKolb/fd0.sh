@@ -10,11 +10,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/valentinkolb/fd0.sh/internal/canon"
 	"github.com/valentinkolb/fd0.sh/internal/chain"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
 	"github.com/valentinkolb/fd0.sh/internal/translog"
@@ -64,36 +64,16 @@ var (
 // number ceremony entirely.
 const FD0AutoPinEnv = "FD0_AUTO_PIN"
 
-// NormalizeServerURL canonicalises a server URL for use as the map key
-// in PinnedServers. Two visually different URLs that point at the same
-// server (e.g., trailing slash, mixed case host) MUST produce the same
-// pin entry — otherwise a user types one form, pins, then later types
-// the other and gets a TOFU prompt for "the same" server.
-//
-// Normalisation:
-//   - lowercase scheme
-//   - lowercase host (RFC 3986 §3.2.2)
-//   - strip trailing slash from path
-//   - drop fragment + query (a server URL must not carry these)
-//
-// Returns (normalised, error). An empty URL or a parse failure yields
-// a non-nil error so callers don't silently skip the pinning gate.
+// NormalizeServerURL canonicalises a server URL string. Wave C-2:
+// kept as a thin shim around canon.ParseURL so existing callers
+// (witness, server fingerprint helpers, downstream serializers that
+// store the URL as a plain string) work unchanged. New code should
+// take canon.URL by type and avoid this function.
 func NormalizeServerURL(s string) (string, error) {
-	if s == "" {
-		return "", errors.New("server URL is empty")
-	}
-	u, err := url.Parse(s)
+	u, err := canon.ParseURL(s)
 	if err != nil {
-		return "", fmt.Errorf("parse server URL: %w", err)
+		return "", err
 	}
-	if u.Scheme == "" || u.Host == "" {
-		return "", fmt.Errorf("server URL must include scheme and host: %q", s)
-	}
-	u.Scheme = strings.ToLower(u.Scheme)
-	u.Host = strings.ToLower(u.Host)
-	u.Path = strings.TrimRight(u.Path, "/")
-	u.RawQuery = ""
-	u.Fragment = ""
 	return u.String(), nil
 }
 
@@ -140,11 +120,13 @@ func ServerFingerprint(serverURL string, pub []byte) (string, error) {
 //
 // The session is mutated in place (s.Body.PinnedServers gets a new
 // entry on first pin); caller is responsible for s.ReSeal afterwards.
-func (s *Session) EnsurePinnedServer(ctx context.Context, serverURL string) (ed25519.PublicKey, error) {
-	canonical, err := NormalizeServerURL(serverURL)
-	if err != nil {
-		return nil, err
-	}
+//
+// Wave C-2: takes canon.URL — caller is responsible for parsing the
+// operator-supplied string via canon.ParseURL. Eliminates the
+// "trailing-slash drift between sync and witness" class because both
+// layers consume the same byte-stable canonical form.
+func (s *Session) EnsurePinnedServer(ctx context.Context, serverURL canon.URL) (ed25519.PublicKey, error) {
+	canonical := serverURL.String()
 	info, err := fetchServerInfo(ctx, canonical)
 	if err != nil {
 		return nil, err
@@ -237,11 +219,8 @@ func pinningPrompt(canonical string, pub []byte) error {
 // NOTE: this is the bare-minimum fix for v1. Full user-chain sync
 // (propagating subsequent auth.set events from `auth add`/`auth rm`
 // to the server) is a v1.x follow-up tracked in TODO.md.
-func (s *Session) EnsureUserRegistered(ctx context.Context, serverURL string) error {
-	canonical, err := NormalizeServerURL(serverURL)
-	if err != nil {
-		return err
-	}
+func (s *Session) EnsureUserRegistered(ctx context.Context, serverURL canon.URL) error {
+	canonical := serverURL.String()
 	pinned, ok := s.Body.PinnedServers[canonical]
 	if ok && pinned.Registered {
 		return nil
@@ -421,11 +400,8 @@ func VerifyTranslogResponse(
 // that operate after the outer RunSync has already done first-contact
 // pinning — they should not redo the ceremony, only trust what's in
 // the vault.
-func (s *Session) PinnedServerPub(serverURL string) (ed25519.PublicKey, error) {
-	canonical, err := NormalizeServerURL(serverURL)
-	if err != nil {
-		return nil, err
-	}
+func (s *Session) PinnedServerPub(serverURL canon.URL) (ed25519.PublicKey, error) {
+	canonical := serverURL.String()
 	if entry, ok := s.Body.PinnedServers[canonical]; ok {
 		return ed25519.PublicKey(entry.ServerPub), nil
 	}
@@ -450,7 +426,7 @@ func EncodeSTH(sth translog.STH) ([]byte, error) {
 func VerifyAndCrossCheck(
 	ctx context.Context,
 	wcc *WitnessCheckClient,
-	serverURL string,
+	serverURL canon.URL,
 	pinnedPub ed25519.PublicKey,
 	expectedChainID string,
 	sth *translog.STH,
@@ -468,16 +444,11 @@ func VerifyAndCrossCheck(
 		// cross-check. Pinning canonicalises (lowercase host, no
 		// trailing slash); the witness archive uses whatever it
 		// was configured with, which is also expected to be the
-		// canonical form. A trailing slash or mixed-case host on
-		// `serverURL` here would silently 404 every cross-check
-		// and the threshold (codex fix #3 hardened) would fail
-		// loudly — but normalising here also avoids the noisy
-		// failure for honest URL drift.
-		canon, err := NormalizeServerURL(serverURL)
-		if err != nil {
-			return fmt.Errorf("witness cross-check: %w", err)
-		}
-		if err := wcc.CrossCheckSTH(ctx, canon, pinnedPub, *sth); err != nil {
+		// canonical form. Wave C-2: serverURL is already a
+		// canon.URL (parsed at RunSync entry), so no second
+		// normalisation pass is needed — the type carries the
+		// invariant.
+		if err := wcc.CrossCheckSTH(ctx, serverURL, pinnedPub, *sth); err != nil {
 			return err
 		}
 	}

@@ -14,6 +14,7 @@ import (
 
 	"github.com/valentinkolb/fd0.sh/internal/fdhome"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
+	"github.com/valentinkolb/fd0.sh/internal/canon"
 	"github.com/valentinkolb/fd0.sh/internal/translog"
 )
 
@@ -227,7 +228,7 @@ func TestPropertyThresholdMath(t *testing.T) {
 							programLagging(f, i)
 						}
 					}
-					err := f.wcc.CrossCheckSTH(context.Background(), f.serverURL, f.srvPub, sth)
+					err := f.wcc.CrossCheckSTH(context.Background(), canon.MustParseURL(f.serverURL), f.srvPub, sth)
 					if k >= m {
 						if err != nil {
 							t.Fatalf("expected pass (k=%d >= m=%d), got %v", k, m, err)
@@ -269,7 +270,7 @@ func TestPropertyEquivocationAlwaysWins(t *testing.T) {
 							programMatching(f, i, sth)
 						}
 					}
-					err := f.wcc.CrossCheckSTH(context.Background(), f.serverURL, f.srvPub, sth)
+					err := f.wcc.CrossCheckSTH(context.Background(), canon.MustParseURL(f.serverURL), f.srvPub, sth)
 					if err == nil || !strings.Contains(err.Error(), "equivocation") {
 						t.Fatalf("expected equivocation (n=%d bad=%d order=%s), got %v",
 							n, kBad, ordering, err)
@@ -293,7 +294,7 @@ func TestPropertyMultiRootArchiveAlwaysWins(t *testing.T) {
 			for i := 1; i < n; i++ {
 				programMatching(f, i, sth)
 			}
-			err := f.wcc.CrossCheckSTH(context.Background(), f.serverURL, f.srvPub, sth)
+			err := f.wcc.CrossCheckSTH(context.Background(), canon.MustParseURL(f.serverURL), f.srvPub, sth)
 			if err == nil || !strings.Contains(err.Error(), "equivocation") {
 				t.Fatalf("expected equivocation from 409, got %v", err)
 			}
@@ -312,7 +313,7 @@ func TestPropertyLagNeverCounts(t *testing.T) {
 			for i := 0; i < n; i++ {
 				programLagging(f, i)
 			}
-			err := f.wcc.CrossCheckSTH(context.Background(), f.serverURL, f.srvPub, sth)
+			err := f.wcc.CrossCheckSTH(context.Background(), canon.MustParseURL(f.serverURL), f.srvPub, sth)
 			if err == nil {
 				t.Fatalf("all-lag with min_cosigns=1 must not pass (n=%d)", n)
 			}
@@ -337,7 +338,7 @@ func TestPropertyBadCosignDoesNotCount(t *testing.T) {
 			for i := 0; i < n; i++ {
 				programBadSig(f, i)
 			}
-			err := f.wcc.CrossCheckSTH(context.Background(), f.serverURL, f.srvPub, sth)
+			err := f.wcc.CrossCheckSTH(context.Background(), canon.MustParseURL(f.serverURL), f.srvPub, sth)
 			if err == nil {
 				t.Fatalf("all-bad-cosign must not pass")
 			}
@@ -369,7 +370,7 @@ func TestPropertyDisabledByEmptyConfig(t *testing.T) {
 			t.Fatalf("case %d: expected nil client, got %v", i, wcc)
 		}
 		// nil receiver must be safe.
-		if err := wcc.CrossCheckSTH(context.Background(), "", nil, translog.STH{}); err != nil {
+		if err := wcc.CrossCheckSTH(context.Background(), canon.URL{}, nil, translog.STH{}); err != nil {
 			t.Fatalf("case %d: nil client cross-check returned %v, want nil", i, err)
 		}
 	}

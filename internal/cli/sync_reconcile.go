@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/valentinkolb/fd0.sh/internal/canon"
 	"github.com/valentinkolb/fd0.sh/internal/chain"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
 	"github.com/valentinkolb/fd0.sh/internal/translog"
@@ -42,7 +43,7 @@ import (
 // Each retry restarts from a fresh server pull, so a rebuilt event that
 // races a third party (yet another concurrent push) gets another
 // chance.
-func (s *Session) reconcileAndRepush(ctx context.Context, wcc *WitnessCheckClient, server, scopeID string, maxRetries int) error {
+func (s *Session) reconcileAndRepush(ctx context.Context, wcc *WitnessCheckClient, server canon.URL, scopeID string, maxRetries int) error {
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		serverEvents, finalSTH, err := s.fullPullScope(ctx, wcc, server, scopeID)
 		if err != nil {
@@ -158,7 +159,7 @@ func (s *Session) reconcileAndRepush(ctx context.Context, wcc *WitnessCheckClien
 // + inclusion proofs against that page's events. The final STH (= the
 // one covering all returned events) is returned to the caller for
 // persistence as the new LastSTH after the reconcile commits.
-func (s *Session) fullPullScope(ctx context.Context, wcc *WitnessCheckClient, server, scopeID string) ([]proto.ScopeEvent, *translog.STH, error) {
+func (s *Session) fullPullScope(ctx context.Context, wcc *WitnessCheckClient, server canon.URL, scopeID string) ([]proto.ScopeEvent, *translog.STH, error) {
 	pinnedPub, err := s.PinnedServerPub(server)
 	if err != nil {
 		return nil, nil, err
@@ -176,7 +177,7 @@ func (s *Session) fullPullScope(ctx context.Context, wcc *WitnessCheckClient, se
 		if err != nil {
 			return nil, nil, err
 		}
-		resp, err := s.signedPOST(ctx, server+"/sync", body)
+		resp, err := s.signedPOST(ctx, server.JoinPath("/sync"), body)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -388,7 +389,7 @@ func (s *Session) applyReplayedScope(scopeID string) error {
 
 // rebuildAndPushSet appends a fresh secret.set built on the current tip and
 // pushes it. Returns (false, nil) on a fresh divergence (caller retries).
-func (s *Session) rebuildAndPushSet(ctx context.Context, wcc *WitnessCheckClient, server, scopeID string, p pendingEvent) (bool, error) {
+func (s *Session) rebuildAndPushSet(ctx context.Context, wcc *WitnessCheckClient, server canon.URL, scopeID string, p pendingEvent) (bool, error) {
 	st, err := s.replayAndCheckScope(scopeID)
 	if err != nil {
 		return false, err
@@ -448,7 +449,7 @@ func (s *Session) rebuildAndPushSet(ctx context.Context, wcc *WitnessCheckClient
 //     (drop without pushing — see chain.RebaseMemberChangeMeaningful).
 //   - (false, nil) on fresh divergence/stale_oek_version (caller retries).
 //   - (false, err) on terminal failure.
-func (s *Session) rebuildAndPushMemberChange(ctx context.Context, wcc *WitnessCheckClient, server, scopeID string, p pendingEvent) (bool, error) {
+func (s *Session) rebuildAndPushMemberChange(ctx context.Context, wcc *WitnessCheckClient, server canon.URL, scopeID string, p pendingEvent) (bool, error) {
 	st, err := s.replayAndCheckScope(scopeID)
 	if err != nil {
 		return false, err
@@ -501,7 +502,7 @@ func (s *Session) rebuildAndPushMemberChange(ctx context.Context, wcc *WitnessCh
 //   - (false, nil) : divergence / stale_oek_version → caller loops the
 //     reconcile (server-tip moved again).
 //   - (false, err) : transport error or terminal "refused" reason.
-func (s *Session) pushRebuiltEvent(ctx context.Context, wcc *WitnessCheckClient, server, scopeID string, ev *proto.ScopeEvent) (bool, error) {
+func (s *Session) pushRebuiltEvent(ctx context.Context, wcc *WitnessCheckClient, server canon.URL, scopeID string, ev *proto.ScopeEvent) (bool, error) {
 	// Snapshot pre-push LastSTH for the consistency anchor: the
 	// request's last_sth_size is read here, server's consistency
 	// proof is relative to it. Reading after a successful push would
@@ -526,7 +527,7 @@ func (s *Session) pushRebuiltEvent(ctx context.Context, wcc *WitnessCheckClient,
 	if perr != nil {
 		return false, perr
 	}
-	resp, err := s.signedPOST(ctx, server+"/sync", body)
+	resp, err := s.signedPOST(ctx, server.JoinPath("/sync"), body)
 	if err != nil {
 		return false, err
 	}

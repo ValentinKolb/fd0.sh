@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/valentinkolb/fd0.sh/internal/canon"
 	"github.com/valentinkolb/fd0.sh/internal/fdhome"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
 	"github.com/valentinkolb/fd0.sh/internal/translog"
@@ -140,14 +141,14 @@ func NewWitnessCheckClient(cfg fdhome.Config) (*WitnessCheckClient, error) {
 //
 // Equivocation (whether cross-witness or within a single witness
 // archive) always rejects regardless of policy.
-func (c *WitnessCheckClient) CrossCheckSTH(ctx context.Context, serverURL string, serverPub ed25519.PublicKey, sth translog.STH) error {
+func (c *WitnessCheckClient) CrossCheckSTH(ctx context.Context, serverURL canon.URL, serverPub ed25519.PublicKey, sth translog.STH) error {
 	if c == nil || c.Policy.MinCosigns <= 0 {
 		return nil
 	}
 	matching := 0
 	var skipReasons []string
 	for _, w := range c.Pinned {
-		out, err := c.fetchWitnessedSTH(ctx, w.URL, serverURL, sth.Head.ChainID, sth.Head.TreeSize)
+		out, err := c.fetchWitnessedSTH(ctx, w.URL, serverURL.String(), sth.Head.ChainID, sth.Head.TreeSize)
 		switch {
 		case errors.Is(err, errWitnessEquivocation):
 			// Codex fix #2: witness archive itself holds the
@@ -170,7 +171,7 @@ func (c *WitnessCheckClient) CrossCheckSTH(ctx context.Context, serverURL string
 		// same server with the same (size, root) is rejected
 		// inside the verifier, so the cli code path can't forget
 		// the check.
-		if err := translog.VerifyWitnessedSTH(serverPub, w.Pub, serverURL, sth.Head.ChainID, out); err != nil {
+		if err := translog.VerifyWitnessedSTH(serverPub, w.Pub, serverURL.String(), sth.Head.ChainID, out); err != nil {
 			skipReasons = append(skipReasons, fmt.Sprintf("%s: bad-cosign(%v)", w.URL, err))
 			continue
 		}

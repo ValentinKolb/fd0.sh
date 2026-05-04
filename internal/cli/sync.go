@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/valentinkolb/fd0.sh/internal/agent"
+	"github.com/valentinkolb/fd0.sh/internal/canon"
 	"github.com/valentinkolb/fd0.sh/internal/chain"
 	"github.com/valentinkolb/fd0.sh/internal/fdhome"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
@@ -69,6 +70,15 @@ func RunSync(ctx context.Context, server string) error {
 	if server == "" {
 		return errors.New("no server configured (--server, FD0_SERVER, or [sync].server)")
 	}
+	// Wave C-2: parse + canonicalise once at the entry boundary; the
+	// typed canon.URL is passed through every downstream helper so
+	// the "trailing-slash drift between sync and witness" class is
+	// structurally eliminated — every consumer sees the same byte-
+	// stable form.
+	serverURL, err := canon.ParseURL(server)
+	if err != nil {
+		return fmt.Errorf("server URL: %w", err)
+	}
 	// Build the witness cross-check client BEFORE opening the
 	// session. A bad [[witness]] config should fail loudly, not get
 	// hidden behind the unlock prompt.
@@ -85,7 +95,7 @@ func RunSync(ctx context.Context, server string) error {
 	// First-contact pinning: ensure (server URL, server pubkey) is in
 	// the vault before any STH from this server is trusted. Subsequent
 	// rounds short-circuit (the pin is persistent across syncs).
-	pinnedPub, err := s.EnsurePinnedServer(ctx, server)
+	pinnedPub, err := s.EnsurePinnedServer(ctx, serverURL)
 	if err != nil {
 		return err
 	}
@@ -94,7 +104,7 @@ func RunSync(ctx context.Context, server string) error {
 	// honouring any authenticated request. Wire the registration
 	// here so first-time users see no "unregistered_pk" rejection.
 	// Idempotent on subsequent syncs (PinnedServer.Registered cache).
-	if err := s.EnsureUserRegistered(ctx, server); err != nil {
+	if err := s.EnsureUserRegistered(ctx, serverURL); err != nil {
 		return fmt.Errorf("user registration: %w", err)
 	}
 
@@ -154,7 +164,7 @@ func RunSync(ctx context.Context, server string) error {
 	if err != nil {
 		return err
 	}
-	resp, err := s.signedPOST(ctx, server+"/sync", body)
+	resp, err := s.signedPOST(ctx, serverURL.JoinPath("/sync"), body)
 	if err != nil {
 		return err
 	}
@@ -261,7 +271,7 @@ func RunSync(ctx context.Context, server string) error {
 			leafIndices = append(leafIndices, ps.Events[i].SignedPrefix.Seq)
 		}
 		expectedChainID := "scope:" + sid
-		if err := VerifyAndCrossCheck(ctx, wcc, server, pinnedPub, expectedChainID, ps.STH, priorSTH, ps.InclusionProofs, leafIndices, leafHashes, ps.ConsistencyProof); err != nil {
+		if err := VerifyAndCrossCheck(ctx, wcc, serverURL, pinnedPub, expectedChainID, ps.STH, priorSTH, ps.InclusionProofs, leafIndices, leafHashes, ps.ConsistencyProof); err != nil {
 			return fmt.Errorf("scope %s: %w", sid, err)
 		}
 
@@ -333,7 +343,7 @@ func RunSync(ctx context.Context, server string) error {
 			if terr := rollbackTruncate(); terr != nil {
 				return terr
 			}
-			if rerr := s.reconcileAndRepush(ctx, wcc, server, sid, 3); rerr != nil {
+			if rerr := s.reconcileAndRepush(ctx, wcc, serverURL, sid, 3); rerr != nil {
 				return fmt.Errorf("sync: replay %s rejected; reconcile failed: %w", sid, rerr)
 			}
 			dirty = true
@@ -403,7 +413,7 @@ func RunSync(ctx context.Context, server string) error {
 		if _, known := s.Body.Scopes[m.ScopeID]; known {
 			continue
 		}
-		if err := s.discoverScope(ctx, wcc, server, m.ScopeID); err != nil {
+		if err := s.discoverScope(ctx, wcc, serverURL, m.ScopeID); err != nil {
 			fmt.Fprintf(os.Stderr, "  skip discover %s: %v\n", m.ScopeID, err)
 			continue
 		}
@@ -472,7 +482,7 @@ func RunSync(ctx context.Context, server string) error {
 		// round and is irrelevant to the push proof.
 		priorSTH := preSyncLastSTH[p.ScopeID]
 		expectedChainID := "scope:" + p.ScopeID
-		if err := VerifyAndCrossCheck(ctx, wcc, server, pinnedPub, expectedChainID, p.STH, priorSTH, []translog.InclusionProof{*p.InclusionProof}, []uint64{p.Seq}, [][]byte{leafHash}, p.ConsistencyProof); err != nil {
+		if err := VerifyAndCrossCheck(ctx, wcc, serverURL, pinnedPub, expectedChainID, p.STH, priorSTH, []translog.InclusionProof{*p.InclusionProof}, []uint64{p.Seq}, [][]byte{leafHash}, p.ConsistencyProof); err != nil {
 			return fmt.Errorf("scope %s push verify: %w", p.ScopeID, err)
 		}
 		encoded, err := EncodeSTH(*p.STH)
@@ -522,7 +532,7 @@ func RunSync(ctx context.Context, server string) error {
 		}
 		retried, retryFailed := 0, 0
 		for sid := range conflictScopes {
-			if err := s.reconcileAndRepush(ctx, wcc, server, sid, 3); err != nil {
+			if err := s.reconcileAndRepush(ctx, wcc, serverURL, sid, 3); err != nil {
 				fmt.Fprintf(os.Stderr, "  reconcile %s: %v\n", shortScopeID(sid), err)
 				retryFailed++
 				continue
@@ -589,7 +599,7 @@ func (s *Session) signedPOST(ctx context.Context, endpoint string, body []byte) 
 	// `endpoint` which carries the path). PinnedServerPub returns
 	// an error if the server isn't pinned yet, but EnsurePinnedServer
 	// is always called before any signedPOST.
-	canonical, err := NormalizeServerURL((&url.URL{Scheme: u.Scheme, Host: u.Host}).String())
+	canonical, err := canon.ParseURL((&url.URL{Scheme: u.Scheme, Host: u.Host}).String())
 	if err != nil {
 		return nil, err
 	}

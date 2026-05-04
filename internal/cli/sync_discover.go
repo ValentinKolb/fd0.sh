@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/valentinkolb/fd0.sh/internal/canon"
 	"github.com/valentinkolb/fd0.sh/internal/chain"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
 	"github.com/valentinkolb/fd0.sh/internal/translog"
@@ -27,7 +28,7 @@ import (
 // downstream. The validated proto.ScopeID is then carried through the
 // rest of the function; .String() recovers the underlying form for
 // helpers that still take a raw string.
-func (s *Session) discoverScope(ctx context.Context, wcc *WitnessCheckClient, server, scopeID string) error {
+func (s *Session) discoverScope(ctx context.Context, wcc *WitnessCheckClient, server canon.URL, scopeID string) error {
 	pid, err := proto.ParseScopeID(scopeID)
 	if err != nil {
 		return fmt.Errorf("discover: invalid server-supplied scope_id: %w", err)
@@ -39,7 +40,7 @@ func (s *Session) discoverScope(ctx context.Context, wcc *WitnessCheckClient, se
 	if err != nil {
 		return err
 	}
-	resp, err := s.signedPOST(ctx, server+"/sync", body)
+	resp, err := s.signedPOST(ctx, server.JoinPath("/sync"), body)
 	if err != nil {
 		return err
 	}
