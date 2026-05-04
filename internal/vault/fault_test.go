@@ -29,13 +29,13 @@ func TestFaultSaveRejectsReadOnlyDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := &proto.VaultBody{
-		SuperPriv: priv, AuthTip: proto.ChainTip{},
+		SuperPriv: priv.Bytes(), AuthTip: proto.ChainTip{},
 		Scopes: map[string]proto.ScopeVaultData{}, PinnedIdentities: map[string]proto.PinnedIdentity{},
 	}
 
 	// First save into a writable dir to confirm baseline works.
 	pathOK := filepath.Join(dir, "vault.enc")
-	if err := Save(pathOK, pub, body, []WrapInput{{
+	if err := Save(pathOK, pub.Bytes(), body, []WrapInput{{
 		MethodID: "am_x", MethodType: proto.AuthPassphrase,
 		PublicParams: pp, UnlockKey: uk,
 	}}); err != nil {
@@ -55,7 +55,7 @@ func TestFaultSaveRejectsReadOnlyDir(t *testing.T) {
 		t.Skip("filesystem doesn't honor chmod 0500 (macOS SIP / unusual mount?); test cannot exercise read-only contract")
 	}
 
-	err = Save(pathOK, pub, body, []WrapInput{{
+	err = Save(pathOK, pub.Bytes(), body, []WrapInput{{
 		MethodID: "am_x", MethodType: proto.AuthPassphrase,
 		PublicParams: pp, UnlockKey: uk,
 	}})
@@ -77,11 +77,11 @@ func TestFaultSaveBodyOnReadOnlyDirRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := &proto.VaultBody{
-		SuperPriv: priv, AuthTip: proto.ChainTip{},
+		SuperPriv: priv.Bytes(), AuthTip: proto.ChainTip{},
 		Scopes: map[string]proto.ScopeVaultData{}, PinnedIdentities: map[string]proto.PinnedIdentity{},
 	}
 	path := filepath.Join(dir, "vault.enc")
-	if err := Save(path, pub, body, []WrapInput{{
+	if err := Save(path, pub.Bytes(), body, []WrapInput{{
 		MethodID: "am_x", MethodType: proto.AuthPassphrase,
 		PublicParams: pp, UnlockKey: uk,
 	}}); err != nil {
@@ -108,7 +108,7 @@ func TestFaultSaveBodyOnReadOnlyDirRollback(t *testing.T) {
 	t.Cleanup(func() { _ = iofault.MakeWritable(dir) })
 
 	body.AuthTip = proto.ChainTip{Seq: 99, Hash: bytes.Repeat([]byte{0xCC}, 32)}
-	if err := SaveBody(path, pub, body, res.PayloadKey); err == nil {
+	if err := SaveBody(path, pub.Bytes(), body, res.PayloadKey); err == nil {
 		t.Fatal("SaveBody on read-only dir succeeded unexpectedly")
 	}
 

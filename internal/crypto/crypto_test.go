@@ -32,9 +32,12 @@ func TestEd25519SignVerifyRoundtrip(t *testing.T) {
 	if Verify(pub, msg, bad) {
 		t.Fatal("modified signature should fail verification")
 	}
-	// Wrong-length pub/sig → reject.
-	if Verify(pub[:31], msg, sig) {
-		t.Fatal("short pub should fail verification")
+	// Wrong-length pub/sig → reject. Wave C-3': "short pub"
+	// is structurally impossible at the typed Verify entry
+	// (only ParseEd25519Pub can construct a value), so probe
+	// the byte-boundary helper instead.
+	if VerifyBytes(pub.Bytes()[:31], msg, sig) {
+		t.Fatal("short pub should fail verification (VerifyBytes)")
 	}
 	if Verify(pub, msg, sig[:63]) {
 		t.Fatal("short sig should fail verification")
@@ -45,18 +48,18 @@ func TestEd25519SignVerifyRoundtrip(t *testing.T) {
 
 func TestEdToX25519Consistency(t *testing.T) {
 	// Property: for any Ed25519 keypair (pub, priv),
-	//   X25519Pub(EdPrivToX25519(priv)) == EdPubToX25519(pub)
+	//   X25519Pub(EdPrivToX25519(priv.Bytes())) == EdPubToX25519(pub.Bytes())
 	// because both compute the Curve25519 public key for the same identity.
 	for i := 0; i < 16; i++ {
 		pub, priv, err := GenerateIdentity()
 		if err != nil {
 			t.Fatal(err)
 		}
-		xPubFromPub, err := EdPubToX25519(pub)
+		xPubFromPub, err := EdPubToX25519(pub.Bytes())
 		if err != nil {
 			t.Fatalf("iter %d: EdPubToX25519: %v", i, err)
 		}
-		xPrivScalar, err := EdPrivToX25519(priv)
+		xPrivScalar, err := EdPrivToX25519(priv.Bytes())
 		if err != nil {
 			t.Fatalf("iter %d: EdPrivToX25519: %v", i, err)
 		}
@@ -224,7 +227,7 @@ func TestEdPrivToX25519NoCapLeak(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	x, err := EdPrivToX25519(priv)
+	x, err := EdPrivToX25519(priv.Bytes())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,8 +245,8 @@ func TestEdPrivToX25519NoCapLeak(t *testing.T) {
 
 func TestSealedBoxRoundtrip(t *testing.T) {
 	pub, priv, _ := GenerateIdentity()
-	xPub, _ := EdPubToX25519(pub)
-	xPriv, _ := EdPrivToX25519(priv)
+	xPub, _ := EdPubToX25519(pub.Bytes())
+	xPriv, _ := EdPrivToX25519(priv.Bytes())
 
 	plain := []byte("a 32-byte OEK or whatever blob")
 	sealed, err := SealAnonymous(plain, xPub)
@@ -264,10 +267,10 @@ func TestSealedBoxRoundtrip(t *testing.T) {
 
 func TestSealedBoxWrongRecipient(t *testing.T) {
 	pubA, _, _ := GenerateIdentity()
-	xPubA, _ := EdPubToX25519(pubA)
+	xPubA, _ := EdPubToX25519(pubA.Bytes())
 
 	_, privB, _ := GenerateIdentity()
-	xPrivB, _ := EdPrivToX25519(privB)
+	xPrivB, _ := EdPrivToX25519(privB.Bytes())
 
 	sealed, _ := SealAnonymous([]byte("for A"), xPubA)
 	xPubB, _ := X25519Pub(xPrivB)
@@ -359,11 +362,11 @@ func TestWipe(t *testing.T) {
 
 func TestEd25519PrivateKeyShape(t *testing.T) {
 	pub, priv, _ := GenerateIdentity()
-	if len(priv) != ed25519.PrivateKeySize {
-		t.Fatalf("ed25519 private key size %d != %d", len(priv), ed25519.PrivateKeySize)
+	if len(priv.Bytes()) != ed25519.PrivateKeySize {
+		t.Fatalf("ed25519 private key size %d != %d", len(priv.Bytes()), ed25519.PrivateKeySize)
 	}
 	// stdlib stores priv as seed||pub
-	if !bytes.Equal(priv[32:], pub) {
-		t.Fatal("priv[32:] should equal pub (stdlib invariant)")
+	if !bytes.Equal(priv.Bytes()[32:], pub.Bytes()) {
+		t.Fatal("priv.Bytes()[32:] should equal pub (stdlib invariant)")
 	}
 }

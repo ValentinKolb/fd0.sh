@@ -45,7 +45,7 @@ func TestRegisterAndAppend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g, err := chain.BuildUserAuthSet(chain.LocalSigner{Priv: priv}, pub, 0, nil, []proto.AuthMethod{{
+	g, err := chain.BuildUserAuthSet(chain.LocalSigner{Priv: priv}, pub.Bytes(), 0, nil, []proto.AuthMethod{{
 		MethodID: "am_x", MethodType: proto.AuthPassphrase,
 		PublicParams: make([]byte, 16), EncryptedSuperPriv: []byte{0xff},
 	}})
@@ -77,7 +77,7 @@ func TestRegisterAndAppend(t *testing.T) {
 	// requires HTTP-sig auth (super_priv must match the chain's
 	// user_super_pub) — a plain http.Get returns 401.
 	req2, _ := http.NewRequest("GET", ts.URL+"/users/"+reg.ShortID+"/events?latest=true", nil)
-	signRequest(t, srv, req2, nil, pub, priv)
+	signRequest(t, srv, req2, nil, pub.Bytes(), priv.Bytes())
 	r2, err := http.DefaultClient.Do(req2)
 	if err != nil {
 		t.Fatal(err)
@@ -96,13 +96,13 @@ func TestRegisterAndAppend(t *testing.T) {
 	if err := proto.Unmarshal(rb2, &got); err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(got.UserSuperPub, pub) {
+	if !bytes.Equal(got.UserSuperPub, pub.Bytes()) {
 		t.Fatalf("pub mismatch")
 	}
 	// Append a second auth.set (authenticated).
 	prefix, _ := g.PrevHashInput()
 	tipHash := proto.HashPrefix(prefix)
-	e2, err := chain.BuildUserAuthSet(chain.LocalSigner{Priv: priv}, pub, 0, tipHash[:], []proto.AuthMethod{{
+	e2, err := chain.BuildUserAuthSet(chain.LocalSigner{Priv: priv}, pub.Bytes(), 0, tipHash[:], []proto.AuthMethod{{
 		MethodID: "am_y", MethodType: proto.AuthPassphrase,
 		PublicParams: make([]byte, 16), EncryptedSuperPriv: []byte{0xee},
 	}})
@@ -112,7 +112,7 @@ func TestRegisterAndAppend(t *testing.T) {
 	body2, _ := proto.Marshal(map[string]any{"event": e2})
 	url := ts.URL + "/users/" + reg.ShortID + "/events"
 	req, _ := http.NewRequest("POST", url, bytes.NewReader(body2))
-	signRequest(t, srv, req, body2, pub, priv)
+	signRequest(t, srv, req, body2, pub.Bytes(), priv.Bytes())
 	r3, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -160,7 +160,7 @@ func TestTranslogEndpoints(t *testing.T) {
 
 	// Register a user → response must carry sth + inclusion_proof.
 	pub, priv, _ := crypto.GenerateIdentity()
-	g, _ := chain.BuildUserAuthSet(chain.LocalSigner{Priv: priv}, pub, 0, nil, []proto.AuthMethod{{
+	g, _ := chain.BuildUserAuthSet(chain.LocalSigner{Priv: priv}, pub.Bytes(), 0, nil, []proto.AuthMethod{{
 		MethodID: "am_z", MethodType: proto.AuthPassphrase,
 		PublicParams: make([]byte, 16), EncryptedSuperPriv: []byte{0x42},
 	}})
@@ -235,14 +235,14 @@ func TestTranslogEndpoints(t *testing.T) {
 	// Append a second event WITH last_sth_size=1 → response must
 	// include a consistency proof from size 1 to size 2.
 	tipHash := proto.HashPrefix(prefix)
-	e2, _ := chain.BuildUserAuthSet(chain.LocalSigner{Priv: priv}, pub, 0, tipHash[:], []proto.AuthMethod{{
+	e2, _ := chain.BuildUserAuthSet(chain.LocalSigner{Priv: priv}, pub.Bytes(), 0, tipHash[:], []proto.AuthMethod{{
 		MethodID: "am_z2", MethodType: proto.AuthPassphrase,
 		PublicParams: make([]byte, 16), EncryptedSuperPriv: []byte{0x43},
 	}})
 	body2, _ := proto.Marshal(map[string]any{"event": e2, "last_sth_size": uint64(1)})
 	url := ts.URL + "/users/" + reg.ShortID + "/events"
 	req, _ := http.NewRequest("POST", url, bytes.NewReader(body2))
-	signRequest(t, srv, req, body2, pub, priv)
+	signRequest(t, srv, req, body2, pub.Bytes(), priv.Bytes())
 	r5, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -318,7 +318,7 @@ func TestRateLimitRegister420(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		g, err := chain.BuildUserAuthSet(chain.LocalSigner{Priv: priv}, pub, 0, nil, []proto.AuthMethod{{
+		g, err := chain.BuildUserAuthSet(chain.LocalSigner{Priv: priv}, pub.Bytes(), 0, nil, []proto.AuthMethod{{
 			MethodID: "am_x", MethodType: proto.AuthPassphrase,
 			PublicParams: make([]byte, 16), EncryptedSuperPriv: []byte{0xff},
 		}})
@@ -383,7 +383,7 @@ func TestRateLimitWritesAfterAuth(t *testing.T) {
 	}
 	// Register pub as a known user so the auth middleware accepts
 	// signed requests (codex audit fix: server.IsUserRegistered).
-	if err := srv.Store().RegisterUser(context.Background(), pub, "test_short_id"); err != nil {
+	if err := srv.Store().RegisterUser(context.Background(), pub.Bytes(), "test_short_id"); err != nil {
 		t.Fatal(err)
 	}
 	postSync := func() *http.Response {
@@ -398,7 +398,7 @@ func TestRateLimitWritesAfterAuth(t *testing.T) {
 			"push": []any{},
 		})
 		req, _ := http.NewRequest("POST", ts.URL+"/sync", bytes.NewReader(body))
-		signRequest(t, srv, req, body, pub, priv)
+		signRequest(t, srv, req, body, pub.Bytes(), priv.Bytes())
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -446,7 +446,7 @@ func TestRateLimitDisabled(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		g, err := chain.BuildUserAuthSet(chain.LocalSigner{Priv: priv}, pub, 0, nil, []proto.AuthMethod{{
+		g, err := chain.BuildUserAuthSet(chain.LocalSigner{Priv: priv}, pub.Bytes(), 0, nil, []proto.AuthMethod{{
 			MethodID: "am_x", MethodType: proto.AuthPassphrase,
 			PublicParams: make([]byte, 16), EncryptedSuperPriv: []byte{0xff},
 		}})
@@ -482,7 +482,7 @@ func signRequest(t *testing.T, srv *Server, r *http.Request, body, pub, priv []b
 	if err != nil {
 		t.Fatal(err)
 	}
-	sig, err := crypto.Sign(priv, si)
+	sig, err := crypto.SignBytes(priv, si)
 	if err != nil {
 		t.Fatal(err)
 	}

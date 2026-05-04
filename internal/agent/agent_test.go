@@ -39,12 +39,12 @@ func TestAgentRoundtrip(t *testing.T) {
 	// to detect legacy/rolled-back vaults.
 	authTipHash := bytes.Repeat([]byte{0xCC}, 32)
 	body := &proto.VaultBody{
-		SuperPriv: priv,
+		SuperPriv: priv.Bytes(),
 		AuthTip:   proto.ChainTip{Seq: 0, Hash: authTipHash},
 		Scopes:    map[string]proto.ScopeVaultData{},
 		PinnedIdentities: map[string]proto.PinnedIdentity{},
 	}
-	if err := vault.Save(paths.Vault, pub, body, []vault.WrapInput{{
+	if err := vault.Save(paths.Vault, pub.Bytes(), body, []vault.WrapInput{{
 		MethodID: "am_p", MethodType: proto.AuthPassphrase,
 		PublicParams: pp, UnlockKey: uk,
 	}}); err != nil {
@@ -91,7 +91,7 @@ func TestAgentRoundtrip(t *testing.T) {
 		t.Fatal("sign verify failed")
 	}
 	// OpenSeal: seal something to our X25519 pub and ask agent to open it.
-	xPub, _ := crypto.EdPubToX25519(pub)
+	xPub, _ := crypto.EdPubToX25519(pub.Bytes())
 	want := []byte("oek_payload_32_bytes_aaaaaaaaaaa")[:32]
 	sealed, err := crypto.SealAnonymous(want, xPub)
 	if err != nil {

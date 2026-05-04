@@ -206,7 +206,7 @@ func verifyCard(card *proto.IdentityCard) error {
 	if err != nil {
 		return err
 	}
-	if !crypto.Verify(card.SuperPub, si, card.Signature) {
+	if !crypto.VerifyBytes(card.SuperPub, si, card.Signature) {
 		return errors.New("card: bad signature")
 	}
 	return nil

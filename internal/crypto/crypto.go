@@ -38,59 +38,93 @@ func Nonce12() ([]byte, error) { return RandomBytes(12) }
 
 // ---- Ed25519 ----
 
-// GenerateIdentity creates a fresh Ed25519 keypair. The private key is the
-// 64-byte expanded form (seed||public); callers must keep it locked.
-func GenerateIdentity() (pub ed25519.PublicKey, priv ed25519.PrivateKey, err error) {
-	return ed25519.GenerateKey(rand.Reader)
+// GenerateIdentity creates a fresh Ed25519 keypair. The private key
+// is the 64-byte expanded form (seed||public); callers must keep it
+// locked.
+//
+// Wave C-3' (full migration): returns typed Ed25519Pub /
+// Ed25519Priv. The struct fields are populated directly here
+// (bypassing ParseEd25519* — we own the bytes from
+// ed25519.GenerateKey, no external validation needed). Callers
+// that still consume []byte (CBOR wire format, vault wraps,
+// server-side stores) round-trip through .Bytes() at the
+// boundary; the audit signal `grep '\.Bytes()' --include="*.go"`
+// surfaces every place a typed key crosses into legacy territory.
+func GenerateIdentity() (pub Ed25519Pub, priv Ed25519Priv, err error) {
+	rawPub, rawPriv, gerr := ed25519.GenerateKey(rand.Reader)
+	if gerr != nil {
+		return Ed25519Pub{}, Ed25519Priv{}, gerr
+	}
+	return Ed25519Pub{b: append([]byte(nil), rawPub...)},
+		Ed25519Priv{b: append([]byte(nil), rawPriv...)}, nil
 }
 
 // Sign produces an Ed25519 signature over msg with priv.
 //
-// Wave C-3 (minimal): runtime length-check eliminates the panic
-// class. Previously a wrong-sized priv (32B instead of 64B,
-// truncated CBOR decode, etc.) would land in ed25519.Sign and
-// panic; now we surface a controlled error. Production callers
-// already validate length upstream — this is defence-in-depth.
-//
-// Note: this entry keeps the legacy []byte signature for
-// backwards compatibility with the broad call-site surface
-// (vault, agent, server, witness, every test fixture). For new
-// code, prefer SignTyped which takes Ed25519Priv from the
-// type-state-enforcing constructor.
-func Sign(priv ed25519.PrivateKey, msg []byte) ([]byte, error) {
-	if len(priv) != ed25519.PrivateKeySize {
-		return nil, fmt.Errorf("crypto: Sign: bad priv length %d (want %d)", len(priv), ed25519.PrivateKeySize)
-	}
-	return ed25519.Sign(priv, msg), nil
-}
-
-// SignTyped is the type-state entry — accepts a validated
-// Ed25519Priv that, by construction, has the correct length.
-// Equivalent to Sign with no possibility of length-related
-// failure (the zero-value safeguard fires on a forged composite
-// literal). Prefer this in new code.
-func SignTyped(priv Ed25519Priv, msg []byte) ([]byte, error) {
+// Wave C-3': takes the typed Ed25519Priv. The wrong-size-priv
+// panic class is structurally impossible — only ParseEd25519Priv
+// (which validates length AND seed/public-half consistency) or
+// GenerateIdentity (correct by construction) can produce a
+// non-zero value. The IsZero check catches forged
+// composite-literal escapes.
+func Sign(priv Ed25519Priv, msg []byte) ([]byte, error) {
 	if priv.IsZero() {
 		return nil, errSignBadKey
 	}
 	return ed25519.Sign(priv.asStdlib(), msg), nil
 }
 
-// Verify returns true iff sig is a valid Ed25519 signature of msg under pub.
-func Verify(pub []byte, msg, sig []byte) bool {
-	if len(pub) != ed25519.PublicKeySize || len(sig) != ed25519.SignatureSize {
-		return false
+// SignBytes is the boundary helper for callers that hold a raw
+// []byte (e.g. agent IPC code that just memcpy'd from an mlocked
+// buffer). It length-checks the slice and delegates to Sign with
+// a typed value. Returns an error on the wrong length so a
+// truncated CBOR decode or corrupt mlock'd buffer surfaces as a
+// controlled failure rather than a stdlib panic.
+//
+// Prefer Sign with a pre-parsed Ed25519Priv when the caller can
+// hold the typed value across the call site.
+func SignBytes(rawPriv []byte, msg []byte) ([]byte, error) {
+	if len(rawPriv) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("crypto: Sign: bad priv length %d (want %d)", len(rawPriv), ed25519.PrivateKeySize)
 	}
-	return ed25519.Verify(ed25519.PublicKey(pub), msg, sig)
+	// Skip the seed/public-half consistency check — the agent's
+	// mlocked buffer is the trust source, not arbitrary user
+	// input. SignBytes is a thin length-gate; for full validation
+	// use ParseEd25519Priv + Sign.
+	return ed25519.Sign(ed25519.PrivateKey(rawPriv), msg), nil
 }
 
-// VerifyTyped is the type-state entry — accepts a validated
-// Ed25519Pub. Length is correct by construction. Prefer in new code.
-func VerifyTyped(pub Ed25519Pub, msg, sig []byte) bool {
+// Verify returns true iff sig is a valid Ed25519 signature of msg under pub.
+//
+// Wave C-3': takes typed Ed25519Pub. Length is correct by
+// construction. ed25519.Verify runs the constant-time path on
+// well-sized inputs, guaranteed by the type-state. A zero-value
+// Ed25519Pub fails closed without invoking the underlying
+// primitive.
+func Verify(pub Ed25519Pub, msg, sig []byte) bool {
 	if pub.IsZero() || len(sig) != ed25519.SignatureSize {
 		return false
 	}
 	return ed25519.Verify(pub.asStdlib(), msg, sig)
+}
+
+// VerifyBytes is the boundary helper for callers that hold a raw
+// []byte pubkey (every wire-format verifier in server / chain /
+// cli — the field rides CBOR as a 32-byte string and we
+// length-check just before invoking the underlying primitive).
+// Returns false on either parse failure OR signature mismatch —
+// callers using it implicitly accept "bad pub size is the same
+// as bad signature" semantics, which is the existing behaviour
+// at every wire-format verifier.
+//
+// Prefer Verify with a pre-parsed Ed25519Pub when distinguishing
+// parse error from verify failure matters.
+func VerifyBytes(rawPub []byte, msg, sig []byte) bool {
+	pub, err := ParseEd25519Pub(rawPub)
+	if err != nil {
+		return false
+	}
+	return Verify(pub, msg, sig)
 }
 
 // ---- Ed25519 → X25519 (PROTOCOL.md §1.2) ----

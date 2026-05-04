@@ -20,10 +20,10 @@ func mkScopeAdv(t *testing.T) (path string, ownPub []byte, opener Opener) {
 	t.Helper()
 	dir := t.TempDir()
 	pub, priv, _ := crypto.GenerateIdentity()
-	xPub, _ := crypto.EdPubToX25519(pub)
-	xPriv, _ := crypto.EdPrivToX25519(priv)
+	xPub, _ := crypto.EdPubToX25519(pub.Bytes())
+	xPriv, _ := crypto.EdPrivToX25519(priv.Bytes())
 	signer := LocalSigner{Priv: priv}
-	gen, _, scopeID, err := BuildScopeGenesis(signer, pub)
+	gen, _, scopeID, err := BuildScopeGenesis(signer, pub.Bytes())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +31,7 @@ func mkScopeAdv(t *testing.T) (path string, ownPub []byte, opener Opener) {
 	if err := AppendScope(path, gen); err != nil {
 		t.Fatal(err)
 	}
-	return path, pub, LocalOpener{Pub: xPub, Priv: xPriv}
+	return path, pub.Bytes(), LocalOpener{Pub: xPub, Priv: xPriv}
 }
 
 // TestAdvReplayRejectsNonMonotoneSeq locks the codex audit fix:
@@ -67,22 +67,22 @@ func TestAdvReplayRejectsScopeMismatch(t *testing.T) {
 	// Build two scopes; mix events between them.
 	dirA := t.TempDir()
 	pubA, privA, _ := crypto.GenerateIdentity()
-	xPubA, _ := crypto.EdPubToX25519(pubA)
-	xPrivA, _ := crypto.EdPrivToX25519(privA)
+	xPubA, _ := crypto.EdPubToX25519(pubA.Bytes())
+	xPrivA, _ := crypto.EdPrivToX25519(privA.Bytes())
 	openerA := LocalOpener{Pub: xPubA, Priv: xPrivA}
 	signerA := LocalSigner{Priv: privA}
 
-	genA, oekA, scopeAID, _ := BuildScopeGenesis(signerA, pubA)
+	genA, oekA, scopeAID, _ := BuildScopeGenesis(signerA, pubA.Bytes())
 	pathA := filepath.Join(dirA, scopeAID.String()+".cbor")
 	_ = AppendScope(pathA, genA)
 
 	// Build a secret.set under scope B (different ID), signed by
 	// the same author. Then splice it into A's chain file.
 	dirB := t.TempDir()
-	genB, _, scopeBID, _ := BuildScopeGenesis(signerA, pubA)
+	genB, _, scopeBID, _ := BuildScopeGenesis(signerA, pubA.Bytes())
 	pathB := filepath.Join(dirB, scopeBID.String()+".cbor")
 	_ = AppendScope(pathB, genB)
-	stB, _ := ReplayScope(pathB, pubA, xPubA, openerA)
+	stB, _ := ReplayScope(pathB, pubA.Bytes(), xPubA, openerA)
 
 	body := &proto.SecretBody{
 		ID: "s_evil_id_aaa",
@@ -92,7 +92,7 @@ func TestAdvReplayRejectsScopeMismatch(t *testing.T) {
 		},
 	}
 	_ = oekA
-	evB, err := BuildSecretSet(signerA, pubA, scopeBID, stB.TipSeq, stB.TipHash, stB.OEKs[stB.CurrentOEKVer], stB.CurrentOEKVer, body)
+	evB, err := BuildSecretSet(signerA, pubA.Bytes(), scopeBID, stB.TipSeq, stB.TipHash, stB.OEKs[stB.CurrentOEKVer], stB.CurrentOEKVer, body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func TestAdvReplayRejectsScopeMismatch(t *testing.T) {
 	if err := AppendScope(pathA, evB); err != nil {
 		t.Fatal(err)
 	}
-	_, err = ReplayScope(pathA, pubA, xPubA, openerA)
+	_, err = ReplayScope(pathA, pubA.Bytes(), xPubA, openerA)
 	if err == nil {
 		t.Fatal("ReplayScope accepted event from sibling scope spliced into chain")
 	}
@@ -186,7 +186,7 @@ func TestAdvReplayRejectsForeignAuthor(t *testing.T) {
 		},
 	}
 	// foreignPub signs but is NOT in MemberSet (only owner is).
-	ev, err := BuildSecretSet(signerForeign, foreignPub,
+	ev, err := BuildSecretSet(signerForeign, foreignPub.Bytes(),
 		stOwner.ScopeID, stOwner.TipSeq, stOwner.TipHash,
 		stOwner.OEKs[stOwner.CurrentOEKVer], stOwner.CurrentOEKVer, body)
 	if err != nil {

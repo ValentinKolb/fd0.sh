@@ -407,11 +407,12 @@ func (s *Server) handleSign(sr *SignReq) *Response {
 	priv := make([]byte, ed25519.PrivateKeySize)
 	copy(priv, s.superPriv.Bytes())
 	defer crypto.Wipe(priv)
-	// Wave C-3: crypto.Sign returns an error on wrong-size priv
-	// (defence-in-depth) instead of panicking inside the stdlib.
-	// Surface as a clean handler error so the IPC client gets a
-	// controlled failure.
-	sig, err := crypto.Sign(ed25519.PrivateKey(priv), sr.Payload)
+	// Wave C-3': SignBytes is the byte-slice boundary helper —
+	// the agent's mlocked source is the trust anchor; the typed
+	// Ed25519Priv path is for callers who hold the value across
+	// multiple operations. SignBytes runs the length-gate then
+	// hands to ed25519.Sign on a guaranteed-correct-length input.
+	sig, err := crypto.SignBytes(priv, sr.Payload)
 	if err != nil {
 		return errResp("sign failed")
 	}

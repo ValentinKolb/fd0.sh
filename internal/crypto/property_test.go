@@ -201,11 +201,11 @@ func TestPropertyEdToX25519Consistency(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		xPub, err := EdPubToX25519(pub)
+		xPub, err := EdPubToX25519(pub.Bytes())
 		if err != nil {
 			t.Fatalf("iter=%d: EdPubToX25519: %v", i, err)
 		}
-		xPriv, err := EdPrivToX25519(priv)
+		xPriv, err := EdPrivToX25519(priv.Bytes())
 		if err != nil {
 			t.Fatalf("iter=%d: EdPrivToX25519: %v", i, err)
 		}
@@ -233,13 +233,13 @@ func TestPropertyEdToX25519Deterministic(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		x1, _ := EdPubToX25519(pub)
-		x2, _ := EdPubToX25519(pub)
+		x1, _ := EdPubToX25519(pub.Bytes())
+		x2, _ := EdPubToX25519(pub.Bytes())
 		if !bytes.Equal(x1, x2) {
 			t.Fatalf("iter=%d: EdPubToX25519 non-deterministic", i)
 		}
-		p1, _ := EdPrivToX25519(priv)
-		p2, _ := EdPrivToX25519(priv)
+		p1, _ := EdPrivToX25519(priv.Bytes())
+		p2, _ := EdPrivToX25519(priv.Bytes())
 		if !bytes.Equal(p1, p2) {
 			t.Fatalf("iter=%d: EdPrivToX25519 non-deterministic", i)
 		}
@@ -254,8 +254,8 @@ func TestPropertySealedBoxTamperRejects(t *testing.T) {
 	r := rand.New(rand.NewSource(0xBEEF))
 	for i := 0; i < 50; i++ {
 		pub, priv, _ := GenerateIdentity()
-		xPub, _ := EdPubToX25519(pub)
-		xPriv, _ := EdPrivToX25519(priv)
+		xPub, _ := EdPubToX25519(pub.Bytes())
+		xPriv, _ := EdPrivToX25519(priv.Bytes())
 		plain := randSeeded(r, 16+r.Intn(64))
 		sealed, err := SealAnonymous(plain, xPub)
 		if err != nil {
@@ -292,10 +292,10 @@ func TestPropertySealedBoxWrongRecipientRejects(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		pubA, privA, _ := GenerateIdentity()
 		pubB, privB, _ := GenerateIdentity()
-		xPubA, _ := EdPubToX25519(pubA)
-		xPubB, _ := EdPubToX25519(pubB)
-		xPrivA, _ := EdPrivToX25519(privA)
-		xPrivB, _ := EdPrivToX25519(privB)
+		xPubA, _ := EdPubToX25519(pubA.Bytes())
+		xPubB, _ := EdPubToX25519(pubB.Bytes())
+		xPrivA, _ := EdPrivToX25519(privA.Bytes())
+		xPrivB, _ := EdPrivToX25519(privB.Bytes())
 
 		plain := []byte("for A only")
 		sealed, err := SealAnonymous(plain, xPubA)

@@ -43,7 +43,15 @@ func RunInit(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer crypto.Wipe(priv)
+	// Wave C-3': pub/priv are typed. Wire-format APIs (vault
+	// wraps, proto VaultBody, chain.LocalSigner) consume []byte;
+	// convert via .Bytes() at the boundary. Wipe the priv
+	// material via the typed Wipe (which delegates to
+	// crypto.Wipe with KeepAlive safeguard).
+	defer priv.Wipe()
+	pubBytes := pub.Bytes()
+	privBytes := priv.Bytes()
+	defer crypto.Wipe(privBytes)
 
 	salt, err := crypto.RandomBytes(16)
 	if err != nil {
@@ -60,13 +68,16 @@ func RunInit(ctx context.Context) error {
 	defer crypto.Wipe(unlockKey)
 
 	methodID := "am_" + ulid.Make().String()
-	encSP, err := vault.EncryptSuperPriv(priv, pub, methodID, unlockKey)
+	encSP, err := vault.EncryptSuperPriv(privBytes, pubBytes, methodID, unlockKey)
 	if err != nil {
 		return err
 	}
 
-	// Genesis auth.set.
-	g, err := chain.BuildUserAuthSet(chain.LocalSigner{Priv: priv}, pub, 0, nil, []proto.AuthMethod{{
+	// Genesis auth.set. LocalSigner now holds the typed priv so
+	// the wrong-size-priv panic in ed25519.Sign is structurally
+	// impossible — only ParseEd25519Priv (or GenerateIdentity)
+	// can produce a non-zero Ed25519Priv.
+	g, err := chain.BuildUserAuthSet(chain.LocalSigner{Priv: priv}, pubBytes, 0, nil, []proto.AuthMethod{{
 		MethodID:           methodID,
 		MethodType:         proto.AuthPassphrase,
 		PublicParams:       pp,
@@ -87,12 +98,12 @@ func RunInit(ctx context.Context) error {
 
 	// Build initial vault body.
 	body := &proto.VaultBody{
-		SuperPriv:        priv,
+		SuperPriv:        privBytes,
 		AuthTip:          proto.ChainTip{Seq: 0, Hash: authTipHash[:]},
 		Scopes:           map[string]proto.ScopeVaultData{},
 		PinnedIdentities: map[string]proto.PinnedIdentity{},
 	}
-	if err := vault.Save(paths.Vault, pub, body, []vault.WrapInput{{
+	if err := vault.Save(paths.Vault, pubBytes, body, []vault.WrapInput{{
 		MethodID:     methodID,
 		MethodType:   proto.AuthPassphrase,
 		PublicParams: pp,
@@ -101,7 +112,7 @@ func RunInit(ctx context.Context) error {
 		return err
 	}
 
-	fmt.Fprintf(os.Stderr, "✓ identity created (%s…)\n", b64sub(pub))
+	fmt.Fprintf(os.Stderr, "✓ identity created (%s…)\n", b64sub(pubBytes))
 	fmt.Fprintf(os.Stderr, "✓ vault written to %s\n", paths.Vault)
 	fmt.Fprintf(os.Stderr, "Run `fd0 unlock` to start the agent.\n")
 	return nil

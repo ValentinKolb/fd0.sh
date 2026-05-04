@@ -29,18 +29,18 @@ func mkVault(t *testing.T) (path string, pub ed25519.PublicKey, unlock []byte) {
 		t.Fatal(err)
 	}
 	body := &proto.VaultBody{
-		SuperPriv:        priv,
+		SuperPriv: priv.Bytes(),
 		AuthTip:          proto.ChainTip{Seq: 0, Hash: bytes.Repeat([]byte{0xAA}, 32)},
 		Scopes:           map[string]proto.ScopeVaultData{},
 		PinnedIdentities: map[string]proto.PinnedIdentity{},
 	}
-	if err := Save(path, pub2, body, []WrapInput{{
+	if err := Save(path, pub2.Bytes(), body, []WrapInput{{
 		MethodID: "am_x", MethodType: proto.AuthPassphrase,
 		PublicParams: pp, UnlockKey: uk,
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	return path, pub2, uk
+	return path, pub2.Bytes(), uk
 }
 
 // TestAdvVaultRejectsEmptyWraps locks the codex audit fix:
@@ -51,15 +51,15 @@ func TestAdvVaultRejectsEmptyWraps(t *testing.T) {
 	path := filepath.Join(dir, "vault.enc")
 	pub, priv, _ := crypto.GenerateIdentity()
 	body := &proto.VaultBody{
-		SuperPriv:        priv,
+		SuperPriv: priv.Bytes(),
 		AuthTip:          proto.ChainTip{},
 		Scopes:           map[string]proto.ScopeVaultData{},
 		PinnedIdentities: map[string]proto.PinnedIdentity{},
 	}
-	if err := Save(path, pub, body, nil); err == nil {
+	if err := Save(path, pub.Bytes(), body, nil); err == nil {
 		t.Fatal("Save(empty wraps) accepted — would write unlockable-by-nobody vault")
 	}
-	if err := Save(path, pub, body, []WrapInput{}); err == nil {
+	if err := Save(path, pub.Bytes(), body, []WrapInput{}); err == nil {
 		t.Fatal("Save(zero-len wraps) accepted")
 	}
 }

@@ -15,7 +15,7 @@ func TestUserChainRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g, err := BuildUserAuthSet(LocalSigner{Priv: priv}, pub, 0, nil, []proto.AuthMethod{{
+	g, err := BuildUserAuthSet(LocalSigner{Priv: priv}, pub.Bytes(), 0, nil, []proto.AuthMethod{{
 		MethodID:           "am_test",
 		MethodType:         proto.AuthPassphrase,
 		PublicParams:       make([]byte, 16),
@@ -37,7 +37,7 @@ func TestUserChainRoundtrip(t *testing.T) {
 		t.Fatalf("bad state: %+v", st)
 	}
 	// Append a second event.
-	e2, err := BuildUserAuthSet(LocalSigner{Priv: priv}, pub, st.TipSeq, st.TipHash, []proto.AuthMethod{{
+	e2, err := BuildUserAuthSet(LocalSigner{Priv: priv}, pub.Bytes(), st.TipSeq, st.TipHash, []proto.AuthMethod{{
 		MethodID:           "am_test2",
 		MethodType:         proto.AuthPassphrase,
 		PublicParams:       make([]byte, 16),
@@ -63,10 +63,10 @@ func TestScopeChainRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	xPub, _ := crypto.EdPubToX25519(pub)
-	xPriv, _ := crypto.EdPrivToX25519(priv)
+	xPub, _ := crypto.EdPubToX25519(pub.Bytes())
+	xPriv, _ := crypto.EdPrivToX25519(priv.Bytes())
 
-	gen, oek, scopeID, err := BuildScopeGenesis(LocalSigner{Priv: priv}, pub)
+	gen, oek, scopeID, err := BuildScopeGenesis(LocalSigner{Priv: priv}, pub.Bytes())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestScopeChainRoundtrip(t *testing.T) {
 	if err := AppendScope(p, gen); err != nil {
 		t.Fatal(err)
 	}
-	st, err := ReplayScope(p, pub, xPub, LocalOpener{Pub: xPub, Priv: xPriv})
+	st, err := ReplayScope(p, pub.Bytes(), xPub, LocalOpener{Pub: xPub, Priv: xPriv})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,14 +93,14 @@ func TestScopeChainRoundtrip(t *testing.T) {
 			Payload: "AKIA...", Tags: map[string]string{"env": "prod"},
 		},
 	}
-	ev, err := BuildSecretSet(LocalSigner{Priv: priv}, pub, scopeID, st.TipSeq, st.TipHash, oek, st.CurrentOEKVer, body)
+	ev, err := BuildSecretSet(LocalSigner{Priv: priv}, pub.Bytes(), scopeID, st.TipSeq, st.TipHash, oek, st.CurrentOEKVer, body)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := AppendScope(p, ev); err != nil {
 		t.Fatal(err)
 	}
-	st, err = ReplayScope(p, pub, xPub, LocalOpener{Pub: xPub, Priv: xPriv})
+	st, err = ReplayScope(p, pub.Bytes(), xPub, LocalOpener{Pub: xPub, Priv: xPriv})
 	if err != nil {
 		t.Fatalf("replay after secret.set: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestLocalOnlyEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	signer := LocalSigner{Priv: priv}
-	gen, oek, scopeID, err := BuildScopeGenesis(signer, pub)
+	gen, oek, scopeID, err := BuildScopeGenesis(signer, pub.Bytes())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestLocalOnlyEvents(t *testing.T) {
 		body := &proto.SecretBody{
 			ID: "s_" + value, Record: &proto.SecretRecord{Name: value, Type: "kv.string", SchemaVersion: 1, Payload: value, Tags: map[string]string{}},
 		}
-		ev, err := BuildSecretSet(signer, pub, scopeID, seq-1, prevHash, oek, 1, body)
+		ev, err := BuildSecretSet(signer, pub.Bytes(), scopeID, seq-1, prevHash, oek, 1, body)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -175,14 +175,14 @@ func TestLocalOnlyEvents(t *testing.T) {
 func TestLocalOnlyEventsCompactedLocal(t *testing.T) {
 	pub, priv, _ := crypto.GenerateIdentity()
 	signer := LocalSigner{Priv: priv}
-	gen, oek, scopeID, _ := BuildScopeGenesis(signer, pub)
+	gen, oek, scopeID, _ := BuildScopeGenesis(signer, pub.Bytes())
 	genPrefix, _ := gen.PrevHashInput()
 	genHash := proto.HashPrefix(genPrefix)
 	mk := func(seq uint64, prevHash []byte, name string) *proto.ScopeEvent {
 		body := &proto.SecretBody{
 			ID: "s_" + name, Record: &proto.SecretRecord{Name: name, Type: "kv.string", SchemaVersion: 1, Payload: name, Tags: map[string]string{}},
 		}
-		ev, _ := BuildSecretSet(signer, pub, scopeID, seq-1, prevHash, oek, 1, body)
+		ev, _ := BuildSecretSet(signer, pub.Bytes(), scopeID, seq-1, prevHash, oek, 1, body)
 		return ev
 	}
 	s1 := mk(1, genHash[:], "v1")
@@ -209,10 +209,10 @@ func TestLocalOnlyEventsCompactedLocal(t *testing.T) {
 // kept, and the returned `dropped` slice lists what was removed.
 func TestCompactScopeKeepsLiveAndDropsSuperseded(t *testing.T) {
 	pub, priv, _ := crypto.GenerateIdentity()
-	xPub, _ := crypto.EdPubToX25519(pub)
-	xPriv, _ := crypto.EdPrivToX25519(priv)
+	xPub, _ := crypto.EdPubToX25519(pub.Bytes())
+	xPriv, _ := crypto.EdPrivToX25519(priv.Bytes())
 	signer := LocalSigner{Priv: priv}
-	gen, oek, scopeID, _ := BuildScopeGenesis(signer, pub)
+	gen, oek, scopeID, _ := BuildScopeGenesis(signer, pub.Bytes())
 	dir := t.TempDir()
 	p := filepath.Join(dir, scopeID.String()+".cbor")
 	if err := AppendScope(p, gen); err != nil {
@@ -228,16 +228,16 @@ func TestCompactScopeKeepsLiveAndDropsSuperseded(t *testing.T) {
 			},
 		}
 	}
-	st, _ := ReplayScope(p, pub, xPub, LocalOpener{Pub: xPub, Priv: xPriv})
+	st, _ := ReplayScope(p, pub.Bytes(), xPub, LocalOpener{Pub: xPub, Priv: xPriv})
 	for _, v := range []string{"v1", "v2", "v3"} {
-		ev, err := BuildSecretSet(signer, pub, scopeID, st.TipSeq, st.TipHash, oek, st.CurrentOEKVer, body(v))
+		ev, err := BuildSecretSet(signer, pub.Bytes(), scopeID, st.TipSeq, st.TipHash, oek, st.CurrentOEKVer, body(v))
 		if err != nil {
 			t.Fatal(err)
 		}
 		if err := AppendScope(p, ev); err != nil {
 			t.Fatal(err)
 		}
-		st, _ = ReplayScope(p, pub, xPub, LocalOpener{Pub: xPub, Priv: xPriv})
+		st, _ = ReplayScope(p, pub.Bytes(), xPub, LocalOpener{Pub: xPub, Priv: xPriv})
 	}
 	// Sanity: 4 events on disk (genesis + 3 sets), 1 secret in index.
 	all, _ := ReadScopeEvents(p)
@@ -264,7 +264,7 @@ func TestCompactScopeKeepsLiveAndDropsSuperseded(t *testing.T) {
 		t.Fatalf("expected 2 events after compact, got %d", len(after))
 	}
 	// Replay still works (compaction-aware) and returns the latest payload.
-	st2, err := ReplayScope(p, pub, xPub, LocalOpener{Pub: xPub, Priv: xPriv})
+	st2, err := ReplayScope(p, pub.Bytes(), xPub, LocalOpener{Pub: xPub, Priv: xPriv})
 	if err != nil {
 		t.Fatalf("replay after compact: %v", err)
 	}
@@ -279,20 +279,20 @@ func TestCompactScopeKeepsLiveAndDropsSuperseded(t *testing.T) {
 // the function refuses rather than silently dropping data.
 func TestCompactScopeRefusesStaleSnapshot(t *testing.T) {
 	pub, priv, _ := crypto.GenerateIdentity()
-	xPub, _ := crypto.EdPubToX25519(pub)
-	xPriv, _ := crypto.EdPrivToX25519(priv)
+	xPub, _ := crypto.EdPubToX25519(pub.Bytes())
+	xPriv, _ := crypto.EdPrivToX25519(priv.Bytes())
 	signer := LocalSigner{Priv: priv}
-	gen, oek, scopeID, _ := BuildScopeGenesis(signer, pub)
+	gen, oek, scopeID, _ := BuildScopeGenesis(signer, pub.Bytes())
 	dir := t.TempDir()
 	p := filepath.Join(dir, scopeID.String()+".cbor")
 	_ = AppendScope(p, gen)
-	st, _ := ReplayScope(p, pub, xPub, LocalOpener{Pub: xPub, Priv: xPriv})
-	ev, _ := BuildSecretSet(signer, pub, scopeID, st.TipSeq, st.TipHash, oek, st.CurrentOEKVer,
+	st, _ := ReplayScope(p, pub.Bytes(), xPub, LocalOpener{Pub: xPub, Priv: xPriv})
+	ev, _ := BuildSecretSet(signer, pub.Bytes(), scopeID, st.TipSeq, st.TipHash, oek, st.CurrentOEKVer,
 		&proto.SecretBody{
 			ID: "s_x", Record: &proto.SecretRecord{Name: "X", Type: "kv.string", SchemaVersion: 1, Payload: "x", Tags: map[string]string{}},
 		})
 	_ = AppendScope(p, ev)
-	st, _ = ReplayScope(p, pub, xPub, LocalOpener{Pub: xPub, Priv: xPriv})
+	st, _ = ReplayScope(p, pub.Bytes(), xPub, LocalOpener{Pub: xPub, Priv: xPriv})
 	// Forge a stale snapshot: claim a non-existent event_id is "live".
 	st.SecretIndex["s_phantom"] = ScopeSecret{
 		EventID: "e_does_not_exist_in_file",
@@ -312,21 +312,21 @@ func TestCompactScopeRefusesStaleSnapshot(t *testing.T) {
 // has only live events).
 func TestCompactScopeNoOpWhenAlreadyMinimal(t *testing.T) {
 	pub, priv, _ := crypto.GenerateIdentity()
-	xPub, _ := crypto.EdPubToX25519(pub)
-	xPriv, _ := crypto.EdPrivToX25519(priv)
+	xPub, _ := crypto.EdPubToX25519(pub.Bytes())
+	xPriv, _ := crypto.EdPrivToX25519(priv.Bytes())
 	signer := LocalSigner{Priv: priv}
-	gen, oek, scopeID, _ := BuildScopeGenesis(signer, pub)
+	gen, oek, scopeID, _ := BuildScopeGenesis(signer, pub.Bytes())
 	dir := t.TempDir()
 	p := filepath.Join(dir, scopeID.String()+".cbor")
 	_ = AppendScope(p, gen)
-	st, _ := ReplayScope(p, pub, xPub, LocalOpener{Pub: xPub, Priv: xPriv})
+	st, _ := ReplayScope(p, pub.Bytes(), xPub, LocalOpener{Pub: xPub, Priv: xPriv})
 	// Single, never-superseded secret.set — already minimal.
-	ev, _ := BuildSecretSet(signer, pub, scopeID, st.TipSeq, st.TipHash, oek, st.CurrentOEKVer,
+	ev, _ := BuildSecretSet(signer, pub.Bytes(), scopeID, st.TipSeq, st.TipHash, oek, st.CurrentOEKVer,
 		&proto.SecretBody{
 			ID: "s_only", Record: &proto.SecretRecord{Name: "ONLY", Type: "kv.string", SchemaVersion: 1, Payload: "v", Tags: map[string]string{}},
 		})
 	_ = AppendScope(p, ev)
-	st, _ = ReplayScope(p, pub, xPub, LocalOpener{Pub: xPub, Priv: xPriv})
+	st, _ = ReplayScope(p, pub.Bytes(), xPub, LocalOpener{Pub: xPub, Priv: xPriv})
 	rewritten, dropped, err := CompactScope(p, st)
 	if err != nil {
 		t.Fatal(err)

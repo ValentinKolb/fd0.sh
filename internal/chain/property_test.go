@@ -45,12 +45,13 @@ func makeChain(t *testing.T, dir string, seed int64, nMembers, nSecrets int) (pa
 	t.Helper()
 	r := rand.New(rand.NewSource(seed))
 
-	pub, priv, err := crypto.GenerateIdentity()
+	pubT, priv, err := crypto.GenerateIdentity()
 	if err != nil {
 		t.Fatal(err)
 	}
+	pub = pubT.Bytes()
 	xPub, _ := crypto.EdPubToX25519(pub)
-	xPriv, _ := crypto.EdPrivToX25519(priv)
+	xPriv, _ := crypto.EdPrivToX25519(priv.Bytes())
 	signer := LocalSigner{Priv: priv}
 	opener = LocalOpener{Pub: xPub, Priv: xPriv}
 
@@ -76,7 +77,7 @@ func makeChain(t *testing.T, dir string, seed int64, nMembers, nSecrets int) (pa
 		if err != nil {
 			t.Fatal(err)
 		}
-		others[i] = op
+		others[i] = op.Bytes()
 	}
 
 	// Add all members.

@@ -25,12 +25,12 @@ func setupTwoMember(t *testing.T) (path string, ownerPub, ownerPriv, otherPub, o
 	dir := t.TempDir()
 	ownerPub2, ownerPriv2, _ := crypto.GenerateIdentity()
 	otherPub2, otherPriv2, _ := crypto.GenerateIdentity()
-	ownerXPub2, _ := crypto.EdPubToX25519(ownerPub2)
-	ownerXPriv2, _ := crypto.EdPrivToX25519(ownerPriv2)
-	otherXPub, _ := crypto.EdPubToX25519(otherPub2)
+	ownerXPub2, _ := crypto.EdPubToX25519(ownerPub2.Bytes())
+	ownerXPriv2, _ := crypto.EdPrivToX25519(ownerPriv2.Bytes())
+	otherXPub, _ := crypto.EdPubToX25519(otherPub2.Bytes())
 	_ = otherXPub
 	signer := LocalSigner{Priv: ownerPriv2}
-	gen, _, sid, err := BuildScopeGenesis(signer, ownerPub2)
+	gen, _, sid, err := BuildScopeGenesis(signer, ownerPub2.Bytes())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,18 +39,18 @@ func setupTwoMember(t *testing.T) (path string, ownerPub, ownerPriv, otherPub, o
 		t.Fatal(err)
 	}
 	// Owner adds other.
-	st, _ := ReplayScope(path, ownerPub2, ownerXPub2, LocalOpener{Pub: ownerXPub2, Priv: ownerXPriv2})
+	st, _ := ReplayScope(path, ownerPub2.Bytes(), ownerXPub2, LocalOpener{Pub: ownerXPub2, Priv: ownerXPriv2})
 	proj := buildProjection(st)
-	add, _, err := BuildMemberChange(signer, ownerPub2,
+	add, _, err := BuildMemberChange(signer, ownerPub2.Bytes(),
 		st.ScopeID, st.TipSeq, st.TipHash, st.CurrentOEKVer,
-		proto.OpAdd, otherPub2, st.MemberSet, proj)
+		proto.OpAdd, otherPub2.Bytes(), st.MemberSet, proj)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := AppendScope(path, add); err != nil {
 		t.Fatal(err)
 	}
-	return path, ownerPub2, ownerPriv2, otherPub2, otherPriv2, ownerXPub2, ownerXPriv2, sid
+	return path, ownerPub2.Bytes(), ownerPriv2.Bytes(), otherPub2.Bytes(), otherPriv2.Bytes(), ownerXPub2, ownerXPriv2, sid
 }
 
 // TestMalMemberCannotForgeAuthor: a member-built event whose
@@ -74,7 +74,8 @@ func TestMalMemberCannotForgeAuthor(t *testing.T) {
 			Payload: "evil", Tags: map[string]string{},
 		},
 	}
-	signerOther := LocalSigner{Priv: otherPriv}
+	otherPrivTyped, _ := crypto.ParseEd25519Priv(otherPriv)
+	signerOther := LocalSigner{Priv: otherPrivTyped}
 	ev, err := BuildSecretSet(signerOther, otherPub, scopeID,
 		st.TipSeq, st.TipHash, st.OEKs[st.CurrentOEKVer], st.CurrentOEKVer, body)
 	if err != nil {
@@ -112,7 +113,8 @@ func TestMalMemberCannotInjectExtraSecretInProjection(t *testing.T) {
 		t.Fatal(err)
 	}
 	thirdPub, _, _ := crypto.GenerateIdentity()
-	signerOther := LocalSigner{Priv: otherPriv}
+	otherPrivTyped, _ := crypto.ParseEd25519Priv(otherPriv)
+	signerOther := LocalSigner{Priv: otherPrivTyped}
 	// Build a projection with one bogus entry not in stNow.SecretIndex.
 	bogusProj := &proto.MemberProjection{
 		Secrets: []proto.SecretInProjection{{
@@ -125,7 +127,7 @@ func TestMalMemberCannotInjectExtraSecretInProjection(t *testing.T) {
 	}
 	ev, _, err := BuildMemberChange(signerOther, otherPub,
 		scopeID, stNow.TipSeq, stNow.TipHash, stNow.CurrentOEKVer,
-		proto.OpAdd, thirdPub, stNow.MemberSet, bogusProj)
+		proto.OpAdd, thirdPub.Bytes(), stNow.MemberSet, bogusProj)
 	if err != nil {
 		// Build itself may reject — also OK. Either way, the
 		// state machine is defended.
@@ -149,7 +151,8 @@ func TestMalMemberCannotReplayOldSecretSet(t *testing.T) {
 	path, ownerPub, _, otherPub, otherPriv, ownerXPub, ownerXPriv, scopeID := setupTwoMember(t)
 
 	stStart, _ := ReplayScope(path, ownerPub, ownerXPub, LocalOpener{Pub: ownerXPub, Priv: ownerXPriv})
-	signerOther := LocalSigner{Priv: otherPriv}
+	otherPrivTyped, _ := crypto.ParseEd25519Priv(otherPriv)
+	signerOther := LocalSigner{Priv: otherPrivTyped}
 	body := &proto.SecretBody{
 		ID: "s_replay_target_aa",
 		Record: &proto.SecretRecord{

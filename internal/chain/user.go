@@ -89,7 +89,7 @@ func verifyUserEvent(ev *proto.UserEvent, superPub []byte) error {
 	if err != nil {
 		return err
 	}
-	if !crypto.Verify(superPub, si, ev.Signature) {
+	if !crypto.VerifyBytes(superPub, si, ev.Signature) {
 		return errors.New("auth.set: bad signature")
 	}
 	return nil

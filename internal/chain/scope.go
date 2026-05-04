@@ -139,7 +139,7 @@ func ReplayScope(path string, ownSuperPub, ownX25519Pub []byte, opener Opener) (
 		if err != nil {
 			return nil, err
 		}
-		if !crypto.Verify(sp.Author, si, ev.Signature.Signature) {
+		if !crypto.VerifyBytes(sp.Author, si, ev.Signature.Signature) {
 			return nil, fmt.Errorf("scope[%d]: bad signature", i)
 		}
 		// Per-kind apply.

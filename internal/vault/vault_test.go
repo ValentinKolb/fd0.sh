@@ -26,7 +26,7 @@ func TestVaultRoundtrip(t *testing.T) {
 	}
 
 	body := &proto.VaultBody{
-		SuperPriv: priv,
+		SuperPriv: priv.Bytes(),
 		AuthTip:   proto.ChainTip{Seq: 0, Hash: bytes.Repeat([]byte{0xAA}, 32)},
 		Scopes:    map[string]proto.ScopeVaultData{},
 		PinnedIdentities: map[string]proto.PinnedIdentity{},
@@ -39,7 +39,7 @@ func TestVaultRoundtrip(t *testing.T) {
 		PublicParams: pp,
 		UnlockKey:    unlock,
 	}}
-	if err := Save(p, pub, body, wraps); err != nil {
+	if err := Save(p, pub.Bytes(), body, wraps); err != nil {
 		t.Fatal(err)
 	}
 
@@ -57,7 +57,7 @@ func TestVaultRoundtrip(t *testing.T) {
 	if len(got.PayloadKey) != 32 {
 		t.Fatal("expected payload_key 32 bytes")
 	}
-	if !bytes.Equal(got.Body.SuperPriv, priv) {
+	if !bytes.Equal(got.Body.SuperPriv, priv.Bytes()) {
 		t.Fatal("super_priv mismatch")
 	}
 	if got.Body.AuthTip.Seq != 0 || !bytes.Equal(got.Body.AuthTip.Hash, body.AuthTip.Hash) {
@@ -84,12 +84,12 @@ func TestAddWrapIdempotentOnRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := &proto.VaultBody{
-		SuperPriv: priv,
+		SuperPriv: priv.Bytes(),
 		AuthTip:   proto.ChainTip{Seq: 0, Hash: bytes.Repeat([]byte{0xAA}, 32)},
 		Scopes:    map[string]proto.ScopeVaultData{},
 		PinnedIdentities: map[string]proto.PinnedIdentity{},
 	}
-	if err := Save(p, pub, body, []WrapInput{{MethodID: "am_a", MethodType: proto.AuthPassphrase, PublicParams: pp, UnlockKey: uk}}); err != nil {
+	if err := Save(p, pub.Bytes(), body, []WrapInput{{MethodID: "am_a", MethodType: proto.AuthPassphrase, PublicParams: pp, UnlockKey: uk}}); err != nil {
 		t.Fatal(err)
 	}
 	// Open once to get a stable payload_key.
@@ -105,13 +105,13 @@ func TestAddWrapIdempotentOnRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	// First add succeeds.
-	if err := AddWrap(p, pub, body, res.PayloadKey, WrapInput{
+	if err := AddWrap(p, pub.Bytes(), body, res.PayloadKey, WrapInput{
 		MethodID: "am_b", MethodType: proto.AuthPassphrase, PublicParams: pp2, UnlockKey: uk2,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	// Retry with the SAME method_id and SAME UnlockKey: must succeed.
-	if err := AddWrap(p, pub, body, res.PayloadKey, WrapInput{
+	if err := AddWrap(p, pub.Bytes(), body, res.PayloadKey, WrapInput{
 		MethodID: "am_b", MethodType: proto.AuthPassphrase, PublicParams: pp2, UnlockKey: uk2,
 	}); err != nil {
 		t.Fatalf("idempotent retry must succeed, got %v", err)
@@ -121,7 +121,7 @@ func TestAddWrapIdempotentOnRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := AddWrap(p, pub, body, res.PayloadKey, WrapInput{
+	if err := AddWrap(p, pub.Bytes(), body, res.PayloadKey, WrapInput{
 		MethodID: "am_b", MethodType: proto.AuthPassphrase, PublicParams: pp2, UnlockKey: uk3,
 	}); err == nil {
 		t.Fatal("collision on method_id with different credential must error")
@@ -148,12 +148,12 @@ func TestRemoveWrapIdempotentOnNotFound(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := &proto.VaultBody{
-		SuperPriv: priv,
+		SuperPriv: priv.Bytes(),
 		AuthTip:   proto.ChainTip{Seq: 0, Hash: bytes.Repeat([]byte{0xAA}, 32)},
 		Scopes:    map[string]proto.ScopeVaultData{},
 		PinnedIdentities: map[string]proto.PinnedIdentity{},
 	}
-	if err := Save(p, pub, body, []WrapInput{
+	if err := Save(p, pub.Bytes(), body, []WrapInput{
 		{MethodID: "am_a", MethodType: proto.AuthPassphrase, PublicParams: pp, UnlockKey: uk},
 		{MethodID: "am_b", MethodType: proto.AuthPassphrase, PublicParams: pp2, UnlockKey: uk2},
 	}); err != nil {
@@ -164,15 +164,15 @@ func TestRemoveWrapIdempotentOnNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := RemoveWrap(p, pub, body, res.PayloadKey, "am_b"); err != nil {
+	if err := RemoveWrap(p, pub.Bytes(), body, res.PayloadKey, "am_b"); err != nil {
 		t.Fatal(err)
 	}
 	// Retry: the wrap is already gone. Must succeed (idempotent).
-	if err := RemoveWrap(p, pub, body, res.PayloadKey, "am_b"); err != nil {
+	if err := RemoveWrap(p, pub.Bytes(), body, res.PayloadKey, "am_b"); err != nil {
 		t.Fatalf("idempotent retry must succeed, got %v", err)
 	}
 	// Refusing to remove the last wrap is still enforced.
-	if err := RemoveWrap(p, pub, body, res.PayloadKey, "am_a"); err == nil {
+	if err := RemoveWrap(p, pub.Bytes(), body, res.PayloadKey, "am_a"); err == nil {
 		t.Fatal("RemoveWrap of last wrap must refuse")
 	}
 }

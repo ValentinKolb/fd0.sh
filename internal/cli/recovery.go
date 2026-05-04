@@ -186,8 +186,18 @@ func RunRecoveryImport(ctx context.Context, inPath string) error {
 	if err != nil {
 		return err
 	}
-	// Genesis auth.set on this device.
-	g, err := chain.BuildUserAuthSet(chain.LocalSigner{Priv: superPriv}, rf.UserSuperPub, 0, nil, []proto.AuthMethod{{
+	// Genesis auth.set on this device. Wave C-3': parse the
+	// recovery-decrypted priv into the typed Ed25519Priv before
+	// handing it to LocalSigner. ParseEd25519Priv re-derives the
+	// public half from the seed and rejects on mismatch — a
+	// corrupted recovery file produces a clean error rather than
+	// the silent-bad-signing-failure that the old code would
+	// emit.
+	signerPriv, perr := crypto.ParseEd25519Priv(superPriv)
+	if perr != nil {
+		return fmt.Errorf("recovery: parse super_priv: %w", perr)
+	}
+	g, err := chain.BuildUserAuthSet(chain.LocalSigner{Priv: signerPriv}, rf.UserSuperPub, 0, nil, []proto.AuthMethod{{
 		MethodID:           methodID,
 		MethodType:         proto.AuthPassphrase,
 		PublicParams:       pp,

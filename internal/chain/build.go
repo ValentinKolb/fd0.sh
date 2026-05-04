@@ -1,7 +1,6 @@
 package chain
 
 import (
-	"crypto/ed25519"
 	"errors"
 
 	"github.com/valentinkolb/fd0.sh/internal/crypto"
@@ -24,16 +23,20 @@ type Signer interface {
 	Sign(payload []byte) ([]byte, error)
 }
 
-// LocalSigner is the in-process Signer. Holds an Ed25519 private key in
-// plain memory; appropriate for the brief windows around init and
-// recovery import where super_priv is decrypted before the agent
-// receives it, and for unit tests.
-type LocalSigner struct{ Priv ed25519.PrivateKey }
+// LocalSigner is the in-process Signer. Holds the typed
+// crypto.Ed25519Priv (Wave C-3') so the wrong-size-key panic
+// in ed25519.Sign is structurally impossible — the only paths
+// to a non-zero Ed25519Priv (ParseEd25519Priv, GenerateIdentity)
+// validate length AND seed/public-half consistency.
+//
+// Used in the brief windows around init and recovery import where
+// super_priv is decrypted before the agent receives it, and in
+// unit tests.
+type LocalSigner struct{ Priv crypto.Ed25519Priv }
 
-// Sign implements Signer. Wave C-3: crypto.Sign returns an
-// error on wrong-size priv (defence-in-depth runtime check)
-// instead of panicking deep inside ed25519.Sign. Propagate
-// verbatim so the misuse surfaces at the chain.Signer seam.
+// Sign implements Signer. Wave C-3': crypto.Sign takes the
+// typed priv directly; only the zero-value sentinel (forged
+// composite literal escape) yields an error.
 func (s LocalSigner) Sign(payload []byte) ([]byte, error) {
 	return crypto.Sign(s.Priv, payload)
 }

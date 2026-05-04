@@ -58,12 +58,12 @@ func runInvariantSequence(t *testing.T, seed int64) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	xPub, _ := crypto.EdPubToX25519(pub)
-	xPriv, _ := crypto.EdPrivToX25519(priv)
+	xPub, _ := crypto.EdPubToX25519(pub.Bytes())
+	xPriv, _ := crypto.EdPrivToX25519(priv.Bytes())
 	signer := LocalSigner{Priv: priv}
 	opener := LocalOpener{Pub: xPub, Priv: xPriv}
 
-	gen, oek, scopeID, err := BuildScopeGenesis(signer, pub)
+	gen, oek, scopeID, err := BuildScopeGenesis(signer, pub.Bytes())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func runInvariantSequence(t *testing.T, seed int64) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pool[i] = op
+		pool[i] = op.Bytes()
 	}
 
 	// Pool of secret IDs.
@@ -95,12 +95,12 @@ func runInvariantSequence(t *testing.T, seed int64) {
 	expected := map[string]string{} // id → last payload
 
 	for op := 0; op < opsPerRun; op++ {
-		st, err := ReplayScope(path, pub, xPub, opener)
+		st, err := ReplayScope(path, pub.Bytes(), xPub, opener)
 		if err != nil {
 			t.Fatalf("seed=%#x op=%d: replay failed: %v", seed, op, err)
 		}
 		// Pre-op invariants.
-		assertInvariants(t, seed, op, st, stableScopeID, expected, path, pub, xPub, opener)
+		assertInvariants(t, seed, op, st, stableScopeID, expected, path, pub.Bytes(), xPub, opener)
 
 		// Choose an op.
 		choice := r.Intn(100)
@@ -112,7 +112,7 @@ func runInvariantSequence(t *testing.T, seed int64) {
 				continue
 			}
 			proj := buildProjection(st)
-			ev, newOEK, err := BuildMemberChange(signer, pub,
+			ev, newOEK, err := BuildMemberChange(signer, pub.Bytes(),
 				stableScopeID, st.TipSeq, st.TipHash, st.CurrentOEKVer,
 				proto.OpAdd, candidate, st.MemberSet, proj)
 			if err != nil {
@@ -127,7 +127,7 @@ func runInvariantSequence(t *testing.T, seed int64) {
 			// remove member (if any non-self member exists)
 			var target []byte
 			for _, m := range st.MemberSet {
-				if !bytes.Equal(m, pub) {
+				if !bytes.Equal(m, pub.Bytes()) {
 					target = m
 					break
 				}
@@ -136,7 +136,7 @@ func runInvariantSequence(t *testing.T, seed int64) {
 				continue
 			}
 			proj := buildProjection(st)
-			ev, newOEK, err := BuildMemberChange(signer, pub,
+			ev, newOEK, err := BuildMemberChange(signer, pub.Bytes(),
 				stableScopeID, st.TipSeq, st.TipHash, st.CurrentOEKVer,
 				proto.OpRemove, target, st.MemberSet, proj)
 			if err != nil {
@@ -164,7 +164,7 @@ func runInvariantSequence(t *testing.T, seed int64) {
 					Payload: payload, Tags: map[string]string{},
 				},
 			}
-			ev, err := BuildSecretSet(signer, pub, stableScopeID,
+			ev, err := BuildSecretSet(signer, pub.Bytes(), stableScopeID,
 				st.TipSeq, st.TipHash, currentOEK, currentOEKVer, body)
 			if err != nil {
 				t.Fatalf("seed=%#x op=%d: secret.set: %v", seed, op, err)
@@ -180,7 +180,7 @@ func runInvariantSequence(t *testing.T, seed int64) {
 			}
 			id := idPool[r.Intn(len(idPool))]
 			body := &proto.SecretBody{ID: id, Record: nil}
-			ev, err := BuildSecretSet(signer, pub, stableScopeID,
+			ev, err := BuildSecretSet(signer, pub.Bytes(), stableScopeID,
 				st.TipSeq, st.TipHash, currentOEK, currentOEKVer, body)
 			if err != nil {
 				t.Fatalf("seed=%#x op=%d: tombstone: %v", seed, op, err)
@@ -198,11 +198,11 @@ func runInvariantSequence(t *testing.T, seed int64) {
 		// completeness) can be properly asserted — both are
 		// codex-audit fixes for previously-documented-but-not-
 		// asserted invariants.
-		stPost, err := ReplayScope(path, pub, xPub, opener)
+		stPost, err := ReplayScope(path, pub.Bytes(), xPub, opener)
 		if err != nil {
 			t.Fatalf("seed=%#x op=%d post-replay failed: %v", seed, op, err)
 		}
-		assertInvariants(t, seed, op, stPost, stableScopeID, expected, path, pub, xPub, opener)
+		assertInvariants(t, seed, op, stPost, stableScopeID, expected, path, pub.Bytes(), xPub, opener)
 	}
 }
 

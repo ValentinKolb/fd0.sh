@@ -71,7 +71,7 @@ func UserEvent(ev *proto.UserEvent, prior *UserMeta, priorTipHash []byte, priorT
 	if err != nil {
 		return err
 	}
-	if !crypto.Verify(ev.UserSuperPub, si, ev.Signature) {
+	if !crypto.VerifyBytes(ev.UserSuperPub, si, ev.Signature) {
 		return errors.New("auth.set: bad signature")
 	}
 	return nil
@@ -92,7 +92,7 @@ func ScopeEvent(ev *proto.ScopeEvent, prior *ScopeMeta, priorTipHash []byte, pri
 	if err != nil {
 		return nil, err
 	}
-	if !crypto.Verify(sp.Author, si, ev.Signature.Signature) {
+	if !crypto.VerifyBytes(sp.Author, si, ev.Signature.Signature) {
 		return nil, errors.New("scope: bad signature")
 	}
 	// Genesis vs. successor envelope.

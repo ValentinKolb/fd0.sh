@@ -99,7 +99,7 @@ func (s *Server) verifyHTTPSig(ctx context.Context, r *http.Request) (*AuthResul
 	if err != nil {
 		return nil, http.StatusBadRequest, err
 	}
-	if !crypto.Verify(pk, si, sig) {
+	if !crypto.VerifyBytes(pk, si, sig) {
 		return nil, http.StatusUnauthorized, errors.New("bad_sig")
 	}
 	// SECURITY (codex audit 🔴 auth.go:87): authenticated endpoints
