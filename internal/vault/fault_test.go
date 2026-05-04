@@ -47,6 +47,13 @@ func TestFaultSaveRejectsReadOnlyDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = iofault.MakeWritable(dir) })
+	// Codex test audit: verify the chmod ACTUALLY works on this
+	// filesystem. macOS+SIP / certain Linux containers silently
+	// ignore chmod 0500 on tmpfs — would let a Save succeed and
+	// the test pass for the wrong reason.
+	if probe := os.WriteFile(filepath.Join(dir, ".probe"), []byte{1}, 0o600); probe == nil {
+		t.Skip("filesystem doesn't honor chmod 0500 (macOS SIP / unusual mount?); test cannot exercise read-only contract")
+	}
 
 	err = Save(pathOK, pub, body, []WrapInput{{
 		MethodID: "am_x", MethodType: proto.AuthPassphrase,

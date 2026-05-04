@@ -14,9 +14,14 @@ import (
 // (s_[a-z2-7]{26}) before joining. Without this, a hostile peer
 // or corrupted local index could feed `../../etc/passwd` and the
 // returned path would escape p.Chains.
+//
+// Codex test audit: every case below MUST be REJECTED (return ""),
+// not "accepted but inside p.Chains" — the spec doesn't allow any
+// non-conforming scope_id. The previous test silently passed
+// non-spec inputs that happened to land under p.Chains.
 func TestAdvScopeChainRejectsPathTraversal(t *testing.T) {
 	p := Paths{Chains: "/safe/chains"}
-	cases := []string{
+	mustReject := []string{
 		"../../etc/passwd",
 		"..",
 		"../sibling/file",
@@ -27,23 +32,20 @@ func TestAdvScopeChainRejectsPathTraversal(t *testing.T) {
 		"s_../escape",
 		"s_short",
 		"s_TOOLONGtoolongtoolongtoolongtoolongtoolong",
-		"X_aaaaaaaaaaaaaaaaaaaaaaaaaa", // wrong prefix
-		"s_AAAAAAAAAAAAAAAAAAAAAAAAAA", // uppercase (spec is lowercase)
-		"s_aaaaaaaaaaaaaaaaaaaaaaaaa1", // 1 not in [a-z2-7]
-		"s_aaaaaaaaaaaaaaaaaaaaaaaaa0", // 0 not in [a-z2-7]
-		"s_aaaaaaaaaaaaaaaaaaaaaaaaa9", // 9 not in [a-z2-7]
+		"X_aaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"s_AAAAAAAAAAAAAAAAAAAAAAAAAA",
+		"s_aaaaaaaaaaaaaaaaaaaaaaaaa1",
+		"s_aaaaaaaaaaaaaaaaaaaaaaaaa0",
+		"s_aaaaaaaaaaaaaaaaaaaaaaaaa9",
 	}
-	for _, sid := range cases {
+	for _, sid := range mustReject {
 		got := p.ScopeChain(sid)
-		if got == "" {
-			continue // correctly rejected
-		}
-		// If anything was returned, it MUST be inside p.Chains.
-		clean := filepath.Clean(got)
-		if !strings.HasPrefix(clean, p.Chains+"/") {
-			t.Errorf("scope_id %q produced path %q escaping %q", sid, clean, p.Chains)
+		if got != "" {
+			t.Errorf("scope_id %q must be rejected (returned %q)", sid, got)
 		}
 	}
+	_ = filepath.Clean
+	_ = strings.HasPrefix
 }
 
 // TestAdvScopeChainAcceptsValidIDs is the positive companion: every

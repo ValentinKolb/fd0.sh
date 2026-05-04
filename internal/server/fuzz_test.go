@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -69,8 +70,27 @@ func FuzzServerEndpoints(f *testing.F) {
 			req.Header.Set("Content-Type", "application/cbor")
 			resp, err := ts.Client().Do(req)
 			if err != nil {
+				// Codex test audit: distinguish "input was bad"
+				// from "server panicked". EOF / reset class
+				// suggests the handler crashed; surface as test
+				// failure.
 				if errors.Is(err, context.DeadlineExceeded) {
 					return
+				}
+				msg := err.Error()
+				if strings.Contains(msg, "request URI too long") ||
+					strings.Contains(msg, "URL too long") ||
+					strings.Contains(msg, "invalid URL escape") ||
+					strings.Contains(msg, "net/url") {
+					continue
+				}
+				if strings.Contains(msg, "EOF") ||
+					strings.Contains(msg, "reset by peer") ||
+					strings.Contains(msg, "broken pipe") ||
+					strings.Contains(msg, "unexpected EOF") {
+					t.Errorf("%s %s body=%dB transport error suggests handler panic: %v",
+						method, path, len(body), err)
+					continue
 				}
 				continue
 			}

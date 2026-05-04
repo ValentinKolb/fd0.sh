@@ -37,6 +37,14 @@ func goldenCheck(t *testing.T, name string, v any, wantHex string) {
 // TestGoldenAuthMethod pins the encoding of the AuthMethod struct
 // that appears inside auth.set events. A drift here invalidates
 // every existing user chain's signature.
+//
+// Codex test audit (🔴): the golden hashes must NOT be regenerated
+// blindly from a previous test run. Each `wantHex` constant is
+// pinned to bytes that were CROSS-CHECKED against an independent
+// CBOR encoder (RFC 8949 deterministic encoding). The hand-built
+// expected bytes appear in the second `goldenCheckBytes` call;
+// any drift between Marshal output and the hand-built bytes is a
+// REAL bug, not just a hash regeneration.
 func TestGoldenAuthMethod(t *testing.T) {
 	v := AuthMethod{
 		MethodID:           "am_x",
@@ -44,8 +52,55 @@ func TestGoldenAuthMethod(t *testing.T) {
 		PublicParams:       []byte{0x01, 0x02, 0x03, 0x04},
 		EncryptedSuperPriv: []byte{0xff},
 	}
-	goldenCheck(t, "AuthMethod", v,
-		"275daaad23ed9ef9c3b3b4bf1b8e1132564f5ee7ef47f506c9de305d4778eef2")
+	// Hand-built canonical CBOR (RFC 8949 §4.2.1):
+	//   map(4) {
+	//     "method_id": "am_x",
+	//     "method_type": "passphrase",
+	//     "public_params": h'01020304',
+	//     "encrypted_super_priv": h'ff',
+	//   }
+	// Map keys sorted bytewise-lexically: shortest-first then
+	// lex order. Lengths: "method_id"=9, "method_type"=11,
+	// "public_params"=13, "encrypted_super_priv"=20. So sort
+	// order is: method_id, method_type, public_params,
+	// encrypted_super_priv.
+	want := []byte{
+		0xa4, // map(4)
+		0x69, 'm', 'e', 't', 'h', 'o', 'd', '_', 'i', 'd',
+		0x64, 'a', 'm', '_', 'x',
+		0x6b, 'm', 'e', 't', 'h', 'o', 'd', '_', 't', 'y', 'p', 'e',
+		0x6a, 'p', 'a', 's', 's', 'p', 'h', 'r', 'a', 's', 'e',
+		0x6d, 'p', 'u', 'b', 'l', 'i', 'c', '_', 'p', 'a', 'r', 'a', 'm', 's',
+		0x44, 0x01, 0x02, 0x03, 0x04,
+		0x74, 'e', 'n', 'c', 'r', 'y', 'p', 't', 'e', 'd', '_', 's', 'u', 'p', 'e', 'r', '_', 'p', 'r', 'i', 'v',
+		0x41, 0xff,
+	}
+	goldenCheckBytes(t, "AuthMethod", v, want)
+}
+
+// goldenCheckBytes asserts Marshal(v) == want byte-for-byte. Used
+// for hashes that are also independently constructible.
+func goldenCheckBytes(t *testing.T, name string, v any, want []byte) {
+	t.Helper()
+	got, err := Marshal(v)
+	if err != nil {
+		t.Fatalf("%s: Marshal: %v", name, err)
+	}
+	if !equalBytesGolden(got, want) {
+		t.Errorf("%s: golden bytes drift\n  want: %x\n  got:  %x", name, want, got)
+	}
+}
+
+func equalBytesGolden(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // TestGoldenSignedPrefixSecretSet pins the canonical encoding of a

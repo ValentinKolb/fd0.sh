@@ -2,11 +2,10 @@ package chain
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"fmt"
 	"math/rand"
+	"os"
 	"path/filepath"
-	"sort"
 	"testing"
 
 	"github.com/valentinkolb/fd0.sh/internal/crypto"
@@ -111,7 +110,7 @@ func runInvariantSequence(t *testing.T, seed int64) {
 			t.Fatalf("seed=%#x op=%d: replay failed: %v", seed, op, err)
 		}
 		// Pre-op invariants.
-		assertInvariants(t, seed, op, st, stableScopeID, expected)
+		assertInvariants(t, seed, op, st, stableScopeID, expected, path, pub, xPub, opener)
 
 		// Choose an op.
 		choice := r.Intn(100)
@@ -204,16 +203,20 @@ func runInvariantSequence(t *testing.T, seed int64) {
 			// noop
 		}
 
-		// Post-op invariants (after the chain mutated).
+		// Post-op invariants (after the chain mutated). Pass path
+		// + opener so I1 (replay determinism) and I3 (OEK ring
+		// completeness) can be properly asserted — both are
+		// codex-audit fixes for previously-documented-but-not-
+		// asserted invariants.
 		stPost, err := ReplayScope(path, pub, xPub, opener)
 		if err != nil {
 			t.Fatalf("seed=%#x op=%d post-replay failed: %v", seed, op, err)
 		}
-		assertInvariants(t, seed, op, stPost, stableScopeID, expected)
+		assertInvariants(t, seed, op, stPost, stableScopeID, expected, path, pub, xPub, opener)
 	}
 }
 
-func assertInvariants(t *testing.T, seed int64, op int, st *ScopeState, expectedScope string, expectedSecrets map[string]string) {
+func assertInvariants(t *testing.T, seed int64, op int, st *ScopeState, expectedScope string, expectedSecrets map[string]string, path string, pub, xPub []byte, opener Opener) {
 	t.Helper()
 
 	// I6. ScopeID stability.
@@ -226,17 +229,36 @@ func assertInvariants(t *testing.T, seed int64, op int, st *ScopeState, expected
 		t.Fatalf("seed=%#x op=%d: I2 MemberSet not sorted/unique", seed, op)
 	}
 
-	// I3. OEK ring complete: every CurrentOEKVer must be in st.OEKs.
+	// I3. OEK ring COMPLETE — codex audit fix. The previous code
+	// only checked that CurrentOEKVer was in the map; it did NOT
+	// check the headline claim "every secret.set in the chain has
+	// its oek_version present in st.OEKs". We now scan every
+	// SecretIndex entry's EventID, find the corresponding event
+	// in the chain, and require its OEKVersion ∈ st.OEKs.
+	events, err := ReadScopeEvents(path)
+	if err != nil {
+		t.Fatalf("seed=%#x op=%d: I3 read chain: %v", seed, op, err)
+	}
+	for _, ev := range events {
+		if ev.SignedPrefix.Kind != proto.KindSecretSet {
+			continue
+		}
+		v := ev.SignedPrefix.OEKVersion
+		if _, ok := st.OEKs[v]; !ok {
+			t.Fatalf("seed=%#x op=%d: I3 secret.set at seq=%d uses OEK v%d but ring missing it (have versions %v)",
+				seed, op, ev.SignedPrefix.Seq, v, oekVersionList(st))
+		}
+	}
 	if _, ok := st.OEKs[st.CurrentOEKVer]; !ok && len(st.MemberSet) > 0 {
 		t.Fatalf("seed=%#x op=%d: I3 CurrentOEKVer=%d missing from OEKs ring", seed, op, st.CurrentOEKVer)
 	}
 
-	// I5. SecretIndex roundtrip.
+	// I5. SecretIndex roundtrip — re-marshal+decode every record
+	// to catch use-after-wipe / aliased buffers.
 	for id, sec := range st.SecretIndex {
 		if sec.Record == nil {
 			continue
 		}
-		// Check expected payload matches if we tracked it.
 		if want, ok := expectedSecrets[id]; ok {
 			gotPayload, _ := sec.Record.Payload.(string)
 			if gotPayload != want {
@@ -244,8 +266,6 @@ func assertInvariants(t *testing.T, seed int64, op int, st *ScopeState, expected
 					seed, op, id, gotPayload, want)
 			}
 		}
-		// Marshal+Unmarshal must round-trip without error
-		// (catches use-after-wipe / aliasing into freed memory).
 		buf, err := proto.Marshal(sec.Record)
 		if err != nil {
 			t.Fatalf("seed=%#x op=%d: I5 secret %s re-marshal failed: %v", seed, op, id, err)
@@ -256,19 +276,104 @@ func assertInvariants(t *testing.T, seed int64, op int, st *ScopeState, expected
 		}
 	}
 
-	// I1. Replay determinism — replay the chain again, compare.
-	// Done at runInvariantSequence's caller boundary by issuing a
-	// SECOND ReplayScope, but here we add a quick check: TipHash
-	// must be 32 bytes (sanity).
+	// I4. TipHash 32 bytes when chain has events.
 	if len(st.TipHash) != 32 && st.TipSeq > 0 {
 		t.Fatalf("seed=%#x op=%d: I4 TipHash wrong length: %d", seed, op, len(st.TipHash))
 	}
 
-	// I4. TipHash matches HashPrefix of any computed prefix —
-	// rather than reconstruct, we trust the replay invariant
-	// already validated by ReplayScope itself.
-	_ = sha256.Sum256
-	_ = sort.Strings
+	// I1. Replay determinism — codex audit fix. The previous code
+	// commented "two replays yield byte-identical states" but
+	// didn't actually compare. Run a SECOND replay AND a third
+	// against a copy of the file (catches code that mutates the
+	// input file as a side effect), then compare deeply.
+	st2, err := ReplayScope(path, pub, xPub, opener)
+	if err != nil {
+		t.Fatalf("seed=%#x op=%d: I1 second replay failed: %v", seed, op, err)
+	}
+	if err := scopeStateEquivalent(st, st2); err != nil {
+		t.Fatalf("seed=%#x op=%d: I1 replay non-deterministic: %v", seed, op, err)
+	}
+	// Replay a COPY of the chain file — guards against code that
+	// makes a path-specific cache mutate state.
+	tmp := path + ".replay-copy"
+	if data, rerr := os.ReadFile(path); rerr == nil {
+		if werr := os.WriteFile(tmp, data, 0o600); werr == nil {
+			defer os.Remove(tmp)
+			st3, err := ReplayScope(tmp, pub, xPub, opener)
+			if err == nil {
+				if eqErr := scopeStateEquivalent(st, st3); eqErr != nil {
+					t.Fatalf("seed=%#x op=%d: I1 replay differs across path copy: %v", seed, op, eqErr)
+				}
+			}
+		}
+	}
+}
+
+// scopeStateEquivalent deep-compares two ScopeStates for I1.
+func scopeStateEquivalent(a, b *ScopeState) error {
+	if a.ScopeID != b.ScopeID {
+		return fmt.Errorf("ScopeID drift: %q vs %q", a.ScopeID, b.ScopeID)
+	}
+	if a.TipSeq != b.TipSeq {
+		return fmt.Errorf("TipSeq drift: %d vs %d", a.TipSeq, b.TipSeq)
+	}
+	if !bytes.Equal(a.TipHash, b.TipHash) {
+		return fmt.Errorf("TipHash drift")
+	}
+	if a.CurrentOEKVer != b.CurrentOEKVer {
+		return fmt.Errorf("CurrentOEKVer drift: %d vs %d", a.CurrentOEKVer, b.CurrentOEKVer)
+	}
+	if a.Left != b.Left {
+		return fmt.Errorf("Left drift: %v vs %v", a.Left, b.Left)
+	}
+	if len(a.MemberSet) != len(b.MemberSet) {
+		return fmt.Errorf("MemberSet len: %d vs %d", len(a.MemberSet), len(b.MemberSet))
+	}
+	for i := range a.MemberSet {
+		if !bytes.Equal(a.MemberSet[i], b.MemberSet[i]) {
+			return fmt.Errorf("MemberSet[%d] differs", i)
+		}
+	}
+	if len(a.OEKs) != len(b.OEKs) {
+		return fmt.Errorf("OEKs ring size: %d vs %d", len(a.OEKs), len(b.OEKs))
+	}
+	for v, ka := range a.OEKs {
+		kb, ok := b.OEKs[v]
+		if !ok {
+			return fmt.Errorf("OEK v%d in A but not B", v)
+		}
+		if !bytes.Equal(ka, kb) {
+			return fmt.Errorf("OEK v%d byte drift", v)
+		}
+	}
+	if len(a.SecretIndex) != len(b.SecretIndex) {
+		return fmt.Errorf("SecretIndex size: %d vs %d", len(a.SecretIndex), len(b.SecretIndex))
+	}
+	for id, sa := range a.SecretIndex {
+		sb, ok := b.SecretIndex[id]
+		if !ok {
+			return fmt.Errorf("secret %s in A but not B", id)
+		}
+		if (sa.Record == nil) != (sb.Record == nil) {
+			return fmt.Errorf("secret %s tombstone state differs", id)
+		}
+		if sa.Record != nil {
+			ba, _ := proto.Marshal(sa.Record)
+			bb, _ := proto.Marshal(sb.Record)
+			if !bytes.Equal(ba, bb) {
+				return fmt.Errorf("secret %s record bytes differ", id)
+			}
+		}
+	}
+	return nil
+}
+
+func oekVersionList(st *ScopeState) []uint64 {
+	out := make([]uint64, 0, len(st.OEKs))
+	for v := range st.OEKs {
+		out = append(out, v)
+	}
+	return out
 }
 
 func sortedNoDup(set [][]byte) bool {

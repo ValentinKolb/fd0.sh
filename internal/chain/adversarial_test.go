@@ -100,8 +100,18 @@ func TestAdvReplayRejectsScopeMismatch(t *testing.T) {
 	if err := AppendScope(pathA, evB); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ReplayScope(pathA, pubA, xPubA, openerA); err == nil {
+	err = nil
+	_, err = ReplayScope(pathA, pubA, xPubA, openerA)
+	if err == nil {
 		t.Fatal("ReplayScope accepted event from sibling scope spliced into chain")
+	}
+	// Codex test audit: pin the SPECIFIC rejection reason. The
+	// spliced event has both wrong scope AND wrong prev_hash —
+	// previously the test passed for either reason. We require
+	// the scope-mismatch reason specifically because that's the
+	// invariant under test.
+	if !contains(err.Error(), "scope mismatch") {
+		t.Fatalf("expected 'scope mismatch' rejection, got: %v", err)
 	}
 }
 
@@ -147,8 +157,14 @@ func TestAdvReplayRejectsBitFlipInGenesisSig(t *testing.T) {
 }
 
 // TestAdvReplayRejectsForeignAuthor: a successor event whose
-// author isn't in the member set MUST be rejected. Even if the
-// signature verifies under that author, the chain rejects it.
+// author isn't in the member set MUST be rejected. Forge a
+// secret.set signed by a NON-MEMBER and splice it into the chain;
+// ReplayScope must reject ("author not in member set").
+//
+// Codex test audit 🔴: the previous version of this test never
+// reached ReplayScope — it only logged whether BuildMemberChange
+// rejected and returned. Now the test actually splices a forged
+// event onto the chain and verifies ReplayScope is the gate.
 func TestAdvReplayRejectsForeignAuthor(t *testing.T) {
 	path, pubOwner, opener := mkScopeAdv(t)
 	lo := opener.(LocalOpener)
@@ -157,25 +173,48 @@ func TestAdvReplayRejectsForeignAuthor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Build a foreign identity, have it sign a member.change
-	// event; splice into the chain. ReplayScope should reject
-	// because foreignPub is not in MemberSet.
+	// We need access to the OEK to construct a valid-by-signature
+	// secret.set under a foreign author. The owner's state has
+	// it; we use it to sign a forged event.
 	foreignPub, foreignPriv, _ := crypto.GenerateIdentity()
 	signerForeign := LocalSigner{Priv: foreignPriv}
-	// Foreign tries to add themselves.
-	proj := &proto.MemberProjection{}
-	_, _, err = BuildMemberChange(signerForeign, foreignPub,
-		stOwner.ScopeID, stOwner.TipSeq, stOwner.TipHash, stOwner.CurrentOEKVer,
-		proto.OpAdd, foreignPub, stOwner.MemberSet, proj)
-	// BuildMemberChange may itself reject (validation on input),
-	// in which case we can't construct the splice — that's also
-	// a defense, just at a different layer.
-	if err == nil {
-		t.Logf("BuildMemberChange accepted foreign-signed self-add; expected ReplayScope to be the gate.")
+
+	body := &proto.SecretBody{
+		ID: "s_foreign_event_aa",
+		Record: &proto.SecretRecord{
+			Name: "evil", Type: "kv.string", SchemaVersion: 1,
+			Payload: "x", Tags: map[string]string{},
+		},
 	}
-	// Either way, the property held: the chain stayed valid. The
-	// real adversarial test is in the existing scope.go gap +
-	// member-contains check. This test documents the coverage.
+	// foreignPub signs but is NOT in MemberSet (only owner is).
+	ev, err := BuildSecretSet(signerForeign, foreignPub,
+		stOwner.ScopeID, stOwner.TipSeq, stOwner.TipHash,
+		stOwner.OEKs[stOwner.CurrentOEKVer], stOwner.CurrentOEKVer, body)
+	if err != nil {
+		t.Fatalf("BuildSecretSet for foreign author: %v", err)
+	}
+	if err := AppendScope(path, ev); err != nil {
+		t.Fatal(err)
+	}
+	// Replay MUST reject — author not in member set.
+	_, err = ReplayScope(path, pubOwner, lo.Pub, opener)
+	if err == nil {
+		t.Fatal("ReplayScope accepted secret.set from non-member author")
+	}
+	// Specific reason: must mention "member set" or "author".
+	msg := err.Error()
+	if !contains(msg, "member set") && !contains(msg, "author") {
+		t.Fatalf("ReplayScope rejected for unrelated reason: %v", err)
+	}
+}
+
+func contains(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
 }
 
 // TestAdvAppendRawAtomic: appending an event MUST be either
@@ -199,13 +238,7 @@ func TestAdvAppendRawAtomic(t *testing.T) {
 	}
 }
 
-// TestAdvCompactScopeRefusesStaleStateGuard: CompactScope must
-// require a freshly-replayed state. Tampering with the state's
-// ScopeID before passing it must NOT cause CompactScope to drop
-// live secrets under the wrong identifier.
-func TestAdvCompactScopeRefusesStaleStateGuard(t *testing.T) {
-	// Already covered by TestCompactScopeRefusesStaleSnapshot in
-	// chain_test.go. Adding a marker here so a future refactor
-	// surfaces if that test gets removed.
-	t.Skip("covered by TestCompactScopeRefusesStaleSnapshot in chain_test.go")
-}
+// (Stale-state CompactScope guard is covered directly by
+// TestCompactScopeRefusesStaleSnapshot in chain_test.go. We don't
+// re-test here — the codex test audit flagged the previous skip
+// stub as zero-coverage inflation.)

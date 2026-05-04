@@ -66,12 +66,34 @@ func FuzzHTTPHandler(f *testing.F) {
 		}
 		resp, err := srv.Client().Do(req)
 		if err != nil {
-			// Context deadline exceeded / transport errors on huge
-			// URLs / etc are fine. We only care about server-side
-			// PANICS (would surface as EOF/conn-reset on the
-			// client side, but we accept those silently here —
-			// dedicated chaos tests cover panic detection).
+			// Codex test audit (🔴): a server-side PANIC manifests
+			// as EOF / connection reset on the client. Previously
+			// this branch silently `return`ed — letting panics slip
+			// through. Now we distinguish:
+			//
+			// - context.DeadlineExceeded → input was pathological,
+			//   server didn't crash; SKIP this iteration.
+			// - URL too long / parse error before transport →
+			//   skip (kernel-level rejection).
+			// - Anything else → potential panic, fail loudly.
 			if errors.Is(err, context.DeadlineExceeded) {
+				return
+			}
+			msg := err.Error()
+			// Curl-equivalent local rejections we accept:
+			if strings.Contains(msg, "request URI too long") ||
+				strings.Contains(msg, "URL too long") ||
+				strings.Contains(msg, "invalid URL escape") ||
+				strings.Contains(msg, "net/url") ||
+				strings.Contains(msg, "invalid control character") {
+				return
+			}
+			// EOF, reset, broken pipe = server-side panic suspect.
+			if strings.Contains(msg, "EOF") ||
+				strings.Contains(msg, "reset by peer") ||
+				strings.Contains(msg, "broken pipe") ||
+				strings.Contains(msg, "unexpected EOF") {
+				t.Errorf("path=%q query=%q transport error suggests handler panic: %v", path, query, err)
 				return
 			}
 			return

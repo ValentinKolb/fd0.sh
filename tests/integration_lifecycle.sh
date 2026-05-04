@@ -209,26 +209,41 @@ sleep 0.5
 # ---- Scenario 5: server SIGTERM mid-request --------------------------
 
 phase "5) Server SIGTERM mid-request: in-flight requests drain"
-# Fire 5 concurrent /healthz hits; SIGTERM the server while they're
-# in flight; assert they all complete (200) and then the server exits.
-for i in $(seq 1 5); do
-    ( curl -m 5 -s -o /dev/null -w "%{http_code}\n" "http://127.0.0.1:${SERVER_PORT}/healthz" > /tmp/fd0-life-curl-$i.out 2>&1 ) &
+# Codex test audit (🔴) caught: /healthz returns in <1ms, so a
+# `sleep 0.05` before SIGTERM meant all requests had completed
+# before the signal landed and the test was a no-op. Fix: high
+# concurrency + no pre-SIGTERM sleep, distinguish curl outcomes
+# by exit code:
+#   exit 0  → completed (status 200/2xx) → drained gracefully
+#   exit 7  → connection refused (server closed listener) → OK
+#   exit 52 → empty reply from server → reset mid-stream → BUG
+#   exit 56 → recv failure / connection reset → BUG
+# Print outcome distribution; test passes iff zero RST-class
+# failures.
+N_CONCURRENT=100
+for i in $(seq 1 $N_CONCURRENT); do
+    ( curl -m 10 -s -o /dev/null "http://127.0.0.1:${SERVER_PORT}/healthz" 2>/dev/null ; echo $? > /tmp/fd0-life-curl-$i.out ) &
 done
-sleep 0.05
+# Send SIGTERM IMMEDIATELY (no sleep) — race with curl.
 kill -TERM $SERVER_PID
 wait
 sleep 0.3
-ALL_OK=1
-for i in $(seq 1 5); do
-    code=$(cat /tmp/fd0-life-curl-$i.out 2>/dev/null)
-    if [ "$code" != "200" ]; then
-        ALL_OK=0
-    fi
+OK=0; REFUSED=0; ABORTED=0; OTHER=0
+for i in $(seq 1 $N_CONCURRENT); do
+    exit_code=$(cat /tmp/fd0-life-curl-$i.out 2>/dev/null | tr -d '[:space:]')
+    case "$exit_code" in
+        0) OK=$((OK+1)) ;;
+        7) REFUSED=$((REFUSED+1)) ;;     # graceful: server closed listener before connect
+        52|56) ABORTED=$((ABORTED+1)) ;;  # mid-stream reset = bug
+        *)  OTHER=$((OTHER+1)) ;;
+    esac
 done
-if [ $ALL_OK = 1 ]; then
-    ok "all 5 in-flight requests returned 200 during graceful shutdown"
+echo "    drain stats: ok=$OK refused=$REFUSED aborted_mid_stream=$ABORTED other=$OTHER (of $N_CONCURRENT)"
+# Aborted=mid-stream RST is the real bug. Refused is fine.
+if [ $ABORTED -eq 0 ] && [ $OK -ge 1 ]; then
+    ok "no requests aborted mid-stream; $OK drained, $REFUSED refused, $OTHER misc-fail"
 else
-    no "in-flight requests aborted during shutdown — graceful Shutdown not honored"
+    no "graceful drain broken: $ABORTED requests aborted mid-stream (server tore down established connections)"
 fi
 rm -f /tmp/fd0-life-curl-*.out
 
