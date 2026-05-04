@@ -131,7 +131,7 @@ func RunSync(ctx context.Context, server string) error {
 	// data loss is impossible by construction.
 	pushItems := []any{}
 	for sid, sd := range s.Body.Scopes {
-		evs, err := chain.ReadScopeEvents(s.Paths.ScopeChain(proto.ScopeID(sid)))
+		evs, err := chain.ReadScopeEvents(s.Paths.ScopeChain(proto.MustParseScopeID(sid)))
 		if err != nil {
 			return err
 		}
@@ -216,7 +216,7 @@ func RunSync(ctx context.Context, server string) error {
 			if err := s.ReSeal(); err != nil {
 				return fmt.Errorf("scope %s denied: ReSeal failed (chain file kept for retry): %w", sid, err)
 			}
-			path := s.Paths.ScopeChain(proto.ScopeID(sid))
+			path := s.Paths.ScopeChain(proto.MustParseScopeID(sid))
 			_ = os.Remove(path)
 			fmt.Fprintf(os.Stderr, "  ↳ removed from scope %s\n", shortScopeID(sid))
 			continue
@@ -259,7 +259,7 @@ func RunSync(ctx context.Context, server string) error {
 			return fmt.Errorf("scope %s: %w", sid, err)
 		}
 
-		path := s.Paths.ScopeChain(proto.ScopeID(sid))
+		path := s.Paths.ScopeChain(proto.MustParseScopeID(sid))
 		// Snapshot size so we can rollback on replay failure (a malicious
 		// server could otherwise poison the local chain file with bytes
 		// that don't replay).
@@ -341,7 +341,7 @@ func RunSync(ctx context.Context, server string) error {
 		// Without this, a server returning a (signature-valid)
 		// chain for a different scope would land under our
 		// requested scope's vault entry.
-		if string(st.ScopeID) != sid {
+		if st.ScopeID.String() != sid {
 			if terr := rollbackTruncate(); terr != nil {
 				return terr
 			}
@@ -547,7 +547,7 @@ func RunSync(ctx context.Context, server string) error {
 // compacted-mode user-chain replay; until then we keep history.
 func (s *Session) compactAfterSync() {
 	for sid := range s.Body.Scopes {
-		st, err := replayScopeViaAgent(s.Paths.ScopeChain(proto.ScopeID(sid)), s.UserSuperPub, s.UserX25519Pub, s.Agent)
+		st, err := replayScopeViaAgent(s.Paths.ScopeChain(proto.MustParseScopeID(sid)), s.UserSuperPub, s.UserX25519Pub, s.Agent)
 		if err != nil || st == nil {
 			continue
 		}
@@ -555,7 +555,7 @@ func (s *Session) compactAfterSync() {
 		// post-replay snapshot (st.SecretIndex). It refuses to compact
 		// if the snapshot is stale relative to the chain file, so a
 		// silent-drop bug here would surface as an error.
-		changed, dropped, err := chain.CompactScope(s.Paths.ScopeChain(proto.ScopeID(sid)), st)
+		changed, dropped, err := chain.CompactScope(s.Paths.ScopeChain(proto.MustParseScopeID(sid)), st)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  ↳ compact %s skipped: %v\n", shortScopeID(sid), err)
 			continue

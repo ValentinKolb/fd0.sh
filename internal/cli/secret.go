@@ -46,7 +46,7 @@ func RunScopeCreate(ctx context.Context, label string) error {
 	defer wipe(oek)
 
 	// Persist locally.
-	chainPath := s.Paths.ScopeChain(proto.ScopeID(scopeID))
+	chainPath := s.Paths.ScopeChain(scopeID)
 	if err := chain.AppendScope(chainPath, ev); err != nil {
 		return err
 	}
@@ -57,10 +57,10 @@ func RunScopeCreate(ctx context.Context, label string) error {
 	// Update vault: add scope entry with current OEK and chain_tip.
 	// Wave C-1: BuildScopeGenesis returns proto.ScopeID; vault map and
 	// internal helpers still use the underlying string form. Cast at
-	// the boundary — string(scopeID) is free and the audit-grep
-	// signal stays clear ("string(scopeID)" → ScopeID escapes the
+	// the boundary — scopeID.String() is free and the audit-grep
+	// signal stays clear ("scopeID.String()" → ScopeID escapes the
 	// type-safe surface).
-	scopeIDStr := string(scopeID)
+	scopeIDStr := scopeID.String()
 	if s.Body.Scopes == nil {
 		s.Body.Scopes = map[string]proto.ScopeVaultData{}
 	}
@@ -198,11 +198,11 @@ func RunSecretSet(ctx context.Context, scopeID, name, value string) error {
 			Tags:          map[string]string{},
 		},
 	}
-	ev, err := chain.BuildSecretSet(AgentSigner{Agent: s.Agent}, s.UserSuperPub, proto.ScopeID(scopeID), st.TipSeq, st.TipHash, curOEK.Key, curOEK.Version, body)
+	ev, err := chain.BuildSecretSet(AgentSigner{Agent: s.Agent}, s.UserSuperPub, proto.MustParseScopeID(scopeID), st.TipSeq, st.TipHash, curOEK.Key, curOEK.Version, body)
 	if err != nil {
 		return err
 	}
-	if err := chain.AppendScope(s.Paths.ScopeChain(proto.ScopeID(scopeID)), ev); err != nil {
+	if err := chain.AppendScope(s.Paths.ScopeChain(proto.MustParseScopeID(scopeID)), ev); err != nil {
 		return err
 	}
 	prefix, _ := ev.PrevHashInput()
@@ -305,7 +305,7 @@ func secretToString(p any) string {
 // Returns chain.ErrRollback when the local chain is behind/diverged vs.
 // the vault binding.
 func (s *Session) replayAndCheckScope(scopeID string) (*chain.ScopeState, error) {
-	st, err := replayScopeViaAgent(s.Paths.ScopeChain(proto.ScopeID(scopeID)), s.UserSuperPub, s.UserX25519Pub, s.Agent)
+	st, err := replayScopeViaAgent(s.Paths.ScopeChain(proto.MustParseScopeID(scopeID)), s.UserSuperPub, s.UserX25519Pub, s.Agent)
 	if err != nil {
 		return nil, err
 	}
@@ -415,12 +415,12 @@ func RunSecretRemove(ctx context.Context, scopeID, name string) error {
 		}
 	}
 	body := &proto.SecretBody{ID: sid, Record: nil}
-	ev, err := chain.BuildSecretSet(AgentSigner{Agent: s.Agent}, s.UserSuperPub, proto.ScopeID(scopeID),
+	ev, err := chain.BuildSecretSet(AgentSigner{Agent: s.Agent}, s.UserSuperPub, proto.MustParseScopeID(scopeID),
 		st.TipSeq, st.TipHash, curOEK.Key, curOEK.Version, body)
 	if err != nil {
 		return err
 	}
-	if err := chain.AppendScope(s.Paths.ScopeChain(proto.ScopeID(scopeID)), ev); err != nil {
+	if err := chain.AppendScope(s.Paths.ScopeChain(proto.MustParseScopeID(scopeID)), ev); err != nil {
 		return err
 	}
 	prefix, _ := ev.PrevHashInput()

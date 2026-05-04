@@ -30,7 +30,7 @@ func EventID(prefix []byte) string {
 // it never need to re-validate.
 func DeriveScopeID(genesisEventID string) ScopeID {
 	sum := sha256.Sum256([]byte(genesisEventID))
-	return ScopeID("s_" + strings.ToLower(b32.EncodeToString(sum[:16])))
+	return ScopeID{s: "s_" + strings.ToLower(b32.EncodeToString(sum[:16]))}
 }
 
 // HashPrefix returns SHA-256(prefix). Used for prev_hash linking.

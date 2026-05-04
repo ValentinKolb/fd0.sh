@@ -56,12 +56,12 @@ func (s *Session) writeScopeMeta(scopeID string, fields map[string]string) error
 			Payload:       fields,
 		},
 	}
-	ev, err := chain.BuildSecretSet(AgentSigner{Agent: s.Agent}, s.UserSuperPub, proto.ScopeID(scopeID),
+	ev, err := chain.BuildSecretSet(AgentSigner{Agent: s.Agent}, s.UserSuperPub, proto.MustParseScopeID(scopeID),
 		st.TipSeq, st.TipHash, curOEK.Key, curOEK.Version, body)
 	if err != nil {
 		return err
 	}
-	if err := chain.AppendScope(s.Paths.ScopeChain(proto.ScopeID(scopeID)), ev); err != nil {
+	if err := chain.AppendScope(s.Paths.ScopeChain(proto.MustParseScopeID(scopeID)), ev); err != nil {
 		return err
 	}
 	prefix, _ := ev.PrevHashInput()

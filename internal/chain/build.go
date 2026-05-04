@@ -74,15 +74,15 @@ func BuildUserAuthSet(signer Signer, userSuperPub []byte, prevSeq uint64, prevHa
 func BuildScopeGenesis(signer Signer, superPub []byte) (*proto.ScopeEvent, []byte, proto.ScopeID, error) {
 	oek, err := crypto.RandomBytes(32)
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, proto.ScopeID{}, err
 	}
 	ownX25519Pub, err := crypto.EdPubToX25519(superPub)
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, proto.ScopeID{}, err
 	}
 	sealed, err := crypto.SealAnonymous(oek, ownX25519Pub)
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, proto.ScopeID{}, err
 	}
 	prefix := proto.SignedPrefix{
 		Kind:       proto.KindMemberChange,
@@ -95,16 +95,16 @@ func BuildScopeGenesis(signer Signer, superPub []byte) (*proto.ScopeEvent, []byt
 	}
 	encProj, err := encryptProjection(oek, &proto.MemberProjection{}, &prefix)
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, proto.ScopeID{}, err
 	}
 	prefix.Payload.EncProjection = encProj
 	ev := &proto.ScopeEvent{SignedPrefix: prefix}
 	if err := signScope(ev, signer); err != nil {
-		return nil, nil, "", err
+		return nil, nil, proto.ScopeID{}, err
 	}
 	preb, err := ev.PrevHashInput()
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, proto.ScopeID{}, err
 	}
 	scopeID := proto.DeriveScopeID(proto.EventID(preb))
 	return ev, oek, scopeID, nil

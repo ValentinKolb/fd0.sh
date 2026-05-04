@@ -73,7 +73,7 @@ func pushItemFor(scope string, ev *proto.ScopeEvent, lastSTHSize uint64) map[str
 // bytes. A mismatch means the server is claiming our slot for some
 // other event — refuse to advance LastSTH.
 func (s *Session) leafHashAtSeq(scopeID string, seq uint64) ([]byte, error) {
-	evs, err := chain.ReadScopeEvents(s.Paths.ScopeChain(proto.ScopeID(scopeID)))
+	evs, err := chain.ReadScopeEvents(s.Paths.ScopeChain(proto.MustParseScopeID(scopeID)))
 	if err != nil {
 		return nil, err
 	}

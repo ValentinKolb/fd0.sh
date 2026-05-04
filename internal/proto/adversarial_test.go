@@ -243,11 +243,11 @@ func TestAdvScopeIDDerivationDeterministic(t *testing.T) {
 		if a != b {
 			t.Fatalf("iter %d: DeriveScopeID non-deterministic (%s vs %s)", i, a, b)
 		}
-		if !strings.HasPrefix(string(a), "s_") {
+		if !strings.HasPrefix(a.String(), "s_") {
 			t.Fatalf("iter %d: ScopeID missing s_ prefix: %s", i, a)
 		}
-		if len(a) != 28 {
-			t.Fatalf("iter %d: ScopeID wrong length %d (want 28)", i, len(a))
+		if len(a.String()) != 28 {
+			t.Fatalf("iter %d: ScopeID wrong length %d (want 28)", i, len(a.String()))
 		}
 	}
 }

@@ -11,18 +11,17 @@ import (
 // Adversarial tests for fdhome — paths and config parsing. Covers
 // the codex-found path-traversal bug and assorted config edge cases.
 
-// TestAdvScopeChainRejectsPathTraversal locks the fdhome.go:51 fix:
-// ScopeChain MUST validate scope_id against the spec pattern
-// (s_[a-z2-7]{26}) before joining. Without this, a hostile peer
-// or corrupted local index could feed `../../etc/passwd` and the
-// returned path would escape p.Chains.
+// TestAdvScopeChainRejectsPathTraversal locks the fdhome.go:51 fix
+// (Wave C-1, hardened in C-1.1 with opaque newtype):
+// ScopeChain takes a typed proto.ScopeID and that type's only
+// constructors validate against `s_[a-z2-7]{26}`. Path-traversal
+// input therefore fails at the construction site (proto.ParseScopeID)
+// — a raw string can no longer reach ScopeChain at all.
 //
-// Codex test audit: every case below MUST be REJECTED (return ""),
-// not "accepted but inside p.Chains" — the spec doesn't allow any
-// non-conforming scope_id. The previous test silently passed
-// non-spec inputs that happened to land under p.Chains.
+// We assert the upstream gate here: every malformed input must be
+// REJECTED by ParseScopeID. The defence-in-depth ScopeChain shape
+// check still runs against ScopeID{} sentinels too.
 func TestAdvScopeChainRejectsPathTraversal(t *testing.T) {
-	p := Paths{Chains: "/safe/chains"}
 	mustReject := []string{
 		"../../etc/passwd",
 		"..",
@@ -41,10 +40,15 @@ func TestAdvScopeChainRejectsPathTraversal(t *testing.T) {
 		"s_aaaaaaaaaaaaaaaaaaaaaaaaa9",
 	}
 	for _, sid := range mustReject {
-		got := p.ScopeChain(proto.ScopeID(sid))
-		if got != "" {
-			t.Errorf("scope_id %q must be rejected (returned %q)", sid, got)
+		if _, err := proto.ParseScopeID(sid); err == nil {
+			t.Errorf("scope_id %q must be rejected by ParseScopeID", sid)
 		}
+	}
+	// Defence-in-depth: zero ScopeID{} (skipped construction)
+	// must still produce empty path from ScopeChain.
+	p := Paths{Chains: "/safe/chains"}
+	if got := p.ScopeChain(proto.ScopeID{}); got != "" {
+		t.Errorf("zero ScopeID{} must return \"\" from ScopeChain, got %q", got)
 	}
 	_ = filepath.Clean
 	_ = strings.HasPrefix
@@ -61,7 +65,7 @@ func TestAdvScopeChainAcceptsValidIDs(t *testing.T) {
 		"s_abcdefghijklmnopqrstuvwxyz", // 26 lowercase letters
 	}
 	for _, sid := range cases {
-		got := p.ScopeChain(proto.ScopeID(sid))
+		got := p.ScopeChain(proto.MustParseScopeID(sid))
 		if got == "" {
 			t.Errorf("valid scope_id %q rejected", sid)
 		}

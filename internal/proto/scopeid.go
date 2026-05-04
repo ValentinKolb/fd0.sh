@@ -9,28 +9,34 @@ import (
 // §1.3 — exactly "s_" followed by 26 chars in [a-z2-7] (lowercase RFC
 // 4648 base32, no padding), 28 chars total.
 //
-// Newtype rather than raw string so the compiler can enforce
-// "must come from ParseScopeID or DeriveScopeID" at API boundaries
-// where a path-traversal segment or other unvalidated string would
-// otherwise be silently accepted (e.g. fdhome.ScopeChain ⇒ joining
-// `../etc/passwd` into the chain dir).
+// OPAQUE struct rather than `type ScopeID string` so that the only
+// way to obtain a non-zero value is through ParseScopeID (validates
+// untrusted input) or DeriveScopeID (protocol-derived, valid by
+// construction). A direct conversion `ScopeID(rawString)` does not
+// compile — codex review (Wave C-1) flagged the soft-newtype as
+// bypass-able since any package could cast around the validator.
 //
-// Internal value-pass-through and CBOR/JSON wire encoding treat
-// ScopeID as its underlying string. Map keys, sort orders and
-// comparisons all behave identically to string. Custom marshallers
-// are intentionally NOT defined — the wire format is a plain string,
-// and named-string types serialise as the underlying value.
-type ScopeID string
+// Internal pass-through is a value copy; comparisons via `==` work
+// because the only field is comparable. Map keys work for the same
+// reason. Format-string sites use the String() method implicitly.
+//
+// Custom CBOR marshallers are intentionally NOT defined — ScopeID
+// is not directly serialised on the wire (SignedPrefix.Scope is
+// *string, the CBOR text-string form is used as-is), and any future
+// at-rest encoding should validate via ParseScopeID at decode.
+type ScopeID struct {
+	s string
+}
 
 // ParseScopeID validates and wraps an untrusted scope id. Returns an
 // error if `s` is not exactly 28 chars and does not match the
 // `s_[a-z2-7]{26}` shape. The empty string is rejected (vs. the
-// nil-ScopeID convention of `*ScopeID == nil` for genesis events).
+// "absent" sentinel of `ScopeID{}` / `IsZero` true for unset values).
 func ParseScopeID(s string) (ScopeID, error) {
 	if !ValidScopeIDShape(s) {
-		return "", fmt.Errorf("invalid scope id %q (must match s_[a-z2-7]{26})", s)
+		return ScopeID{}, fmt.Errorf("invalid scope id %q (must match s_[a-z2-7]{26})", s)
 	}
-	return ScopeID(s), nil
+	return ScopeID{s: s}, nil
 }
 
 // MustParseScopeID is the panicking variant for tests + protocol-derived
@@ -44,18 +50,25 @@ func MustParseScopeID(s string) ScopeID {
 	return id
 }
 
-// String returns the underlying canonical form. Equivalent to
-// `string(id)` but reads more clearly at format-string call sites.
-func (id ScopeID) String() string { return string(id) }
+// String returns the underlying canonical form. The fmt package picks
+// this up automatically for %s and %v.
+func (id ScopeID) String() string { return id.s }
 
-// ScopePtr returns a *string pointer wrapping id. Used by event
-// builders that mark genesis events with a nil pointer (PROTOCOL.md
-// §4.1) and successor events with a non-nil pointer to the binding
-// scope id. The wire form is the underlying string — keeping
-// SignedPrefix.Scope as *string avoids rippling the type rename
-// through the CBOR layer and downstream verifiers.
+// IsZero reports whether the ScopeID is the unset sentinel (== ScopeID{}).
+// Useful at boundaries where an "absent" scope is meaningful — e.g. the
+// genesis-event scope is *ScopeID == nil; a present-but-empty ScopeID is
+// distinct.
+func (id ScopeID) IsZero() bool { return id.s == "" }
+
+// ScopePtr returns a *string pointer wrapping id's underlying form.
+// Used by event builders that mark genesis events with a nil pointer
+// (PROTOCOL.md §4.1) and successor events with a non-nil pointer to
+// the binding scope id. The wire form is a CBOR text string —
+// keeping SignedPrefix.Scope as *string avoids rippling the type
+// through the CBOR layer and downstream verifiers (server, witness,
+// older clients). The wire schema is unchanged.
 func ScopePtr(id ScopeID) *string {
-	s := string(id)
+	s := id.s
 	return &s
 }
 

@@ -71,7 +71,7 @@ func TestScopeChainRoundtrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	p := filepath.Join(dir, string(scopeID)+".cbor")
+	p := filepath.Join(dir, scopeID.String()+".cbor")
 	if err := AppendScope(p, gen); err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +214,7 @@ func TestCompactScopeKeepsLiveAndDropsSuperseded(t *testing.T) {
 	signer := LocalSigner{Priv: priv}
 	gen, oek, scopeID, _ := BuildScopeGenesis(signer, pub)
 	dir := t.TempDir()
-	p := filepath.Join(dir, string(scopeID)+".cbor")
+	p := filepath.Join(dir, scopeID.String()+".cbor")
 	if err := AppendScope(p, gen); err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +284,7 @@ func TestCompactScopeRefusesStaleSnapshot(t *testing.T) {
 	signer := LocalSigner{Priv: priv}
 	gen, oek, scopeID, _ := BuildScopeGenesis(signer, pub)
 	dir := t.TempDir()
-	p := filepath.Join(dir, string(scopeID)+".cbor")
+	p := filepath.Join(dir, scopeID.String()+".cbor")
 	_ = AppendScope(p, gen)
 	st, _ := ReplayScope(p, pub, xPub, LocalOpener{Pub: xPub, Priv: xPriv})
 	ev, _ := BuildSecretSet(signer, pub, scopeID, st.TipSeq, st.TipHash, oek, st.CurrentOEKVer,
@@ -317,7 +317,7 @@ func TestCompactScopeNoOpWhenAlreadyMinimal(t *testing.T) {
 	signer := LocalSigner{Priv: priv}
 	gen, oek, scopeID, _ := BuildScopeGenesis(signer, pub)
 	dir := t.TempDir()
-	p := filepath.Join(dir, string(scopeID)+".cbor")
+	p := filepath.Join(dir, scopeID.String()+".cbor")
 	_ = AppendScope(p, gen)
 	st, _ := ReplayScope(p, pub, xPub, LocalOpener{Pub: xPub, Priv: xPriv})
 	// Single, never-superseded secret.set — already minimal.
@@ -380,7 +380,7 @@ func TestLocalOnlyEventsPreservesOrder(t *testing.T) {
 		return proto.ScopeEvent{
 			SignedPrefix: proto.SignedPrefix{
 				Kind:     proto.KindSecretSet,
-				Scope:    proto.ScopePtr(proto.ScopeID("s_test")),
+				Scope:    proto.ScopePtr(proto.MustParseScopeID("s_aaaaaaaaaaaaaaaaaaaaaaaaaa")),
 				PrevHash: bytes.Repeat([]byte(payloadID), 16),
 				Author:   bytes.Repeat([]byte{0xAA}, 32),
 				Seq:      1,

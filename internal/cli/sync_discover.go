@@ -82,7 +82,7 @@ func (s *Session) discoverScope(ctx context.Context, wcc *WitnessCheckClient, se
 	if err := VerifyAndCrossCheck(ctx, wcc, server, pinnedPub, expectedChainID, ps.STH, nil, ps.InclusionProofs, leafIndices, leafHashes, ps.ConsistencyProof); err != nil {
 		return fmt.Errorf("discover %s: %w", scopeID, err)
 	}
-	path := s.Paths.ScopeChain(proto.ScopeID(scopeID))
+	path := s.Paths.ScopeChain(proto.MustParseScopeID(scopeID))
 	for _, ev := range ps.Events {
 		cb, err := proto.Marshal(&ev)
 		if err != nil {

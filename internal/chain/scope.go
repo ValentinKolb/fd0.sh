@@ -106,7 +106,7 @@ func ReplayScope(path string, ownSuperPub, ownX25519Pub []byte, opener Opener) (
 				return nil, fmt.Errorf("scope[0]: %w", err)
 			}
 		} else {
-			if sp.Scope == nil || *sp.Scope != string(st.ScopeID) {
+			if sp.Scope == nil || *sp.Scope != st.ScopeID.String() {
 				return nil, fmt.Errorf("scope[%d]: scope mismatch", i)
 			}
 			// SECURITY (codex audit 🔴 scope.go:113): forward-only

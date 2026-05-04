@@ -67,7 +67,7 @@ func runInvariantSequence(t *testing.T, seed int64) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dir, string(scopeID)+".cbor")
+	path := filepath.Join(dir, scopeID.String()+".cbor")
 	if err := AppendScope(path, gen); err != nil {
 		t.Fatal(err)
 	}

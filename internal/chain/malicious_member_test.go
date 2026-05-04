@@ -34,7 +34,7 @@ func setupTwoMember(t *testing.T) (path string, ownerPub, ownerPriv, otherPub, o
 	if err != nil {
 		t.Fatal(err)
 	}
-	path = filepath.Join(dir, string(sid)+".cbor")
+	path = filepath.Join(dir, sid.String()+".cbor")
 	if err := AppendScope(path, gen); err != nil {
 		t.Fatal(err)
 	}

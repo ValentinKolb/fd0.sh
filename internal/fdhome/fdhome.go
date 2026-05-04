@@ -67,10 +67,14 @@ func Resolve() (Paths, error) {
 // string on invalid input — the caller should detect and refuse
 // rather than open the empty path.
 func (p Paths) ScopeChain(scopeID proto.ScopeID) string {
-	if !proto.ValidScopeIDShape(string(scopeID)) {
+	// scopeID is opaque; the only constructors validate. A zero
+	// value (ScopeID{}) is the only "unsafe" possibility — defend
+	// against accidentally passing one through (e.g. forgotten
+	// error path) by treating it as invalid.
+	if scopeID.IsZero() || !proto.ValidScopeIDShape(scopeID.String()) {
 		return ""
 	}
-	return filepath.Join(p.Chains, string(scopeID)+".cbor")
+	return filepath.Join(p.Chains, scopeID.String()+".cbor")
 }
 
 // ValidScopeID is a thin alias for proto.ValidScopeIDShape kept
