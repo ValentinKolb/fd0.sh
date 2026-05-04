@@ -414,7 +414,16 @@ func (s *Session) PinnedServerPub(serverURL canon.URL) (ed25519.PublicKey, error
 // persisted. The only path to a VerifiedSTH is via
 // VerifyAndCrossCheck (or decodeVerifiedSTH for vault-loaded
 // values, which are themselves trusted by induction).
+//
+// Codex Wave-D review fix: also runtime-check the seal sentinel
+// so a forged `cli.VerifiedSTH{}` composite literal from a
+// foreign package fails closed. The seal is set only by the two
+// package-internal constructors (newVerifiedSTH from the verifier,
+// decodeVerifiedSTH from the sealed vault).
 func EncodeSTH(v VerifiedSTH) ([]byte, error) {
+	if !v.seal.ok {
+		return nil, errUnsealedVerifiedSTH
+	}
 	return proto.Marshal(v.sth)
 }
 

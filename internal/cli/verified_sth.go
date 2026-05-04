@@ -25,30 +25,54 @@ package cli
 //     successful verify in a prior round, so vault contents are
 //     trusted by induction)
 import (
+	"errors"
+
 	"github.com/valentinkolb/fd0.sh/internal/proto"
 	"github.com/valentinkolb/fd0.sh/internal/translog"
 )
 
+// verifiedToken is the sealing sentinel addressed by codex review of
+// Wave D. The struct field carrying it is unexported (lowercase
+// `seal`), and the only constructor that initialises it lives
+// inside this package. A composite literal `cli.VerifiedSTH{}`
+// constructed elsewhere therefore has seal.ok == false; EncodeSTH
+// rejects such forged tokens at runtime. Without the sentinel,
+// `cli.VerifiedSTH{}` would compile across package boundaries and
+// the type-state would only be a soft hint.
+type verifiedToken struct{ ok bool }
+
 // VerifiedSTH carries a translog.STH that has cleared every
 // signature, inclusion-proof, consistency-proof, and witness
 // cross-check gate enforced by VerifyAndCrossCheck. The only paths
-// to a VerifiedSTH are via that function (fresh verify) or
+// to a non-zero VerifiedSTH are via that function (fresh verify) or
 // decodeVerifiedSTH (reading from a sealed vault that previously
 // stored a verified value).
 //
 // Wire-format note: VerifiedSTH itself is NEVER serialised to disk
 // — only the wrapped STH is. The "verified" state is a runtime
 // invariant for the lifetime of the value.
+//
+// Codex review fix: byte slices inside the wrapped STH are deep-
+// copied at construction so post-verify mutations of the source
+// (the server response struct) cannot retroactively change the
+// bytes that EncodeSTH will eventually marshal.
 type VerifiedSTH struct {
-	sth translog.STH
+	sth  translog.STH
+	seal verifiedToken
 }
 
-// STH returns the underlying translog.STH. Caller may inspect the
-// fields freely but should NOT round-trip the value back into a new
-// VerifiedSTH — the wrapper reflects a verification that took
-// place at a specific moment, and any post-mutation requires a
-// fresh Verify call.
-func (v VerifiedSTH) STH() translog.STH { return v.sth }
+// errUnsealedVerifiedSTH is returned by EncodeSTH when called with
+// a value that did NOT originate from a package-internal
+// constructor (newVerifiedSTH / decodeVerifiedSTH). Such values
+// have seal.ok == false — the empty composite literal escape from
+// across package boundaries.
+var errUnsealedVerifiedSTH = errors.New("VerifiedSTH: forged token (must come from VerifyAndCrossCheck)")
+
+// STH returns a deep copy of the underlying translog.STH. The deep
+// copy ensures a caller mutating the returned value (or its byte
+// slices) cannot retroactively poison the verified state held by
+// VerifiedSTH itself.
+func (v VerifiedSTH) STH() translog.STH { return cloneSTH(v.sth) }
 
 // TreeSize is a convenience accessor — the most-frequently-read
 // field across sync paths (LastSTH max-tracking, push consistency
@@ -64,9 +88,11 @@ func (v VerifiedSTH) IsZero() bool {
 
 // newVerifiedSTH wraps an STH that has just cleared every gate in
 // VerifyAndCrossCheck. Package-private; the only legitimate caller
-// is VerifyAndCrossCheck itself.
+// is VerifyAndCrossCheck itself. Sets the seal sentinel and
+// deep-clones byte slices so the wrapped value is independent of
+// the source.
 func newVerifiedSTH(sth translog.STH) *VerifiedSTH {
-	return &VerifiedSTH{sth: sth}
+	return &VerifiedSTH{sth: cloneSTH(sth), seal: verifiedToken{ok: true}}
 }
 
 // decodeVerifiedSTH parses a CBOR-encoded STH from the vault and
@@ -75,9 +101,8 @@ func newVerifiedSTH(sth translog.STH) *VerifiedSTH {
 // VerifyAndCrossCheck call (vault contents are sealed by the
 // agent's master key; corruption causes a separate decode error).
 //
-// Returns (nil, nil) on empty input — the legacy behaviour of
-// DecodeSTH, used to mean "no anchor yet". Caller must check for
-// nil before using.
+// Returns (nil, nil) on empty input — used to mean "no anchor yet".
+// Caller must check for nil before using.
 func decodeVerifiedSTH(b []byte) (*VerifiedSTH, error) {
 	if len(b) == 0 {
 		return nil, nil
@@ -86,5 +111,23 @@ func decodeVerifiedSTH(b []byte) (*VerifiedSTH, error) {
 	if err := proto.Unmarshal(b, &sth); err != nil {
 		return nil, err
 	}
-	return &VerifiedSTH{sth: sth}, nil
+	// Unmarshal already produced a fresh allocation; no extra clone
+	// needed, but the seal must still be set so EncodeSTH accepts.
+	return &VerifiedSTH{sth: sth, seal: verifiedToken{ok: true}}, nil
+}
+
+// cloneSTH returns a deep copy of an STH (independent byte slices
+// for RootHash and Signature). Inexpensive — both slices are
+// hash-sized.
+func cloneSTH(s translog.STH) translog.STH {
+	out := translog.STH{
+		Head: translog.TreeHead{
+			ChainID:   s.Head.ChainID,
+			TreeSize:  s.Head.TreeSize,
+			Timestamp: s.Head.Timestamp,
+		},
+		Signature: append([]byte(nil), s.Signature...),
+	}
+	out.Head.RootHash = append([]byte(nil), s.Head.RootHash...)
+	return out
 }
