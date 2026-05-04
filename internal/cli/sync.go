@@ -335,6 +335,21 @@ func RunSync(ctx context.Context, server string) error {
 		// server could otherwise poison the local chain file with bytes
 		// that don't replay).
 		preSize, _ := fileSize(path)
+		// SECURITY (subagent regression hunt 🔴): check every
+		// event's signed_prefix.scope BEFORE persisting any of
+		// them. The post-AppendRaw replay-then-check path leaves
+		// a crash window: events fsync'd, server crashes, file
+		// has wrong-scope events at restart. Pre-check is cheap
+		// and closes the window.
+		for i, ev := range ps.Events {
+			sp := &ev.SignedPrefix
+			// Genesis events legitimately have nil scope; any
+			// other event MUST embed the scope we're pulling.
+			if sp.Scope != nil && *sp.Scope != sid {
+				return fmt.Errorf("scope %s: server returned event[%d] for scope %s (chain swap, pre-write)",
+					sid, i, *sp.Scope)
+			}
+		}
 		// SECURITY (codex audit 🔴 sync.go:319): if AppendRaw fails
 		// mid-loop, we leave the file half-extended AND fsync'd
 		// between events. Truncate back to preSize on any error so
@@ -351,8 +366,25 @@ func RunSync(ctx context.Context, server string) error {
 			}
 			return nil
 		}()
+		// rollbackTruncate is used at multiple failure points
+		// below. Codex regression hunt (🟡 sync.go:355/366/382):
+		// previously each site did `_ = os.Truncate(...)` —
+		// silently dropping truncate errors meant a chain file
+		// could be left half-extended on disk after a "rolled
+		// back" return path. Surface the error explicitly so the
+		// user sees a corrupt-chain warning rather than a silent
+		// data-corruption setup.
+		rollbackTruncate := func() error {
+			if terr := os.Truncate(path, preSize); terr != nil {
+				return fmt.Errorf("scope %s: rollback truncate to %d bytes failed (chain may be corrupt on disk): %w", sid, preSize, terr)
+			}
+			return nil
+		}
+
 		if appendErr != nil {
-			_ = os.Truncate(path, preSize)
+			if terr := rollbackTruncate(); terr != nil {
+				return fmt.Errorf("%w (truncate rollback also failed: %v)", appendErr, terr)
+			}
 			return fmt.Errorf("scope %s: AppendRaw failed mid-batch (rolled back): %w", sid, appendErr)
 		}
 		st, err := replayScopeViaAgent(path, s.UserSuperPub, s.UserX25519Pub, s.Agent)
@@ -363,7 +395,9 @@ func RunSync(ctx context.Context, server string) error {
 			// reconcile path handles divergent local-only events by saving
 			// them as pending sets, rewriting the chain to the server's
 			// authoritative copy, and rebuilding pendings on top.
-			_ = os.Truncate(path, preSize)
+			if terr := rollbackTruncate(); terr != nil {
+				return terr
+			}
 			if rerr := s.reconcileAndRepush(ctx, wcc, server, sid, 3); rerr != nil {
 				return fmt.Errorf("sync: replay %s rejected; reconcile failed: %w", sid, rerr)
 			}
@@ -379,7 +413,9 @@ func RunSync(ctx context.Context, server string) error {
 		// chain for a different scope would land under our
 		// requested scope's vault entry.
 		if st.ScopeID != sid {
-			_ = os.Truncate(path, preSize)
+			if terr := rollbackTruncate(); terr != nil {
+				return terr
+			}
 			return fmt.Errorf("scope %s: server returned chain for scope %s (chain swap)", sid, st.ScopeID)
 		}
 		// We were removed from this scope: drop locally (STORAGE.md §5.3).
@@ -391,8 +427,17 @@ func RunSync(ctx context.Context, server string) error {
 			continue
 		}
 		sd.ChainTip = proto.ChainTip{Seq: st.TipSeq, Hash: st.TipHash}
-		if k, ok := st.OEKs[st.CurrentOEKVer]; ok {
-			sd.OEKs = upsertOEK(sd.OEKs, st.CurrentOEKVer, k)
+		// SECURITY (subagent regression hunt 🔴 sync.go:394):
+		// merge ALL OEK versions from the replayed state, not
+		// just the current. Previously only `st.OEKs[CurrentOEKVer]`
+		// was upserted, so historic versions in `st.OEKs` (still
+		// needed to decrypt pre-rotation secrets in pending-event
+		// reconcile) were never persisted to the vault. The next
+		// `savePendingLocalEvents` would error with "missing OEK
+		// v%d" — silently losing local-only secrets authored
+		// under an older era.
+		for v, k := range st.OEKs {
+			sd.OEKs = upsertOEK(sd.OEKs, v, k)
 		}
 		// Refresh shared label from _meta if present.
 		if l := metaLabelFromIndex(st.SecretIndex); l != "" {
@@ -1137,8 +1182,10 @@ func (s *Session) applyReplayedScope(scopeID string) error {
 	}
 	sd := s.Body.Scopes[scopeID]
 	sd.ChainTip = proto.ChainTip{Seq: st.TipSeq, Hash: st.TipHash}
-	if k, ok := st.OEKs[st.CurrentOEKVer]; ok {
-		sd.OEKs = upsertOEK(sd.OEKs, st.CurrentOEKVer, k)
+	// SECURITY (subagent regression hunt 🔴): merge ALL OEK
+	// versions, not just CurrentOEKVer. See sync.go:394 fix.
+	for v, k := range st.OEKs {
+		sd.OEKs = upsertOEK(sd.OEKs, v, k)
 	}
 	if l := metaLabelFromIndex(st.SecretIndex); l != "" {
 		sd.Label = l
@@ -1330,6 +1377,18 @@ func (s *Session) pushRebuiltEvent(ctx context.Context, wcc *WitnessCheckClient,
 		if r.STH == nil || r.InclusionProof == nil {
 			return false, fmt.Errorf("scope %s rebuilt-push: %w (server returned %s without STH/inclusion proof)",
 				scopeID, ErrSTHMissing, r.Reason)
+		}
+		// SECURITY (subagent regression hunt 🔴 sync.go:1334):
+		// the server's r.Seq MUST match the seq we just signed
+		// and submitted. Without this check, a server bug or
+		// hostile server returning a different Seq would cause
+		// leafHashAtSeq to read the WRONG event's leaf and the
+		// inclusion proof would verify (against the wrong leaf)
+		// — letting the client persist a LastSTH that "proves"
+		// inclusion of an event the user never authored.
+		if r.Seq != ev.SignedPrefix.Seq {
+			return false, fmt.Errorf("scope %s rebuilt-push: server returned r.Seq=%d but submitted event has Seq=%d",
+				scopeID, r.Seq, ev.SignedPrefix.Seq)
 		}
 		leafHash, lerr := s.leafHashAtSeq(scopeID, r.Seq)
 		if lerr != nil {
