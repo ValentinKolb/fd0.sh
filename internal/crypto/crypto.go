@@ -55,8 +55,14 @@ func GenerateIdentity() (pub Ed25519Pub, priv Ed25519Priv, err error) {
 	if gerr != nil {
 		return Ed25519Pub{}, Ed25519Priv{}, gerr
 	}
-	return Ed25519Pub{b: append([]byte(nil), rawPub...)},
-		Ed25519Priv{b: append([]byte(nil), rawPriv...)}, nil
+	// Codex Wave-C-3' review fix: take ownership of the
+	// stdlib-allocated slices directly rather than copying
+	// (which would leave the original 64-byte private-key heap
+	// copy abandoned through GC). ed25519.GenerateKey returns
+	// fresh allocations with no aliasing; we own them.
+	pub = Ed25519Pub{b: rawPub}
+	priv = Ed25519Priv{b: rawPriv}
+	return pub, priv, nil
 }
 
 // Sign produces an Ed25519 signature over msg with priv.

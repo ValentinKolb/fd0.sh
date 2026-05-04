@@ -197,6 +197,12 @@ func RunRecoveryImport(ctx context.Context, inPath string) error {
 	if perr != nil {
 		return fmt.Errorf("recovery: parse super_priv: %w", perr)
 	}
+	// Codex Wave-C-3' review fix: ParseEd25519Priv allocates a
+	// second 64-byte copy of the decrypted super_priv. The
+	// signer is one-shot (genesis auth.set then discarded) so
+	// wipe via the typed Wipe (which delegates to crypto.Wipe
+	// with the runtime.KeepAlive safeguard).
+	defer signerPriv.Wipe()
 	g, err := chain.BuildUserAuthSet(chain.LocalSigner{Priv: signerPriv}, rf.UserSuperPub, 0, nil, []proto.AuthMethod{{
 		MethodID:           methodID,
 		MethodType:         proto.AuthPassphrase,
