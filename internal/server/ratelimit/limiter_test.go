@@ -1,6 +1,7 @@
 package ratelimit
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -16,8 +17,12 @@ func newTestLimiter(t *testing.T, cfg Config) (*Limiter, *fakeClock) {
 	t.Helper()
 	c := &fakeClock{now: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
 	cfg.Now = c.Now
-	// Pass nil ctx so the GC goroutine is not started; tests call gcOnce.
-	return New(nil, cfg), c
+	// Pass an already-cancelled context so the GC goroutine exits
+	// immediately; tests drive eviction via gcOnce. Pre-Wave-A this
+	// passed nil — flagged by staticcheck SA1012.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	return New(ctx, cfg), c
 }
 
 func TestAcquireWriteAllowsBurstUpToCapacity(t *testing.T) {

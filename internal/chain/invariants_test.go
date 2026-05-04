@@ -40,16 +40,6 @@ import (
 const invIters = 50
 const opsPerRun = 30
 
-type opKind int
-
-const (
-	opNoop opKind = iota
-	opAddMember
-	opRemoveMember
-	opSecretSet
-	opSecretTombstone
-)
-
 func TestInvariantsScopeStateMachine(t *testing.T) {
 	for run := 0; run < invIters; run++ {
 		seed := int64(0x100000 + run)

@@ -5,11 +5,9 @@ package cli
 
 import (
 	"context"
-	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/gofrs/flock"
@@ -19,12 +17,7 @@ import (
 	"github.com/valentinkolb/fd0.sh/internal/crypto"
 	"github.com/valentinkolb/fd0.sh/internal/fdhome"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
-	"github.com/valentinkolb/fd0.sh/internal/vault"
 )
-
-// vaultRead aliases vault.Read so the secret.go file can stay decoupled from
-// the import.
-func vaultRead(path string) (*proto.VaultFile, error) { return vault.Read(path) }
 
 // Session is one CLI invocation's open state. Acquire via Open; release via
 // Close. Open holds the ~/.fd0/.lock flock, talks to the agent for an unlock
@@ -221,13 +214,3 @@ func VaultExists(p fdhome.Paths) bool {
 	return err == nil
 }
 
-// readVaultHeader is a tiny shim around vault.Read used by activeWraps.
-func readVaultHeader(path string) (*proto.VaultFile, error) {
-	return vaultRead(path)
-}
-
-// ed25519PrivateKeySize is exported for tests/callers without importing the stdlib path.
-const ed25519PrivateKeySize = ed25519.PrivateKeySize
-
-// joinPath is a tiny convenience for path concat.
-func joinPath(a, b string) string { return filepath.Join(a, b) }

@@ -194,7 +194,7 @@ func BuildMemberChange(
 	}
 	// For remove-self of last member, post is empty → no projection to
 	// encrypt (no recipient anyway).
-	if !(op == proto.OpRemove && len(post) == 0) {
+	if op != proto.OpRemove || len(post) != 0 {
 		encProj, err := encryptProjection(newOEK, projection, &ev.SignedPrefix)
 		if err != nil {
 			return nil, nil, err

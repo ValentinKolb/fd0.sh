@@ -57,6 +57,7 @@ func TestRegisterAndAppend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusCreated {
 		b, _ := io.ReadAll(resp.Body)
 		t.Fatalf("register: %d %s", resp.StatusCode, b)
@@ -81,6 +82,7 @@ func TestRegisterAndAppend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer r2.Body.Close()
 	if r2.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(r2.Body)
 		t.Fatalf("fetch: %d %s", r2.StatusCode, b)
@@ -115,6 +117,7 @@ func TestRegisterAndAppend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer r3.Body.Close()
 	if r3.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(r3.Body)
 		t.Fatalf("append: %d %s", r3.StatusCode, b)
@@ -138,6 +141,7 @@ func TestTranslogEndpoints(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer r1.Body.Close()
 	if r1.StatusCode != http.StatusOK {
 		t.Fatalf("server-info: %d", r1.StatusCode)
 	}
@@ -165,6 +169,7 @@ func TestTranslogEndpoints(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer r2.Body.Close()
 	if r2.StatusCode != http.StatusCreated {
 		b, _ := io.ReadAll(r2.Body)
 		t.Fatalf("register: %d %s", r2.StatusCode, b)

@@ -28,6 +28,17 @@ integration:
 vet:
 	go vet ./...
 
+# golangci-lint covers the bug classes already observed in past
+# review rounds (errcheck, bodyclose, gosec, staticcheck, unused).
+# Config lives at .golangci.yml; install via `brew install
+# golangci-lint` or per https://golangci-lint.run/install.
+golangci:
+	@if command -v golangci-lint >/dev/null 2>&1; then \
+		golangci-lint run ./...; \
+	else \
+		echo "golangci-lint not installed; skipping (brew install golangci-lint)"; \
+	fi
+
 # semgrep rules from tools/semgrep/. Skipped silently when semgrep
 # isn't installed (CI installs it; local dev can opt in).
 semgrep:
@@ -37,6 +48,6 @@ semgrep:
 		echo "semgrep not installed; skipping (pip install semgrep)"; \
 	fi
 
-lint: vet semgrep
+lint: vet golangci semgrep
 
 all: build test integration lint

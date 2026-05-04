@@ -93,23 +93,23 @@ func New(cfg Config) (*Server, error) {
 		cfg.Logger.Warn(m)
 	})
 	if err != nil {
-		st.Close()
+		_ = st.Close()
 		return nil, err
 	}
 	if err := st.SetTranslogKey(priv, pub); err != nil {
-		st.Close()
+		_ = st.Close()
 		return nil, err
 	}
 	// Pre-compute the cached /v1/server-info bytes so each first-contact
 	// request is one cheap CBOR write rather than a fresh Ed25519 sign.
 	info, err := st.SignServerInfo(uint64(time.Now().Unix()))
 	if err != nil {
-		st.Close()
+		_ = st.Close()
 		return nil, err
 	}
 	infoBytes, err := proto.Marshal(info)
 	if err != nil {
-		st.Close()
+		_ = st.Close()
 		return nil, err
 	}
 	s := &Server{cfg: cfg, store: st, mux: http.NewServeMux(), log: cfg.Logger, serverInfo: infoBytes}

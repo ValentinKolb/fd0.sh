@@ -60,7 +60,7 @@ func main() {
 		log.Error("init", "err", err)
 		os.Exit(1)
 	}
-	defer srv.Close()
+	defer func() { _ = srv.Close() }()
 	if err := server.Run(srv); err != nil {
 		log.Error("listen", "err", err)
 		os.Exit(1)

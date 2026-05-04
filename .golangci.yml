@@ -1,0 +1,89 @@
+# fd0.sh static-analysis config (golangci-lint v2 schema). Each
+# linter listed here was selected to catch a specific bug class
+# observed in past review rounds — not arbitrary "best practice".
+#
+# - errcheck:     "_ = err" silent error swallowing → 15% of bugs
+# - bodyclose:    leaked HTTP response bodies
+# - rowserrcheck: forgot to check sql.Rows.Err()
+# - sqlclosecheck: leaked sql.Rows / sql.Stmt
+# - gosec:        general security patterns
+# - staticcheck:  bug-class catches
+# - govet:        printf, atomic, etc.
+# - unused:       dead code (catches abandoned half-fixes)
+# - ineffassign:  assignments that are never read
+
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - bodyclose
+    - rowserrcheck
+    - sqlclosecheck
+    - gosec
+    - staticcheck
+    - govet
+    - unused
+    - ineffassign
+  settings:
+    errcheck:
+      check-type-assertions: false
+      check-blank: false
+      exclude-functions:
+        # defer file/conn/listener Close patterns are intentional
+        # "best effort" cleanup. Real close errors don't matter
+        # for correctness on the read side.
+        - (io.Closer).Close
+        - (net.Conn).Close
+        - (net.Listener).Close
+        - (*os.File).Close
+        - (*database/sql.DB).Close
+        - (*database/sql.Rows).Close
+        - (*os.Process).Kill
+        # tx.Rollback in error paths — if the rollback fails the
+        # original error is still the meaningful one. The deferred
+        # rollback pattern is canonical Go SQL.
+        - (*database/sql.Tx).Rollback
+        # flock Unlock in defer — same fire-and-forget pattern.
+        - (*github.com/gofrs/flock.Flock).Unlock
+        # fmt.Fprint* to stderr — error means terminal closed,
+        # nothing useful we can do.
+        - fmt.Fprintln
+        - fmt.Fprintf
+        - fmt.Fprint
+        # os.Setenv — only fails on invalid name; we use literals.
+        - os.Setenv
+        - os.Remove
+        - os.Truncate
+    gosec:
+      excludes:
+        - G104  # unhandled error — covered by errcheck with better config
+        - G101  # hardcoded creds — false positive for constant key strings
+        - G115  # integer overflow — too noisy; bounds checked at validate layer
+        - G204  # subprocess with variable — config-validated paths
+        - G302  # file permissions — 0o700 needed for dirs (gosec wants 0o600)
+        - G304  # file inclusion — paths from validated home + scope_id
+        - G404  # weak random — math/rand used in tests for reproducibility
+        - G703  # path traversal — mitigated by ValidScopeID
+        - G704  # SSRF — server URL is the SSRF target by design (pinned)
+        - G705  # XSS — fd0 returns CBOR not HTML
+  exclusions:
+    rules:
+      # Test helpers commonly use `_ = ...` for ignored returns.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+          - bodyclose
+      - path: cmd/fd0-test-.*/
+        linters:
+          - errcheck
+          - gosec
+          - bodyclose
+      - path: tools/
+        linters:
+          - errcheck

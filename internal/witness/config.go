@@ -82,7 +82,7 @@ func (c *Config) Validate() error {
 		}
 		for _, ch := range t.Chains {
 			if !strings.HasPrefix(ch, "user:") && !strings.HasPrefix(ch, "scope:") {
-				return fmt.Errorf("target %s: chain %q must start with user: or scope:", t.ServerURL, ch)
+				return fmt.Errorf("target %s: chain %q must start with %q or %q", t.ServerURL, ch, "user:", "scope:")
 			}
 		}
 		if t.PollInterval <= 0 {

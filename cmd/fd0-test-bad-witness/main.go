@@ -110,17 +110,16 @@ func (b *badWitness) handleSTH(w http.ResponseWriter, r *http.Request) {
 	var size uint64
 	if s := r.URL.Query().Get("tree_size"); s != "" {
 		size, _ = strconv.ParseUint(s, 10, 64)
-	} else {
-		// "Latest" — we ask upstream for the current STH at any
-		// size, then mutate per mode.
 	}
+	// "Latest" (no tree_size) — we ask upstream for the current
+	// STH at any size, then mutate per mode.
 
 	switch b.mode {
 	case "always-409":
-		http.Error(w, "fake equivocation", 409)
+		http.Error(w, "fake equivocation", http.StatusConflict)
 		return
 	case "always-500":
-		http.Error(w, "fake server error", 500)
+		http.Error(w, "fake server error", http.StatusInternalServerError)
 		return
 	case "garbage-cbor":
 		w.Header().Set("Content-Type", "application/cbor")
@@ -134,7 +133,7 @@ func (b *badWitness) handleSTH(w http.ResponseWriter, r *http.Request) {
 	// under the real server pub).
 	sth, srvSTHsize, err := b.fetchUpstreamSTH(chainID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("upstream fetch failed: %v", err), 502)
+		http.Error(w, fmt.Sprintf("upstream fetch failed: %v", err), http.StatusBadGateway)
 		return
 	}
 	if size == 0 {

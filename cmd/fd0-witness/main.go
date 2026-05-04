@@ -74,7 +74,7 @@ func main() {
 		log.Error("open db", "path", c.DB, "err", err)
 		os.Exit(2)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Provision the witness's own cosign keypair only when --key
 	// is given. Without a key the witness runs in legacy

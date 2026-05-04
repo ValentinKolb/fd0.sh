@@ -100,7 +100,6 @@ func TestAdvReplayRejectsScopeMismatch(t *testing.T) {
 	if err := AppendScope(pathA, evB); err != nil {
 		t.Fatal(err)
 	}
-	err = nil
 	_, err = ReplayScope(pathA, pubA, xPubA, openerA)
 	if err == nil {
 		t.Fatal("ReplayScope accepted event from sibling scope spliced into chain")

@@ -452,6 +452,9 @@ func (w *Witness) VerifyArchive(ctx context.Context) (errs, equivs int, err erro
 		if qerr != nil {
 			return errs, equivs, qerr
 		}
+		// Codex linter (sqlclosecheck): defer Close so any
+		// early-return path doesn't leak the rows iterator.
+		defer rows.Close() //nolint:sqlclosecheck // explicit Close below for hot path
 		for rows.Next() {
 			var (
 				size int64
@@ -460,7 +463,6 @@ func (w *Witness) VerifyArchive(ctx context.Context) (errs, equivs int, err erro
 				sig  []byte
 			)
 			if scerr := rows.Scan(&size, &root, &ts, &sig); scerr != nil {
-				rows.Close()
 				return errs, equivs, scerr
 			}
 			sth := translog.STH{

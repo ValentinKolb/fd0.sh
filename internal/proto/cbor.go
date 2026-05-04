@@ -28,7 +28,7 @@ func init() {
 		DupMapKey:                   cbor.DupMapKeyEnforcedAPF,
 		IndefLength:                 cbor.IndefLengthForbidden,
 		TagsMd:                      cbor.TagsForbidden,
-		IntDec:                      cbor.IntDecConvertSigned,
+		IntDec:                      cbor.IntDecConvertSignedOrFail,
 		MaxArrayElements:            131072,
 		MaxMapPairs:                 131072,
 		MaxNestedLevels:             16,
