@@ -408,10 +408,14 @@ func (s *Session) PinnedServerPub(serverURL canon.URL) (ed25519.PublicKey, error
 	return nil, fmt.Errorf("translog: no pinned pubkey for %s — outer sync must run first-contact pinning", canonical)
 }
 
-// EncodeSTH marshals an STH for storage in the vault's LastSTH /
-// LastSTHUser fields. Wrapper for symmetry with DecodeSTH.
-func EncodeSTH(sth translog.STH) ([]byte, error) {
-	return proto.Marshal(sth)
+// EncodeSTH marshals a VerifiedSTH for storage in the vault's
+// LastSTH / LastSTHUser fields. Wave D: signature now requires
+// the type-state wrapper so an unverified STH cannot be
+// persisted. The only path to a VerifiedSTH is via
+// VerifyAndCrossCheck (or decodeVerifiedSTH for vault-loaded
+// values, which are themselves trusted by induction).
+func EncodeSTH(v VerifiedSTH) ([]byte, error) {
+	return proto.Marshal(v.sth)
 }
 
 // VerifyAndCrossCheck wraps VerifyTranslogResponse with a witness
@@ -423,6 +427,12 @@ func EncodeSTH(sth translog.STH) ([]byte, error) {
 // [[witness]] entries OR min_cosigns=0. Both checks happen before
 // any state is committed, so a witness rejection reaches the
 // caller before vault writes.
+//
+// Wave D: returns *VerifiedSTH on success — callers feed this into
+// EncodeSTH for vault persistence. The type-state ensures encode
+// can never run against an unverified value. Returns (nil, nil)
+// when sth is nil and the verify path treats that as a legitimate
+// "no STH this round" outcome.
 func VerifyAndCrossCheck(
 	ctx context.Context,
 	wcc *WitnessCheckClient,
@@ -430,16 +440,28 @@ func VerifyAndCrossCheck(
 	pinnedPub ed25519.PublicKey,
 	expectedChainID string,
 	sth *translog.STH,
-	priorSTH *translog.STH,
+	priorSTH *VerifiedSTH,
 	inclusionProofs []translog.InclusionProof,
 	expectedLeafIndices []uint64,
 	eventLeafHashes [][]byte,
 	consistency *translog.ConsistencyProof,
-) error {
-	if err := VerifyTranslogResponse(pinnedPub, expectedChainID, sth, priorSTH, inclusionProofs, expectedLeafIndices, eventLeafHashes, consistency); err != nil {
-		return err
+) (*VerifiedSTH, error) {
+	// VerifyTranslogResponse takes the underlying STH; unwrap the
+	// trusted prior anchor (or pass nil for fresh verifies).
+	var priorRaw *translog.STH
+	if priorSTH != nil {
+		s := priorSTH.STH()
+		priorRaw = &s
 	}
-	if wcc != nil && sth != nil {
+	if err := VerifyTranslogResponse(pinnedPub, expectedChainID, sth, priorRaw, inclusionProofs, expectedLeafIndices, eventLeafHashes, consistency); err != nil {
+		return nil, err
+	}
+	if sth == nil {
+		// Verify accepted "no STH this round" (e.g. denied or
+		// empty pull); no value to wrap.
+		return nil, nil
+	}
+	if wcc != nil {
 		// Codex fix #5: normalise the server URL once before the
 		// cross-check. Pinning canonicalises (lowercase host, no
 		// trailing slash); the witness archive uses whatever it
@@ -449,10 +471,10 @@ func VerifyAndCrossCheck(
 		// normalisation pass is needed — the type carries the
 		// invariant.
 		if err := wcc.CrossCheckSTH(ctx, serverURL, pinnedPub, *sth); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return nil
+	return newVerifiedSTH(*sth), nil
 }
 
 // DecodeSTH parses a CBOR-encoded STH from the vault. Returns nil on

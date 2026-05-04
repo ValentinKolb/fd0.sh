@@ -91,8 +91,12 @@ func (s *Session) discoverScope(ctx context.Context, wcc *WitnessCheckClient, se
 		leafIndices = append(leafIndices, ps.Events[i].SignedPrefix.Seq)
 	}
 	expectedChainID := "scope:" + scopeID
-	if err := VerifyAndCrossCheck(ctx, wcc, server, pinnedPub, expectedChainID, ps.STH, nil, ps.InclusionProofs, leafIndices, leafHashes, ps.ConsistencyProof); err != nil {
+	verifiedSTH, err := VerifyAndCrossCheck(ctx, wcc, server, pinnedPub, expectedChainID, ps.STH, nil, ps.InclusionProofs, leafIndices, leafHashes, ps.ConsistencyProof)
+	if err != nil {
 		return fmt.Errorf("discover %s: %w", scopeID, err)
+	}
+	if verifiedSTH == nil {
+		return fmt.Errorf("discover %s: verifier returned nil STH for non-empty events", scopeID)
 	}
 	path := s.Paths.ScopeChain(pid)
 	for _, ev := range ps.Events {
@@ -119,7 +123,9 @@ func (s *Session) discoverScope(ctx context.Context, wcc *WitnessCheckClient, se
 		return fmt.Errorf("no current OEK after replay")
 	}
 	// Persist verified STH as the initial LastSTH for this scope.
-	encodedSTH, err := EncodeSTH(*ps.STH)
+	// Wave D: type-state — only the value returned by Verify can be
+	// encoded here.
+	encodedSTH, err := EncodeSTH(*verifiedSTH)
 	if err != nil {
 		_ = os.Remove(path)
 		return fmt.Errorf("encode initial LastSTH: %w", err)

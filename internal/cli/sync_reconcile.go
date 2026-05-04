@@ -159,14 +159,14 @@ func (s *Session) reconcileAndRepush(ctx context.Context, wcc *WitnessCheckClien
 // + inclusion proofs against that page's events. The final STH (= the
 // one covering all returned events) is returned to the caller for
 // persistence as the new LastSTH after the reconcile commits.
-func (s *Session) fullPullScope(ctx context.Context, wcc *WitnessCheckClient, server canon.URL, scopeID string) ([]proto.ScopeEvent, *translog.STH, error) {
+func (s *Session) fullPullScope(ctx context.Context, wcc *WitnessCheckClient, server canon.URL, scopeID string) ([]proto.ScopeEvent, *VerifiedSTH, error) {
 	pinnedPub, err := s.PinnedServerPub(server)
 	if err != nil {
 		return nil, nil, err
 	}
 	const pageSize = 1000
 	var all []proto.ScopeEvent
-	var finalSTH *translog.STH
+	var finalSTH *VerifiedSTH
 	cursorSeq := uint64(0)
 	cursorHash := []byte(nil) // sentinel: include seq=0 (server fresh-discovery)
 	for round := 0; round < 64; round++ {
@@ -227,11 +227,12 @@ func (s *Session) fullPullScope(ctx context.Context, wcc *WitnessCheckClient, se
 			leafIndices = append(leafIndices, ps.Events[i].SignedPrefix.Seq)
 		}
 		expectedChainID := "scope:" + scopeID
-		if err := VerifyAndCrossCheck(ctx, wcc, server, pinnedPub, expectedChainID, ps.STH, nil, ps.InclusionProofs, leafIndices, leafHashes, ps.ConsistencyProof); err != nil {
+		verifiedPage, err := VerifyAndCrossCheck(ctx, wcc, server, pinnedPub, expectedChainID, ps.STH, nil, ps.InclusionProofs, leafIndices, leafHashes, ps.ConsistencyProof)
+		if err != nil {
 			return nil, nil, fmt.Errorf("full pull %s: %w", scopeID, err)
 		}
-		if ps.STH != nil {
-			finalSTH = ps.STH
+		if verifiedPage != nil {
+			finalSTH = verifiedPage
 		}
 
 		all = append(all, ps.Events...)
@@ -509,10 +510,10 @@ func (s *Session) pushRebuiltEvent(ctx context.Context, wcc *WitnessCheckClient,
 	// see the just-updated LastSTH and verify wrong (same root cause
 	// as the RunSync snapshot pattern).
 	sdPre := s.Body.Scopes[scopeID]
-	preSTH, _ := DecodeSTH(sdPre.LastSTH)
+	preSTH, _ := decodeVerifiedSTH(sdPre.LastSTH)
 	preSize := uint64(0)
 	if preSTH != nil {
-		preSize = preSTH.Head.TreeSize
+		preSize = preSTH.TreeSize()
 	}
 
 	push := []any{pushItemFor(scopeID, ev, preSize)}
@@ -579,11 +580,15 @@ func (s *Session) pushRebuiltEvent(ctx context.Context, wcc *WitnessCheckClient,
 			return false, fmt.Errorf("scope %s rebuilt-push verify: %w", scopeID, lerr)
 		}
 		expectedChainID := "scope:" + scopeID
-		if err := VerifyAndCrossCheck(ctx, wcc, server, pinnedPub, expectedChainID, r.STH, preSTH, []translog.InclusionProof{*r.InclusionProof}, []uint64{r.Seq}, [][]byte{leafHash}, r.ConsistencyProof); err != nil {
+		verifiedPushSTH, err := VerifyAndCrossCheck(ctx, wcc, server, pinnedPub, expectedChainID, r.STH, preSTH, []translog.InclusionProof{*r.InclusionProof}, []uint64{r.Seq}, [][]byte{leafHash}, r.ConsistencyProof)
+		if err != nil {
 			return false, fmt.Errorf("scope %s rebuilt-push verify: %w", scopeID, err)
 		}
+		if verifiedPushSTH == nil {
+			return false, fmt.Errorf("scope %s rebuilt-push verify: verified STH unexpectedly nil", scopeID)
+		}
 		sdNow := s.Body.Scopes[scopeID]
-		encoded, eerr := EncodeSTH(*r.STH)
+		encoded, eerr := EncodeSTH(*verifiedPushSTH)
 		if eerr != nil {
 			return false, fmt.Errorf("encode LastSTH: %w", eerr)
 		}

@@ -114,9 +114,14 @@ func RunSync(ctx context.Context, server string) error {
 	// pull processing succeeds we update sd.LastSTH; without this
 	// snapshot the push verify would compare the server's "from K"
 	// proof against an "from N (post-pull)" anchor and falsely reject.
-	preSyncLastSTH := map[string]*translog.STH{}
+	//
+	// Wave D: vault-loaded anchors are wrapped as *VerifiedSTH —
+	// they were placed there by a previous successful Verify call
+	// in an earlier sync round and the sealed vault rules out
+	// tampering, so the type-state holds by induction.
+	preSyncLastSTH := map[string]*VerifiedSTH{}
 	for sid, sd := range s.Body.Scopes {
-		preSyncLastSTH[sid], _ = DecodeSTH(sd.LastSTH)
+		preSyncLastSTH[sid], _ = decodeVerifiedSTH(sd.LastSTH)
 	}
 
 	// First round-trip: discovery + pull for known scopes + push.
@@ -271,7 +276,8 @@ func RunSync(ctx context.Context, server string) error {
 			leafIndices = append(leafIndices, ps.Events[i].SignedPrefix.Seq)
 		}
 		expectedChainID := "scope:" + sid
-		if err := VerifyAndCrossCheck(ctx, wcc, serverURL, pinnedPub, expectedChainID, ps.STH, priorSTH, ps.InclusionProofs, leafIndices, leafHashes, ps.ConsistencyProof); err != nil {
+		verifiedSTH, err := VerifyAndCrossCheck(ctx, wcc, serverURL, pinnedPub, expectedChainID, ps.STH, priorSTH, ps.InclusionProofs, leafIndices, leafHashes, ps.ConsistencyProof)
+		if err != nil {
 			return fmt.Errorf("scope %s: %w", sid, err)
 		}
 
@@ -388,10 +394,12 @@ func RunSync(ctx context.Context, server string) error {
 		if l := metaLabelFromIndex(st.SecretIndex); l != "" {
 			sd.Label = l
 		}
-		// Persist the verified STH as the new anchor. Verification
-		// already passed above; we couldn't reach this line otherwise.
-		if ps.STH != nil {
-			encoded, err := EncodeSTH(*ps.STH)
+		// Persist the verified STH as the new anchor. Wave D: the
+		// type-state ensures we can only encode the STH that
+		// VerifyAndCrossCheck just returned — no risk of
+		// re-extracting an unverified copy from ps.
+		if verifiedSTH != nil {
+			encoded, err := EncodeSTH(*verifiedSTH)
 			if err != nil {
 				return fmt.Errorf("encode LastSTH for scope %s: %w", sid, err)
 			}
@@ -482,10 +490,19 @@ func RunSync(ctx context.Context, server string) error {
 		// round and is irrelevant to the push proof.
 		priorSTH := preSyncLastSTH[p.ScopeID]
 		expectedChainID := "scope:" + p.ScopeID
-		if err := VerifyAndCrossCheck(ctx, wcc, serverURL, pinnedPub, expectedChainID, p.STH, priorSTH, []translog.InclusionProof{*p.InclusionProof}, []uint64{p.Seq}, [][]byte{leafHash}, p.ConsistencyProof); err != nil {
+		verifiedPushSTH, err := VerifyAndCrossCheck(ctx, wcc, serverURL, pinnedPub, expectedChainID, p.STH, priorSTH, []translog.InclusionProof{*p.InclusionProof}, []uint64{p.Seq}, [][]byte{leafHash}, p.ConsistencyProof)
+		if err != nil {
 			return fmt.Errorf("scope %s push verify: %w", p.ScopeID, err)
 		}
-		encoded, err := EncodeSTH(*p.STH)
+		if verifiedPushSTH == nil {
+			// p.STH was non-nil to reach the verify call (the
+			// guard at line ~470 mandates STH+InclusionProof on
+			// accepted/dup), so a nil verified value would mean
+			// VerifyAndCrossCheck inferred "no STH" — protocol
+			// violation, refuse to advance.
+			return fmt.Errorf("scope %s push verify: verified STH unexpectedly nil", p.ScopeID)
+		}
+		encoded, err := EncodeSTH(*verifiedPushSTH)
 		if err != nil {
 			return fmt.Errorf("encode LastSTH: %w", err)
 		}
