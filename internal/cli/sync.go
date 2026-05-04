@@ -216,8 +216,14 @@ func RunSync(ctx context.Context, server string) error {
 			if err := s.ReSeal(); err != nil {
 				return fmt.Errorf("scope %s denied: ReSeal failed (chain file kept for retry): %w", sid, err)
 			}
-			path := s.Paths.ScopeChain(proto.MustParseScopeID(sid))
-			_ = os.Remove(path)
+			// Codex C-1.1 review fix: a malformed scope_id in a denied
+			// server response previously panicked via MustParseScopeID.
+			// Use ParseScopeID — silently skip the file-remove when
+			// the id can't be validated; the in-memory map delete
+			// above already handled the membership downgrade.
+			if pid, perr := proto.ParseScopeID(sid); perr == nil {
+				_ = os.Remove(s.Paths.ScopeChain(pid))
+			}
 			fmt.Fprintf(os.Stderr, "  ↳ removed from scope %s\n", shortScopeID(sid))
 			continue
 		}

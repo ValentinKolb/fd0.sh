@@ -20,7 +20,18 @@ import (
 // discoverScope pulls a fresh scope from cursor=0, persists its events, and
 // adds it to the vault with the OEK extracted by replay. `wcc` is the
 // witness cross-check client (nil = cross-check disabled).
+//
+// Codex C-1.1 review fix: scopeID is server-supplied (from a /sync
+// memberships response) — validate at entry so a malformed value
+// returns a controlled error rather than panicking via MustParseScopeID
+// downstream. The validated proto.ScopeID is then carried through the
+// rest of the function; .String() recovers the underlying form for
+// helpers that still take a raw string.
 func (s *Session) discoverScope(ctx context.Context, wcc *WitnessCheckClient, server, scopeID string) error {
+	pid, err := proto.ParseScopeID(scopeID)
+	if err != nil {
+		return fmt.Errorf("discover: invalid server-supplied scope_id: %w", err)
+	}
 	body, err := buildSyncRequestBody(
 		map[string]pullCursor{scopeID: {Seq: 0, Hash: nil}},
 		nil, false, 1000,
@@ -82,7 +93,7 @@ func (s *Session) discoverScope(ctx context.Context, wcc *WitnessCheckClient, se
 	if err := VerifyAndCrossCheck(ctx, wcc, server, pinnedPub, expectedChainID, ps.STH, nil, ps.InclusionProofs, leafIndices, leafHashes, ps.ConsistencyProof); err != nil {
 		return fmt.Errorf("discover %s: %w", scopeID, err)
 	}
-	path := s.Paths.ScopeChain(proto.MustParseScopeID(scopeID))
+	path := s.Paths.ScopeChain(pid)
 	for _, ev := range ps.Events {
 		cb, err := proto.Marshal(&ev)
 		if err != nil {
