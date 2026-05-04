@@ -97,7 +97,15 @@ func ParseEd25519Priv(raw []byte) (Ed25519Priv, error) {
 	// Re-derive the public half from the seed and compare in
 	// constant time. ed25519.NewKeyFromSeed re-hashes the seed,
 	// which is the canonical derivation path.
+	//
+	// Codex Wave-C-3.1 review fix: NewKeyFromSeed returns a full
+	// 64-byte expanded private key whose seed-half is identical
+	// to raw[:32]. That temporary copy lives on the heap and
+	// would persist past this function until GC; wipe it before
+	// return so recovery imports / mlocked-key reparse paths
+	// don't leak an extra heap-resident super_priv copy.
 	derived := ed25519.NewKeyFromSeed(raw[:ed25519.SeedSize])
+	defer Wipe(derived)
 	if !constantTimeEqual(derived[ed25519.SeedSize:], raw[ed25519.SeedSize:]) {
 		return Ed25519Priv{}, errors.New("crypto: ed25519 priv: seed and public halves do not match (corrupted or forged key)")
 	}
