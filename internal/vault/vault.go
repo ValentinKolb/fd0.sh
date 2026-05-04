@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	"github.com/valentinkolb/fd0.sh/internal/crypto"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
@@ -480,9 +481,15 @@ func bodyAAD(v *proto.VaultFile) ([]byte, error) {
 }
 
 // atomicWrite writes data to path via a tmp file with fsync + rename + dir fsync.
+//
+// SECURITY (codex security audit 🟠): O_NOFOLLOW on the tmp file
+// prevents a same-UID attacker from planting a symlink at
+// `<path>.tmp` to redirect the vault write into an attacker-
+// chosen location. fd0's threat model assumes the home dir is
+// 0700-owned by the user, but defense-in-depth is cheap.
 func atomicWrite(path string, data []byte) error {
 	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return err
 	}

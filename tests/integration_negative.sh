@@ -430,13 +430,19 @@ CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "http://127.0.0.1:${SERVER
     || no "server returned $CODE for stale ts (expected 401)"
 
 # ─────────────────────────────────────────────────────────────────────────
-# A27. Server: nonexistent shortId returns 404
+# A27. Server: /users/<shortId>/events requires auth, then 404 for unknown
 # ─────────────────────────────────────────────────────────────────────────
-step "A27) Server returns 404 for unknown shortId"
+step "A27) Server: /users/<unknown>/events auth-gates before existence check"
+# Codex security audit: the endpoint now requires HTTP-sig auth so
+# `encrypted_super_priv` blobs aren't readable by anyone who can
+# guess a shortId. Unauthenticated GET → 401 (was 404). The
+# specific value (401 vs 404) is intentional; auth check fires
+# BEFORE the chain lookup so an attacker can't enumerate which
+# shortIds exist.
 CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${SERVER_PORT}/users/zzzzzzzz/events?latest=true")
-[ "$CODE" = "404" ] \
-    && ok "GET /users/<unknown>/events → 404" \
-    || no "GET /users/<unknown>/events → $CODE (expected 404)"
+[ "$CODE" = "401" ] \
+    && ok "GET /users/<unknown>/events → 401 (auth required, no enumeration leak)" \
+    || no "GET /users/<unknown>/events → $CODE (expected 401)"
 
 # ─────────────────────────────────────────────────────────────────────────
 # A28. Server: oversized request body

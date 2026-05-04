@@ -300,6 +300,24 @@ func (s *Server) handleUnlock(u *UnlockReq) *Response {
 			liveSeq = st.TipSeq
 			liveHash = st.TipHash
 		}
+		// SECURITY (codex security audit 🟠 vault.go:253): legacy
+		// vaults from before the AuthTip field was added decode
+		// with AuthTip = zero (CBOR omits absent fields). If an
+		// attacker rolls back to such a vault snapshot AND deletes
+		// the user chain, the previous check would see (0, nil) ==
+		// (0, nil) and unlock. Properly init'd modern vaults have
+		// AuthTip.Hash == HashPrefix(genesis_event), which is
+		// always exactly 32 bytes. Reject any vault whose AuthTip
+		// hash is missing/short — it can't be a legitimately-
+		// initialised v1 vault.
+		if len(body.AuthTip.Hash) != 32 {
+			crypto.Wipe(res.UnlockKey)
+			crypto.Wipe(res.PayloadKey)
+			return errResp(fmt.Sprintf(
+				"vault: AuthTip.Hash is %d bytes (want 32) — possible legacy/rolled-back vault; refusing to unlock",
+				len(body.AuthTip.Hash),
+			))
+		}
 		if liveSeq != body.AuthTip.Seq || !bytes.Equal(liveHash, body.AuthTip.Hash) {
 			crypto.Wipe(res.UnlockKey)
 			crypto.Wipe(res.PayloadKey)

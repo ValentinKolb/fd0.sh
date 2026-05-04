@@ -81,16 +81,29 @@ func NewWitnessCheckClient(cfg fdhome.Config) (*WitnessCheckClient, error) {
 			return nil, fmt.Errorf("[[witness]] %s: pub must be 32 bytes (got %d)", w.URL, len(raw))
 		}
 		canonURL := strings.TrimRight(w.URL, "/")
-		// Dedupe key: BOTH url and pub must match before we call it
-		// a duplicate. Two different witness operators could happen
-		// to share a URL prefix in a misconfigured proxy setup;
-		// requiring pub-match makes the rule explicit.
-		dedupKey := canonURL + "|" + hex.EncodeToString(raw)
-		if first, dup := seen[dedupKey]; dup {
-			return nil, fmt.Errorf("[[witness]] #%d duplicates [[witness]] #%d (url=%s, same pub) — duplicate entries would inflate the cross-check quorum",
+		// SECURITY (codex security audit 🟠 witness_check.go:83):
+		// Reject duplicates by URL OR by pub independently. The
+		// previous (url+pub) joint key let an attacker present
+		// the SAME witness pub at TWO different URLs (e.g. via
+		// DNS aliasing or proxy paths) and have both count
+		// toward min_cosigns — the same pub signing a cosign
+		// once is the same evidence, not two independent ones.
+		// The threat: operator with one witness pub spins up a
+		// dummy DNS alias and makes their solo witness pretend
+		// to satisfy a 2-of-3 quorum.
+		pubHex := hex.EncodeToString(raw)
+		urlKey := "url:" + canonURL
+		pubKey := "pub:" + pubHex
+		if first, dup := seen[urlKey]; dup {
+			return nil, fmt.Errorf("[[witness]] #%d duplicates [[witness]] #%d by URL %s — each URL must appear at most once",
 				i, first, canonURL)
 		}
-		seen[dedupKey] = i
+		if first, dup := seen[pubKey]; dup {
+			return nil, fmt.Errorf("[[witness]] #%d duplicates [[witness]] #%d by pub %s… — same witness pub at two URLs would inflate the cross-check quorum",
+				i, first, pubHex[:16])
+		}
+		seen[urlKey] = i
+		seen[pubKey] = i
 		pinned = append(pinned, pinnedWitness{URL: canonURL, Pub: ed25519.PublicKey(raw)})
 	}
 	if cfg.WitnessP.MinCosigns > len(pinned) {

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -32,9 +33,14 @@ func TestAgentRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Modern vaults always have a 32-byte AuthTip.Hash from the
+	// genesis auth.set event. The agent's new rollback check
+	// (Wave 2.4 codex security fix) rejects zero-hash AuthTips
+	// to detect legacy/rolled-back vaults.
+	authTipHash := bytes.Repeat([]byte{0xCC}, 32)
 	body := &proto.VaultBody{
 		SuperPriv: priv,
-		AuthTip:   proto.ChainTip{},
+		AuthTip:   proto.ChainTip{Seq: 0, Hash: authTipHash},
 		Scopes:    map[string]proto.ScopeVaultData{},
 		PinnedIdentities: map[string]proto.PinnedIdentity{},
 	}
@@ -63,7 +69,12 @@ func TestAgentRoundtrip(t *testing.T) {
 		t.Fatal("expected locked")
 	}
 	// Unlock.
-	ur, err := cli.Unlock(paths.Vault, paths.UserChain, proto.AuthPassphrase, pass)
+	// Pass empty UserChainPath to skip the rollback-detection
+	// check — this unit test fixture builds a vault without the
+	// matching user.cbor chain, which the production-path check
+	// would (correctly) reject. Integration tests cover the
+	// real path.
+	ur, err := cli.Unlock(paths.Vault, "", proto.AuthPassphrase, pass)
 	if err != nil {
 		t.Fatal(err)
 	}

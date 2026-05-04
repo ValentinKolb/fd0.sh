@@ -42,6 +42,17 @@ type Config struct {
 	// Defaults to 5/h. Use a low value: registration is irreversible.
 	RegisterPerHour int
 
+	// AuthAttemptsPerMin: per-IP cap on authenticated-endpoint attempts
+	// BEFORE signature verification. Closes the codex-found DoS where
+	// an unauthenticated attacker rotates self-signed keys and forces
+	// the server to body-read + sig-verify + DB lookup for each. The
+	// per-pk rate limit only fires AFTER auth, so without this an
+	// attacker bypasses it by changing pk every request.
+	// Default 600/min (10/sec) — generous enough that a legitimate
+	// behind-NAT cluster of clients works, tight enough to bound
+	// crypto cost. Set to -1 to disable.
+	AuthAttemptsPerMin int
+
 	// IdleEvict drops buckets unused for at least this long. Default 10 min.
 	IdleEvict time.Duration
 
@@ -87,6 +98,9 @@ func New(ctx context.Context, cfg Config) *Limiter {
 	if cfg.RegisterPerHour == 0 {
 		cfg.RegisterPerHour = 5
 	}
+	if cfg.AuthAttemptsPerMin == 0 {
+		cfg.AuthAttemptsPerMin = 600
+	}
 	if cfg.IdleEvict <= 0 {
 		cfg.IdleEvict = 10 * time.Minute
 	}
@@ -106,9 +120,10 @@ func New(ctx context.Context, cfg Config) *Limiter {
 // Class names keys for the bucket map. Public so tests can poke specific
 // classes; do not call directly from handlers — use the helpers below.
 const (
-	classWrites   = "w:"
-	classBytes    = "b:"
-	classRegister = "r:"
+	classWrites      = "w:"
+	classBytes       = "b:"
+	classRegister    = "r:"
+	classAuthAttempt = "a:"
 )
 
 // Decision is the result of an Acquire. Retry is non-zero only when Allow is
@@ -138,6 +153,25 @@ func (l *Limiter) AcquireBytes(ident string, n int) Decision {
 	cap := float64(l.cfg.IdentityBytesPerMin)
 	rate := cap / 60.0
 	return l.acquire(classBytes+ident, cap, rate, float64(n))
+}
+
+// AcquireAuthAttempt charges 1 token against the per-IP "may we even
+// try to verify auth on this request" bucket. Called BEFORE body
+// read / signature verify / DB lookup, so a key-rotating attacker
+// can't bypass the per-pk write limit by changing pk every request.
+//
+// Codex security audit (🔴 auth.go:70/98/115): without this, an
+// unauthenticated attacker rotating self-signed keys would hit
+// body-read + sig-verify + IsUserRegistered for each request and
+// only get rate-limited at the per-pk write layer (which they
+// bypass by definition of key rotation).
+func (l *Limiter) AcquireAuthAttempt(ip string) Decision {
+	if l.cfg.AuthAttemptsPerMin < 0 {
+		return Decision{Allow: true}
+	}
+	cap := float64(l.cfg.AuthAttemptsPerMin)
+	rate := cap / 60.0
+	return l.acquire(classAuthAttempt+ip, cap, rate, 1)
 }
 
 // AcquireRegister checks whether ip may register one more user.

@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"syscall"
 
 	"github.com/valentinkolb/fd0.sh/internal/proto"
 )
@@ -44,7 +45,13 @@ func AppendScope(path string, ev *proto.ScopeEvent) error {
 func AppendRaw(path string, raw []byte) error { return appendBytes(path, raw) }
 
 func appendBytes(path string, raw []byte) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	// SECURITY (codex security audit 🟠): O_NOFOLLOW prevents a
+	// same-UID attacker who plants a symlink at `path` (or who
+	// owns the chains directory in some unusual deployment) from
+	// redirecting our append into an attacker-chosen file. fd0's
+	// security boundary is "trusted home dir, mode 0700", but
+	// defense in depth costs nothing here.
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return err
 	}
@@ -144,7 +151,11 @@ func readRawEvents(path string) ([][]byte, error) {
 // compaction (STORAGE.md §5).
 func WriteAll(path string, raws [][]byte) error {
 	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	// O_NOFOLLOW on the tmp path: defense in depth against
+	// same-UID symlink-plant attacks. The .tmp suffix is
+	// predictable, so an attacker who knows the chain path can
+	// pre-create a symlink there and redirect our write.
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return err
 	}

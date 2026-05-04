@@ -5,6 +5,7 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -413,7 +414,33 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 }
 
 // GET /users/<shortId>/events
+//
+// SECURITY (codex security audit 🔴): this endpoint returns the
+// chain's auth.set events, which embed `encrypted_super_priv` —
+// a blob that's offline-brute-forceable against the user's
+// passphrase. An unauthenticated `shortId` (8 Crockford chars =
+// 40 bits) is brute-forceable too, so without auth ANY attacker
+// who can guess the shortId AND brute-force the passphrase wins.
+//
+// Auth model: the requester MUST sign with `super_priv`, and the
+// signing pubkey MUST match the chain's `user_super_pub`. Only
+// the legitimate chain owner can fetch their own events.
+//
+// Recovery flow: a fresh device with the recovery file has
+// super_priv (after K_recovery decrypt) → can sign → can fetch.
+// Operator-side enrollment / observer flows that DON'T have
+// super_priv must use a separate API (none exist in v1).
 func (s *Server) handleFetchUser(w http.ResponseWriter, r *http.Request) {
+	auth, code, err := s.verifyHTTPSig(r.Context(), r)
+	if err != nil {
+		var rle rateLimitedError
+		if errors.As(err, &rle) {
+			s.writeRateLimited(w, rle.RetryAfter())
+			return
+		}
+		writeErr(w, code, "auth", err.Error())
+		return
+	}
 	sid := r.PathValue("shortId")
 	chainID := store.ChainID(store.KindUser, sid)
 	c, err := s.store.GetChain(r.Context(), chainID)
@@ -428,6 +455,11 @@ func (s *Server) handleFetchUser(w http.ResponseWriter, r *http.Request) {
 	var meta validate.UserMeta
 	if err := proto.Unmarshal(c.Metadata, &meta); err != nil {
 		writeErr(w, http.StatusInternalServerError, "bad_meta", err.Error())
+		return
+	}
+	// Bind: only the chain owner (matching super_pub) may read.
+	if subtle.ConstantTimeCompare(auth.Pub, meta.SuperPub) != 1 {
+		writeErr(w, http.StatusForbidden, "forbidden", "signing key does not match chain user_super_pub")
 		return
 	}
 	q := r.URL.Query()

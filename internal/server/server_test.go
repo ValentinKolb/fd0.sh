@@ -72,8 +72,12 @@ func TestRegisterAndAppend(t *testing.T) {
 	if reg.ShortID == "" {
 		t.Fatal("no shortId")
 	}
-	// Fetch latest.
-	r2, err := http.Get(ts.URL + "/users/" + reg.ShortID + "/events?latest=true")
+	// Fetch latest. Codex security audit fix: this endpoint now
+	// requires HTTP-sig auth (super_priv must match the chain's
+	// user_super_pub) — a plain http.Get returns 401.
+	req2, _ := http.NewRequest("GET", ts.URL+"/users/"+reg.ShortID+"/events?latest=true", nil)
+	signRequest(t, srv, req2, nil, pub, priv)
+	r2, err := http.DefaultClient.Do(req2)
 	if err != nil {
 		t.Fatal(err)
 	}

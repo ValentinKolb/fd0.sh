@@ -39,6 +39,17 @@ type AuthResult struct {
 // The handler MUST NOT use r.Body after this call: the body has already been
 // consumed. Use the returned Body bytes.
 func (s *Server) verifyHTTPSig(ctx context.Context, r *http.Request) (*AuthResult, int, error) {
+	// SECURITY (codex security audit 🔴 auth.go:70/98/115): per-IP
+	// pre-auth rate limit. Without this, a key-rotating attacker
+	// hits body-read + sig-verify + IsUserRegistered DB lookup for
+	// each request and only rate-limits at the per-pk layer —
+	// which they bypass by definition of key rotation. The cheap
+	// per-IP token bucket fires BEFORE any expensive work.
+	if s.rl != nil {
+		if d := s.rl.AcquireAuthAttempt(clientIP(r)); !d.Allow {
+			return nil, http.StatusTooManyRequests, rateLimitedError{retry: d.Retry}
+		}
+	}
 	hdr := r.Header.Get("Authorization")
 	if hdr == "" {
 		return nil, http.StatusUnauthorized, errors.New("missing authorization")
