@@ -10,7 +10,6 @@ package cli
 import (
 	"errors"
 	"fmt"
-	"os"
 
 	"github.com/valentinkolb/fd0.sh/internal/chain"
 	"github.com/valentinkolb/fd0.sh/internal/crypto"
@@ -162,14 +161,3 @@ func upsertOEK(ring []proto.OEKEntry, version uint64, key []byte) []proto.OEKEnt
 	return append(ring, proto.OEKEntry{Version: version, Key: append([]byte(nil), key...)})
 }
 
-// fileSize returns the size of path or 0 if missing.
-func fileSize(path string) (int64, error) {
-	st, err := os.Stat(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return 0, nil
-		}
-		return 0, err
-	}
-	return st.Size(), nil
-}

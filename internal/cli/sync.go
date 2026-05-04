@@ -282,10 +282,6 @@ func RunSync(ctx context.Context, server string) error {
 		}
 
 		path := s.Paths.ScopeChain(proto.MustParseScopeID(sid))
-		// Snapshot size so we can rollback on replay failure (a malicious
-		// server could otherwise poison the local chain file with bytes
-		// that don't replay).
-		preSize, _ := fileSize(path)
 		// SECURITY (subagent regression hunt 🔴): check every
 		// event's signed_prefix.scope BEFORE persisting any of
 		// them. The post-AppendRaw replay-then-check path leaves
@@ -301,53 +297,45 @@ func RunSync(ctx context.Context, server string) error {
 					sid, i, *sp.Scope)
 			}
 		}
-		// SECURITY (codex audit 🔴 sync.go:319): if AppendRaw fails
-		// mid-loop, we leave the file half-extended AND fsync'd
-		// between events. Truncate back to preSize on any error so
-		// the next sync starts from a consistent state.
+		// Wave E: chain.AppendTx replaces the previous manual
+		// preSize+rollbackTruncate dance. Three failure paths
+		// (AppendRaw mid-batch, replay-rejection, scope-swap
+		// detection) used to each call `_ = os.Truncate(...)`
+		// with the silent-drop hazard codex flagged in three
+		// review rounds (sync.go:319/355/366/382). The tx's
+		// `defer Cleanup()` makes rollback uniform; a future
+		// failure branch added between Append and Commit
+		// automatically inherits the rollback without per-site
+		// truncate boilerplate.
+		tx, err := chain.BeginAppend(path)
+		if err != nil {
+			return fmt.Errorf("scope %s: BeginAppend: %w", sid, err)
+		}
 		appendErr := func() error {
 			for _, ev := range ps.Events {
-				cb, err := proto.Marshal(&ev)
-				if err != nil {
-					return err
+				cb, merr := proto.Marshal(&ev)
+				if merr != nil {
+					return merr
 				}
-				if err := chain.AppendRaw(path, cb); err != nil {
-					return err
+				if aerr := tx.AppendRaw(cb); aerr != nil {
+					return aerr
 				}
 			}
 			return nil
 		}()
-		// rollbackTruncate is used at multiple failure points
-		// below. Codex regression hunt (🟡 sync.go:355/366/382):
-		// previously each site did `_ = os.Truncate(...)` —
-		// silently dropping truncate errors meant a chain file
-		// could be left half-extended on disk after a "rolled
-		// back" return path. Surface the error explicitly so the
-		// user sees a corrupt-chain warning rather than a silent
-		// data-corruption setup.
-		rollbackTruncate := func() error {
-			if terr := os.Truncate(path, preSize); terr != nil {
-				return fmt.Errorf("scope %s: rollback truncate to %d bytes failed (chain may be corrupt on disk): %w", sid, preSize, terr)
-			}
-			return nil
-		}
-
 		if appendErr != nil {
-			if terr := rollbackTruncate(); terr != nil {
-				return fmt.Errorf("%w (truncate rollback also failed: %v)", appendErr, terr)
+			if cerr := tx.Cleanup(); cerr != nil {
+				return fmt.Errorf("%w (cleanup also failed: %v)", appendErr, cerr)
 			}
 			return fmt.Errorf("scope %s: AppendRaw failed mid-batch (rolled back): %w", sid, appendErr)
 		}
 		st, err := replayScopeViaAgent(path, s.UserSuperPub, s.UserX25519Pub, s.Agent)
 		if err != nil {
-			// Roll back, then reconcile: the most common cause is a local
-			// write that occurred while the server already advanced past
-			// its previous tip (some other member or device pushed). The
-			// reconcile path handles divergent local-only events by saving
-			// them as pending sets, rewriting the chain to the server's
-			// authoritative copy, and rebuilding pendings on top.
-			if terr := rollbackTruncate(); terr != nil {
-				return terr
+			// Replay rejection: divergence with the server. Roll
+			// back the just-appended events so reconcile starts
+			// from a clean pre-batch state.
+			if cerr := tx.Cleanup(); cerr != nil {
+				return cerr
 			}
 			if rerr := s.reconcileAndRepush(ctx, wcc, serverURL, sid, 3); rerr != nil {
 				return fmt.Errorf("sync: replay %s rejected; reconcile failed: %w", sid, rerr)
@@ -356,6 +344,12 @@ func RunSync(ctx context.Context, server string) error {
 			continue
 		}
 		if st == nil {
+			// No state after replay (empty chain). Commit to
+			// finalise the tx so a subsequent defer/explicit
+			// Cleanup is a no-op; we don't want the truncate.
+			if cerr := tx.Commit(); cerr != nil {
+				return cerr
+			}
 			continue
 		}
 		// SECURITY (codex audit 🔴 sync.go:328): the replayed
@@ -364,10 +358,14 @@ func RunSync(ctx context.Context, server string) error {
 		// chain for a different scope would land under our
 		// requested scope's vault entry.
 		if st.ScopeID.String() != sid {
-			if terr := rollbackTruncate(); terr != nil {
-				return terr
+			if cerr := tx.Cleanup(); cerr != nil {
+				return cerr
 			}
 			return fmt.Errorf("scope %s: server returned chain for scope %s (chain swap)", sid, st.ScopeID)
+		}
+		// All checks passed — finalise the appended events.
+		if cerr := tx.Commit(); cerr != nil {
+			return cerr
 		}
 		// We were removed from this scope: drop locally (STORAGE.md §5.3).
 		if st.Left {
