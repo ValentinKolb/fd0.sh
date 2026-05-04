@@ -107,9 +107,6 @@ type SignedPrefix struct {
 	Payload       Payload       `cbor:"payload"`
 }
 
-// ScopePtr returns a *string pointer wrapping s. Used by event builders.
-func ScopePtr(s string) *string { return &s }
-
 // Payload is a sum of member.change and secret.set payloads. Both fields are
 // "omitempty" so the wire form has exactly one populated key per kind.
 type Payload struct {

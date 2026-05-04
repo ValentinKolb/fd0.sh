@@ -46,7 +46,7 @@ func RunScopeCreate(ctx context.Context, label string) error {
 	defer wipe(oek)
 
 	// Persist locally.
-	chainPath := s.Paths.ScopeChain(scopeID)
+	chainPath := s.Paths.ScopeChain(proto.ScopeID(scopeID))
 	if err := chain.AppendScope(chainPath, ev); err != nil {
 		return err
 	}
@@ -55,10 +55,16 @@ func RunScopeCreate(ctx context.Context, label string) error {
 	tipHash := proto.HashPrefix(prefix)
 
 	// Update vault: add scope entry with current OEK and chain_tip.
+	// Wave C-1: BuildScopeGenesis returns proto.ScopeID; vault map and
+	// internal helpers still use the underlying string form. Cast at
+	// the boundary — string(scopeID) is free and the audit-grep
+	// signal stays clear ("string(scopeID)" → ScopeID escapes the
+	// type-safe surface).
+	scopeIDStr := string(scopeID)
 	if s.Body.Scopes == nil {
 		s.Body.Scopes = map[string]proto.ScopeVaultData{}
 	}
-	s.Body.Scopes[scopeID] = proto.ScopeVaultData{
+	s.Body.Scopes[scopeIDStr] = proto.ScopeVaultData{
 		Label:    label,
 		OEKs:     []proto.OEKEntry{{Version: 1, Key: append([]byte(nil), oek...)}},
 		ChainTip: proto.ChainTip{Seq: 0, Hash: tipHash[:]},
@@ -69,14 +75,14 @@ func RunScopeCreate(ctx context.Context, label string) error {
 	// Persist the label as a shared `_meta` secret so other members will
 	// see it on discovery (cf. internal/cli/meta.go).
 	if label != "" {
-		if err := s.writeScopeMeta(scopeID, map[string]string{MetaKeyLabel: label}); err != nil {
+		if err := s.writeScopeMeta(scopeIDStr, map[string]string{MetaKeyLabel: label}); err != nil {
 			return fmt.Errorf("write _meta: %w", err)
 		}
 	}
 	if label != "" {
-		fmt.Fprintf(os.Stderr, "✓ scope '%s' created (%s)\n", label, shortScopeID(scopeID))
+		fmt.Fprintf(os.Stderr, "✓ scope '%s' created (%s)\n", label, shortScopeID(scopeIDStr))
 	} else {
-		fmt.Fprintf(os.Stderr, "✓ scope created (%s)\n", shortScopeID(scopeID))
+		fmt.Fprintf(os.Stderr, "✓ scope created (%s)\n", shortScopeID(scopeIDStr))
 	}
 	return nil
 }
@@ -192,11 +198,11 @@ func RunSecretSet(ctx context.Context, scopeID, name, value string) error {
 			Tags:          map[string]string{},
 		},
 	}
-	ev, err := chain.BuildSecretSet(AgentSigner{Agent: s.Agent}, s.UserSuperPub, scopeID, st.TipSeq, st.TipHash, curOEK.Key, curOEK.Version, body)
+	ev, err := chain.BuildSecretSet(AgentSigner{Agent: s.Agent}, s.UserSuperPub, proto.ScopeID(scopeID), st.TipSeq, st.TipHash, curOEK.Key, curOEK.Version, body)
 	if err != nil {
 		return err
 	}
-	if err := chain.AppendScope(s.Paths.ScopeChain(scopeID), ev); err != nil {
+	if err := chain.AppendScope(s.Paths.ScopeChain(proto.ScopeID(scopeID)), ev); err != nil {
 		return err
 	}
 	prefix, _ := ev.PrevHashInput()
@@ -299,7 +305,7 @@ func secretToString(p any) string {
 // Returns chain.ErrRollback when the local chain is behind/diverged vs.
 // the vault binding.
 func (s *Session) replayAndCheckScope(scopeID string) (*chain.ScopeState, error) {
-	st, err := replayScopeViaAgent(s.Paths.ScopeChain(scopeID), s.UserSuperPub, s.UserX25519Pub, s.Agent)
+	st, err := replayScopeViaAgent(s.Paths.ScopeChain(proto.ScopeID(scopeID)), s.UserSuperPub, s.UserX25519Pub, s.Agent)
 	if err != nil {
 		return nil, err
 	}
@@ -409,12 +415,12 @@ func RunSecretRemove(ctx context.Context, scopeID, name string) error {
 		}
 	}
 	body := &proto.SecretBody{ID: sid, Record: nil}
-	ev, err := chain.BuildSecretSet(AgentSigner{Agent: s.Agent}, s.UserSuperPub, scopeID,
+	ev, err := chain.BuildSecretSet(AgentSigner{Agent: s.Agent}, s.UserSuperPub, proto.ScopeID(scopeID),
 		st.TipSeq, st.TipHash, curOEK.Key, curOEK.Version, body)
 	if err != nil {
 		return err
 	}
-	if err := chain.AppendScope(s.Paths.ScopeChain(scopeID), ev); err != nil {
+	if err := chain.AppendScope(s.Paths.ScopeChain(proto.ScopeID(scopeID)), ev); err != nil {
 		return err
 	}
 	prefix, _ := ev.PrevHashInput()

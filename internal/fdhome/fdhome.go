@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/valentinkolb/fd0.sh/internal/proto"
 )
 
 // Paths bundles all paths inside an fd0 home.
@@ -47,42 +49,36 @@ func Resolve() (Paths, error) {
 	}, nil
 }
 
-// ScopeChain returns the chain path for a given scope_id.
+// ScopeChain returns the chain path for a given scope id.
 //
-// SECURITY (codex audit 🔴 fdhome.go:51): scopeID is validated
-// against STORAGE.md's `s_[a-z2-7]{26}` pattern before being joined
-// with the chain directory. Without this, a hostile peer (or a
-// corrupted local index) could feed a path traversal segment like
-// `../../etc/passwd` and ScopeChain would silently produce a path
-// outside p.Chains. Returns an empty string on invalid input — the
-// caller should detect and refuse rather than open the empty path.
-func (p Paths) ScopeChain(scopeID string) string {
-	if !ValidScopeID(scopeID) {
+// SECURITY (codex audit 🔴 fdhome.go:51, hardened in Wave C-1):
+// scopeID is a proto.ScopeID — a typed value that, by being passed
+// in here, advertises that it has already been validated against
+// STORAGE.md's `s_[a-z2-7]{26}` shape (typically via
+// proto.ParseScopeID at the entry point or proto.DeriveScopeID at
+// the protocol-derivation site). The compile-time signature gives
+// reviewers a single audit-grep target ("proto.ScopeID(...)" in
+// non-test code) for any place where a raw string crosses the
+// boundary without going through ParseScopeID.
+//
+// Defence-in-depth: we also re-validate here so a bypass via
+// `proto.ScopeID(rawString)` fails closed rather than silently
+// joining a path-traversal segment with p.Chains. Returns an empty
+// string on invalid input — the caller should detect and refuse
+// rather than open the empty path.
+func (p Paths) ScopeChain(scopeID proto.ScopeID) string {
+	if !proto.ValidScopeIDShape(string(scopeID)) {
 		return ""
 	}
-	return filepath.Join(p.Chains, scopeID+".cbor")
+	return filepath.Join(p.Chains, string(scopeID)+".cbor")
 }
 
-// ValidScopeID returns true iff s matches the spec's exact
-// "scope id" shape: prefix `s_` then 26 chars from base32-Crockford
-// (lower) without padding, no separators. Does NOT enforce a
-// checksum — callers that need cryptographic identity bind via
-// proto.ScopeID(genesis_event_id).
-func ValidScopeID(s string) bool {
-	if len(s) != 28 || s[0] != 's' || s[1] != '_' {
-		return false
-	}
-	for i := 2; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case c >= 'a' && c <= 'z':
-		case c >= '2' && c <= '7':
-		default:
-			return false
-		}
-	}
-	return true
-}
+// ValidScopeID is a thin alias for proto.ValidScopeIDShape kept
+// for backwards compatibility with adversarial_test.go and any
+// external caller that imported it before the proto-side type
+// landed. Prefer proto.ValidScopeIDShape (or the typed
+// proto.ParseScopeID) in new code.
+func ValidScopeID(s string) bool { return proto.ValidScopeIDShape(s) }
 
 // EnsureDirs creates Home and Chains with mode 0700 (user-only). The 0700
 // permission is the agent's same-UID security boundary.

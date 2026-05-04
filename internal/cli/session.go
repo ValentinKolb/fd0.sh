@@ -118,7 +118,7 @@ func (s *Session) Close() {
 // it. The CLI is responsible for keeping local and server tips in sync via
 // the sync command.
 func (s *Session) AppendScopeEvent(scopeID string, ev *proto.ScopeEvent) error {
-	return chain.AppendScope(s.Paths.ScopeChain(scopeID), ev)
+	return chain.AppendScope(s.Paths.ScopeChain(proto.ScopeID(scopeID)), ev)
 }
 
 // AppendUserEvent persists ev to the user chain file.

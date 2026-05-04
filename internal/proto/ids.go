@@ -24,10 +24,13 @@ func EventID(prefix []byte) string {
 	return "e_" + strings.ToLower(b32.EncodeToString(sum[:16]))
 }
 
-// ScopeID is derived from a genesis event ID per PROTOCOL.md §1.3.
-func ScopeID(genesisEventID string) string {
+// DeriveScopeID returns the scope id derived from a genesis event id
+// per PROTOCOL.md §1.3. The returned value is a typed ScopeID — by
+// construction it satisfies ValidScopeIDShape, so callers receiving
+// it never need to re-validate.
+func DeriveScopeID(genesisEventID string) ScopeID {
 	sum := sha256.Sum256([]byte(genesisEventID))
-	return "s_" + strings.ToLower(b32.EncodeToString(sum[:16]))
+	return ScopeID("s_" + strings.ToLower(b32.EncodeToString(sum[:16])))
 }
 
 // HashPrefix returns SHA-256(prefix). Used for prev_hash linking.

@@ -44,7 +44,7 @@ func (o LocalOpener) Open(sealed []byte) ([]byte, error) {
 
 // ScopeState is the post-replay state of one scope chain.
 type ScopeState struct {
-	ScopeID       string
+	ScopeID       proto.ScopeID
 	MemberSet     [][]byte // super_pubs, sorted by bytes
 	OEKs          map[uint64][]byte // version → 32B key
 	CurrentOEKVer uint64
@@ -106,7 +106,7 @@ func ReplayScope(path string, ownSuperPub, ownX25519Pub []byte, opener Opener) (
 				return nil, fmt.Errorf("scope[0]: %w", err)
 			}
 		} else {
-			if sp.Scope == nil || *sp.Scope != st.ScopeID {
+			if sp.Scope == nil || *sp.Scope != string(st.ScopeID) {
 				return nil, fmt.Errorf("scope[%d]: scope mismatch", i)
 			}
 			// SECURITY (codex audit 🔴 scope.go:113): forward-only
@@ -217,7 +217,7 @@ func verifyScopeGenesis(ev *proto.ScopeEvent, st *ScopeState) error {
 	if err != nil {
 		return err
 	}
-	st.ScopeID = proto.ScopeID(proto.EventID(prefix))
+	st.ScopeID = proto.DeriveScopeID(proto.EventID(prefix))
 	return nil
 }
 

@@ -27,7 +27,7 @@ func mkScopeAdv(t *testing.T) (path string, ownPub []byte, opener Opener) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path = filepath.Join(dir, scopeID+".cbor")
+	path = filepath.Join(dir, string(scopeID)+".cbor")
 	if err := AppendScope(path, gen); err != nil {
 		t.Fatal(err)
 	}
@@ -73,14 +73,14 @@ func TestAdvReplayRejectsScopeMismatch(t *testing.T) {
 	signerA := LocalSigner{Priv: privA}
 
 	genA, oekA, scopeAID, _ := BuildScopeGenesis(signerA, pubA)
-	pathA := filepath.Join(dirA, scopeAID+".cbor")
+	pathA := filepath.Join(dirA, string(scopeAID)+".cbor")
 	_ = AppendScope(pathA, genA)
 
 	// Build a secret.set under scope B (different ID), signed by
 	// the same author. Then splice it into A's chain file.
 	dirB := t.TempDir()
 	genB, _, scopeBID, _ := BuildScopeGenesis(signerA, pubA)
-	pathB := filepath.Join(dirB, scopeBID+".cbor")
+	pathB := filepath.Join(dirB, string(scopeBID)+".cbor")
 	_ = AppendScope(pathB, genB)
 	stB, _ := ReplayScope(pathB, pubA, xPubA, openerA)
 

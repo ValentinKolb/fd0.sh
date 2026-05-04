@@ -88,7 +88,7 @@ func TestScopeEventScopePtrEncoding(t *testing.T) {
 
 	successor := SignedPrefix{
 		Kind:   KindSecretSet,
-		Scope:  ScopePtr("s_test"),
+		Scope:  ScopePtr(ScopeID("s_test")),
 		Author: bytes.Repeat([]byte{1}, 32),
 	}
 	b2, err := Marshal(successor)
@@ -147,12 +147,12 @@ func TestEventIDStable(t *testing.T) {
 }
 
 func TestScopeIDDerivation(t *testing.T) {
-	id := ScopeID("e_abc123")
+	id := DeriveScopeID("e_abc123")
 	if !bytes.HasPrefix([]byte(id), []byte("s_")) {
-		t.Fatalf("ScopeID missing prefix: %s", id)
+		t.Fatalf("DeriveScopeID missing prefix: %s", id)
 	}
-	if id == ScopeID("e_other") {
-		t.Fatal("ScopeID collision")
+	if id == DeriveScopeID("e_other") {
+		t.Fatal("DeriveScopeID collision")
 	}
 }
 

@@ -55,7 +55,7 @@ func (s *Session) reconcileAndRepush(ctx context.Context, wcc *WitnessCheckClien
 		}
 		// Backup the existing chain so we can roll back if replay fails on
 		// the rewritten file.
-		path := s.Paths.ScopeChain(scopeID)
+		path := s.Paths.ScopeChain(proto.ScopeID(scopeID))
 		backup, _ := os.ReadFile(path)
 		if err := s.replaceLocalChain(scopeID, serverEvents); err != nil {
 			return err
@@ -285,7 +285,7 @@ type pendingEvent struct {
 // tested in chain). Foreign events (authored by another member yet
 // somehow local-only — should never happen in practice) are skipped.
 func (s *Session) savePendingLocalEvents(scopeID string, serverEvents []proto.ScopeEvent) ([]pendingEvent, error) {
-	localPtrs, err := chain.ReadScopeEvents(s.Paths.ScopeChain(scopeID))
+	localPtrs, err := chain.ReadScopeEvents(s.Paths.ScopeChain(proto.ScopeID(scopeID)))
 	if err != nil {
 		return nil, err
 	}
@@ -335,7 +335,7 @@ func (s *Session) savePendingLocalEvents(scopeID string, serverEvents []proto.Sc
 // replaceLocalChain rewrites the chain file with a fresh server-authoritative
 // sequence. Atomic via chain.WriteAll's tmp+rename.
 func (s *Session) replaceLocalChain(scopeID string, events []proto.ScopeEvent) error {
-	path := s.Paths.ScopeChain(scopeID)
+	path := s.Paths.ScopeChain(proto.ScopeID(scopeID))
 	bytesList := make([][]byte, 0, len(events))
 	for _, ev := range events {
 		b, err := proto.Marshal(&ev)
@@ -350,7 +350,7 @@ func (s *Session) replaceLocalChain(scopeID string, events []proto.ScopeEvent) e
 // applyReplayedScope replays the (possibly rewritten) chain and updates vault
 // (chain_tip, OEKs, label). Drops the scope on leave.
 func (s *Session) applyReplayedScope(scopeID string) error {
-	path := s.Paths.ScopeChain(scopeID)
+	path := s.Paths.ScopeChain(proto.ScopeID(scopeID))
 	st, err := replayScopeViaAgent(path, s.UserSuperPub, s.UserX25519Pub, s.Agent)
 	if err != nil {
 		return err
@@ -415,12 +415,12 @@ func (s *Session) rebuildAndPushSet(ctx context.Context, wcc *WitnessCheckClient
 			}
 		}
 	}
-	ev, err := chain.BuildSecretSet(AgentSigner{Agent: s.Agent}, s.UserSuperPub, scopeID,
+	ev, err := chain.BuildSecretSet(AgentSigner{Agent: s.Agent}, s.UserSuperPub, proto.ScopeID(scopeID),
 		st.TipSeq, st.TipHash, curOEK.Key, curOEK.Version, p.body)
 	if err != nil {
 		return false, err
 	}
-	if err := chain.AppendScope(s.Paths.ScopeChain(scopeID), ev); err != nil {
+	if err := chain.AppendScope(s.Paths.ScopeChain(proto.ScopeID(scopeID)), ev); err != nil {
 		return false, err
 	}
 	prefix, _ := ev.PrevHashInput()
@@ -470,13 +470,13 @@ func (s *Session) rebuildAndPushMemberChange(ctx context.Context, wcc *WitnessCh
 	proj := projectionFromIndex(st.SecretIndex)
 	ev, newOEK, err := chain.BuildMemberChange(
 		AgentSigner{Agent: s.Agent}, s.UserSuperPub,
-		scopeID, st.TipSeq, st.TipHash, st.CurrentOEKVer,
+		proto.ScopeID(scopeID), st.TipSeq, st.TipHash, st.CurrentOEKVer,
 		p.op, p.target, st.MemberSet, proj,
 	)
 	if err != nil {
 		return false, err
 	}
-	if err := chain.AppendScope(s.Paths.ScopeChain(scopeID), ev); err != nil {
+	if err := chain.AppendScope(s.Paths.ScopeChain(proto.ScopeID(scopeID)), ev); err != nil {
 		return false, err
 	}
 	prefix, _ := ev.PrevHashInput()

@@ -43,13 +43,13 @@ func RunScopeAddMember(ctx context.Context, scopeID, memberCardOrLabel string) e
 	proj := projectionFromIndex(st.SecretIndex)
 	ev, newOEK, err := chain.BuildMemberChange(
 		s.Agent, s.UserSuperPub,
-		scopeID, st.TipSeq, st.TipHash, st.CurrentOEKVer,
+		proto.ScopeID(scopeID), st.TipSeq, st.TipHash, st.CurrentOEKVer,
 		proto.OpAdd, memberPub, st.MemberSet, proj,
 	)
 	if err != nil {
 		return err
 	}
-	if err := chain.AppendScope(s.Paths.ScopeChain(scopeID), ev); err != nil {
+	if err := chain.AppendScope(s.Paths.ScopeChain(proto.ScopeID(scopeID)), ev); err != nil {
 		return err
 	}
 	prefix, _ := ev.PrevHashInput()
@@ -104,13 +104,13 @@ func RunScopeRemoveMember(ctx context.Context, scopeID, memberCardOrLabel string
 	proj := projectionFromIndex(st.SecretIndex)
 	ev, newOEK, err := chain.BuildMemberChange(
 		s.Agent, s.UserSuperPub,
-		scopeID, st.TipSeq, st.TipHash, st.CurrentOEKVer,
+		proto.ScopeID(scopeID), st.TipSeq, st.TipHash, st.CurrentOEKVer,
 		proto.OpRemove, memberPub, st.MemberSet, proj,
 	)
 	if err != nil {
 		return err
 	}
-	if err := chain.AppendScope(s.Paths.ScopeChain(scopeID), ev); err != nil {
+	if err := chain.AppendScope(s.Paths.ScopeChain(proto.ScopeID(scopeID)), ev); err != nil {
 		return err
 	}
 	prefix, _ := ev.PrevHashInput()
@@ -165,13 +165,13 @@ func RunScopeLeave(ctx context.Context, scopeID string) error {
 	proj := projectionFromIndex(st.SecretIndex)
 	ev, _, err := chain.BuildMemberChange(
 		s.Agent, s.UserSuperPub,
-		scopeID, st.TipSeq, st.TipHash, st.CurrentOEKVer,
+		proto.ScopeID(scopeID), st.TipSeq, st.TipHash, st.CurrentOEKVer,
 		proto.OpRemove, s.UserSuperPub, st.MemberSet, proj,
 	)
 	if err != nil {
 		return err
 	}
-	if err := chain.AppendScope(s.Paths.ScopeChain(scopeID), ev); err != nil {
+	if err := chain.AppendScope(s.Paths.ScopeChain(proto.ScopeID(scopeID)), ev); err != nil {
 		return err
 	}
 	// Update vault entry: bump ChainTip past the leave, mark Leaving.

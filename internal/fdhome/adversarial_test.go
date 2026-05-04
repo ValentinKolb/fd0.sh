@@ -4,6 +4,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/valentinkolb/fd0.sh/internal/proto"
 )
 
 // Adversarial tests for fdhome — paths and config parsing. Covers
@@ -39,7 +41,7 @@ func TestAdvScopeChainRejectsPathTraversal(t *testing.T) {
 		"s_aaaaaaaaaaaaaaaaaaaaaaaaa9",
 	}
 	for _, sid := range mustReject {
-		got := p.ScopeChain(sid)
+		got := p.ScopeChain(proto.ScopeID(sid))
 		if got != "" {
 			t.Errorf("scope_id %q must be rejected (returned %q)", sid, got)
 		}
@@ -59,7 +61,7 @@ func TestAdvScopeChainAcceptsValidIDs(t *testing.T) {
 		"s_abcdefghijklmnopqrstuvwxyz", // 26 lowercase letters
 	}
 	for _, sid := range cases {
-		got := p.ScopeChain(sid)
+		got := p.ScopeChain(proto.ScopeID(sid))
 		if got == "" {
 			t.Errorf("valid scope_id %q rejected", sid)
 		}

@@ -67,7 +67,7 @@ func runInvariantSequence(t *testing.T, seed int64) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dir, scopeID+".cbor")
+	path := filepath.Join(dir, string(scopeID)+".cbor")
 	if err := AppendScope(path, gen); err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +206,7 @@ func runInvariantSequence(t *testing.T, seed int64) {
 	}
 }
 
-func assertInvariants(t *testing.T, seed int64, op int, st *ScopeState, expectedScope string, expectedSecrets map[string]string, path string, pub, xPub []byte, opener Opener) {
+func assertInvariants(t *testing.T, seed int64, op int, st *ScopeState, expectedScope proto.ScopeID, expectedSecrets map[string]string, path string, pub, xPub []byte, opener Opener) {
 	t.Helper()
 
 	// I6. ScopeID stability.

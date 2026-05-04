@@ -20,7 +20,7 @@ import (
 
 // setupTwoMember builds a scope with self + one other member. Both
 // signing keys are returned for the malicious tests.
-func setupTwoMember(t *testing.T) (path string, ownerPub, ownerPriv, otherPub, otherPriv, ownerXPub, ownerXPriv []byte, scopeID string) {
+func setupTwoMember(t *testing.T) (path string, ownerPub, ownerPriv, otherPub, otherPriv, ownerXPub, ownerXPriv []byte, scopeID proto.ScopeID) {
 	t.Helper()
 	dir := t.TempDir()
 	ownerPub2, ownerPriv2, _ := crypto.GenerateIdentity()
@@ -34,7 +34,7 @@ func setupTwoMember(t *testing.T) (path string, ownerPub, ownerPriv, otherPub, o
 	if err != nil {
 		t.Fatal(err)
 	}
-	path = filepath.Join(dir, sid+".cbor")
+	path = filepath.Join(dir, string(sid)+".cbor")
 	if err := AppendScope(path, gen); err != nil {
 		t.Fatal(err)
 	}

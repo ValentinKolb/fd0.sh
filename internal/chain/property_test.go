@@ -58,7 +58,7 @@ func makeChain(t *testing.T, dir string, seed int64, nMembers, nSecrets int) (pa
 	if err != nil {
 		t.Fatal(err)
 	}
-	path = filepath.Join(dir, scopeID+".cbor")
+	path = filepath.Join(dir, string(scopeID)+".cbor")
 	if err := AppendScope(path, gen); err != nil {
 		t.Fatal(err)
 	}
@@ -449,7 +449,7 @@ func TestPropertyLocalOnlyEventsCollidesOnSeqOnly(t *testing.T) {
 		return proto.ScopeEvent{
 			SignedPrefix: proto.SignedPrefix{
 				Kind:     proto.KindSecretSet,
-				Scope:    proto.ScopePtr("s_test"),
+				Scope:    proto.ScopePtr(proto.ScopeID("s_test")),
 				PrevHash: bytes.Repeat([]byte{marker}, 32),
 				Author:   bytes.Repeat([]byte{0xAA}, 32),
 				Seq:      seq,
@@ -490,7 +490,7 @@ func TestPropertyLocalOnlyEventsPreservesOrder(t *testing.T) {
 			local[j] = proto.ScopeEvent{
 				SignedPrefix: proto.SignedPrefix{
 					Kind:     proto.KindSecretSet,
-					Scope:    proto.ScopePtr("s_test"),
+					Scope:    proto.ScopePtr(proto.ScopeID("s_test")),
 					PrevHash: bytes.Repeat([]byte{byte(seed) ^ byte(j)}, 32),
 					Author:   bytes.Repeat([]byte{0xAA}, 32),
 					Seq:      uint64(j),

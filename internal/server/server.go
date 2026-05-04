@@ -960,7 +960,10 @@ func (s *Server) applyPush(ctx context.Context, authorPub []byte, p pushItem) pu
 	if len(sp.PrevHash) == 0 && sp.Seq == 0 && p.Scope == "" {
 		prefix, _ := p.Event.PrevHashInput()
 		eventID := proto.EventID(prefix)
-		scopeID := proto.ScopeID(eventID)
+		// Server uses scopeID as a string identifier into the store
+		// + push-result struct; cast to string at the boundary so
+		// downstream call sites stay typed against the store API.
+		scopeID := string(proto.DeriveScopeID(eventID))
 		if exists, _ := s.eventExists(ctx, eventID); exists {
 			// Seq=0 explicit so the client's PushFloor advance logic works
 			// uniformly across success and dup responses. STH + proofs

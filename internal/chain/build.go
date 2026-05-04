@@ -65,11 +65,13 @@ func BuildUserAuthSet(signer Signer, userSuperPub []byte, prevSeq uint64, prevHa
 }
 
 // BuildScopeGenesis constructs the genesis member.change of a new scope.
-// Returns the event, the new OEK (32 bytes) and the derived scope_id.
+// Returns the event, the new OEK (32 bytes) and the derived scope_id
+// (typed proto.ScopeID — by construction it satisfies the canonical
+// shape, callers receive a value they need not re-validate).
 //
 // Per PROTOCOL.md §4.1 the genesis Scope field is nil, prev_hash is nil, and
 // the sole key_delivery is to the author's own X25519 pub.
-func BuildScopeGenesis(signer Signer, superPub []byte) (*proto.ScopeEvent, []byte, string, error) {
+func BuildScopeGenesis(signer Signer, superPub []byte) (*proto.ScopeEvent, []byte, proto.ScopeID, error) {
 	oek, err := crypto.RandomBytes(32)
 	if err != nil {
 		return nil, nil, "", err
@@ -104,12 +106,17 @@ func BuildScopeGenesis(signer Signer, superPub []byte) (*proto.ScopeEvent, []byt
 	if err != nil {
 		return nil, nil, "", err
 	}
-	scopeID := proto.ScopeID(proto.EventID(preb))
+	scopeID := proto.DeriveScopeID(proto.EventID(preb))
 	return ev, oek, scopeID, nil
 }
 
-// BuildSecretSet constructs a secret.set event.
-func BuildSecretSet(signer Signer, superPub []byte, scopeID string, prevSeq uint64, prevHash []byte, oek []byte, oekVersion uint64, body *proto.SecretBody) (*proto.ScopeEvent, error) {
+// BuildSecretSet constructs a secret.set event. scopeID is the
+// validated typed identifier — symmetric with BuildScopeGenesis's
+// return type so that tests and CLI callers chain the value through
+// without round-tripping to a raw string. The wire form (signed
+// prefix's Scope field) remains a *string for CBOR compatibility
+// (PROTOCOL.md §1.3 — encoded as a text string).
+func BuildSecretSet(signer Signer, superPub []byte, scopeID proto.ScopeID, prevSeq uint64, prevHash []byte, oek []byte, oekVersion uint64, body *proto.SecretBody) (*proto.ScopeEvent, error) {
 	if len(oek) != 32 {
 		return nil, errors.New("BuildSecretSet: bad OEK")
 	}
@@ -153,7 +160,7 @@ func BuildSecretSet(signer Signer, superPub []byte, scopeID string, prevSeq uint
 // new OEK (32 B) so the caller can install it in the local vault.
 func BuildMemberChange(
 	signer Signer, superPub []byte,
-	scopeID string, prevSeq uint64, prevHash []byte,
+	scopeID proto.ScopeID, prevSeq uint64, prevHash []byte,
 	priorOEKVersion uint64,
 	op string, target []byte,
 	priorMembers [][]byte,

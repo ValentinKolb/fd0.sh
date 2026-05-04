@@ -238,12 +238,12 @@ func TestAdvScopeIDDerivationDeterministic(t *testing.T) {
 	for i := 0; i < 50; i++ {
 		prefix := bytes.Repeat([]byte{byte(i)}, 32+i)
 		eid := EventID(prefix)
-		a := ScopeID(eid)
-		b := ScopeID(eid)
+		a := DeriveScopeID(eid)
+		b := DeriveScopeID(eid)
 		if a != b {
-			t.Fatalf("iter %d: ScopeID non-deterministic (%s vs %s)", i, a, b)
+			t.Fatalf("iter %d: DeriveScopeID non-deterministic (%s vs %s)", i, a, b)
 		}
-		if !strings.HasPrefix(a, "s_") {
+		if !strings.HasPrefix(string(a), "s_") {
 			t.Fatalf("iter %d: ScopeID missing s_ prefix: %s", i, a)
 		}
 		if len(a) != 28 {
