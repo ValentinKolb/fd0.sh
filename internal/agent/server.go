@@ -407,7 +407,14 @@ func (s *Server) handleSign(sr *SignReq) *Response {
 	priv := make([]byte, ed25519.PrivateKeySize)
 	copy(priv, s.superPriv.Bytes())
 	defer crypto.Wipe(priv)
-	sig := crypto.Sign(ed25519.PrivateKey(priv), sr.Payload)
+	// Wave C-3: crypto.Sign returns an error on wrong-size priv
+	// (defence-in-depth) instead of panicking inside the stdlib.
+	// Surface as a clean handler error so the IPC client gets a
+	// controlled failure.
+	sig, err := crypto.Sign(ed25519.PrivateKey(priv), sr.Payload)
+	if err != nil {
+		return errResp("sign failed")
+	}
 	return &Response{Sign: &SignResp{Signature: sig}}
 }
 

@@ -45,8 +45,35 @@ func GenerateIdentity() (pub ed25519.PublicKey, priv ed25519.PrivateKey, err err
 }
 
 // Sign produces an Ed25519 signature over msg with priv.
-func Sign(priv ed25519.PrivateKey, msg []byte) []byte {
-	return ed25519.Sign(priv, msg)
+//
+// Wave C-3 (minimal): runtime length-check eliminates the panic
+// class. Previously a wrong-sized priv (32B instead of 64B,
+// truncated CBOR decode, etc.) would land in ed25519.Sign and
+// panic; now we surface a controlled error. Production callers
+// already validate length upstream — this is defence-in-depth.
+//
+// Note: this entry keeps the legacy []byte signature for
+// backwards compatibility with the broad call-site surface
+// (vault, agent, server, witness, every test fixture). For new
+// code, prefer SignTyped which takes Ed25519Priv from the
+// type-state-enforcing constructor.
+func Sign(priv ed25519.PrivateKey, msg []byte) ([]byte, error) {
+	if len(priv) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("crypto: Sign: bad priv length %d (want %d)", len(priv), ed25519.PrivateKeySize)
+	}
+	return ed25519.Sign(priv, msg), nil
+}
+
+// SignTyped is the type-state entry — accepts a validated
+// Ed25519Priv that, by construction, has the correct length.
+// Equivalent to Sign with no possibility of length-related
+// failure (the zero-value safeguard fires on a forged composite
+// literal). Prefer this in new code.
+func SignTyped(priv Ed25519Priv, msg []byte) ([]byte, error) {
+	if priv.IsZero() {
+		return nil, errSignBadKey
+	}
+	return ed25519.Sign(priv.asStdlib(), msg), nil
 }
 
 // Verify returns true iff sig is a valid Ed25519 signature of msg under pub.
@@ -55,6 +82,15 @@ func Verify(pub []byte, msg, sig []byte) bool {
 		return false
 	}
 	return ed25519.Verify(ed25519.PublicKey(pub), msg, sig)
+}
+
+// VerifyTyped is the type-state entry — accepts a validated
+// Ed25519Pub. Length is correct by construction. Prefer in new code.
+func VerifyTyped(pub Ed25519Pub, msg, sig []byte) bool {
+	if pub.IsZero() || len(sig) != ed25519.SignatureSize {
+		return false
+	}
+	return ed25519.Verify(pub.asStdlib(), msg, sig)
 }
 
 // ---- Ed25519 → X25519 (PROTOCOL.md §1.2) ----

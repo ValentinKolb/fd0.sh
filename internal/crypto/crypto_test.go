@@ -15,7 +15,10 @@ func TestEd25519SignVerifyRoundtrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	msg := []byte("test message")
-	sig := Sign(priv, msg)
+	sig, err := Sign(priv, msg)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !Verify(pub, msg, sig) {
 		t.Fatal("valid signature failed to verify")
 	}

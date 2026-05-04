@@ -482,7 +482,10 @@ func signRequest(t *testing.T, srv *Server, r *http.Request, body, pub, priv []b
 	if err != nil {
 		t.Fatal(err)
 	}
-	sig := crypto.Sign(priv, si)
+	sig, err := crypto.Sign(priv, si)
+	if err != nil {
+		t.Fatal(err)
+	}
 	r.Header.Set("Authorization",
 		"fd0-sig v1 pk="+base64.StdEncoding.EncodeToString(pub)+
 			", nonce="+base64.StdEncoding.EncodeToString(nonce)+

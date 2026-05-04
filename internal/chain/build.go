@@ -30,9 +30,12 @@ type Signer interface {
 // receives it, and for unit tests.
 type LocalSigner struct{ Priv ed25519.PrivateKey }
 
-// Sign implements Signer.
+// Sign implements Signer. Wave C-3: crypto.Sign returns an
+// error on wrong-size priv (defence-in-depth runtime check)
+// instead of panicking deep inside ed25519.Sign. Propagate
+// verbatim so the misuse surfaces at the chain.Signer seam.
 func (s LocalSigner) Sign(payload []byte) ([]byte, error) {
-	return crypto.Sign(s.Priv, payload), nil
+	return crypto.Sign(s.Priv, payload)
 }
 
 // BuildUserAuthSet constructs a signed UserEvent (kind=auth.set).
