@@ -81,9 +81,25 @@ func MustParseEd25519Pub(raw []byte) Ed25519Pub {
 
 // ParseEd25519Priv validates a 64-byte slice as an Ed25519
 // expanded private key and wraps it in an Ed25519Priv.
+//
+// Codex Wave-C-3 review fix: also verify that the public-half
+// (raw[32:]) matches the public key derived from the seed-half
+// (raw[:32]). A 64-byte slice with inconsistent halves —
+// corrupted recovery file, mis-spliced Yubikey blob, attacker-
+// crafted "valid-length" priv — would otherwise wrap cleanly
+// but produce signatures that fail every Verify call against
+// `priv.Public()`. Reject up-front so the failure mode is a
+// loud parse error, not silent signing-failure.
 func ParseEd25519Priv(raw []byte) (Ed25519Priv, error) {
 	if len(raw) != ed25519.PrivateKeySize {
 		return Ed25519Priv{}, fmt.Errorf("crypto: ed25519 priv: want %d bytes, got %d", ed25519.PrivateKeySize, len(raw))
+	}
+	// Re-derive the public half from the seed and compare in
+	// constant time. ed25519.NewKeyFromSeed re-hashes the seed,
+	// which is the canonical derivation path.
+	derived := ed25519.NewKeyFromSeed(raw[:ed25519.SeedSize])
+	if !constantTimeEqual(derived[ed25519.SeedSize:], raw[ed25519.SeedSize:]) {
+		return Ed25519Priv{}, errors.New("crypto: ed25519 priv: seed and public halves do not match (corrupted or forged key)")
 	}
 	out := make([]byte, ed25519.PrivateKeySize)
 	copy(out, raw)
@@ -162,13 +178,19 @@ func (p Ed25519Priv) Public() Ed25519Pub {
 
 // Wipe zeroes the underlying secret bytes. Caller MUST ensure no
 // further use of the value follows; subsequent Sign calls would
-// fail with "wrong-size key" since the buffer is still
-// 64-bytes-len (just all zeros). For agent-mlock'd buffers, the
-// agent should call Wipe in its shutdown path.
+// fail with "zero-key" since the seal sentinel still says ok=true
+// but the key material is all zeros (and ed25519.Sign would
+// happily produce a signature for the seed `0^64`, which is a
+// known-bad scalar — but no useful signature). For agent-mlock'd
+// buffers, the agent should call Wipe in its shutdown path.
+//
+// Codex Wave-C-3 review fix: delegate to crypto.Wipe so the
+// runtime.KeepAlive safeguard there protects against compiler
+// dead-store elimination of the zeroing loop. A hand-rolled
+// loop would be subject to the same optimisation hazard
+// documented at Wipe's call site.
 func (p Ed25519Priv) Wipe() {
-	for i := range p.b {
-		p.b[i] = 0
-	}
+	Wipe(p.b)
 }
 
 // constantTimeEqual: subtle-style byte-equal. Pulled to a free
