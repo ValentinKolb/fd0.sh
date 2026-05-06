@@ -44,8 +44,9 @@ tree with per-leaf signature.
   is higher because each chain has its own incremental-tree state
   and the store doesn't hold a global lock per append.
 - **Inclusion / consistency proofs** show the same inflection:
-  ~13× slowdown from 10k → 100k for both. Path length only grows
-  log₂(10×) = ~3.3× — the rest is SQL row-lookup. A future
+  inclusion is ~13× slower from 10k → 100k, consistency ~10.6×.
+  Path length only grows by ~3.3 Merkle levels (log₂(100k) -
+  log₂(10k) ≈ 3.3) — the rest is SQL row-lookup. A future
   Wave-H optimisation candidate IF a deployment shows real
   load: pre-warm the page cache, OR cache the most-recent N
   proof results, OR move the merkle frontier into an in-memory
@@ -153,7 +154,10 @@ that opens the vault hits this path.
 - **Multi-tenant translog throughput** (concurrent push from N
   clients): single-threaded numbers above bound the lower limit.
 - **1M-leaf translog**: pre-fill takes ~10 minutes; not reproduced
-  here. Linear extrapolation in the table above.
+  here. Honest ratio-based guess in §"Extrapolation to 1M leaves"
+  above is shaky — at 1M the working set is well past any
+  reasonable page cache and the cost becomes I/O-bound, not
+  CPU-bound.
 - **Memory under load** on the server side — the SQLite store
   doesn't pre-load the chain into memory, so steady-state RSS is
   bounded by SQLite's page cache (configurable; default 2 MiB).
