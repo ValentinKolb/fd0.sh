@@ -151,29 +151,14 @@ func (c *WitnessCheckClient) CrossCheckSTH(ctx context.Context, serverURL canon.
 	if c == nil || c.Policy.MinCosigns <= 0 {
 		return nil
 	}
-	// C4 + C5: chain-level probes BEFORE the per-tree_size cosign
-	// loop. Run against every pinned witness; ANY positive
-	// equivocation report or freshness mismatch is hard refusal.
-	// Probes are best-effort: a non-200 / decode error is treated
-	// as a skip, NOT a refusal — we still need MinCosigns
-	// matching cosigns below to advance. This way an offline or
-	// older-witness deployment doesn't block sync.
-	for _, w := range c.Pinned {
-		// C5 (T35) — chain-level equivocation. If even one witness
-		// has ever observed multi-roots at any tree_size for this
-		// (server, chain), refuse all cosigns from this server.
-		if eq, err := c.fetchEquivocationProbe(ctx, w.URL, serverURL.String(), sth.Head.ChainID); err == nil && eq {
-			return fmt.Errorf("%w: chain=%s witness=%s reports historical multi-root",
-				ErrWitnessEquivocation, sth.Head.ChainID, w.URL)
-		}
-		// C4 (T41) — freshness probe. If a witness has observed a
-		// HIGHER tree_size for this chain than the server is
-		// currently presenting, refuse: server is rolling us back.
-		if hi, observed, err := c.fetchHighestProbe(ctx, w.URL, serverURL.String(), sth.Head.ChainID); err == nil && observed && hi > sth.Head.TreeSize {
-			return fmt.Errorf("%w: chain=%s server_size=%d witness=%s observed_size=%d (rollback)",
-				ErrWitnessEquivocation, sth.Head.ChainID, sth.Head.TreeSize, w.URL, hi)
-		}
-	}
+	// C4 + C5: chain-level probes are run per-witness AFTER its
+	// cosign fetch (codex review fix: doing it as a separate
+	// pre-pass leaves a race where the witness archives
+	// evidence between probe and cosign lookup, and the now-
+	// stale cosign would still count). Probes are best-effort
+	// — non-200 / decode errors fall through to the threshold
+	// check so an offline / old / lagging witness doesn't block
+	// sync.
 	matching := 0
 	var skipReasons []string
 	for _, w := range c.Pinned {
@@ -215,6 +200,22 @@ func (c *WitnessCheckClient) CrossCheckSTH(ctx context.Context, serverURL canon.
 			return fmt.Errorf("%w: chain=%s size=%d server_root=%x witness=%s witness_root=%x",
 				ErrWitnessEquivocation, sth.Head.ChainID, sth.Head.TreeSize,
 				sth.Head.RootHash, w.URL, out.STH.Head.RootHash)
+		}
+		// C4 + C5 (codex race-fix): chain-level probes run AFTER
+		// the cosign fetch, against the same witness. Closes the
+		// race where the witness archives evidence between a
+		// pre-pass probe and the cosign lookup. The probes are
+		// best-effort — a non-200 / decode error doesn't refuse
+		// (the witness might be lagging or running an older
+		// build that doesn't expose these endpoints), but
+		// positive evidence wins immediately.
+		if eq, perr := c.fetchEquivocationProbe(ctx, w.URL, serverURL.String(), sth.Head.ChainID); perr == nil && eq {
+			return fmt.Errorf("%w: chain=%s witness=%s reports historical multi-root",
+				ErrWitnessEquivocation, sth.Head.ChainID, w.URL)
+		}
+		if hi, observed, perr := c.fetchHighestProbe(ctx, w.URL, serverURL.String(), sth.Head.ChainID); perr == nil && observed && hi > sth.Head.TreeSize {
+			return fmt.Errorf("%w: chain=%s server_size=%d witness=%s observed_size=%d (rollback)",
+				ErrWitnessEquivocation, sth.Head.ChainID, sth.Head.TreeSize, w.URL, hi)
 		}
 		matching++
 	}
