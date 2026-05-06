@@ -54,19 +54,19 @@ participants).
 
 Status legend:
 
-- 🟢 **Structural**: the threat is impossible unless a foundational
-  primitive is broken. Two flavours: (a) compile-time impossible
-  (type-state, unconstructable types — e.g. T15, T25); (b) breaks
-  the threat iff a cryptographic primitive itself is broken (e.g.
-  T20 — verifying a forged signature requires breaking Ed25519,
-  not finding a missing check). Codex review caught the original
-  legend conflating these with runtime checks; we keep them in 🟢
-  here because they ARE structural under the standard
-  "primitives-are-secure" assumption, with the boundary clearly
-  marked per threat.
+- 🟢 **Structural**: the threat is impossible at the type level
+  OR is impossible-iff-a-primitive-is-broken. Two flavours:
+  (a) compile-time impossible (type-state, unconstructable types
+  — e.g. T15, T25); (b) breaks iff Ed25519 / SHA-256 / AES-GCM
+  / Argon2id is itself broken (e.g. T20 — verifying a forged
+  signature requires forging Ed25519). What 🟢 does NOT mean:
+  "we added a runtime check that's hard to forget". Those are
+  🛡️.
 - 🛡️ **Runtime**: explicit guard / check at runtime; surface a
   controlled error. Failure mode is a missing check (forgettable
-  on refactor, lint-protectable).
+  on refactor, lint-protectable). Examples: nonce DB UNIQUE
+  insert (T22), validator branches (T26, T30), length checks
+  (T18 O_NOFOLLOW).
 - 🤝 **Ceremony**: depends on user behaviour (e.g. compare safety
   number, choose strong passphrase).
 - 📋 **Acknowledged**: outside what v1 promises; documented as a
@@ -193,13 +193,11 @@ Status legend:
 - **Threat**: a signature produced for one purpose (event
   authorship) is replayed in a different context (HTTP request
   auth, server-info self-sig, witness cosign).
-- **Mitigation** 🟢: every signature input has a domain separator
-  (`fd0-event-v1`, `fd0-user-event-v1`, `fd0-http-v1`,
-  `fd0-server-info-v1`, `fd0-translog-sth-v1`,
-  `fd0-translog-cosign-v1`, `fd0-recovery-key-v1`,
-  `fd0-vault-body-v1`, `fd0-vault-wrap-v1`, `fd0-card-v1`,
-  `fd0-server-fingerprint-v1`). Domain disjunction is asserted
-  by `proto.TestDomainSeparatorsDisjoint`.
+- **Mitigation** 🟢: every signature input has a domain separator.
+  See `internal/proto/domain.go` for the canonical list — the
+  doc deliberately doesn't repeat the literals to avoid drift.
+  Domain disjunction is asserted by
+  `proto.TestDomainSeparatorsDisjoint` (PROTOCOL.md §1.1).
 - **Code**: `proto/domain.go`, test in `proto/proto_test.go`.
 
 #### T14 — Cross-context AEAD ciphertext reuse
@@ -368,12 +366,27 @@ Status legend:
   - Other members (who got valid OEKs) continue normally; the
     scope itself is not lost. The bad author is removable from
     THEIR view.
-- **Pre-v1.0 todo**: a CLI subcommand
-  `fd0 scope recover-membership <scope_id>` that purges the
-  local chain file and re-discovers from cursor=0 (skipping
-  the bricked event by design — caller has been re-admitted in
-  a later event) would close the operational gap. Currently
-  the recovery path requires manual intervention.
+- **Pre-v1.0 todo (corrected per codex 2nd-round review)**: a
+  recovery subcommand isn't trivial — re-fetching from
+  cursor=0 still re-replays the poisoned `member.change` and
+  ReplayScope still fails on the bad sealed-box. The honest
+  recovery path requires either:
+  - **Replay-skip semantics**: a flag that allows
+    `chain.ReplayScope` to skip our own key_delivery on a
+    specific seq when explicitly authorized by the operator
+    (e.g. `fd0 scope skip-key-delivery <scope> <seq>`). The
+    chain still verifies signatures + projection content for
+    the affected event; only the OEK extraction is skipped.
+    The next member.change addressed to us re-establishes
+    OEK access.
+  - **OR a re-admit checkpoint**: after a member.change
+    op="add" of the victim by another current member, the
+    victim resumes from that genesis-like checkpoint with a
+    fresh OEK delivery, treating the bricked prefix as
+    cryptographically inaccessible.
+  Both paths are operator-driven; neither restores access to
+  events authored UNDER the era between bricking and recovery.
+  Path 1 is preferred (no protocol change); call it Wave H.
 
 #### T29 — Insider projection-poisoning
 - **Adversary**: A4.
@@ -436,18 +449,30 @@ Status legend:
   witness archive is keyed by `(server_url, chain_id,
   tree_size, root_hash)` — divergent roots at the same
   tree_size are intentionally **stored side-by-side** as
-  evidence (codex review correction; the original framing said
-  "archive refuses to cosign", which is wrong: the witness
-  cosigns whatever it polled, then the multi-row state at the
-  same tree_size is what the client detects later). When a
-  client's `LookupAt` query returns ≥2 rows for the same
-  (server_url, chain_id, tree_size), the witness layer
-  responds HTTP 409 — that's the equivocation signal the
-  client refuses on. Multi-witness cross-check makes a
-  colluding-witness a separate threat (T39).
+  evidence. The client's `CrossCheckSTH` queries witnesses for
+  cosign at the server-supplied tree_size; if the witness has
+  multi-roots at that size, the witness HTTP layer returns 409
+  (`ErrEquivocationAtSize` ⇒ `errWitnessEquivocation` ⇒
+  `ErrWitnessEquivocation`).
+- **Known limitation (codex 2nd-round review)**: this only
+  catches equivocation **at the exact tree_size the client
+  asks about**. If the server equivocated at size N (witness
+  has multi-roots at N) and has now moved to size N+1 with one
+  chosen branch, a client asking witnesses about N+1 gets a
+  clean cosign and never learns about the historical multi-
+  root at N. To close this gap, the witness API needs a
+  "any-equivocation-on-this-chain" probe — a client-side
+  query that surfaces the chain's equivocation state across
+  all observed tree_sizes. Tracked as **Wave H**: extend
+  `witness.Store` with a per-chain "ever-saw-multi-root" flag
+  and a corresponding HTTP endpoint; the client's CrossCheckSTH
+  consults this BEFORE accepting any cosign on the chain. v1.0
+  ships without this; the operational fallback is
+  cross-device tip comparison + monitoring witness logs for
+  ERROR-level "EQUIVOCATION ARCHIVED" emissions.
 - **Code**: `cli/witness_check.go` CrossCheckSTH,
-  `witness/store.go` Insert + LookupAt; HTTP 409 path in
-  `witness/witness.go`.
+  `witness/store.go` Insert + DetectEquivocationAt;
+  HTTP 409 path in `witness/http.go`.
 - **Spec**: TRANSLOG.md §6.
 
 #### T36 — Server returns wrong consistency proof (forks history)
@@ -596,12 +621,24 @@ Status legend:
     threat-model review caught the original gap on
     server-info)
   - `AcquireWrite` / `AcquireBytes` (per-pubkey, post-auth)
-- The translog public proof endpoints (`handleSTH`,
-  `handleInclusionProof`, `handleConsistencyProof`) are
-  intentionally unrated — they serve cached, pre-signed
-  responses and are designed to scale to public traffic.
+- **Residual exposure (codex 2nd-round review)**: the translog
+  public proof endpoints (`handleSTH`, `handleInclusionProof`,
+  `handleConsistencyProof`) and `handleServerInfo` are NOT
+  rate-limited:
+  - `handleServerInfo` returns a cached ~256-byte blob from
+    memory; serving unbounded requests is cheap.
+  - `handleSTH` reads a recent `(chain_id, tree_size, root,
+    sig)` row from SQLite; near-O(1).
+  - `handleInclusionProof` and `handleConsistencyProof` walk
+    `translog_nodes` per request via SQL — these are NOT
+    cached and an attacker with a high-fanout client could
+    drive non-trivial CPU + IO. **This is residual DoS
+    exposure for v1.0**. Pre-v1.0 todo: either add per-IP
+    rate-limit at a generous cap (e.g. 60/min) or document
+    the operator-bound (e.g. nginx-level per-IP limits) as
+    the deployment story. Tracked as Wave H.
 - **Code**: `server/auth.go`, `server/server.go`
-  (handleRegister, handleServerInfo),
+  (handleRegister, NOT handleServerInfo),
   `server/ratelimit/limiter.go`.
 
 #### T49 — Witness archive storage growth
@@ -612,14 +649,20 @@ Status legend:
   claimed witness has an `IngestSTH` rate-limited path. That is
   **incorrect** — the witness has no inbound ingest endpoint;
   it polls upstream servers OUTBOUND on a schedule
-  (`witness.Witness.poll`). Storage growth is therefore bounded
-  by upstream server activity (one row per `tree_size` polled,
-  capped at one per polling interval per chain), not by
-  attacker effort. The witness layer DOES bound response read
-  size on the outbound poll (`io.LimitReader`-style) so a
-  malicious upstream cannot OOM-crash the witness. Operational
-  bound: the operator runs storage GC / archives older STHs.
-- **Code**: `witness/witness.go` (poll loop, bounded reads).
+  (`witness.Witness.poll`).
+- **Storage growth bound (corrected per codex 2nd-round
+  review)**: at most one **distinct-root** row per polling
+  interval per chain. T35 / T40 explicitly preserve same-size
+  divergent roots as evidence, so a malicious server feeding
+  different roots at the same tree_size grows the table by
+  one row per *distinct* root seen, not one per tree_size.
+  In the honest case (server is monogamous), it's one row per
+  tree_size advance. The witness layer DOES bound response
+  read size on the outbound poll so a malicious upstream
+  cannot OOM-crash the witness. Operational bound: the
+  operator runs storage GC / archives older STHs.
+- **Code**: `witness/witness.go` (poll loop, bounded reads),
+  `witness/store.go` Insert (per-distinct-root storage).
 
 ### 3.8 Operational / metadata
 
@@ -689,15 +732,15 @@ Status legend:
 | T19 | 📋 | —                                                | STORAGE §5.4    |
 | T20 | 🟢 | `chain/scope.go` ReplayScope                     | PROTOCOL §4     |
 | T21 | 🟢 | `proto/httpsig.go` server_pub binding            | PROTOCOL §7.1   |
-| T22 | 🟢 | `server/auth.go`, store CheckAndInsertNonce      | API §1          |
+| T22 | 🛡️ | `server/auth.go`, store CheckAndInsertNonce      | API §1          |
 | T23 | 🟢 | `proto/ids.go` EventID                           | PROTOCOL §1.3   |
 | T24 | 🟢 | `canon/url.go`, `cli/sync.go`                    | TRANSLOG §6.1   |
 | T25 | 🟢 | `cli/verified_sth.go` (opaque + sealed)          | TRANSLOG §5     |
-| T26 | 🟢 | `server/validate/validate.go`                    | PROTOCOL §4     |
-| T27 | 🟢 | `chain/scope.go` member-set check                | PROTOCOL §4     |
+| T26 | 🛡️ | `server/validate/validate.go`                    | PROTOCOL §4     |
+| T27 | 🛡️ | `chain/scope.go` member-set check                | PROTOCOL §4     |
 | T28 | 📋 | `chain/scope.go` (replay error path)             | THREATS §5      |
 | T29 | 🟢🤝 | `chain/scope.go` projection-content check        | PROTOCOL §4.4   |
-| T30 | 🟢 | `validate/validate.go`, `chain/scope.go`         | PROTOCOL §4.2   |
+| T30 | 🛡️ | `validate/validate.go`, `chain/scope.go`         | PROTOCOL §4.2   |
 | T31 | 🟢 | `cli/sync_internal.go` upsertOEK                 | STORAGE §6.1    |
 | T32 | 📋 | —                                                | THREATS §5      |
 | T33 | 🤝 | —                                                | THREATS §5      |

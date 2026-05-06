@@ -181,22 +181,22 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 // GET /v1/server-info — publish the cached self-signed pubkey record.
 // Unauthenticated by design; first-contact pinning binds the pubkey
 // to the operator the user trusts (TRANSLOG.md §6.1).
-// handleServerInfo serves the cached self-signed
-// /v1/server-info blob. Codex threat-model review (P2): this is
-// an unauthenticated endpoint and was previously not rate-
-// limited, so an attacker could hammer it without bound. It
-// uses the AcquireRegister bucket (per-hour per-IP) — same
-// class as registration since both expose pre-pin metadata at
-// the unauthenticated edge.
+// handleServerInfo serves the cached self-signed /v1/server-info
+// blob. Codex threat-model 2nd-round review caught that the
+// previous attempt to rate-limit this with the AcquireRegister
+// bucket (5/hour per-IP) blocks normal client behaviour:
+// `cli.EnsurePinnedServer` refetches server-info on every sync
+// for pin-mismatch detection, so any client syncing >5 times per
+// hour from the same NAT/IP would 429-out. Rate-limit reverted;
+// the residual DoS exposure is documented in THREATS.md T48.
 //
-// THREAT: T48 (per-IP DoS at unauthenticated endpoints).
+// The blob is already cached in memory and ~256 bytes; serving
+// unbounded requests of it is cheaper than fetching the SQLite
+// state, so the residual cost is acceptable.
+//
+// THREAT: T48 (residual DoS at this unauthenticated endpoint —
+//                documented as accepted exposure for v1.0).
 func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
-	if s.rl != nil {
-		if d := s.rl.AcquireRegister(clientIP(r)); !d.Allow {
-			s.writeRateLimited(w, d.Retry)
-			return
-		}
-	}
 	w.Header().Set("Content-Type", "application/cbor")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(s.serverInfo)
