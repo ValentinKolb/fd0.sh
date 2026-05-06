@@ -212,6 +212,12 @@ func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 // 400 on a malformed chain_id (catches operator/attacker probing
 // future namespaces).
 func (s *Server) handleSTH(w http.ResponseWriter, r *http.Request) {
+	if s.rl != nil {
+		if d := s.rl.AcquireProof(clientIP(r)); !d.Allow {
+			s.writeRateLimited(w, d.Retry)
+			return
+		}
+	}
 	chainID := r.PathValue("chainId")
 	if !validChainID(chainID) {
 		writeErr(w, http.StatusBadRequest, "bad_chain_id", "")
@@ -234,6 +240,12 @@ func (s *Server) handleSTH(w http.ResponseWriter, r *http.Request) {
 // All three query parameters are required. tree_size MUST be ≤ the
 // server's current size; leaf_index MUST be < tree_size.
 func (s *Server) handleInclusionProof(w http.ResponseWriter, r *http.Request) {
+	if s.rl != nil {
+		if d := s.rl.AcquireProof(clientIP(r)); !d.Allow {
+			s.writeRateLimited(w, d.Retry)
+			return
+		}
+	}
 	q := r.URL.Query()
 	chainID := q.Get("chain_id")
 	if !validChainID(chainID) {
@@ -276,6 +288,12 @@ func (s *Server) handleInclusionProof(w http.ResponseWriter, r *http.Request) {
 // cases: from_size == 0 returns an empty proof (any tree is consistent
 // with empty); from_size == to_size returns an empty proof.
 func (s *Server) handleConsistencyProof(w http.ResponseWriter, r *http.Request) {
+	if s.rl != nil {
+		if d := s.rl.AcquireProof(clientIP(r)); !d.Allow {
+			s.writeRateLimited(w, d.Retry)
+			return
+		}
+	}
 	q := r.URL.Query()
 	chainID := q.Get("chain_id")
 	if !validChainID(chainID) {

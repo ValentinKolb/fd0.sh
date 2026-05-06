@@ -626,22 +626,21 @@ Status legend:
     refetch it on every sync for pin-mismatch detection and
     a 5/hour cap would 429-out normal users behind a NAT.
   - `AcquireWrite` / `AcquireBytes` (per-pubkey, post-auth)
-- **Residual exposure (codex 2nd-round review)**: the translog
-  public proof endpoints (`handleSTH`, `handleInclusionProof`,
-  `handleConsistencyProof`) and `handleServerInfo` are NOT
-  rate-limited:
-  - `handleServerInfo` returns a cached ~256-byte blob from
-    memory; serving unbounded requests is cheap.
-  - `handleSTH` reads a recent `(chain_id, tree_size, root,
-    sig)` row from SQLite; near-O(1).
-  - `handleInclusionProof` and `handleConsistencyProof` walk
-    `translog_nodes` per request via SQL — these are NOT
-    cached and an attacker with a high-fanout client could
-    drive non-trivial CPU + IO. **This is residual DoS
-    exposure for v1.0**. Pre-v1.0 todo: either add per-IP
-    rate-limit at a generous cap (e.g. 60/min) or document
-    the operator-bound (e.g. nginx-level per-IP limits) as
-    the deployment story. Tracked as Wave H.
+- **Translog public proof endpoints**: `handleSTH`,
+  `handleInclusionProof`, `handleConsistencyProof` are now
+  per-IP rate-limited via `AcquireProof` (default 120/min).
+  Closes the v1.0 residual exposure that the previous version
+  of this entry flagged. The handlers walk SQL per request and
+  are NOT cached, so an attacker with a high-fanout client
+  could otherwise drive non-trivial CPU + IO without
+  authenticating. Cap is generous: legitimate clients
+  verifying many proofs in a single pull don't get 429-out.
+- **`handleServerInfo`**: still NOT rate-limited. Returns a
+  cached ~256-byte blob from memory; serving unbounded
+  requests is cheap. The previous attempt to put it on the
+  AcquireRegister bucket (5/hour) blocked normal client
+  behaviour — clients refetch server-info on every sync for
+  pin-mismatch detection.
 - **Code**: `server/auth.go`, `server/server.go`
   (handleRegister, NOT handleServerInfo),
   `server/ratelimit/limiter.go`.

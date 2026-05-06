@@ -53,6 +53,18 @@ type Config struct {
 	// crypto cost. Set to -1 to disable.
 	AuthAttemptsPerMin int
 
+	// ProofRequestsPerMin: per-IP cap on the unauthenticated translog
+	// proof endpoints (handleSTH, handleInclusionProof,
+	// handleConsistencyProof). Closes the T48 residual-exposure
+	// flagged by codex threat-model review: those handlers walk
+	// SQL per request and are NOT cached, so an attacker with a
+	// high-fanout client could drive non-trivial CPU + IO without
+	// authenticating. Default 120/min (2/sec) per IP — generous
+	// enough for legitimate clients verifying many proofs in a
+	// pull, tight enough that a single hostile IP can't saturate
+	// the proof query path. Set to -1 to disable.
+	ProofRequestsPerMin int
+
 	// IdleEvict drops buckets unused for at least this long. Default 10 min.
 	IdleEvict time.Duration
 
@@ -103,6 +115,9 @@ func New(ctx context.Context, cfg Config) *Limiter {
 	if cfg.AuthAttemptsPerMin == 0 {
 		cfg.AuthAttemptsPerMin = 600
 	}
+	if cfg.ProofRequestsPerMin == 0 {
+		cfg.ProofRequestsPerMin = 120
+	}
 	if cfg.IdleEvict <= 0 {
 		cfg.IdleEvict = 10 * time.Minute
 	}
@@ -126,6 +141,7 @@ const (
 	classBytes       = "b:"
 	classRegister    = "r:"
 	classAuthAttempt = "a:"
+	classProof       = "p:"
 )
 
 // Decision is the result of an Acquire. Retry is non-zero only when Allow is
@@ -184,6 +200,27 @@ func (l *Limiter) AcquireRegister(ip string) Decision {
 	cap := float64(l.cfg.RegisterPerHour)
 	rate := cap / 3600.0
 	return l.acquire(classRegister+ip, cap, rate, 1)
+}
+
+// AcquireProof charges 1 token against the per-IP unauthenticated
+// translog proof bucket. Closes the T48 residual-exposure flagged
+// by codex threat-model review: handleSTH /
+// handleInclusionProof / handleConsistencyProof walk SQL per
+// request and are NOT cached, so an attacker with a high-fanout
+// client could drive non-trivial CPU + IO without authenticating.
+//
+// Cap is generous (default 120/min = 2/sec) so legitimate clients
+// verifying many proofs in a single pull don't get 429-out, but
+// a single hostile IP can't saturate the proof query path either.
+//
+// THREAT: T48 (per-IP DoS at unauthenticated translog endpoints).
+func (l *Limiter) AcquireProof(ip string) Decision {
+	if l.cfg.ProofRequestsPerMin < 0 {
+		return Decision{Allow: true}
+	}
+	cap := float64(l.cfg.ProofRequestsPerMin)
+	rate := cap / 60.0
+	return l.acquire(classProof+ip, cap, rate, 1)
 }
 
 // acquire is the shared bucket update path. We look up (or lazily create) a
