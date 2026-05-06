@@ -278,6 +278,10 @@ func ValidateArgon2(p Argon2Params) error {
 // untrusted vault / recovery file headers, where T=0 or P=0 would
 // panic inside argon2.IDKey and a huge M would OOM the process
 // (codex review: 🔴).
+//
+// THREAT: T02 (stolen vault file → offline brute-force passphrase
+//                — protection reduces to passphrase strength under
+//                Argon2id with M=64MiB / T=3 / P=1).
 func DeriveKey(password, salt []byte, p Argon2Params) ([]byte, error) {
 	if err := ValidateArgon2(p); err != nil {
 		return nil, err

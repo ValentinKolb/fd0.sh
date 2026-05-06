@@ -33,6 +33,9 @@ func (e *VaultTipMismatch) Error() string {
 //	file ahead → caller advances vault tip via re-seal (signal nil error,
 //	             *VaultTipMismatch with Direction="ahead")
 //	file behind → return error; caller refuses to operate.
+//
+// THREAT: T04 (server rolls back user chain to expose revoked credential),
+//         T05 (single-file local rollback — vault OR chain replaced alone).
 func CompareUserTip(vault proto.ChainTip, st *UserState) *VaultTipMismatch {
 	if st == nil {
 		// No file → must match nil vault.
@@ -57,6 +60,9 @@ func CompareUserTip(vault proto.ChainTip, st *UserState) *VaultTipMismatch {
 }
 
 // CompareScopeTip is the analogue for one scope chain.
+//
+// THREAT: T05 (single-file local rollback — scope chain replaced
+//                without matching vault update).
 func CompareScopeTip(scopeID string, vault proto.ChainTip, st *ScopeState) *VaultTipMismatch {
 	tag := "scope:" + scopeID
 	if st == nil {

@@ -19,6 +19,9 @@ var b32 = base32.StdEncoding.WithPadding(base32.NoPadding)
 // EventID returns "e_" + base32(SHA-256(prefix)[:16]).
 // prefix is cbor(SignedPrefix) for scope events, cbor(UserEvent without sig)
 // for user events.
+//
+// THREAT: T23 (stored-event replay — content-addressed event_id +
+//                server-side UNIQUE constraint reject duplicate inserts).
 func EventID(prefix []byte) string {
 	sum := sha256.Sum256(prefix)
 	return "e_" + strings.ToLower(b32.EncodeToString(sum[:16]))

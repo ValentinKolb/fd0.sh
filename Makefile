@@ -7,7 +7,7 @@
 #   make lint         — go vet + semgrep rules (semgrep optional)
 #   make all          — build + test + integration + lint
 
-.PHONY: build test integration lint vet semgrep all
+.PHONY: build test integration lint vet semgrep threat-coverage all
 
 build:
 	go install ./...
@@ -48,6 +48,14 @@ semgrep:
 		echo "semgrep not installed; skipping (pip install semgrep)"; \
 	fi
 
-lint: vet golangci semgrep
+# threat-coverage walks THREATS.md and verifies every threat that
+# requires a code annotation has at least one `// THREAT: Tnn`
+# in non-test code, and that every annotation references a
+# catalogued threat. Closes the doc-↔-code drift risk that
+# THREATS.md §8 explicitly flags.
+threat-coverage:
+	@go run ./tools/threat-coverage
+
+lint: vet golangci semgrep threat-coverage
 
 all: build test integration lint

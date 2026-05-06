@@ -44,6 +44,7 @@ func AppendScope(path string, ev *proto.ScopeEvent) error {
 // byte-identically.
 func AppendRaw(path string, raw []byte) error { return appendBytes(path, raw) }
 
+// THREAT: T18 (symlink-redirect attack on chain file).
 func appendBytes(path string, raw []byte) error {
 	// SECURITY (codex security audit 🟠): O_NOFOLLOW prevents a
 	// same-UID attacker who plants a symlink at `path` (or who

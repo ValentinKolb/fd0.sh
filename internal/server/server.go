@@ -466,6 +466,11 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 // super_priv (after K_recovery decrypt) → can sign → can fetch.
 // Operator-side enrollment / observer flows that DON'T have
 // super_priv must use a separate API (none exist in v1).
+//
+// THREAT: T50 (shortId enumeration via API — A2 cannot enumerate
+//                because this endpoint requires authentication +
+//                signer-must-equal-chain-owner. Only A1 with raw
+//                DB access can read encrypted user chains).
 func (s *Server) handleFetchUser(w http.ResponseWriter, r *http.Request) {
 	auth, code, err := s.verifyHTTPSig(r.Context(), r)
 	if err != nil {

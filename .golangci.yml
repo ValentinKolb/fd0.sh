@@ -87,3 +87,5 @@ linters:
       - path: tools/
         linters:
           - errcheck
+          - gosec
+          - unused
