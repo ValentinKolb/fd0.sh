@@ -227,13 +227,23 @@ func (c *WitnessCheckClient) CrossCheckSTH(ctx context.Context, serverURL canon.
 		// inside the verifier, so the cli code path can't forget
 		// the check.
 		if err := translog.VerifyWitnessedSTH(serverPub, w.Pub, serverURL.String(), sth.Head.ChainID, out); err != nil {
+			// Probe even on bad-cosign — the witness might still
+			// have rollback / equivocation evidence at other
+			// sizes despite returning a malformed cosign at this
+			// one (codex 4th-round race-fix).
+			if perr := checkChainProbes(w); perr != nil {
+				return perr
+			}
 			skipReasons = append(skipReasons, fmt.Sprintf("%s: bad-cosign(%v)", w.URL, err))
 			continue
 		}
 		if out.STH.Head.TreeSize != sth.Head.TreeSize {
 			// Witness gave a row at a DIFFERENT tree_size despite
 			// our explicit ?tree_size=N. Don't count it (the
-			// witness is misbehaving).
+			// witness is misbehaving). Probe before skipping.
+			if perr := checkChainProbes(w); perr != nil {
+				return perr
+			}
 			skipReasons = append(skipReasons, fmt.Sprintf("%s: size-drift(want=%d got=%d)", w.URL, sth.Head.TreeSize, out.STH.Head.TreeSize))
 			continue
 		}
