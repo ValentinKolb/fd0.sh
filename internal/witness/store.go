@@ -325,6 +325,61 @@ func (s *Store) LatestSTHWithCosign(ctx context.Context, serverURL, chainID stri
 	return s.LookupAt(ctx, serverURL, chainID, uint64(maxSize.Int64))
 }
 
+// HighestTreeSize returns the highest tree_size the witness has
+// archived for (serverURL, chainID), or (0, false, nil) if the
+// witness has never observed this chain. Used by the C4 freshness
+// probe — clients consult this BEFORE accepting a server-supplied
+// STH at tree_size N to make sure the witness hasn't observed
+// N+k for some k > 0 (the "first-fetch checkpoint rollback"
+// case from THREATS.md T41).
+//
+// THREAT: T41 (first-fetch checkpoint rollback — fresh client
+//                with no prior STH cannot consistency-prove; the
+//                witness's highest-observed tree_size for the
+//                chain is the cross-check anchor).
+func (s *Store) HighestTreeSize(ctx context.Context, serverURL, chainID string) (uint64, bool, error) {
+	var maxSize sql.NullInt64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT MAX(tree_size) FROM witness_sths
+		  WHERE server_url = ? AND chain_id = ?`,
+		serverURL, chainID,
+	).Scan(&maxSize)
+	if err != nil {
+		return 0, false, err
+	}
+	if !maxSize.Valid {
+		return 0, false, nil
+	}
+	return uint64(maxSize.Int64), true, nil
+}
+
+// DetectChainEquivocation returns true iff witness_sths has any
+// (serverURL, chainID) row pair with the same tree_size and
+// distinct root_hash. Unlike DetectEquivocationAt (which is
+// tree_size-specific), this scans the WHOLE chain history. Used
+// by the C5 chain-level probe — clients refuse ANY cosign on a
+// chain the witness has ever seen equivocate, even if the current
+// tree_size is past the equivocation point.
+//
+// THREAT: T35 (server equivocation across clients — historical
+//                multi-roots remain evidence indefinitely).
+func (s *Store) DetectChainEquivocation(ctx context.Context, serverURL, chainID string) (bool, error) {
+	var n int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*)
+		   FROM (
+		     SELECT tree_size FROM witness_sths
+		      WHERE server_url = ? AND chain_id = ?
+		      GROUP BY tree_size HAVING COUNT(DISTINCT root_hash) > 1
+		   )`,
+		serverURL, chainID,
+	).Scan(&n)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
 // DetectEquivocationAt returns true iff witness_sths has two or more
 // distinct root_hash values for (serverURL, chainID, treeSize). Used
 // internally by Insert and by `fd0-witness verify` to scan the

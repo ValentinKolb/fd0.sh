@@ -458,25 +458,17 @@ Status legend:
   multi-roots at that size, the witness HTTP layer returns 409
   (`ErrEquivocationAtSize` ⇒ `errWitnessEquivocation` ⇒
   `ErrWitnessEquivocation`).
-- **Known limitation (codex 2nd-round review)**: this only
-  catches equivocation **at the exact tree_size the client
-  asks about**. If the server equivocated at size N (witness
-  has multi-roots at N) and has now moved to size N+1 with one
-  chosen branch, a client asking witnesses about N+1 gets a
-  clean cosign and never learns about the historical multi-
-  root at N. To close this gap, the witness API needs a
-  "any-equivocation-on-this-chain" probe — a client-side
-  query that surfaces the chain's equivocation state across
-  all observed tree_sizes. Tracked as **Wave H**: extend
-  `witness.Store` with a per-chain "ever-saw-multi-root" flag
-  and a corresponding HTTP endpoint; the client's CrossCheckSTH
-  consults this BEFORE accepting any cosign on the chain. v1.0
-  ships without this; the operational fallback is
-  cross-device tip comparison + monitoring witness logs for
-  ERROR-level "EQUIVOCATION ARCHIVED" emissions.
-- **Code**: `cli/witness_check.go` CrossCheckSTH,
-  `witness/store.go` Insert + DetectEquivocationAt;
-  HTTP 409 path in `witness/http.go`.
+- **Chain-level cross-check (closed by C5)**: client now
+  consults `GET /v1/witness/equivocation/{server}/{chain}` on
+  every pinned witness BEFORE accepting any cosign. The
+  endpoint returns true iff the witness has EVER archived
+  multi-roots at any tree_size for the chain. Closes the
+  historical-equivocation gap codex flagged in the 2nd-round
+  threat-model review.
+- **Code**: `cli/witness_check.go` CrossCheckSTH +
+  fetchEquivocationProbe, `witness/store.go` Insert +
+  DetectEquivocationAt + DetectChainEquivocation,
+  `witness/http.go` handleEquivocation.
 - **Spec**: TRANSLOG.md §6.
 
 #### T36 — Server returns wrong consistency proof (forks history)
@@ -535,24 +527,21 @@ Status legend:
 
 #### T41 — First-fetch checkpoint rollback (no prior STH anchor)
 - **Adversary**: A1.
-- **Mitigation** 🤝: a fresh device has no priorSTH to
-  consistency-prove against, **and the witness cross-check does
-  NOT mitigate this case**. Codex review correctly flagged the
-  original framing: the client cross-check asks witnesses for a
-  cosign at the *server-supplied* `tree_size`. If the server
-  rolls the client back to an older STH that the witnesses also
-  have (because witnesses had previously cosigned the same
-  size), the witnesses return matching cosigns and the rollback
-  goes undetected. To detect it the witness API would need a
-  "highest-observed `tree_size` for this chain" probe and the
-  client would need to reject when that exceeds the
-  server-supplied size. This is a **v1.x feature** (TRANSLOG.md
-  §6.4 enhancement); for v1.0 the only mitigation is
-  user-ceremony out-of-band tip comparison.
-- **Pre-v1.0 todo**: optionally add a `GET /v1/witness/latest/
-  {server_url}/{chain_id}` endpoint and a client-side
-  freshness check; not required for v1.0 ship if cross-device
-  comparison is documented.
+- **Mitigation** 🛡️ + 🤝: client now consults
+  `GET /v1/witness/highest/{server}/{chain}` on every pinned
+  witness BEFORE accepting a cosign at the server-supplied
+  tree_size N. If any witness has previously archived
+  tree_size > N for this chain, refuse the cosign — server is
+  rolling the client back. Closes the rollback-to-older-witnessed-
+  STH gap codex flagged in the 2nd-round threat-model review.
+- **Residual user-ceremony**: still depends on at least one
+  witness having seen the chain BEFORE the rollback. A
+  truly-first-contact client (no witness has ever seen the
+  chain either) falls back on cross-device out-of-band tip
+  comparison.
+- **Code**: `cli/witness_check.go` CrossCheckSTH +
+  fetchHighestProbe, `witness/store.go` HighestTreeSize,
+  `witness/http.go` handleHighest.
 - **Spec**: TRANSLOG.md §6.1, §6.4.
 
 #### T42 — STH for a different chain_id served as ours
@@ -755,7 +744,7 @@ Status legend:
 | T38 | 📋 | —                                                | TRANSLOG §6     |
 | T39 | 🟢 | `cli/witness_check.go`                           | TRANSLOG §6.3   |
 | T40 | 🟢 | `witness/store.go` Insert UNIQUE                 | TRANSLOG §6.4   |
-| T41 | 🤝 | (NOT mitigated by witnesses — see §3.6)          | TRANSLOG §6.1   |
+| T41 | 🛡️🤝 | `cli/witness_check.go` fetchHighestProbe       | TRANSLOG §6.1   |
 | T42 | 🟢 | `cli/translog.go` VerifyTranslogResponse         | TRANSLOG §3     |
 | T43 | 🟢 | `translog/witness.go` SignWitnessedSTH           | TRANSLOG §6.3   |
 | T44 | 🟢 | `server/auth.go`                                 | API §1          |

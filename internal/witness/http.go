@@ -51,6 +51,11 @@ func (s *HTTPServer) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/witness/server-info", s.handleServerInfo)
 	mux.HandleFunc("/v1/witness/sth/", s.handleWitnessSTH)
+	// C4: T41 freshness probe — highest tree_size archived per chain.
+	mux.HandleFunc("/v1/witness/highest/", s.handleHighest)
+	// C5: T35 chain-level equivocation probe — has the witness ever
+	// archived multi-roots at any tree_size for this chain?
+	mux.HandleFunc("/v1/witness/equivocation/", s.handleEquivocation)
 	return mux
 }
 
@@ -201,6 +206,107 @@ func (s *HTTPServer) handleWitnessSTH(w http.ResponseWriter, r *http.Request) {
 		WitnessSig: cosign,
 	}
 	writeCBOR(w, http.StatusOK, wsth)
+}
+
+// HighestResponse is the body of GET
+// /v1/witness/highest/<server_b64>/<chain_id>. `Observed` is true
+// iff the witness has archived at least one STH for the
+// (server_url, chain_id) pair; `TreeSize` is the maximum observed.
+//
+// Clients call this BEFORE accepting a server-supplied STH at
+// tree_size N. If `Observed && N < TreeSize`, the server is
+// rolling the client back — refuse.
+type HighestResponse struct {
+	Observed bool   `cbor:"observed"`
+	TreeSize uint64 `cbor:"tree_size"`
+}
+
+// EquivocationResponse is the body of GET
+// /v1/witness/equivocation/<server_b64>/<chain_id>. `Equivocated`
+// is true iff the witness has ever archived multi-root STHs at
+// the SAME tree_size for the (server_url, chain_id) pair.
+//
+// Clients call this BEFORE accepting any cosign on a chain.
+// `Equivocated == true` means the witness saw the server publish
+// two divergent histories — refuse all cosigns from this server
+// for this chain regardless of tree_size.
+type EquivocationResponse struct {
+	Equivocated bool `cbor:"equivocated"`
+}
+
+// handleHighest serves
+// GET /v1/witness/highest/<server_b64>/<chain_id> for the C4
+// T41 freshness probe.
+func (s *HTTPServer) handleHighest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	serverURL, chainID, ok := parseHighestEquivocPath(w, r, "/v1/witness/highest/")
+	if !ok {
+		return
+	}
+	size, observed, err := s.Store.HighestTreeSize(r.Context(), serverURL, chainID)
+	if err != nil {
+		s.Log.Error("witness http: HighestTreeSize lookup failed", "err", err)
+		http.Error(w, "internal lookup error", http.StatusInternalServerError)
+		return
+	}
+	writeCBOR(w, http.StatusOK, HighestResponse{Observed: observed, TreeSize: size})
+}
+
+// handleEquivocation serves
+// GET /v1/witness/equivocation/<server_b64>/<chain_id> for the
+// C5 T35 chain-level equivocation probe.
+func (s *HTTPServer) handleEquivocation(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	serverURL, chainID, ok := parseHighestEquivocPath(w, r, "/v1/witness/equivocation/")
+	if !ok {
+		return
+	}
+	equiv, err := s.Store.DetectChainEquivocation(r.Context(), serverURL, chainID)
+	if err != nil {
+		s.Log.Error("witness http: DetectChainEquivocation lookup failed", "err", err)
+		http.Error(w, "internal lookup error", http.StatusInternalServerError)
+		return
+	}
+	writeCBOR(w, http.StatusOK, EquivocationResponse{Equivocated: equiv})
+}
+
+// parseHighestEquivocPath shares URL-shape validation between
+// handleHighest and handleEquivocation. Both routes use the same
+// `<server_b64>/<chain_id>` shape as handleWitnessSTH (without the
+// optional ?tree_size). Returns (server_url, chain_id, ok); writes
+// the response on the http.ResponseWriter on parse error.
+func parseHighestEquivocPath(w http.ResponseWriter, r *http.Request, prefix string) (string, string, bool) {
+	rest := strings.TrimPrefix(r.URL.Path, prefix)
+	parts := strings.SplitN(rest, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		http.Error(w, "expected "+prefix+"<server_b64>/<chain_id>", http.StatusBadRequest)
+		return "", "", false
+	}
+	if len(parts[0]) > maxServerB64Len {
+		http.Error(w, "server segment too long", http.StatusRequestURITooLong)
+		return "", "", false
+	}
+	if len(parts[1]) > maxChainIDLen {
+		http.Error(w, "chain_id too long", http.StatusRequestURITooLong)
+		return "", "", false
+	}
+	serverURL, err := DecodeServerURL(parts[0])
+	if err != nil {
+		http.Error(w, "server segment is not valid base64url", http.StatusBadRequest)
+		return "", "", false
+	}
+	chainID := parts[1]
+	if !strings.HasPrefix(chainID, "user:") && !strings.HasPrefix(chainID, "scope:") {
+		http.Error(w, "chain_id must start with user: or scope:", http.StatusBadRequest)
+		return "", "", false
+	}
+	return serverURL, chainID, true
 }
 
 // writeCBOR serializes v as CBOR and writes it. Mirror of the

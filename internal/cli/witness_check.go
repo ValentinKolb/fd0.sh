@@ -145,10 +145,34 @@ func NewWitnessCheckClient(cfg fdhome.Config) (*WitnessCheckClient, error) {
 // THREAT: T35 (server equivocation between clients),
 //         T39 (bad-cosign / forged witness response),
 //         T40 (witness archive itself shows equivocation),
+//         T41 (first-fetch checkpoint rollback — witness highest probe),
 //         T43 (equivocation across servers by URL).
 func (c *WitnessCheckClient) CrossCheckSTH(ctx context.Context, serverURL canon.URL, serverPub ed25519.PublicKey, sth translog.STH) error {
 	if c == nil || c.Policy.MinCosigns <= 0 {
 		return nil
+	}
+	// C4 + C5: chain-level probes BEFORE the per-tree_size cosign
+	// loop. Run against every pinned witness; ANY positive
+	// equivocation report or freshness mismatch is hard refusal.
+	// Probes are best-effort: a non-200 / decode error is treated
+	// as a skip, NOT a refusal — we still need MinCosigns
+	// matching cosigns below to advance. This way an offline or
+	// older-witness deployment doesn't block sync.
+	for _, w := range c.Pinned {
+		// C5 (T35) — chain-level equivocation. If even one witness
+		// has ever observed multi-roots at any tree_size for this
+		// (server, chain), refuse all cosigns from this server.
+		if eq, err := c.fetchEquivocationProbe(ctx, w.URL, serverURL.String(), sth.Head.ChainID); err == nil && eq {
+			return fmt.Errorf("%w: chain=%s witness=%s reports historical multi-root",
+				ErrWitnessEquivocation, sth.Head.ChainID, w.URL)
+		}
+		// C4 (T41) — freshness probe. If a witness has observed a
+		// HIGHER tree_size for this chain than the server is
+		// currently presenting, refuse: server is rolling us back.
+		if hi, observed, err := c.fetchHighestProbe(ctx, w.URL, serverURL.String(), sth.Head.ChainID); err == nil && observed && hi > sth.Head.TreeSize {
+			return fmt.Errorf("%w: chain=%s server_size=%d witness=%s observed_size=%d (rollback)",
+				ErrWitnessEquivocation, sth.Head.ChainID, sth.Head.TreeSize, w.URL, hi)
+		}
 	}
 	matching := 0
 	var skipReasons []string
@@ -254,6 +278,85 @@ func (c *WitnessCheckClient) fetchWitnessedSTH(ctx context.Context, witnessURL, 
 // inline rather than import to keep the cli package leaf-only.
 func encodeServerURL(raw string) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+}
+
+// highestProbeResponse mirrors witness.HighestResponse on the
+// wire so we don't import the witness package (cli must stay
+// leaf-only on the server-side packages).
+type highestProbeResponse struct {
+	Observed bool   `cbor:"observed"`
+	TreeSize uint64 `cbor:"tree_size"`
+}
+
+// equivProbeResponse mirrors witness.EquivocationResponse.
+type equivProbeResponse struct {
+	Equivocated bool `cbor:"equivocated"`
+}
+
+// fetchHighestProbe queries
+// GET /v1/witness/highest/<server>/<chain> for the C4 freshness
+// probe. Returns (max_tree_size, observed, error). A 404 / non-OK
+// response or any decode error returns observed=false so the
+// caller treats it as "witness can't help here, fall through to
+// the cosign loop" rather than refusing. Hard refusal happens
+// only when observed=true AND the witness's max > server-supplied
+// size.
+func (c *WitnessCheckClient) fetchHighestProbe(ctx context.Context, witnessURL, serverURL, chainID string) (uint64, bool, error) {
+	endpoint := fmt.Sprintf("%s/v1/witness/highest/%s/%s",
+		witnessURL, encodeServerURL(serverURL), chainID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return 0, false, err
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return 0, false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, false, fmt.Errorf("witness highest: HTTP %s", resp.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<10))
+	if err != nil {
+		return 0, false, err
+	}
+	var r highestProbeResponse
+	if err := proto.Unmarshal(body, &r); err != nil {
+		return 0, false, err
+	}
+	return r.TreeSize, r.Observed, nil
+}
+
+// fetchEquivocationProbe queries
+// GET /v1/witness/equivocation/<server>/<chain> for the C5
+// chain-level equivocation probe. Returns (equivocated, error).
+// On any non-OK / decode failure returns false so the caller
+// treats the probe as "witness can't help here" rather than
+// refusing.
+func (c *WitnessCheckClient) fetchEquivocationProbe(ctx context.Context, witnessURL, serverURL, chainID string) (bool, error) {
+	endpoint := fmt.Sprintf("%s/v1/witness/equivocation/%s/%s",
+		witnessURL, encodeServerURL(serverURL), chainID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return false, err
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("witness equivocation: HTTP %s", resp.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<10))
+	if err != nil {
+		return false, err
+	}
+	var r equivProbeResponse
+	if err := proto.Unmarshal(body, &r); err != nil {
+		return false, err
+	}
+	return r.Equivocated, nil
 }
 
 func equalBytes(a, b []byte) bool {
