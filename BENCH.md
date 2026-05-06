@@ -18,42 +18,56 @@ go test -bench=. -benchmem -benchtime=2s -run=^$ \
 The hot path on every `/sync` push: SQLite-backed incremental Merkle
 tree with per-leaf signature.
 
-| Operation                  | Depth |     ns/op |   B/op | allocs |   ops/sec |
-|----------------------------|------:|----------:|-------:|-------:|----------:|
-| `AppendLeaf` cold          |     0 |   540 081 |  8 760 |    235 |     ~1850 |
-| `AppendLeaf` warm          |  1 000 |   615 104 |  8 911 |    239 |     ~1625 |
-| `AppendLeaf` warm          | 10 000 | 1 010 664 |  9 501 |    256 |      ~990 |
-| `InclusionProofFor`        |  1 000 |   144 320 |  7 580 |    198 |     ~6930 |
-| `InclusionProofFor`        | 10 000 |   793 590 |  7 610 |    200 |     ~1260 |
-| `ConsistencyProofFor`      |  1 000 |   189 301 | 12 023 |    306 |     ~5285 |
-| `ConsistencyProofFor`      | 10 000 |   857 845 | 13 635 |    351 |     ~1166 |
+| Operation                  |  Depth |     ns/op |  B/op | allocs |   ops/sec |
+|----------------------------|-------:|----------:|------:|-------:|----------:|
+| `AppendLeaf` cold          |      0 |   540 081 | 8 760 |    235 |     ~1850 |
+| `AppendLeaf` warm          |  1 000 |   615 104 | 8 911 |    239 |     ~1625 |
+| `AppendLeaf` warm          | 10 000 | 1 010 664 | 9 501 |    256 |      ~990 |
+| `AppendLeaf` warm          |100 000 | 9 287 440 |10 547 |    284 |      ~108 |
+| `InclusionProofFor`        |  1 000 |   144 320 | 7 580 |    198 |     ~6930 |
+| `InclusionProofFor`        | 10 000 |   793 590 | 7 610 |    200 |     ~1260 |
+| `InclusionProofFor`        |100 000 |10 303 929 | 9 619 |    245 |       ~97 |
+| `ConsistencyProofFor`      |  1 000 |   189 301 |12 023 |    306 |     ~5285 |
+| `ConsistencyProofFor`      | 10 000 |   857 845 |13 635 |    351 |     ~1166 |
+| `ConsistencyProofFor`      |100 000 | 9 124 275 |16 100 |    417 |      ~110 |
 
 ### Notes
 
-- **AppendLeaf** scales sub-linearly with depth. Cold→1k is +14% (one
-  cached SQLite plan amortised); 1k→10k is +64% (B-tree index walks
-  start to cost real time on the leaves table).
-- The 10k figure (~1ms / append) bounds throughput at ~1000 push/sec
-  per chain on a single machine. Multi-chain throughput is higher
-  because each chain has its own incremental-tree state and the
-  store doesn't hold a global lock per append.
-- **Inclusion proofs** at 10k take ~5.5× the 1k cost despite path
-  length only growing 1.3×. That's SQL row-lookup overhead — at
-  small N the index fits in cache, at 10k it spills. A future
-  optimisation candidate IF push verification ever becomes a
-  bottleneck.
-- **Consistency proofs** track inclusion proofs closely (same
-  underlying tree-frontier walk).
+- **AppendLeaf** scales sub-linearly between 1k → 10k (+64%), then
+  jumps **9× from 10k → 100k** for only a 10× scale increase. The
+  inflection at ~10k is when the leaves-table B-tree starts to
+  spill the SQLite page cache; from there the per-append cost is
+  bounded by SQL row-lookup latency, not SHA-256 / signature
+  cost.
+- The 100k figure (~9 ms / append) bounds throughput at **~110
+  push/sec per chain** on a single machine. Multi-chain throughput
+  is higher because each chain has its own incremental-tree state
+  and the store doesn't hold a global lock per append.
+- **Inclusion / consistency proofs** show the same inflection:
+  ~13× slowdown from 10k → 100k for both. Path length only grows
+  log₂(10×) = ~3.3× — the rest is SQL row-lookup. A future
+  Wave-H optimisation candidate IF a deployment shows real
+  load: pre-warm the page cache, OR cache the most-recent N
+  proof results, OR move the merkle frontier into an in-memory
+  structure (current schema stores every internal-node hash in
+  SQLite for replay-after-crash).
 
 ### Extrapolation to 1M leaves
 
-I did not benchmark 1M directly because the pre-fill setup was
-~10 minutes and we don't yet have a deployment that needs it.
-Linear extrapolation from the AppendLeaf trend (1k → 10k = +64%)
-suggests 1M would land around 2–3 ms/op — ~400 leaves/sec sustained.
-That's enough headroom for ≤100k events/day per scope without
-sweat; it's NOT enough for write-heavy multi-tenant workloads
-without sharding the store.
+100k → 1M is another 10× scale. If the 10k → 100k ratio (9.2×)
+held, 1M would land around 85 ms/op = **~12 leaves/sec sustained**.
+That extrapolation is shaky — at 1M the working set is well past
+any reasonable page cache and the constant becomes "B-tree
+walks at log₂(1M) ≈ 20 levels of disk I/O per insert", which on
+SSD is closer to 50–100 ms.
+
+Either way, **>100k events per single chain is not a comfortable
+v1.0 deployment shape on this storage backend**. Production
+deployments expecting that scale want either: chain-level
+horizontal partitioning, a separate translog backend, or
+periodic checkpoint-and-prune of the leaves table once
+inclusion-proof requests for old events stop arriving. Tracked
+as Wave H performance work.
 
 ## Client-side scope replay (`internal/chain`)
 
