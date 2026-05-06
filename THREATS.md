@@ -1,75 +1,708 @@
 # fd0 Threat Model (v1)
 
-Companion to `PROTOCOL.md`. The reference attacker is the hosted server operator with full read/write access to the server's database and code. Network attackers are strictly weaker.
+Companion to `PROTOCOL.md`, `STORAGE.md`, `TRANSLOG.md`, `API.md`.
+
+This document is the canonical inventory of threats fd0 reasons about.
+It is **not** an inventory of every protocol property — those live in
+`PROTOCOL.md` §1 and `TRANSLOG.md` §1. It is the inventory of
+**adversary capabilities**, **trust boundaries**, **specific threats**
+under those capabilities, and **the mitigation each threat receives**
+(structural / runtime / ceremony / acknowledged-limit / out-of-scope).
+
+Every threat has a stable identifier (`T01`–`T54`). Source code that
+implements a mitigation carries a `// THREAT: Txx` annotation
+referencing the catalogue below — `grep -rn '// THREAT:' --include='*.go'`
+walks the doc-↔-code link in either direction.
 
 ---
 
-## 1. Engineering guarantees
+## 1. Adversary model
 
-Properties enforced by the protocol against a malicious server, given correct clients.
+Six attacker classes. Threats below are tagged with which class(es)
+they apply to.
 
-- **Confidentiality of secrets.** Scope event bodies are AEAD-encrypted under per-scope OEKs that never appear server-side in plaintext.
-- **Confidentiality of `super_priv`.** Each auth method's `encrypted_super_priv` is AEAD-encrypted under a key derived from a credential the server does not hold.
-- **Unforgeable events.** Every event is Ed25519-signed by an identity the server does not hold.
-- **Unforgeable membership changes.** `member.change` is the only event kind that mutates membership; its `op`, `member`, and `key_deliveries` are validated against pre- and post-mutation state.
-- **Forward secrecy on member churn.** Every `member.change` rotates the OEK. Events authored after a `member.change op="remove"` are unreadable by the removed member.
-- **Checkpoint joins.** A new member receives only the current scope projection encrypted under the new OEK. Pre-admission events remain unreadable.
-- **Tamper detection on the server-held chain.** Both event chains are hash-linked end-to-end on the server. Modification or reordering is detectable by any client that pulls from `cursor=0`.
-- **Single-file rollback detection.** The vault binds the latest accepted seq+hash for the user chain and for every subscribed scope (`PROTOCOL.md` §6). A rollback that touches only the chain file or only the vault is detected on the next open and the client refuses to operate.
-- **Per-key snapshot isolation.** Every `auth.set` and every `secret.set` is a complete signed snapshot of one key. A read is a single decrypt; manipulating prior events cannot change the latest value.
-- **Replay protection.** Per-request `(pk, nonce, ts)` window; content-addressed event IDs plus `UNIQUE` constraint prevent stored-event replay.
-- **No cross-context ciphertext reuse.** Each AEAD site has a distinct AAD domain prefix.
-- **No cross-protocol signature reuse.** Each signature has a domain separator.
-- **HTTP request integrity.** Signed input covers method, path, canonical query, body hash, timestamp, and nonce.
-- **Login is read-only.** Logging in does not modify the user identity chain.
-- **Self-healing replay.** On every open, `replay_chain` (`STORAGE.md` §4) verifies each event in full before installing any new OEK in the vault.
-- **Idempotent leave-scope recovery.** A `member.change op="remove"` of self spans two filesystem operations (chain unlink + vault re-seal); the next open's recovery pass reconciles partial state.
-- **Pruning of revoked vault wraps.** `WrappedKey.method_id` ties each unlock entry to a specific active `AuthMethod`. Wraps for inactive methods are pruned on every sync.
+| ID  | Attacker                          | Capabilities                                                                                                                                                  |
+| --- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A1  | **Hosted-server operator**        | Full read/write on the server's database + code. Can rewrite history, equivocate, omit events, return forged proofs, run any handler. Cannot forge identities (no super_priv). |
+| A2  | **Network attacker (active)**     | TLS-MITM during transport, DNS poisoning, ability to drop / reorder / replay packets. Cannot forge TLS certs (assumes a working PKI / cert-pinning).          |
+| A3  | **Same-machine local attacker**   | Same UID / process namespace. Can read mlock'd memory in some configs, can plant symlinks in the home dir, can race fs operations. Stops at root / kernel-bug. |
+| A4  | **Compromised member**            | Holds a valid `super_priv` that is currently in a scope's MemberSet. Can produce signed events, can withhold OEKs, can author projection-poisoned events.   |
+| A5  | **Witness operator (malicious)**  | Runs an `fd0-witness` instance the user has pinned. Can refuse to cosign, return forged STHs, equivocate on what they observed. Cannot forge the server's signature. |
+| A6  | **Coerced / lost-credential**     | A user who lost a credential (passphrase, hardware token) or who is being coerced. Includes "device theft" scenarios.                                         |
+
+Each attacker is **strictly weaker than its predecessor** for the
+guarantees fd0 enforces, except A4 (members are by definition trusted
+authors of events) and A5 (witnesses are passive observers, not protocol
+participants).
 
 ---
 
-## 2. Acknowledged limits
+## 2. Trust boundaries
 
-- **Server equivocation.** A malicious server can present different consistent prefixes — or different parallel branches — of an event log to different clients. The hash chain catches modifications, not divergent views. v1 ships without a transparency log; the protocol is designed to accommodate one additively in v2 (witness-cosigned tree heads over chain tips, inclusion-proof endpoints, client gossip).
-- **All members are admins.** v1 has no role separation. Any member of a scope can add or remove any other member.
-- **Insider key-delivery.** The server validates the recipient set on `KeyDelivery` but cannot validate that each sealed box contains the actual OEK. A malicious authorized author can deliver an unusable OEK to one recipient. Remediable by another current member posting a fresh `member.change op="remove"` of the bad author.
-- **Insider projection-poisoning.** Any current member can post a `member.change` with a manipulated projection. Existing members verify against their local `secret_index` and reject mismatches. A new member has no prior local state and trusts the inviter.
-- **First-fetch checkpoint rollback (user chain).** A fresh device fetching `?latest=true` cannot tell whether the server is serving the actual latest `auth.set` or an older one (e.g., one still containing a revoked credential). Cross-device tip comparison out of band is the user-ceremony mitigation.
-- **First-fetch projection trust (scope).** A fresh device receiving a `member.change op="add"` for itself trusts the inviter for the projection contents.
-- **Server can hide self-removal.** A malicious server can withhold a `member.change op="remove"` of self from the affected client. Future events under the new OEK are unreadable, but the local subscription remains stale until manually pruned.
-- **Server can withhold scope discovery.** Membership discovery rides on `/sync` with `discover_memberships=true`. A malicious server can return a stale or filtered list.
-- **Coordinated local rollback.** An attacker with filesystem control can restore vault and chain files in lockstep (matching `auth_tip` and `chain_tip`). The single-file binding does not catch this. Mitigation is operational (filesystem permissions, full-disk encryption).
-- **Local audit is not authoritative after compaction.** Compacted chain files drop superseded events; the local `prev_hash` chain has gaps. Audit-grade verification requires fetching from the server with `cursor=0`.
-- **Identity rotation requires recovery export or re-onboarding.** If `super_priv` is compromised, the user re-onboards with a new identity. If `super_priv` is lost, the user restores from a recovery export (`PROTOCOL.md` §6.3) or re-onboards.
-- **No forward secrecy for already-fetched data.** A removed member retains every OEK they had access to and can decrypt any event ciphertext they still hold. OEK rotation only protects events authored after removal.
-- **No per-event forward secrecy.** All events under one OEK era share the same key. Compromise of an OEK exposes the entire era's data.
-- **No post-compromise security.** Identity compromise is terminal; the protocol does not include a ratcheting mechanism that heals after key exposure.
-- **Local-machine compromise.** Same-UID malware can read process memory. `mlock`, no-core-dumps, and zeroization mitigate but do not eliminate.
-- **No protection against a coerced user.**
-- **Server availability is not a security property.**
-- **Metadata side channels.** The server learns scope membership, online times, event sizes, and the membership graph.
-- **Server-side storage growth is unbounded.** The server retains events forever. Operationally bounded; not cryptographically bounded.
+| ID    | Boundary                          | Crosses                                                                                |
+| ----- | --------------------------------- | -------------------------------------------------------------------------------------- |
+| TB1   | **User → Vault**                  | Passphrase / hardware-token credential becomes K_unlock then payload key.            |
+| TB2   | **Agent → CLI process**           | super_priv stays mlocked in agent. CLI requests `Sign` over IPC; never sees raw priv. |
+| TB3   | **Client ↔ Server (HTTP)**        | Signed requests + sealed bodies cross network. Server is A1; cannot decrypt.         |
+| TB4   | **Server → Translog → Witness**   | Server publishes signed STHs; witnesses cosign. Witness is A5; sees only STHs.       |
+| TB5   | **Filesystem → Process memory**   | Vault file + chain files on disk. Same-UID adversary (A3) crosses here.              |
+| TB6   | **Member → Member (in-scope)**    | One member trusts other members for projection contents on join. Members are A4.     |
 
 ---
 
-## 3. User-ceremony properties
+## 3. Threats
 
-Properties that depend on user behavior.
+Status legend:
 
-- **Safety-number first-trust verification.** When importing a card, the user compares the displayed safety number with the source via an authentic out-of-band channel.
-- **Strong-passphrase choice.** In passphrase mode the security of `super_priv` reduces to the user's passphrase. The CLI displays a strength estimate; it does not enforce a minimum.
-- **Recovery-passphrase strength.** `RecoveryFile` security depends on the user's recovery passphrase.
-- **Custody of `shortId`.** Knowing a `shortId` enables fetching the encrypted user chain. In passphrase mode this enables offline brute force.
-- **Card-channel integrity.** A card delivered via a channel an attacker controls can be substituted. Safety numbers detect this if compared.
-- **Cross-device chain-tip comparison.** Detects server-side equivocation if compared out of band.
-- **Inviter trust on join.** When `/sync` discovery surfaces a new scope, the CLI prompts before exposing secrets. The user verifies the invite out of band.
-- **Storage of recovery exports.** The user is responsible for the safety and availability of `RecoveryFile`.
+- 🟢 **Structural**: compile-time impossible (type-state, unconstructable types).
+- 🛡️ **Runtime**: explicit guard / check; surface a controlled error.
+- 🤝 **Ceremony**: depends on user behaviour (e.g. compare safety number).
+- 📋 **Acknowledged**: outside what v1 promises; documented as a non-goal.
+- ⛔ **Out of scope**: explicitly not addressed (kernel bugs, etc.).
+
+### 3.1 Identity / unlock plane (TB1, TB2, TB5)
+
+#### T01 — Server fabricates `auth.set` events to install a malicious credential
+- **Adversary**: A1.
+- **Threat**: server returns a forged user chain that contains an
+  `auth.set` whose `EncryptedSuperPriv` is an attacker-known wrap.
+- **Mitigation** 🟢: every `auth.set` carries an Ed25519 signature by
+  the user's `super_priv`. The server doesn't hold `super_priv`, so
+  cannot produce a valid signature. **Code**: `chain/user.go`
+  `ReplayUser` ⇒ `crypto.VerifyBytes` of every event.
+- **Spec ref**: PROTOCOL.md §3.
+
+#### T02 — Stolen vault file → offline brute-force passphrase
+- **Adversary**: A3, A1 (if user pulled from a server that holds
+  cipher-vault for backup — current v1 does not, but a future "vault
+  sync" feature would expose this).
+- **Mitigation** 🤝 + 🛡️: K_unlock is Argon2id with M=64 MiB / T=3 / P=1
+  (`crypto.DefaultArgon2`). User-ceremony: strong passphrase (CLI
+  shows a strength estimate but does not enforce a minimum).
+- **Code**: `vault/resolver.go` PassphraseResolver, `crypto.DeriveKey`.
+- **Spec ref**: PROTOCOL.md §6.1.
+
+#### T03 — Coerced unlock
+- **Adversary**: A6.
+- **Mitigation** 📋: out of cryptographic scope. Threat is
+  acknowledged in the original THREATS.md §3.
+
+#### T04 — Server rolls back the user chain to expose a revoked credential
+- **Adversary**: A1.
+- **Threat**: user removes a compromised `AuthMethod`, server still
+  serves an older `auth.set` that contains it; a fresh device fetches
+  `?latest=true` and unlocks with the revoked credential.
+- **Mitigation** 🛡️ + 🤝: vault binds `AuthTip(seq, hash)` (PROTOCOL.md
+  §6.0). On every open, `chain.CompareUserTip` rejects when the file's
+  tip lags the vault. **First-fetch case** (fresh device, no vault
+  yet) is acknowledged: cross-device tip comparison out of band is
+  the user-ceremony fallback.
+- **Code**: `chain/tipbind.go` `CompareUserTip`,
+  `cli/session.go` open path.
+
+#### T05 — Single-file local rollback (vault OR chain replaced alone)
+- **Adversary**: A3.
+- **Mitigation** 🟢: vault `AuthTip` and `ScopeVaultData.ChainTip` bind
+  the chain file's expected tip. A chain file alone (without the
+  matching vault update) fails `CompareScopeTip`.
+- **Code**: `chain/tipbind.go`. **Spec**: STORAGE.md §6.
+
+#### T06 — Coordinated local rollback (vault + chain replaced together)
+- **Adversary**: A3.
+- **Mitigation** 📋: not covered. The vault-↔-chain hash binding
+  catches one-of-the-two; replacing both in lockstep is a clean
+  rollback. Operational mitigation: filesystem permissions
+  (0700 home), full-disk encryption.
+- **Spec ref**: THREATS.md historical §2 retained.
+
+#### T07 — Same-UID malware reads agent process memory
+- **Adversary**: A3 (with same-UID exec).
+- **Mitigation** 🛡️: `mlock` on super_priv buffer (memguard);
+  zeroization (`crypto.Wipe` with `runtime.KeepAlive` safeguard);
+  agent runs as a separate process so CLI memory never holds the
+  raw priv.
+- **Code**: `internal/agent/server.go` mlocked buffers,
+  `internal/crypto/wipe.go`, `internal/crypto/keys.go`
+  `Ed25519Priv.Wipe`.
+- **Spec ref**: PROTOCOL.md §1.1, §6.
+
+#### T08 — Recovery-file theft
+- **Adversary**: A3 + offline brute-force.
+- **Mitigation** 🤝: `RecoveryFile` is AEAD-sealed under K_recovery
+  (Argon2id over a separate recovery passphrase). Strength of
+  protection reduces to user's recovery-passphrase choice.
+- **Spec ref**: PROTOCOL.md §6.3.
+
+### 3.2 Cryptographic primitives plane
+
+#### T09 — `ed25519.Sign` panics on wrong-size priv
+- **Adversary**: A4 / data-corruption.
+- **Mitigation** 🟢: `crypto.Ed25519Priv` is opaque; only
+  `ParseEd25519Priv` (validates length AND seed/public-half
+  consistency) and `GenerateIdentity` (correct by construction)
+  produce a non-zero value. `crypto.Sign` rejects zero-value via
+  `errSignBadKey`. Untyped byte boundaries use `crypto.SignBytes`
+  with explicit length-gate.
+- **Code**: `crypto/keys.go`, `crypto/crypto.go` Sign / SignBytes.
+- **Wave**: C-3, C-3', C-3.1 (codex P2 fixes).
+
+#### T10 — `ed25519.Verify` accepts wrong-size pub silently
+- **Adversary**: A1, A4.
+- **Mitigation** 🟢: `crypto.Verify(Ed25519Pub, ...)` requires the
+  typed wrapper; zero-value fails closed. `crypto.VerifyBytes`
+  parses-or-false at byte boundaries.
+- **Code**: `crypto/crypto.go`.
+
+#### T11 — Forged "valid-length" priv with mismatched seed/public half
+- **Adversary**: A1 + corrupted/forged recovery file delivered to user.
+- **Threat**: a 64-byte slice whose seed[:32] doesn't derive to
+  public[32:] would wrap "successfully" in earlier C-3 design but
+  produce signatures that fail every `Verify(.Public(), ...)` —
+  silent signing failure.
+- **Mitigation** 🟢: `ParseEd25519Priv` re-derives public half via
+  `ed25519.NewKeyFromSeed`, constant-time-compares against the
+  input's public half, rejects on mismatch. The temporary derived
+  copy is wiped via `defer Wipe(derived)` (codex Wave C-3.2 fix).
+- **Code**: `crypto/keys.go` ParseEd25519Priv.
+
+#### T12 — Heap leak of priv bytes after Wipe
+- **Adversary**: A3 (post-process-exit forensic).
+- **Mitigation** 🛡️: `crypto.Wipe` carries `runtime.KeepAlive`; typed
+  `Ed25519Priv.Wipe` delegates to it. Codex Wave-C-3' fix: take
+  ownership of `ed25519.GenerateKey`'s slices directly (no
+  duplicate copy); recovery import calls `defer signerPriv.Wipe()`
+  after the one-shot signer use.
+- **Code**: `crypto/wipe.go`, `crypto/keys.go`,
+  `cli/init.go`, `cli/recovery.go`.
+
+#### T13 — Cross-protocol signature reuse
+- **Adversary**: A1.
+- **Threat**: a signature produced for one purpose (event
+  authorship) is replayed in a different context (HTTP request
+  auth, server-info self-sig, witness cosign).
+- **Mitigation** 🟢: every signature input has a domain separator
+  (`fd0-event-v1`, `fd0-user-event-v1`, `fd0-http-v1`,
+  `fd0-server-info-v1`, `fd0-translog-sth-v1`,
+  `fd0-translog-cosign-v1`, `fd0-recovery-key-v1`,
+  `fd0-vault-body-v1`, `fd0-vault-wrap-v1`, `fd0-card-v1`,
+  `fd0-server-fingerprint-v1`). Domain disjunction is asserted
+  by `proto.TestDomainSeparatorsDisjoint`.
+- **Code**: `proto/domain.go`, test in `proto/proto_test.go`.
+
+#### T14 — Cross-context AEAD ciphertext reuse
+- **Adversary**: A1.
+- **Mitigation** 🟢: every AEAD site has a distinct AAD domain prefix.
+  Wrapping `super_priv` (`fd0-vault-wrap-v1`), vault body
+  (`fd0-vault-body-v1`), scope event body (`fd0-event-v1`),
+  scope projection (also `fd0-event-v1` with the prefix-of-prefix
+  trick — see chain.encryptProjection AAD construction), recovery
+  blob (`fd0-recovery-key-v1`).
+- **Code**: `chain/build.go` encryptProjection, BodyAAD;
+  `vault/vault.go` bodyAAD, `vault/resolver.go` EncryptSuperPriv.
+
+### 3.3 Storage plane (TB5)
+
+#### T15 — Path traversal via attacker-supplied scope_id
+- **Adversary**: A1, A3 (corrupted local index).
+- **Threat**: `s.Paths.ScopeChain(sid)` joins `sid + ".cbor"` into
+  the chain dir; a hostile `sid = "../../etc/passwd"` would escape.
+- **Mitigation** 🟢: `proto.ScopeID` is an opaque struct;
+  `ParseScopeID` validates against `s_[a-z2-7]{26}` shape; direct
+  cast is impossible. `fdhome.ScopeChain` re-validates as
+  defence-in-depth.
+- **Code**: `proto/scopeid.go`, `fdhome/fdhome.go`.
+- **Wave**: C-1.1.
+
+#### T16 — Silent truncate-rollback failure
+- **Adversary**: A1 (server returns events that fail to replay).
+- **Threat**: the older `_ = os.Truncate(path, preSize)` pattern
+  swallowed errors; a half-extended chain file could survive a
+  "rolled back" return.
+- **Mitigation** 🟢: `chain.AppendTx.Cleanup` returns the truncate
+  error; `defer tx.Cleanup()` makes rollback uniform across every
+  early-return path. 200 random property-test seeds enforce
+  invariants I1 (final size ∈ {preSize, preSize + Σ committed})
+  and I2 (Cleanup is idempotent).
+- **Code**: `chain/tx.go`, `chain/tx_test.go`, used in `cli/sync.go`.
+- **Wave**: E.
+
+#### T17 — Partial AppendRaw mid-batch leaves fsynced events
+- **Adversary**: A1.
+- **Mitigation** 🟢: AppendTx pattern — defer Cleanup truncates back
+  to preSize on any error. Every event is fsynced, but the file
+  size invariant guarantees readers see either pre-batch or
+  post-commit, never partial.
+- **Code**: `chain/tx.go` (new in Wave E).
+
+#### T18 — Symlink-redirect attack on chain file
+- **Adversary**: A3.
+- **Mitigation** 🛡️: `O_NOFOLLOW` on every chain-file open
+  (`appendBytes` and `chain.WriteAll`). Same flag on vault file
+  open and tmp-file rename. Defence-in-depth on top of
+  "trusted home dir, mode 0700".
+- **Code**: `chain/file.go` appendBytes, `vault/vault.go` Save.
+
+#### T19 — Local audit gap after compaction
+- **Adversary**: not an attacker — operational consequence.
+- **Mitigation** 📋: compacted chain files drop superseded events
+  by design (STORAGE.md §5.4); the local prev_hash chain has gaps.
+  Audit-grade verification requires fetching from server with
+  `cursor=0`. Documented limit.
+
+#### T20 — Bit-flipping of on-disk chain
+- **Adversary**: A3.
+- **Mitigation** 🟢: every event is signature-bound to its
+  prev_hash; any byte flip in CBOR breaks the signature. Adversarial
+  test `TestAdvReplayRejectsBitFlipInGenesisSig` exercises this.
+- **Code**: `chain/scope.go` ReplayScope verify path; test in
+  `chain/adversarial_test.go`.
+
+### 3.4 Wire / replay plane (TB3)
+
+#### T21 — Cross-server signature replay
+- **Adversary**: A1 (operator of server-A) + user registered on
+  server-B with the same identity.
+- **Threat**: signed `/sync` request from server-A's HTTP log is
+  replayed against server-B's `/sync`.
+- **Mitigation** 🟢: `proto.HTTPSignedInput` includes the
+  destination `server_pub`. Different `server_pub` ⇒ different
+  signed input ⇒ replay verify-fails.
+- **Code**: `proto/httpsig.go`, `cli/sync.go` `signedPOST`,
+  `server/auth.go` verify path.
+- **Test**: `proto/proto_test.go` `TestHTTPSignedInputServerPubBinding`.
+
+#### T22 — Per-request HTTP replay (within a single server)
+- **Adversary**: A2 (network).
+- **Mitigation** 🟢: per-request `(pk, nonce, ts)` tuple stored in
+  `nonces` table with UNIQUE constraint. `ts` window enforced
+  (currently ±300s).
+- **Code**: `server/auth.go` verifyAuthHeader, `server/store/store.go`
+  CheckAndInsertNonce.
+
+#### T23 — Stored-event replay
+- **Adversary**: A1.
+- **Mitigation** 🟢: events are content-addressed via
+  `event_id = "e_" + base32(SHA-256(prefix)[:16])` and the server
+  has a UNIQUE constraint on event_id; same event_id submitted
+  twice is rejected (or returns the first-write `dup` result for
+  idempotent retry).
+- **Code**: `proto/ids.go` EventID, `server/store/store.go` Append.
+
+#### T24 — URL drift between sync ↔ witness ↔ pin lookup
+- **Adversary**: A1 (presents subtly different URLs to different layers).
+- **Threat**: `https://server` vs `https://server/` vs
+  `HTTPS://Server` keying into different vault entries.
+- **Mitigation** 🟢: `canon.URL` opaque newtype; only
+  `canon.ParseURL` (lowercase scheme/host, strip trailing slash,
+  drop query+fragment) produces a value. All API surfaces
+  consume the typed value.
+- **Code**: `canon/url.go`, all `cli/sync*.go` + `cli/witness_check.go`.
+- **Wave**: C-2.
+
+#### T25 — Verify result discarded; encode unverified STH
+- **Adversary**: A1 (returns a forged STH the verify rejects but
+  the persistence path re-extracts).
+- **Threat**: a refactor splits `Verify(...)` and `Encode(...)`
+  into unrelated functions; the encode runs against the raw
+  `r.STH` while `verifiedSTH` from Verify is discarded.
+- **Mitigation** 🟢: `cli.VerifiedSTH` is opaque + sealed (a
+  composite literal `cli.VerifiedSTH{}` from any other package
+  fails the seal sentinel runtime check). `EncodeSTH` only
+  accepts `VerifiedSTH`. Byte slices are deep-copied on
+  construction so post-verify mutation can't poison.
+- **Code**: `cli/verified_sth.go`, `cli/translog.go` EncodeSTH.
+- **Wave**: D.1.
+
+### 3.5 Membership plane (TB6)
+
+#### T26 — Forged member.change (unsigned author)
+- **Adversary**: A1.
+- **Mitigation** 🟢: `validate.ScopeEvent` enforces `Author ==
+  ev.Signature.SignerPubkey` AND signature verifies under that pub.
+- **Code**: `server/validate/validate.go`, `chain/scope.go` replay.
+
+#### T27 — Foreign-author event splice (non-member writes a secret)
+- **Adversary**: A4 (a non-member splicing a signed event into a
+  victim's local chain) or A1.
+- **Mitigation** 🟢: `chain.ReplayScope` enforces "author ∈
+  current MemberSet" before applying. Adversarial test
+  `TestAdvReplayRejectsForeignAuthor` pins this.
+- **Code**: `chain/scope.go` per-event member check.
+
+#### T28 — Insider key-delivery omission
+- **Adversary**: A4.
+- **Threat**: a current member posts a `member.change` and
+  delivers an unusable sealed-box to one recipient.
+- **Mitigation** 📋: mitigated, not eliminated. The server
+  validates *recipient set* (every post-mutation member receives
+  one delivery) but cannot validate *contents* (the OEK inside
+  each sealed box). Remediable by another current member posting
+  a fresh `member.change op="remove"` of the bad author.
+
+#### T29 — Insider projection-poisoning
+- **Adversary**: A4.
+- **Mitigation** 🟢 for existing members + 📋 for new joiners:
+  existing members run "projection-content integrity check" on
+  every member.change — the projection MUST equal their local
+  `secret_index`. Adversarial test
+  `TestMalMemberCannotInjectExtraSecretInProjection`. New members
+  have no prior local state and trust the inviter (T34).
+- **Code**: `chain/scope.go` applyMemberChange projection check.
+
+#### T30 — No-op membership change as a poison vehicle
+- **Adversary**: A4.
+- **Threat**: a `member.change op="add"` for an already-member
+  could be used to rotate the OEK without justification, possibly
+  delivering a poisoned projection.
+- **Mitigation** 🟢: server-side and client-side reject
+  `op="add"` on existing members and `op="remove"` on
+  non-members; no-op member.changes are explicitly disallowed.
+- **Code**: `server/validate/validate.go`, `chain/scope.go`.
+
+#### T31 — OEK ring stale after failed local push
+- **Adversary**: A4 (race) or A1.
+- **Threat**: a failed local `member.change` push leaves a stale
+  OEK at version v in the vault. When the authoritative
+  server-chain replay later returns a different bytewise key at
+  the same version, the stale entry must be overwritten —
+  otherwise subsequent secret.sets get encrypted under the wrong
+  key and peers silently fail to decrypt them.
+- **Mitigation** 🟢: `cli.upsertOEK` *replaces* on version
+  collision, never just appends. Documented invariant: vault.OEKs
+  is authoritative for the most recent replay.
+- **Code**: `cli/sync_internal.go` upsertOEK.
+
+#### T32 — Server hides a `member.change op="remove"` of self
+- **Adversary**: A1.
+- **Mitigation** 📋: future events under the new OEK become
+  unreadable (forward-secrecy on member churn), but the local
+  subscription remains stale until manually pruned.
+
+#### T33 — First-fetch projection trust on join
+- **Adversary**: A4.
+- **Mitigation** 🤝: a fresh member receiving an admit event has
+  no prior local state to verify projection content against.
+  Inviter trust is inherent.
+
+#### T34 — Server can withhold scope discovery
+- **Adversary**: A1.
+- **Mitigation** 📋: `/sync?discover_memberships=true` runs
+  server-side; a malicious server can return a stale or filtered
+  list. User can manually `fd0 scope sub <id>` if they know the
+  scope id out of band.
+
+### 3.6 Translog / equivocation plane (TB4)
+
+#### T35 — Server equivocation between two clients (different consistent histories)
+- **Adversary**: A1.
+- **Mitigation** 🛡️ + 🤝: STH cosign by ≥`min_cosigns` independent
+  witnesses (configurable; recommended 2-of-3 or 3-of-3). A
+  witness that has archived an STH at tree_size N for chain C
+  cannot cosign a divergent STH at the same size — its archive
+  refuses with HTTP 409 (`witness/store.go:Insert`). Multi-witness
+  cross-check makes a colluding-witness a separate threat (T39).
+- **Code**: `cli/witness_check.go` CrossCheckSTH,
+  `witness/store.go` archive equivocation guard.
+- **Spec**: TRANSLOG.md §6.
+
+#### T36 — Server returns wrong consistency proof (forks history)
+- **Adversary**: A1.
+- **Mitigation** 🟢: every `/sync` response that advances LastSTH
+  carries a consistency proof from priorSTH → newSTH. Client
+  verifies before persisting. Wrong proof ⇒ verify fails ⇒ no
+  state advance.
+- **Code**: `translog/proof.go` VerifyConsistency,
+  `cli/translog.go` VerifyTranslogResponse.
+
+#### T37 — Server returns inclusion proof for the wrong leaf
+- **Adversary**: A1.
+- **Threat**: server claims our seq=5 push landed but actually
+  embedded a different event at that seq.
+- **Mitigation** 🟢: `cli.leafHashAtSeq` reads the local chain
+  file by seq and computes the expected leaf hash from local
+  bytes. Inclusion proof must verify against THAT leaf, not
+  whatever the server claims at seq=5.
+- **Code**: `cli/sync_internal.go` leafHashAtSeq, `cli/sync.go`
+  push-verify path, `cli/sync_reconcile.go` rebuilt-push path.
+
+#### T38 — Witness collusion with server
+- **Adversary**: A1 + A5(coordinated).
+- **Mitigation** 📋 partially: N-of-M cosign threshold
+  (`min_cosigns`) makes single-witness collusion ineffective.
+  All-witness collusion is a config attack (the user pinned the
+  wrong witnesses); mitigation is pin-diversity ceremony.
+
+#### T39 — Bad-cosign / forged witness response
+- **Adversary**: A5.
+- **Mitigation** 🟢: every witness's pub is pinned in the user's
+  config. `cli.fetchWitnessedSTH` verifies the cosign signature
+  under the pinned pub. A wrong-pub or wrong-sig response is a
+  miss; the threshold check still has to be satisfied by other
+  honest witnesses. Adversarial test suite
+  `tests/integration_witness_malicious.sh` (8 scenarios:
+  fork-cosign, wrong-chain-id, wrong-server-url, size-drift,
+  garbage-cbor, always-409, always-500, wrong-witness-pub).
+- **Code**: `cli/witness_check.go`,
+  `cmd/fd0-test-bad-witness/main.go`.
+
+#### T40 — Witness archive itself shows equivocation
+- **Adversary**: A1 (caught red-handed).
+- **Mitigation** 🟢: `witness/store.go:Insert` enforces UNIQUE
+  `(server_url, chain_id, tree_size)`; a divergent root_hash
+  against an archived STH triggers HTTP 409. Client treats 409
+  as immediate evidence of equivocation and refuses to advance
+  LastSTH.
+- **Code**: `witness/store.go` Insert, `cli/witness_check.go`
+  errWitnessEquivocation handler.
+
+#### T41 — First-fetch checkpoint rollback (no prior STH anchor)
+- **Adversary**: A1.
+- **Mitigation** 🤝: a fresh device has no priorSTH to
+  consistency-prove against. The user-ceremony fallback is
+  cross-device tip comparison out of band, plus the witness
+  archive (which was online before this client first contacted
+  the server) holding an STH that contradicts the "first fetch".
+- **Spec**: TRANSLOG.md §6.1, §6.4.
+
+#### T42 — STH for a different chain_id served as ours
+- **Adversary**: A1, A5.
+- **Mitigation** 🟢: the STH's signed prefix includes
+  `chain_id`. `cli.VerifyTranslogResponse` requires
+  `expectedChainID == sth.Head.ChainID` AND the witness cosign
+  binding is also chain-id-keyed.
+
+#### T43 — Equivocation across servers (split-brain by URL)
+- **Adversary**: A1.
+- **Mitigation** 🟢 (T24 also covers this): the STH cosign embeds
+  the *canonical server URL*. Witnesses index their archive by
+  `(server_url, chain_id, tree_size)`. Trying to present
+  "server-A's chain at server-B's URL" is a wrong-server-url
+  cosign that the client rejects.
+- **Code**: `translog/witness.go` SignWitnessedSTH binds URL,
+  `cli/witness_check.go` verify path.
+
+### 3.7 Server boundary (TB3, server-internal)
+
+#### T44 — Authenticate as someone else
+- **Adversary**: A1, A2.
+- **Mitigation** 🟢: every authenticated request carries an
+  Ed25519 signature over `(server_pub, method, path, query, ts,
+  nonce, body_hash)`. Server verifies under the claimed `pk` from
+  the Authorization header. No pk → no auth → 401.
+- **Code**: `server/auth.go` verifyAuthHeader.
+
+#### T45 — User-registration replay (bind a stranger's identity)
+- **Adversary**: A1, A2.
+- **Mitigation** 🟢: `POST /users` requires the genesis user
+  event itself (signature-bound to the user's super_priv).
+  Server verifies before storing. Re-registration with the same
+  pubkey returns 409 `super_pub_taken`.
+- **Code**: `server/server.go` handleUsersRegister.
+
+#### T46 — Server-info pubkey forgery
+- **Adversary**: A1.
+- **Threat**: server returns a forged `/v1/server-info` pinning
+  an attacker pubkey.
+- **Mitigation** 🟢 + 🤝: `server-info` is self-signed under the
+  server's translog priv; client verifies sig before pinning.
+  But on FIRST contact the client has nothing to verify against
+  (TOFU) — fallback is the safety-number ceremony
+  (`cli.ServerFingerprint`) that the user verifies out-of-band.
+- **Code**: `server/server.go` ServerInfo handler,
+  `translog/witness.go` VerifyServerInfo, `cli/translog.go`
+  EnsurePinnedServer + pinningPrompt.
+
+#### T47 — Auto-pin bypass without operator awareness
+- **Adversary**: A1 + scripted unattended client.
+- **Threat**: a CI script that accepts any pin would never
+  detect a MITM during first-contact pinning.
+- **Mitigation** 🛡️: `FD0_AUTO_PIN=1` must be explicitly set;
+  default is to refuse non-TTY pinning. The fingerprint is
+  always printed even when auto-pinning, so a follow-up review
+  can detect a wrong pin.
+- **Code**: `cli/translog.go` pinningPrompt.
+
+#### T48 — Per-IP brute-force / DoS
+- **Adversary**: A2.
+- **Mitigation** 🛡️: token-bucket rate limiter per IP for
+  authenticated endpoints. Lower threshold for unauthenticated
+  endpoints (registration, server-info).
+- **Code**: `server/auth.go`, `server/ratelimit/limiter.go`.
+
+#### T49 — Witness archive growth (DoS by spamming STHs)
+- **Adversary**: A1.
+- **Mitigation** 🛡️: witness `IngestSTH` is rate-limited and
+  bounded read; bad-magic / oversized payloads dropped early.
+- **Code**: `witness/witness.go`.
+
+### 3.8 Operational / metadata
+
+#### T50 — `shortId` enumeration → encrypted user chain → offline brute
+- **Adversary**: A1, A2.
+- **Mitigation** 🤝: protection reduces to passphrase strength.
+  Short_id is by design discoverable — it's what you advertise
+  on a card.
+- **Spec**: PROTOCOL.md §6.0, THREATS.md historical §3.
+
+#### T51 — Card-channel substitution
+- **Adversary**: A2.
+- **Mitigation** 🤝: safety-number ceremony — user compares the
+  fingerprint of the imported card with the source's via an
+  authentic out-of-band channel.
+- **Code**: `cli/card.go` safety number renderer.
+
+#### T52 — Metadata side channels
+- **Adversary**: A1.
+- **Mitigation** 📋: server learns scope membership graphs,
+  online times, event sizes by design. Hiding metadata is not a
+  v1 goal.
+
+#### T53 — Server-storage growth is unbounded
+- **Adversary**: not malicious — operational consequence.
+- **Mitigation** 📋: server retains events forever (translog
+  immutability is the property). Operator-bounded by quota /
+  GC policy outside fd0.
+
+#### T54 — Coerced or lost-credential recovery
+- **Adversary**: A6.
+- **Mitigation** 📋: identity rotation requires recovery export
+  or full re-onboarding. Forward-secrecy of past data is not
+  achievable given that removed members retain past OEKs.
 
 ---
 
-## 4. Out of scope
+## 4. Coverage matrix (one-line per threat)
+
+| ID  | Status | Code reference                                   | Spec §          |
+| --- | :----: | ------------------------------------------------ | --------------- |
+| T01 | 🟢 | `chain/user.go`                                  | PROTOCOL §3     |
+| T02 | 🤝🛡️ | `crypto.DeriveKey`                               | PROTOCOL §6.1   |
+| T03 | 📋 | —                                                | THREATS §5      |
+| T04 | 🛡️🤝 | `chain/tipbind.go`                               | STORAGE §6      |
+| T05 | 🟢 | `chain/tipbind.go`                               | STORAGE §6      |
+| T06 | 📋 | —                                                | —               |
+| T07 | 🛡️ | `agent/server.go`, `crypto/wipe.go`              | PROTOCOL §1.1   |
+| T08 | 🤝 | `cli/recovery.go`                                | PROTOCOL §6.3   |
+| T09 | 🟢 | `crypto/keys.go` Ed25519Priv                     | —               |
+| T10 | 🟢 | `crypto/keys.go` Ed25519Pub                      | —               |
+| T11 | 🟢 | `crypto/keys.go` ParseEd25519Priv                | —               |
+| T12 | 🛡️ | `crypto/wipe.go`, `crypto/keys.go` Wipe          | —               |
+| T13 | 🟢 | `proto/domain.go`                                | PROTOCOL §1.1   |
+| T14 | 🟢 | `chain/build.go` BodyAAD, `vault/vault.go`       | PROTOCOL §5     |
+| T15 | 🟢 | `proto/scopeid.go`, `fdhome/fdhome.go`           | STORAGE §1.3    |
+| T16 | 🟢 | `chain/tx.go` AppendTx                           | STORAGE §3      |
+| T17 | 🟢 | `chain/tx.go`                                    | STORAGE §3      |
+| T18 | 🛡️ | `chain/file.go` O_NOFOLLOW                       | —               |
+| T19 | 📋 | —                                                | STORAGE §5.4    |
+| T20 | 🟢 | `chain/scope.go` ReplayScope                     | PROTOCOL §4     |
+| T21 | 🟢 | `proto/httpsig.go` server_pub binding            | PROTOCOL §7.1   |
+| T22 | 🟢 | `server/auth.go`, store CheckAndInsertNonce      | API §1          |
+| T23 | 🟢 | `proto/ids.go` EventID                           | PROTOCOL §1.3   |
+| T24 | 🟢 | `canon/url.go`, `cli/sync.go`                    | TRANSLOG §6.1   |
+| T25 | 🟢 | `cli/verified_sth.go` (opaque + sealed)          | TRANSLOG §5     |
+| T26 | 🟢 | `server/validate/validate.go`                    | PROTOCOL §4     |
+| T27 | 🟢 | `chain/scope.go` member-set check                | PROTOCOL §4     |
+| T28 | 📋 | —                                                | THREATS §5      |
+| T29 | 🟢🤝 | `chain/scope.go` projection-content check        | PROTOCOL §4.4   |
+| T30 | 🟢 | `validate/validate.go`, `chain/scope.go`         | PROTOCOL §4.2   |
+| T31 | 🟢 | `cli/sync_internal.go` upsertOEK                 | STORAGE §6.1    |
+| T32 | 📋 | —                                                | THREATS §5      |
+| T33 | 🤝 | —                                                | THREATS §5      |
+| T34 | 📋 | —                                                | API §2.1        |
+| T35 | 🛡️🤝 | `cli/witness_check.go`, `witness/store.go`        | TRANSLOG §6     |
+| T36 | 🟢 | `translog/proof.go`, `cli/translog.go`           | TRANSLOG §5     |
+| T37 | 🟢 | `cli/sync_internal.go` leafHashAtSeq             | TRANSLOG §5.4   |
+| T38 | 📋 | —                                                | TRANSLOG §6     |
+| T39 | 🟢 | `cli/witness_check.go`                           | TRANSLOG §6.3   |
+| T40 | 🟢 | `witness/store.go` Insert UNIQUE                 | TRANSLOG §6.4   |
+| T41 | 🤝 | —                                                | TRANSLOG §6.1   |
+| T42 | 🟢 | `cli/translog.go` VerifyTranslogResponse         | TRANSLOG §3     |
+| T43 | 🟢 | `translog/witness.go` SignWitnessedSTH           | TRANSLOG §6.3   |
+| T44 | 🟢 | `server/auth.go`                                 | API §1          |
+| T45 | 🟢 | `server/server.go` handleUsersRegister           | API §2.0        |
+| T46 | 🟢🤝 | `cli/translog.go` EnsurePinnedServer             | TRANSLOG §6.1   |
+| T47 | 🛡️ | `cli/translog.go` pinningPrompt                  | TRANSLOG §6.1   |
+| T48 | 🛡️ | `server/ratelimit/limiter.go`                    | API §1          |
+| T49 | 🛡️ | `witness/witness.go`                             | TRANSLOG §8     |
+| T50 | 🤝 | —                                                | PROTOCOL §6.0   |
+| T51 | 🤝 | `cli/card.go`                                    | PROTOCOL §2.3   |
+| T52 | 📋 | —                                                | —               |
+| T53 | 📋 | —                                                | —               |
+| T54 | 📋 | —                                                | PROTOCOL §6.3   |
+
+---
+
+## 5. Acknowledged limits (consolidated)
+
+What v1 explicitly does NOT promise:
+
+- **Coerced user** (T03, T54).
+- **Coordinated local rollback** (T06) — vault + chain restored in
+  lockstep is indistinguishable from a legitimate older snapshot.
+- **Insider key-delivery omission** (T28) — server can't validate
+  sealed-box contents.
+- **Server hides remove-self** (T32) — local subscription stays stale.
+- **Server withholds scope discovery** (T34) — discovery is
+  best-effort.
+- **First-fetch projection trust on join** (T33) — inviter trust is
+  inherent on a fresh device.
+- **First-fetch checkpoint rollback** (T41) — no priorSTH to
+  consistency-prove against; user-ceremony fallback (T46 + cross-
+  device gossip).
+- **No forward secrecy for already-fetched data** — removed members
+  retain every OEK they had.
+- **No per-event forward secrecy** — all events under one OEK era
+  share the same key.
+- **No post-compromise security** — identity compromise is terminal.
+- **Local-machine compromise** (T07) — same-UID malware can read
+  process memory; mlock + zeroize mitigate but do not eliminate.
+- **Server availability** is not a security property.
+- **Metadata side channels** (T52) — membership graph, online time,
+  event sizes are visible to the server by design.
+- **Server storage growth** (T53) — unbounded, operator-bounded.
+
+---
+
+## 6. User-ceremony properties
+
+These hold ONLY if the user does the right thing. Each is flagged
+🤝 in the threat catalogue.
+
+- **Strong passphrase** (T02, T08, T50).
+- **Recovery-passphrase strength** (T08, T54).
+- **Custody of `shortId`** (T50).
+- **Card safety-number verification** (T51).
+- **Cross-device chain-tip comparison** (T04, T41).
+- **Inviter trust on join** (T33).
+- **Storage of recovery exports** (T08).
+- **Server-fingerprint verification on first pin** (T46, T47).
+
+---
+
+## 7. Out of scope (explicit non-goals)
 
 - OS-level defense in depth.
 - Hardware-token compromise scenarios beyond "key extraction is hard".
-- Side channels in the underlying primitives.
+- Side channels in the underlying primitives (timing on
+  AES / Ed25519 / Argon2id stdlib implementations).
 - Supply-chain attacks against fd0 binaries.
+- TLS / PKI failures at the transport layer.
+
+---
+
+## 8. Maintenance
+
+When code changes, the THREAT annotation must move with it. To find
+all annotations:
+
+```sh
+grep -rn '// THREAT: T' --include='*.go'
+```
+
+When adding a new security-critical function, add a `// THREAT: TXX`
+comment referencing the relevant entry. When adding a new threat,
+extend §3 + §4 here, then go annotate the corresponding code site.
+
+A future Wave F (spec-compliance generator) could parse this doc and
+fail CI when a Tnn entry has no matching `// THREAT:` annotation in
+non-test code.

@@ -84,6 +84,12 @@ type ScopeSecret struct {
 // addressed to us (we joined later in the chain), we advance MemberSet
 // and OEKVersion only; projection decryption is skipped. Our admit
 // event's projection is the authoritative re-establishment.
+//
+// THREAT: T20 (bit-flipping of on-disk chain — every event signature
+//                checked here),
+//         T27 (foreign-author event splice — author ∈ MemberSet check),
+//         T29 (insider projection-poisoning for existing members),
+//         T30 (no-op membership change rejection).
 func ReplayScope(path string, ownSuperPub, ownX25519Pub []byte, opener Opener) (*ScopeState, error) {
 	events, err := ReadScopeEvents(path)
 	if err != nil {

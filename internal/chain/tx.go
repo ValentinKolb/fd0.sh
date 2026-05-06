@@ -30,6 +30,9 @@ package chain
 // doesn't leave the on-disk file in a state that confuses
 // readers). Per-event flush + truncate-on-Cleanup gives the same
 // crash safety + the new uniform rollback story.
+//
+// THREAT: T16 (silent truncate-rollback failure),
+//         T17 (partial AppendRaw mid-batch).
 
 import (
 	"errors"

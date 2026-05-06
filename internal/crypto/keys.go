@@ -59,6 +59,8 @@ type Ed25519Priv struct {
 // key and wraps it in an Ed25519Pub. Returns an error on the
 // wrong length so callers can surface the problem rather than
 // crash in ed25519.Verify.
+//
+// THREAT: T10 (ed25519.Verify accepts wrong-size pub silently).
 func ParseEd25519Pub(raw []byte) (Ed25519Pub, error) {
 	if len(raw) != ed25519.PublicKeySize {
 		return Ed25519Pub{}, fmt.Errorf("crypto: ed25519 pub: want %d bytes, got %d", ed25519.PublicKeySize, len(raw))
@@ -90,6 +92,9 @@ func MustParseEd25519Pub(raw []byte) Ed25519Pub {
 // but produce signatures that fail every Verify call against
 // `priv.Public()`. Reject up-front so the failure mode is a
 // loud parse error, not silent signing-failure.
+//
+// THREAT: T09 (ed25519.Sign panics on wrong-size priv),
+//         T11 (forged seed/public-half mismatch).
 func ParseEd25519Priv(raw []byte) (Ed25519Priv, error) {
 	if len(raw) != ed25519.PrivateKeySize {
 		return Ed25519Priv{}, fmt.Errorf("crypto: ed25519 priv: want %d bytes, got %d", ed25519.PrivateKeySize, len(raw))
@@ -197,6 +202,9 @@ func (p Ed25519Priv) Public() Ed25519Pub {
 // dead-store elimination of the zeroing loop. A hand-rolled
 // loop would be subject to the same optimisation hazard
 // documented at Wipe's call site.
+//
+// THREAT: T07 (same-UID malware reads agent memory),
+//         T12 (heap leak of priv after Wipe).
 func (p Ed25519Priv) Wipe() {
 	Wipe(p.b)
 }

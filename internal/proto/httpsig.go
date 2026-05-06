@@ -25,6 +25,8 @@ import (
 // replay as a fresh request. Including the receiving server's
 // pinned pubkey in the signed input forces every signature to be
 // destination-specific.
+//
+// THREAT: T21 (cross-server signature replay).
 func HTTPSignedInput(method, path string, query map[string]string, ts uint64, nonce, body, serverPub []byte) ([]byte, error) {
 	sum := sha256.Sum256(body)
 	if len(query) == 0 {

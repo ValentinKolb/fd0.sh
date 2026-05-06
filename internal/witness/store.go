@@ -171,6 +171,10 @@ type ArchiveResult struct {
 // Caller is expected to have ALREADY verified sth.Signature against
 // the pinned pubkey; Insert does not re-verify (the storage layer is
 // crypto-blind, the polling layer is crypto-aware).
+//
+// THREAT: T40 (witness archive equivocation evidence — emits HTTP 409
+//                via the polling layer when a divergent root is seen
+//                at the same tree_size).
 func (s *Store) Insert(ctx context.Context, serverURL string, sth translog.STH, fetchedAt int64, witnessSig []byte) (ArchiveResult, error) {
 	if witnessSig != nil && len(witnessSig) != ed25519.SignatureSize {
 		return ArchiveResult{}, fmt.Errorf("witness.Insert: witnessSig must be %d bytes or nil", ed25519.SignatureSize)

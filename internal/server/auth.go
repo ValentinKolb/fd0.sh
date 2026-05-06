@@ -38,6 +38,10 @@ type AuthResult struct {
 //
 // The handler MUST NOT use r.Body after this call: the body has already been
 // consumed. Use the returned Body bytes.
+//
+// THREAT: T22 (per-request HTTP replay — nonce + ts window),
+//         T44 (authenticate as someone else — sig over signed input),
+//         T48 (per-IP brute-force / DoS — rate-limit).
 func (s *Server) verifyHTTPSig(ctx context.Context, r *http.Request) (*AuthResult, int, error) {
 	// SECURITY (codex security audit 🔴 auth.go:70/98/115): per-IP
 	// pre-auth rate limit. Without this, a key-rotating attacker

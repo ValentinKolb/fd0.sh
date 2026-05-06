@@ -40,6 +40,8 @@ type URL struct {
 // ParseURL canonicalises and wraps an untrusted server URL. Returns
 // an error if the input is empty, unparseable, missing the scheme or
 // host. The returned URL is the byte-stable canonical form.
+//
+// THREAT: T24 (URL drift between sync ↔ witness ↔ pin lookup).
 func ParseURL(raw string) (URL, error) {
 	if raw == "" {
 		return URL{}, errors.New("server URL is empty")

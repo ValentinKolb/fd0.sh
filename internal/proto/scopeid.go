@@ -32,6 +32,8 @@ type ScopeID struct {
 // error if `s` is not exactly 28 chars and does not match the
 // `s_[a-z2-7]{26}` shape. The empty string is rejected (vs. the
 // "absent" sentinel of `ScopeID{}` / `IsZero` true for unset values).
+//
+// THREAT: T15 (path traversal via attacker-supplied scope_id).
 func ParseScopeID(s string) (ScopeID, error) {
 	if !ValidScopeIDShape(s) {
 		return ScopeID{}, fmt.Errorf("invalid scope id %q (must match s_[a-z2-7]{26})", s)

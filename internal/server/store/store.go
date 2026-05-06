@@ -256,6 +256,8 @@ func (s *Store) ScopesForMember(ctx context.Context, pkBytes []byte) ([]Chain, e
 
 // CheckAndInsertNonce returns true if (pk, nonce) was inserted; false if seen.
 // Old nonces are pruned in the background by PruneNonces.
+//
+// THREAT: T22 (per-request HTTP replay).
 func (s *Store) CheckAndInsertNonce(ctx context.Context, pk, nonce []byte, ts int64) (bool, error) {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO auth_nonces (pk, nonce, ts) VALUES (?, ?, ?)`, pk, nonce, ts)
 	if err == nil {

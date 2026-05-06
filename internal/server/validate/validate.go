@@ -28,6 +28,8 @@ type UserMeta struct {
 // UserEvent validates a single auth.set event against the prior chain state.
 //
 //	prior == nil iff this is genesis (seq=0).
+//
+// THREAT: T01 (server fabricates auth.set events).
 func UserEvent(ev *proto.UserEvent, prior *UserMeta, priorTipHash []byte, priorTipSeq uint64) error {
 	if ev.Kind != proto.KindAuthSet {
 		return fmt.Errorf("bad kind %q", ev.Kind)
@@ -81,6 +83,9 @@ func UserEvent(ev *proto.UserEvent, prior *UserMeta, priorTipHash []byte, priorT
 // describe the chain state before this event.
 //
 // Returns the post-mutation ScopeMeta the caller should write back.
+//
+// THREAT: T26 (forged member.change unsigned author),
+//         T30 (no-op membership change as poison vehicle).
 func ScopeEvent(ev *proto.ScopeEvent, prior *ScopeMeta, priorTipHash []byte, priorTipSeq uint64) (*ScopeMeta, error) {
 	sp := &ev.SignedPrefix
 	// Author == signer.

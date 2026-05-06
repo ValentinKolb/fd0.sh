@@ -125,6 +125,9 @@ func ServerFingerprint(serverURL string, pub []byte) (string, error) {
 // operator-supplied string via canon.ParseURL. Eliminates the
 // "trailing-slash drift between sync and witness" class because both
 // layers consume the same byte-stable canonical form.
+//
+// THREAT: T46 (server-info pubkey forgery — mitigated by server self-
+//                signature verify + first-contact pinning).
 func (s *Session) EnsurePinnedServer(ctx context.Context, serverURL canon.URL) (ed25519.PublicKey, error) {
 	canonical := serverURL.String()
 	info, err := fetchServerInfo(ctx, canonical)
@@ -177,6 +180,8 @@ func (s *Session) EnsurePinnedServer(ctx context.Context, serverURL canon.URL) (
 //
 // The fingerprint is ALWAYS printed; the only thing the auto-confirm
 // path skips is blocking on stdin.
+//
+// THREAT: T47 (auto-pin bypass without operator awareness).
 func pinningPrompt(canonical string, pub []byte) error {
 	fp, err := ServerFingerprint(canonical, pub)
 	if err != nil {
@@ -330,6 +335,9 @@ var ErrSTHTreeSizeRegression = errors.New("translog: STH tree_size went backward
 // All verification errors are surfaced as ErrInclusionMismatch /
 // ErrConsistencyMismatch / ErrSTHMissing / ErrSTHTreeSizeRegression
 // so the caller can react uniformly.
+//
+// THREAT: T36 (server returns wrong consistency proof),
+//         T42 (STH for a different chain_id).
 func VerifyTranslogResponse(
 	pinnedPub ed25519.PublicKey,
 	expectedChainID string,
@@ -442,6 +450,10 @@ func EncodeSTH(v VerifiedSTH) ([]byte, error) {
 // can never run against an unverified value. Returns (nil, nil)
 // when sth is nil and the verify path treats that as a legitimate
 // "no STH this round" outcome.
+//
+// THREAT: T35 (server equivocation between clients — witness cosign),
+//         T36 (wrong consistency proof — verify before commit),
+//         T25 (verify result discarded — type-state enforced).
 func VerifyAndCrossCheck(
 	ctx context.Context,
 	wcc *WitnessCheckClient,

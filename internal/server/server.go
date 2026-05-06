@@ -298,6 +298,9 @@ func (s *Server) handleConsistencyProof(w http.ResponseWriter, r *http.Request) 
 }
 
 // POST /users — accept genesis auth.set, assign shortId.
+//
+// THREAT: T45 (user-registration replay — UNIQUE on (pubkey, short_id)),
+//         T48 (DoS — per-IP rate limit on register).
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if s.rl != nil {
 		ip := clientIP(r)

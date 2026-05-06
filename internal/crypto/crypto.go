@@ -73,6 +73,8 @@ func GenerateIdentity() (pub Ed25519Pub, priv Ed25519Priv, err error) {
 // GenerateIdentity (correct by construction) can produce a
 // non-zero value. The IsZero check catches forged
 // composite-literal escapes.
+//
+// THREAT: T09 (ed25519.Sign panics on wrong-size priv).
 func Sign(priv Ed25519Priv, msg []byte) ([]byte, error) {
 	if priv.IsZero() {
 		return nil, errSignBadKey
@@ -89,6 +91,8 @@ func Sign(priv Ed25519Priv, msg []byte) ([]byte, error) {
 //
 // Prefer Sign with a pre-parsed Ed25519Priv when the caller can
 // hold the typed value across the call site.
+//
+// THREAT: T09 (ed25519.Sign panic) at byte boundaries.
 func SignBytes(rawPriv []byte, msg []byte) ([]byte, error) {
 	if len(rawPriv) != ed25519.PrivateKeySize {
 		return nil, fmt.Errorf("crypto: Sign: bad priv length %d (want %d)", len(rawPriv), ed25519.PrivateKeySize)
@@ -107,6 +111,8 @@ func SignBytes(rawPriv []byte, msg []byte) ([]byte, error) {
 // well-sized inputs, guaranteed by the type-state. A zero-value
 // Ed25519Pub fails closed without invoking the underlying
 // primitive.
+//
+// THREAT: T10 (ed25519.Verify accepts wrong-size pub).
 func Verify(pub Ed25519Pub, msg, sig []byte) bool {
 	if pub.IsZero() || len(sig) != ed25519.SignatureSize {
 		return false

@@ -66,6 +66,8 @@ func Resolve() (Paths, error) {
 // joining a path-traversal segment with p.Chains. Returns an empty
 // string on invalid input — the caller should detect and refuse
 // rather than open the empty path.
+//
+// THREAT: T15 (path traversal via attacker-supplied scope_id).
 func (p Paths) ScopeChain(scopeID proto.ScopeID) string {
 	// scopeID is opaque; the only constructors validate. A zero
 	// value (ScopeID{}) is the only "unsafe" possibility — defend

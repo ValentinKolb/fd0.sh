@@ -141,6 +141,11 @@ func NewWitnessCheckClient(cfg fdhome.Config) (*WitnessCheckClient, error) {
 //
 // Equivocation (whether cross-witness or within a single witness
 // archive) always rejects regardless of policy.
+//
+// THREAT: T35 (server equivocation between clients),
+//         T39 (bad-cosign / forged witness response),
+//         T40 (witness archive itself shows equivocation),
+//         T43 (equivocation across servers by URL).
 func (c *WitnessCheckClient) CrossCheckSTH(ctx context.Context, serverURL canon.URL, serverPub ed25519.PublicKey, sth translog.STH) error {
 	if c == nil || c.Policy.MinCosigns <= 0 {
 		return nil

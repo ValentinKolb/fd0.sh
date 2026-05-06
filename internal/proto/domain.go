@@ -4,6 +4,9 @@
 // Every value used as input to Ed25519 signing or AEAD AAD is prefixed with
 // one of the domain separators below. A signature or ciphertext valid under
 // one domain MUST be invalid under any other (PROTOCOL.md §1.1).
+//
+// THREAT: T13 (cross-protocol signature reuse),
+//         T14 (cross-context AEAD ciphertext reuse).
 package proto
 
 // Domain separators. See PROTOCOL.md §1.1.

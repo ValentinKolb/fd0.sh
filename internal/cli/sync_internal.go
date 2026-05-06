@@ -71,6 +71,8 @@ func pushItemFor(scope string, ev *proto.ScopeEvent, lastSTHSize uint64) map[str
 // to confirm the server's inclusion proof matches our pushed event
 // bytes. A mismatch means the server is claiming our slot for some
 // other event — refuse to advance LastSTH.
+//
+// THREAT: T37 (server returns inclusion proof for the wrong leaf).
 func (s *Session) leafHashAtSeq(scopeID string, seq uint64) ([]byte, error) {
 	evs, err := chain.ReadScopeEvents(s.Paths.ScopeChain(proto.MustParseScopeID(scopeID)))
 	if err != nil {
@@ -150,6 +152,8 @@ func decryptSecretBody(ev *proto.ScopeEvent, oek []byte) (*proto.SecretBody, err
 // rebuildAndPushSet (which looks up the current OEK by version in the vault
 // ring) would encrypt subsequent secret.sets under the stale key, and peers
 // would silently fail to decrypt them. The defensive upsert matches the
+//
+// THREAT: T31 (OEK ring stale after failed local push).
 // invariant "vault.OEKs is authoritative for the most recent replay".
 func upsertOEK(ring []proto.OEKEntry, version uint64, key []byte) []proto.OEKEntry {
 	for i, e := range ring {

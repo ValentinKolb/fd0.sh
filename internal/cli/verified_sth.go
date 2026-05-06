@@ -56,6 +56,8 @@ type verifiedToken struct{ ok bool }
 // copied at construction so post-verify mutations of the source
 // (the server response struct) cannot retroactively change the
 // bytes that EncodeSTH will eventually marshal.
+//
+// THREAT: T25 (verify result discarded, encode unverified STH).
 type VerifiedSTH struct {
 	sth  translog.STH
 	seal verifiedToken
