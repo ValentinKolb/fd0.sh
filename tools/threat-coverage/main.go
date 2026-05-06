@@ -167,16 +167,26 @@ func scanAnnotations(root string) (map[string][]string, []string, error) {
 
 // requiresAnnotation returns true if the status mandates at least
 // one inline `// THREAT: Tnn` annotation in non-test code.
+//
+// Codex review note: emoji status cells can be entered with or
+// without the U+FE0F variation selector that disambiguates
+// "🛡️" (presentation: emoji) from "🛡" (presentation: text). They
+// look identical in most editors but compare as different byte
+// sequences (`f09f9ba1efb88f` vs `f09f9ba1`). To keep the CI
+// guarantee robust, we check for the BASE rune of each
+// structural emoji — that catches both variants.
 func requiresAnnotation(status string) bool {
 	if requireAnnotation[status] {
 		return true
 	}
-	// Match common emoji-combos heuristically: any status containing
-	// 🟢 OR 🛡️ but not exclusively 🤝 / 📋 / ⛔ counts.
-	if strings.Contains(status, "🟢") || strings.Contains(status, "🛡️") {
-		// But if it ALSO has only-ceremony / only-acknowledged,
-		// the structural part is what we care about — keep it.
-		return true
+	// Use base runes (without the optional VS-16 selector) so a
+	// human accidentally typing the bare-presentation form
+	// doesn't silently exempt a structural threat from
+	// annotation coverage.
+	for _, baseRune := range []string{"🟢", "🛡"} {
+		if strings.Contains(status, baseRune) {
+			return true
+		}
 	}
 	return false
 }

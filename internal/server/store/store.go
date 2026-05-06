@@ -116,6 +116,11 @@ type AppendOpts struct {
 // Equivalent to AppendWithTranslog with no translog hook — kept for
 // callers that don't have a translog key installed (tests, legacy
 // callers).
+//
+// THREAT: T23 (stored-event replay — the events.event_id UNIQUE
+//                constraint at the SQL layer is what actually
+//                rejects duplicate inserts; proto.EventID derives
+//                the content-addressed value the constraint keys on).
 func (s *Store) Append(ctx context.Context, o AppendOpts) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
