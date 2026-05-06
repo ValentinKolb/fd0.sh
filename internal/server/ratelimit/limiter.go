@@ -89,7 +89,7 @@ type bucket struct {
 // non-positive specific limit (e.g. IdentityWritesPerMin: -1) disables that
 // class — Acquire always returns Allow=true.
 //
-// THREAT: T48 (per-IP brute-force / DoS), T49 (witness archive growth DoS).
+// THREAT: T48 (per-IP brute-force / DoS).
 func New(ctx context.Context, cfg Config) *Limiter {
 	if cfg.IdentityWritesPerMin == 0 {
 		cfg.IdentityWritesPerMin = 60

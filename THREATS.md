@@ -54,10 +54,23 @@ participants).
 
 Status legend:
 
-- 🟢 **Structural**: compile-time impossible (type-state, unconstructable types).
-- 🛡️ **Runtime**: explicit guard / check; surface a controlled error.
-- 🤝 **Ceremony**: depends on user behaviour (e.g. compare safety number).
-- 📋 **Acknowledged**: outside what v1 promises; documented as a non-goal.
+- 🟢 **Structural**: the threat is impossible unless a foundational
+  primitive is broken. Two flavours: (a) compile-time impossible
+  (type-state, unconstructable types — e.g. T15, T25); (b) breaks
+  the threat iff a cryptographic primitive itself is broken (e.g.
+  T20 — verifying a forged signature requires breaking Ed25519,
+  not finding a missing check). Codex review caught the original
+  legend conflating these with runtime checks; we keep them in 🟢
+  here because they ARE structural under the standard
+  "primitives-are-secure" assumption, with the boundary clearly
+  marked per threat.
+- 🛡️ **Runtime**: explicit guard / check at runtime; surface a
+  controlled error. Failure mode is a missing check (forgettable
+  on refactor, lint-protectable).
+- 🤝 **Ceremony**: depends on user behaviour (e.g. compare safety
+  number, choose strong passphrase).
+- 📋 **Acknowledged**: outside what v1 promises; documented as a
+  non-goal.
 - ⛔ **Out of scope**: explicitly not addressed (kernel bugs, etc.).
 
 ### 3.1 Identity / unlock plane (TB1, TB2, TB5)
@@ -329,15 +342,38 @@ Status legend:
   `TestAdvReplayRejectsForeignAuthor` pins this.
 - **Code**: `chain/scope.go` per-event member check.
 
-#### T28 — Insider key-delivery omission
+#### T28 — Insider key-delivery omission (recipient-bricking)
 - **Adversary**: A4.
 - **Threat**: a current member posts a `member.change` and
-  delivers an unusable sealed-box to one recipient.
-- **Mitigation** 📋: mitigated, not eliminated. The server
-  validates *recipient set* (every post-mutation member receives
-  one delivery) but cannot validate *contents* (the OEK inside
-  each sealed box). Remediable by another current member posting
-  a fresh `member.change op="remove"` of the bad author.
+  delivers an unusable sealed-box to one recipient (corrupt
+  ciphertext, garbage OEK, or an OEK that decrypts but is not
+  the active key).
+- **Mitigation** 📋: **mitigated for the scope, NOT for the
+  victim.** The server validates *recipient set* (every
+  post-mutation member receives one delivery) but cannot
+  validate *contents* (the OEK inside each sealed box). Codex
+  threat-model review correctly flagged that the original
+  framing was hand-waving:
+  - The victim's `chain.ReplayScope` errors out at the
+    poisoned `member.change` event ("scope[i]: open
+    key_delivery: ...") and CANNOT advance past it. A later
+    `member.change op="remove"` of the bad author does NOT
+    rescue this victim — replay is stuck before reaching it.
+  - In practice, the victim is **bricked for that scope**
+    until they perform an out-of-band recovery: have another
+    current member capture the post-remove chain prefix and
+    physically re-deliver the recovered OEK, OR re-bootstrap
+    via re-discovery + fresh `member.change op=add` of the
+    victim that delivers a clean OEK.
+  - Other members (who got valid OEKs) continue normally; the
+    scope itself is not lost. The bad author is removable from
+    THEIR view.
+- **Pre-v1.0 todo**: a CLI subcommand
+  `fd0 scope recover-membership <scope_id>` that purges the
+  local chain file and re-discovers from cursor=0 (skipping
+  the bricked event by design — caller has been re-admitted in
+  a later event) would close the operational gap. Currently
+  the recovery path requires manual intervention.
 
 #### T29 — Insider projection-poisoning
 - **Adversary**: A4.
@@ -396,13 +432,22 @@ Status legend:
 #### T35 — Server equivocation between two clients (different consistent histories)
 - **Adversary**: A1.
 - **Mitigation** 🛡️ + 🤝: STH cosign by ≥`min_cosigns` independent
-  witnesses (configurable; recommended 2-of-3 or 3-of-3). A
-  witness that has archived an STH at tree_size N for chain C
-  cannot cosign a divergent STH at the same size — its archive
-  refuses with HTTP 409 (`witness/store.go:Insert`). Multi-witness
-  cross-check makes a colluding-witness a separate threat (T39).
+  witnesses (configurable; recommended 2-of-3 or 3-of-3). The
+  witness archive is keyed by `(server_url, chain_id,
+  tree_size, root_hash)` — divergent roots at the same
+  tree_size are intentionally **stored side-by-side** as
+  evidence (codex review correction; the original framing said
+  "archive refuses to cosign", which is wrong: the witness
+  cosigns whatever it polled, then the multi-row state at the
+  same tree_size is what the client detects later). When a
+  client's `LookupAt` query returns ≥2 rows for the same
+  (server_url, chain_id, tree_size), the witness layer
+  responds HTTP 409 — that's the equivocation signal the
+  client refuses on. Multi-witness cross-check makes a
+  colluding-witness a separate threat (T39).
 - **Code**: `cli/witness_check.go` CrossCheckSTH,
-  `witness/store.go` archive equivocation guard.
+  `witness/store.go` Insert + LookupAt; HTTP 409 path in
+  `witness/witness.go`.
 - **Spec**: TRANSLOG.md §6.
 
 #### T36 — Server returns wrong consistency proof (forks history)
@@ -445,23 +490,40 @@ Status legend:
 - **Code**: `cli/witness_check.go`,
   `cmd/fd0-test-bad-witness/main.go`.
 
-#### T40 — Witness archive itself shows equivocation
+#### T40 — Witness archive holds same-size divergent roots → 409 on lookup
 - **Adversary**: A1 (caught red-handed).
-- **Mitigation** 🟢: `witness/store.go:Insert` enforces UNIQUE
-  `(server_url, chain_id, tree_size)`; a divergent root_hash
-  against an archived STH triggers HTTP 409. Client treats 409
-  as immediate evidence of equivocation and refuses to advance
+- **Mitigation** 🟢: the witness schema's UNIQUE key includes
+  `root_hash`, so divergent same-size STHs are stored as
+  separate rows by design — that IS the equivocation evidence,
+  not a thing the witness suppresses. The client's `LookupAt`
+  query returns HTTP 409 when ≥2 rows exist at the same
+  (server_url, chain_id, tree_size). Client treats 409 as
+  immediate evidence of equivocation and refuses to advance
   LastSTH.
-- **Code**: `witness/store.go` Insert, `cli/witness_check.go`
-  errWitnessEquivocation handler.
+- **Code**: `witness/store.go` Insert (intentional row-per-
+  divergent-root) + LookupAt (multi-row → 409 caller-side),
+  `cli/witness_check.go` errWitnessEquivocation handler.
 
 #### T41 — First-fetch checkpoint rollback (no prior STH anchor)
 - **Adversary**: A1.
 - **Mitigation** 🤝: a fresh device has no priorSTH to
-  consistency-prove against. The user-ceremony fallback is
-  cross-device tip comparison out of band, plus the witness
-  archive (which was online before this client first contacted
-  the server) holding an STH that contradicts the "first fetch".
+  consistency-prove against, **and the witness cross-check does
+  NOT mitigate this case**. Codex review correctly flagged the
+  original framing: the client cross-check asks witnesses for a
+  cosign at the *server-supplied* `tree_size`. If the server
+  rolls the client back to an older STH that the witnesses also
+  have (because witnesses had previously cosigned the same
+  size), the witnesses return matching cosigns and the rollback
+  goes undetected. To detect it the witness API would need a
+  "highest-observed `tree_size` for this chain" probe and the
+  client would need to reject when that exceeds the
+  server-supplied size. This is a **v1.x feature** (TRANSLOG.md
+  §6.4 enhancement); for v1.0 the only mitigation is
+  user-ceremony out-of-band tip comparison.
+- **Pre-v1.0 todo**: optionally add a `GET /v1/witness/latest/
+  {server_url}/{chain_id}` endpoint and a client-side
+  freshness check; not required for v1.0 ship if cross-device
+  comparison is documented.
 - **Spec**: TRANSLOG.md §6.1, §6.4.
 
 #### T42 — STH for a different chain_id served as ours
@@ -524,25 +586,56 @@ Status legend:
 
 #### T48 — Per-IP brute-force / DoS
 - **Adversary**: A2.
-- **Mitigation** 🛡️: token-bucket rate limiter per IP for
-  authenticated endpoints. Lower threshold for unauthenticated
-  endpoints (registration, server-info).
-- **Code**: `server/auth.go`, `server/ratelimit/limiter.go`.
+- **Mitigation** 🛡️: token-bucket rate limiter at three classes:
+  - `AcquireAuthAttempt` (per-IP, fires BEFORE body read /
+    sig verify) — covers every authenticated handler via
+    `verifyHTTPSig`
+  - `AcquireRegister` (per-IP-per-hour, low cap) — covers
+    `handleRegister` AND `handleServerInfo` (both are
+    unauthenticated, both expose pre-pin metadata; codex
+    threat-model review caught the original gap on
+    server-info)
+  - `AcquireWrite` / `AcquireBytes` (per-pubkey, post-auth)
+- The translog public proof endpoints (`handleSTH`,
+  `handleInclusionProof`, `handleConsistencyProof`) are
+  intentionally unrated — they serve cached, pre-signed
+  responses and are designed to scale to public traffic.
+- **Code**: `server/auth.go`, `server/server.go`
+  (handleRegister, handleServerInfo),
+  `server/ratelimit/limiter.go`.
 
-#### T49 — Witness archive growth (DoS by spamming STHs)
-- **Adversary**: A1.
-- **Mitigation** 🛡️: witness `IngestSTH` is rate-limited and
-  bounded read; bad-magic / oversized payloads dropped early.
-- **Code**: `witness/witness.go`.
+#### T49 — Witness archive storage growth
+- **Adversary**: A1 (operationally) — not actually exploitable
+  by an attacker.
+- **Status**: 📋 acknowledged operational consideration.
+- **Codex threat-model review correction**: the original entry
+  claimed witness has an `IngestSTH` rate-limited path. That is
+  **incorrect** — the witness has no inbound ingest endpoint;
+  it polls upstream servers OUTBOUND on a schedule
+  (`witness.Witness.poll`). Storage growth is therefore bounded
+  by upstream server activity (one row per `tree_size` polled,
+  capped at one per polling interval per chain), not by
+  attacker effort. The witness layer DOES bound response read
+  size on the outbound poll (`io.LimitReader`-style) so a
+  malicious upstream cannot OOM-crash the witness. Operational
+  bound: the operator runs storage GC / archives older STHs.
+- **Code**: `witness/witness.go` (poll loop, bounded reads).
 
 ### 3.8 Operational / metadata
 
 #### T50 — `shortId` enumeration → encrypted user chain → offline brute
-- **Adversary**: A1, A2.
-- **Mitigation** 🤝: protection reduces to passphrase strength.
+- **Adversary**: A1 only (corrected from A1+A2 per codex review).
+- **Mitigation** 🤝 + 🛡️: `GET /users/{shortId}/events` requires
+  authentication + signer-must-equal-chain-owner check
+  (`server.handleFetchUser`), so a network attacker (A2) CANNOT
+  enumerate `shortId`s and pull encrypted user chains. The
+  threat is real ONLY for A1 (server operator with raw DB
+  access), where protection reduces to passphrase strength.
   Short_id is by design discoverable — it's what you advertise
-  on a card.
-- **Spec**: PROTOCOL.md §6.0, THREATS.md historical §3.
+  on a card; the mitigation is that the encrypted user chain
+  is not network-readable.
+- **Code**: `server/server.go` handleFetchUser auth check.
+- **Spec**: PROTOCOL.md §6.0, API.md §2.
 
 #### T51 — Card-channel substitution
 - **Adversary**: A2.
@@ -602,7 +695,7 @@ Status legend:
 | T25 | 🟢 | `cli/verified_sth.go` (opaque + sealed)          | TRANSLOG §5     |
 | T26 | 🟢 | `server/validate/validate.go`                    | PROTOCOL §4     |
 | T27 | 🟢 | `chain/scope.go` member-set check                | PROTOCOL §4     |
-| T28 | 📋 | —                                                | THREATS §5      |
+| T28 | 📋 | `chain/scope.go` (replay error path)             | THREATS §5      |
 | T29 | 🟢🤝 | `chain/scope.go` projection-content check        | PROTOCOL §4.4   |
 | T30 | 🟢 | `validate/validate.go`, `chain/scope.go`         | PROTOCOL §4.2   |
 | T31 | 🟢 | `cli/sync_internal.go` upsertOEK                 | STORAGE §6.1    |
@@ -615,7 +708,7 @@ Status legend:
 | T38 | 📋 | —                                                | TRANSLOG §6     |
 | T39 | 🟢 | `cli/witness_check.go`                           | TRANSLOG §6.3   |
 | T40 | 🟢 | `witness/store.go` Insert UNIQUE                 | TRANSLOG §6.4   |
-| T41 | 🤝 | —                                                | TRANSLOG §6.1   |
+| T41 | 🤝 | (NOT mitigated by witnesses — see §3.6)          | TRANSLOG §6.1   |
 | T42 | 🟢 | `cli/translog.go` VerifyTranslogResponse         | TRANSLOG §3     |
 | T43 | 🟢 | `translog/witness.go` SignWitnessedSTH           | TRANSLOG §6.3   |
 | T44 | 🟢 | `server/auth.go`                                 | API §1          |
@@ -623,8 +716,8 @@ Status legend:
 | T46 | 🟢🤝 | `cli/translog.go` EnsurePinnedServer             | TRANSLOG §6.1   |
 | T47 | 🛡️ | `cli/translog.go` pinningPrompt                  | TRANSLOG §6.1   |
 | T48 | 🛡️ | `server/ratelimit/limiter.go`                    | API §1          |
-| T49 | 🛡️ | `witness/witness.go`                             | TRANSLOG §8     |
-| T50 | 🤝 | —                                                | PROTOCOL §6.0   |
+| T49 | 📋 | `witness/witness.go` (no ingest endpoint exists) | TRANSLOG §8     |
+| T50 | 🤝🛡️ | `server/server.go` handleFetchUser auth          | PROTOCOL §6.0   |
 | T51 | 🤝 | `cli/card.go`                                    | PROTOCOL §2.3   |
 | T52 | 📋 | —                                                | —               |
 | T53 | 📋 | —                                                | —               |
