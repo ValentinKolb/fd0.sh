@@ -196,9 +196,13 @@ Status legend:
 - **Mitigation** 🟢: every signature input has a domain separator.
   See `internal/proto/domain.go` for the canonical list — the
   doc deliberately doesn't repeat the literals to avoid drift.
-  Domain disjunction is asserted by
-  `proto.TestDomainSeparatorsDisjoint` (PROTOCOL.md §1.1).
-- **Code**: `proto/domain.go`, test in `proto/proto_test.go`.
+  Domain pairwise disjunction (no two are equal AND none is a
+  prefix of another) is asserted by two tests:
+  `proto.TestDomainSeparatorsDisjoint` in
+  `internal/proto/proto_test.go` (basic equality + prefix check)
+  and `proto.TestAdvDomainPrefixesDisjoint` in
+  `internal/proto/adversarial_test.go` (harder property checks).
+- **Code**: `internal/proto/domain.go`.
 
 #### T14 — Cross-context AEAD ciphertext reuse
 - **Adversary**: A1.
@@ -284,7 +288,7 @@ Status legend:
 
 #### T22 — Per-request HTTP replay (within a single server)
 - **Adversary**: A2 (network).
-- **Mitigation** 🟢: per-request `(pk, nonce, ts)` tuple stored in
+- **Mitigation** 🛡️: per-request `(pk, nonce, ts)` tuple stored in
   `nonces` table with UNIQUE constraint. `ts` window enforced
   (currently ±300s).
 - **Code**: `server/auth.go` verifyAuthHeader, `server/store/store.go`
@@ -328,14 +332,14 @@ Status legend:
 
 #### T26 — Forged member.change (unsigned author)
 - **Adversary**: A1.
-- **Mitigation** 🟢: `validate.ScopeEvent` enforces `Author ==
+- **Mitigation** 🛡️: `validate.ScopeEvent` enforces `Author ==
   ev.Signature.SignerPubkey` AND signature verifies under that pub.
 - **Code**: `server/validate/validate.go`, `chain/scope.go` replay.
 
 #### T27 — Foreign-author event splice (non-member writes a secret)
 - **Adversary**: A4 (a non-member splicing a signed event into a
   victim's local chain) or A1.
-- **Mitigation** 🟢: `chain.ReplayScope` enforces "author ∈
+- **Mitigation** 🛡️: `chain.ReplayScope` enforces "author ∈
   current MemberSet" before applying. Adversarial test
   `TestAdvReplayRejectsForeignAuthor` pins this.
 - **Code**: `chain/scope.go` per-event member check.
@@ -403,7 +407,7 @@ Status legend:
 - **Threat**: a `member.change op="add"` for an already-member
   could be used to rotate the OEK without justification, possibly
   delivering a poisoned projection.
-- **Mitigation** 🟢: server-side and client-side reject
+- **Mitigation** 🛡️: server-side and client-side reject
   `op="add"` on existing members and `op="remove"` on
   non-members; no-op member.changes are explicitly disallowed.
 - **Code**: `server/validate/validate.go`, `chain/scope.go`.
@@ -616,10 +620,11 @@ Status legend:
     sig verify) — covers every authenticated handler via
     `verifyHTTPSig`
   - `AcquireRegister` (per-IP-per-hour, low cap) — covers
-    `handleRegister` AND `handleServerInfo` (both are
-    unauthenticated, both expose pre-pin metadata; codex
-    threat-model review caught the original gap on
-    server-info)
+    `handleRegister` only. `handleServerInfo` is also
+    unauthenticated but is INTENTIONALLY left unrated for
+    v1.0 (see residual-exposure note below) because clients
+    refetch it on every sync for pin-mismatch detection and
+    a 5/hour cap would 429-out normal users behind a NAT.
   - `AcquireWrite` / `AcquireBytes` (per-pubkey, post-auth)
 - **Residual exposure (codex 2nd-round review)**: the translog
   public proof endpoints (`handleSTH`, `handleInclusionProof`,
