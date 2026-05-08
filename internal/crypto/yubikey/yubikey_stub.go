@@ -4,7 +4,7 @@ package yubikey
 
 // Open is the no-op stub when fd0 is built without the `yubikey` tag.
 // The real implementation lives in yubikey_piv.go and depends on libpcsc.
-func Open(opts OpenOptions) (PivKey, error) { return nil, ErrNotEnabled }
+func Open(opts OpenOptions) (Card, error) { return nil, ErrNotEnabled }
 
 // List is the stub equivalent of yubikey_piv.go's List.
 func List() ([]string, error) { return nil, ErrNotEnabled }

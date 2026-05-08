@@ -51,16 +51,39 @@ const (
 	PinOnce                    // PIN required once per session.
 )
 
-// PivKey is the implementer's view of a connected YubiKey. Real impl in
-// yubikey_piv.go; stub in yubikey_stub.go.
-type PivKey interface {
-	// PublicX25519 returns the slot's X25519 public key (32 B).
+// Card is the abstract YubiKey-PIV view used by fd0.
+//
+// The interface deliberately exposes only the steps that depend on
+// hardware: producing the slot's public X25519 key, and running ECDH
+// against the slot's private key. Everything else in the sealed-box
+// open path (parsing, libsodium key derivation, XSalsa20-Poly1305
+// open) is pure software and lives in package crypto, where it is
+// independently unit-tested.
+//
+// Real impl in yubikey_piv.go (build tag `yubikey`); software MockCard
+// in mockcard.go for tests; stub in yubikey_stub.go for builds without
+// the tag.
+type Card interface {
+	// PublicX25519 returns a fresh 32-byte copy of the slot's X25519
+	// public key. Implementations MUST NOT alias internal state — the
+	// caller owns the returned slice and may overwrite it freely.
 	PublicX25519() ([]byte, error)
-	// OpenSealedBox runs sealed-box decryption on-card. The ephemeral pub
-	// embedded in the sealed blob produces an ECDH against the slot's key;
-	// the libsodium HKDF-then-AEAD step happens in software.
-	OpenSealedBox(sealed []byte) ([]byte, error)
-	// Close releases the smartcard handle.
+	// SharedSecret performs an X25519 ECDH between the slot's private
+	// key and the supplied ephemeral pubkey. The 32-byte output is the
+	// libsodium crypto_box_seal "shared" input, fed into the
+	// HSalsa20 / XSalsa20-Poly1305 open path on the host side.
+	//
+	// Implementations MUST:
+	//   - reject ephPub whose length is not exactly 32 bytes;
+	//   - return a fresh, caller-owned 32-byte slice on success;
+	//   - return a non-nil error if the resulting shared secret is
+	//     all-zero (RFC 7748 §6.1 — small-subgroup ephemerals produce
+	//     a degenerate zero output and MUST NOT be used as keying
+	//     material). The pure-software curve25519.X25519 already
+	//     enforces this; hardware implementations MUST replicate the
+	//     check after the on-card ECDH.
+	SharedSecret(ephPub []byte) ([]byte, error)
+	// Close releases the smartcard handle (no-op for software cards).
 	Close() error
 }
 
