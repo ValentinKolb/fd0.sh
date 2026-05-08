@@ -27,16 +27,21 @@ v1.json
 ## Hardware-day workflow
 
 ```sh
-# 1. Plug in the YubiKey.
-go run -tags=yubikey ./cmd/fd0-yubikey-record \
-    > internal/crypto/yubikey/testdata/golden/v1.json
+# 1. Plug in the YubiKey. Read the firmware version (e.g. via `ykman info`).
 
-# 2. Verify the fixture replays under the pure-Go path.
+# 2. Run the recorder. --output writes via temp+rename so a recording
+#    failure leaves the existing fixture untouched. DO NOT use shell
+#    redirect (`> v1.json`) — that truncates before the recorder runs.
+go run -tags=yubikey ./cmd/fd0-yubikey-record \
+    --firmware 5.7.1 \
+    --output internal/crypto/yubikey/testdata/golden/v1.json
+
+# 3. Verify the fixture replays under the pure-Go path.
 go test ./internal/crypto/yubikey/... -run TestGolden
 
-# 3. Commit the JSON. The diff is the recording.
+# 4. Commit. The diff is the recording.
 git add internal/crypto/yubikey/testdata/golden/v1.json
-git commit -m "yubikey: record golden vectors (firmware <X.Y.Z>)"
+git commit -m "yubikey: record golden vectors (firmware 5.7.1)"
 ```
 
 The placeholder `vectors: []` ships with the repo so the replay test
