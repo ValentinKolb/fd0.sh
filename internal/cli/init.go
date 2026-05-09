@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/oklog/ulid/v2"
 
@@ -118,8 +119,21 @@ func RunInit(ctx context.Context) error {
 	return nil
 }
 
-// RunUnlock starts the agent if necessary, then sends the credential.
-func RunUnlock(ctx context.Context, agentBin string) error {
+// RunUnlock starts the agent if necessary, then sends the credential
+// for the chosen auth method.
+//
+// Method selection (in order):
+//  1. Explicit --method flag, if non-empty.
+//  2. Single-method auth.set: pick the only one.
+//  3. Multi-method auth.set: pick the first method (sorted by
+//     method_id) — deterministic so scripts can rely on the choice.
+//
+// For passphrase methods we prompt "Passphrase: ". For YubiKey methods
+// we prompt "YubiKey PIN (empty for touch-only): "; an empty input
+// surfaces as a touch-only unlock (the agent passes "" through to
+// yubikey.Open which skips VerifyPIN). Either prompt reads from
+// non-TTY stdin when piped, so shell tests can drive it.
+func RunUnlock(ctx context.Context, agentBin, method string) error {
 	paths, err := fdhome.Resolve()
 	if err != nil {
 		return err
@@ -127,8 +141,21 @@ func RunUnlock(ctx context.Context, agentBin string) error {
 	if !VaultExists(paths) {
 		return errors.New("no vault found — run `fd0 init` first")
 	}
-	cli := agent.NewClient(paths.AgentSock)
-	if !cli.IsRunning() {
+
+	uctx, err := chain.ReplayUser(paths.UserChain)
+	if err != nil {
+		return fmt.Errorf("replay user chain: %w", err)
+	}
+	if uctx == nil || uctx.LatestAuthSet == nil {
+		return errors.New("no auth methods on user chain — run `fd0 init` first")
+	}
+	chosen, err := pickUnlockMethod(uctx.LatestAuthSet.Payload.Active, method)
+	if err != nil {
+		return err
+	}
+
+	c := agent.NewClient(paths.AgentSock)
+	if !c.IsRunning() {
 		if err := agent.Spawn(agentBin, paths.AgentLog); err != nil {
 			return err
 		}
@@ -137,16 +164,73 @@ func RunUnlock(ctx context.Context, agentBin string) error {
 		}
 		fmt.Fprintln(os.Stderr, "✓ agent started")
 	}
-	pass, err := ReadPassphrase("Passphrase: ")
-	if err != nil {
+
+	var cred agent.UnlockCredential
+	switch chosen.MethodType {
+	case proto.AuthPassphrase:
+		pass, err := ReadPassphrase("Passphrase: ")
+		if err != nil {
+			return err
+		}
+		cred.Passphrase = pass
+		defer crypto.Wipe(cred.Passphrase)
+	case proto.AuthYubikey:
+		pin, err := ReadOptionalPIN("YubiKey PIN (empty for touch-only): ")
+		if err != nil {
+			return err
+		}
+		cred.YubikeyPIN = pin
+		defer crypto.Wipe(cred.YubikeyPIN)
+		fmt.Fprintln(os.Stderr, "Touch your YubiKey if it blinks…")
+	default:
+		return fmt.Errorf("unknown method type %q on user chain", chosen.MethodType)
+	}
+	if _, err := c.Unlock(paths.Vault, paths.UserChain, chosen.MethodType, cred); err != nil {
 		return err
 	}
-	defer crypto.Wipe(pass)
-	if _, err := cli.Unlock(paths.Vault, paths.UserChain, proto.AuthPassphrase, pass); err != nil {
-		return err
-	}
-	fmt.Fprintln(os.Stderr, "✓ vault unlocked")
+	fmt.Fprintf(os.Stderr, "✓ vault unlocked (%s)\n", chosen.MethodType)
 	return nil
+}
+
+// pickUnlockMethod implements the method-selection rules documented on
+// RunUnlock. Returns a copy of the chosen AuthMethod (so the caller
+// holds nothing that aliases the chain replay state).
+func pickUnlockMethod(active []proto.AuthMethod, requested string) (proto.AuthMethod, error) {
+	if len(active) == 0 {
+		return proto.AuthMethod{}, errors.New("no active auth methods")
+	}
+	if requested != "" {
+		for _, m := range active {
+			if m.MethodType == requested {
+				return m, nil
+			}
+		}
+		return proto.AuthMethod{}, fmt.Errorf("--method=%q: no enrolled method matches; have %s",
+			requested, summariseMethodTypes(active))
+	}
+	// No request: pick the FIRST method by method_id. We do NOT pick
+	// "the only type" because deterministic ordering matters more than
+	// "guess what the user meant"; --method gives the override knob.
+	out := active[0]
+	for _, m := range active[1:] {
+		if m.MethodID < out.MethodID {
+			out = m
+		}
+	}
+	return out, nil
+}
+
+func summariseMethodTypes(active []proto.AuthMethod) string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(active))
+	for _, m := range active {
+		if _, ok := seen[m.MethodType]; ok {
+			continue
+		}
+		seen[m.MethodType] = struct{}{}
+		out = append(out, m.MethodType)
+	}
+	return strings.Join(out, ", ")
 }
 
 // RunLock asks the agent to lock and exit.

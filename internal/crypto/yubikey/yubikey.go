@@ -96,8 +96,12 @@ type Card interface {
 
 // OpenOptions controls how Open finds and connects to the YubiKey.
 type OpenOptions struct {
-	// PIN, when non-empty, is verified before any operation.
-	PIN string
+	// PIN, when non-empty, is verified before any operation. We hold
+	// the PIN as []byte so callers can wipe their copy after Open
+	// returns; the implementation forwards it to go-piv (which only
+	// accepts string) at the single call boundary, with no long-lived
+	// retention.
+	PIN []byte
 	// Slot is the PIV slot to use. Default SlotKeyManagement.
 	Slot SlotID
 }
@@ -114,6 +118,8 @@ func Default() OpenOptions {
 // uses it (a) to authenticate the slot operation if the management key
 // requires PIN-then-mgmt mode, and (b) to set the slot's PIN policy:
 // non-empty PIN ⇒ PINPolicyOnce on the new slot, empty ⇒ PINPolicyNever.
+// Stored as []byte so callers can wipe their buffer after Enroll
+// returns.
 //
 // Touch is configurable; the default is TouchAlways for production
 // (without it, same-UID malware with USB access could silently exercise
@@ -125,7 +131,7 @@ func Default() OpenOptions {
 // should change the management key before enrolling and pass it here.
 type EnrollOptions struct {
 	Slot          SlotID
-	PIN           string
+	PIN           []byte
 	ManagementKey []byte
 	// TouchPolicy controls whether the on-card key requires a physical
 	// touch on each operation. Default (zero value) maps to TouchAlways.
@@ -144,7 +150,9 @@ type EnrollResult struct {
 // before invoking Enroll. Yubico PIV PINs must be 6–8 ASCII characters.
 //
 // Pulled out of Enroll so unit tests can hit it without hardware.
-func ValidatePIN(pin string) error {
+// Accepts []byte so callers don't need to convert to string (which
+// would prevent the buffer from being wiped).
+func ValidatePIN(pin []byte) error {
 	if len(pin) < 6 {
 		return errPINTooShort
 	}

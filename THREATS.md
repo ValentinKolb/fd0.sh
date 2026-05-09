@@ -30,10 +30,7 @@ they apply to.
 | A5  | **Witness operator (malicious)**  | Runs an `fd0-witness` instance the user has pinned. Can refuse to cosign, return forged STHs, equivocate on what they observed. Cannot forge the server's signature. |
 | A6  | **Coerced / lost-credential**     | A user who lost a credential (passphrase, hardware token) or who is being coerced. Includes "device theft" scenarios.                                         |
 
-Each attacker is **strictly weaker than its predecessor** for the
-guarantees fd0 enforces, except A4 (members are by definition trusted
-authors of events) and A5 (witnesses are passive observers, not protocol
-participants).
+Each attacker is strictly weaker than its predecessor for the guarantees fd0 enforces — except A4 (members are by definition trusted event authors) and A5 (witnesses are passive observers, not protocol participants).
 
 ---
 
@@ -54,23 +51,10 @@ participants).
 
 Status legend:
 
-- 🟢 **Structural**: the threat is impossible at the type level
-  OR is impossible-iff-a-primitive-is-broken. Two flavours:
-  (a) compile-time impossible (type-state, unconstructable types
-  — e.g. T15, T25); (b) breaks iff Ed25519 / SHA-256 / AES-GCM
-  / Argon2id is itself broken (e.g. T20 — verifying a forged
-  signature requires forging Ed25519). What 🟢 does NOT mean:
-  "we added a runtime check that's hard to forget". Those are
-  🛡️.
-- 🛡️ **Runtime**: explicit guard / check at runtime; surface a
-  controlled error. Failure mode is a missing check (forgettable
-  on refactor, lint-protectable). Examples: nonce DB UNIQUE
-  insert (T22), validator branches (T26, T30), length checks
-  (T18 O_NOFOLLOW).
-- 🤝 **Ceremony**: depends on user behaviour (e.g. compare safety
-  number, choose strong passphrase).
-- 📋 **Acknowledged**: outside what v1 promises; documented as a
-  non-goal.
+- 🟢 **Structural**: impossible at the type level (e.g. T15, T25 — unconstructable types) OR impossible unless a primitive breaks (e.g. T20 — would require forging Ed25519). A runtime guard that is "hard to forget" is 🛡️, not 🟢.
+- 🛡️ **Runtime**: explicit guard or check at runtime, surfaces a controlled error. Failure mode is a missing check — forgettable on refactor, lint-protectable. Examples: nonce DB UNIQUE insert (T22), validator branches (T26, T30), `O_NOFOLLOW` (T18).
+- 🤝 **Ceremony**: depends on user behaviour, e.g. comparing safety numbers or choosing a strong passphrase.
+- 📋 **Acknowledged**: outside what v1 promises; documented as a non-goal.
 - ⛔ **Out of scope**: explicitly not addressed (kernel bugs, etc.).
 
 ### 3.1 Identity / unlock plane (TB1, TB2, TB5)
@@ -350,47 +334,14 @@ Status legend:
   delivers an unusable sealed-box to one recipient (corrupt
   ciphertext, garbage OEK, or an OEK that decrypts but is not
   the active key).
-- **Mitigation** 📋: **mitigated for the scope, NOT for the
-  victim.** The server validates *recipient set* (every
-  post-mutation member receives one delivery) but cannot
-  validate *contents* (the OEK inside each sealed box). Codex
-  threat-model review correctly flagged that the original
-  framing was hand-waving:
-  - The victim's `chain.ReplayScope` errors out at the
-    poisoned `member.change` event ("scope[i]: open
-    key_delivery: ...") and CANNOT advance past it. A later
-    `member.change op="remove"` of the bad author does NOT
-    rescue this victim — replay is stuck before reaching it.
-  - In practice, the victim is **bricked for that scope**
-    until they perform an out-of-band recovery: have another
-    current member capture the post-remove chain prefix and
-    physically re-deliver the recovered OEK, OR re-bootstrap
-    via re-discovery + fresh `member.change op=add` of the
-    victim that delivers a clean OEK.
-  - Other members (who got valid OEKs) continue normally; the
-    scope itself is not lost. The bad author is removable from
-    THEIR view.
-- **Pre-v1.0 todo (corrected per codex 2nd-round review)**: a
-  recovery subcommand isn't trivial — re-fetching from
-  cursor=0 still re-replays the poisoned `member.change` and
-  ReplayScope still fails on the bad sealed-box. The honest
-  recovery path requires either:
-  - **Replay-skip semantics**: a flag that allows
-    `chain.ReplayScope` to skip our own key_delivery on a
-    specific seq when explicitly authorized by the operator
-    (e.g. `fd0 scope skip-key-delivery <scope> <seq>`). The
-    chain still verifies signatures + projection content for
-    the affected event; only the OEK extraction is skipped.
-    The next member.change addressed to us re-establishes
-    OEK access.
-  - **OR a re-admit checkpoint**: after a member.change
-    op="add" of the victim by another current member, the
-    victim resumes from that genesis-like checkpoint with a
-    fresh OEK delivery, treating the bricked prefix as
-    cryptographically inaccessible.
-  Both paths are operator-driven; neither restores access to
-  events authored UNDER the era between bricking and recovery.
-  Path 1 is preferred (no protocol change); call it Wave H.
+- **Mitigation** 📋: mitigated for the scope, NOT for the victim. The server validates the recipient set (every post-mutation member receives one delivery) but cannot validate sealed-box contents (the OEK inside).
+  - The victim's `chain.ReplayScope` errors at the poisoned `member.change` and cannot advance past it. A later `member.change op="remove"` of the bad author does not rescue the victim — replay is stuck before reaching it.
+  - The victim is bricked for that scope until out-of-band recovery: another current member captures the post-remove chain prefix and physically re-delivers the recovered OEK, or re-bootstraps via re-discovery plus a fresh `member.change op=add` carrying a clean OEK.
+  - Other members (who got valid OEKs) continue normally; the scope is not lost.
+- **Pre-v1.0 todo (Wave H)**: a recovery subcommand is non-trivial — re-fetching from `cursor=0` still re-replays the poisoned event. The honest recovery path is either:
+  - **Replay-skip**: an operator-authorised flag (e.g. `fd0 scope skip-key-delivery <scope> <seq>`) that lets `ReplayScope` skip our own key_delivery on a specific seq while still verifying signatures and projection content for that event. The next `member.change` addressed to us re-establishes OEK access. Preferred — no protocol change.
+  - **Re-admit checkpoint**: after a fresh `member.change op="add"` of the victim by another member, the victim resumes from that checkpoint with a clean OEK and treats the bricked prefix as cryptographically inaccessible.
+  Neither path restores events authored during the bricked era.
 
 #### T29 — Insider projection-poisoning
 - **Adversary**: A4.
@@ -604,58 +555,20 @@ Status legend:
 
 #### T48 — Per-IP brute-force / DoS
 - **Adversary**: A2.
-- **Mitigation** 🛡️: token-bucket rate limiter at three classes:
-  - `AcquireAuthAttempt` (per-IP, fires BEFORE body read /
-    sig verify) — covers every authenticated handler via
-    `verifyHTTPSig`
-  - `AcquireRegister` (per-IP-per-hour, low cap) — covers
-    `handleRegister` only. `handleServerInfo` is also
-    unauthenticated but is INTENTIONALLY left unrated for
-    v1.0 (see residual-exposure note below) because clients
-    refetch it on every sync for pin-mismatch detection and
-    a 5/hour cap would 429-out normal users behind a NAT.
-  - `AcquireWrite` / `AcquireBytes` (per-pubkey, post-auth)
-- **Translog public proof endpoints**: `handleSTH`,
-  `handleInclusionProof`, `handleConsistencyProof` are now
-  per-IP rate-limited via `AcquireProof` (default 120/min).
-  Closes the v1.0 residual exposure that the previous version
-  of this entry flagged. The handlers walk SQL per request and
-  are NOT cached, so an attacker with a high-fanout client
-  could otherwise drive non-trivial CPU + IO without
-  authenticating. Cap is generous: legitimate clients
-  verifying many proofs in a single pull don't get 429-out.
-- **`handleServerInfo`**: still NOT rate-limited. Returns a
-  cached ~256-byte blob from memory; serving unbounded
-  requests is cheap. The previous attempt to put it on the
-  AcquireRegister bucket (5/hour) blocked normal client
-  behaviour — clients refetch server-info on every sync for
-  pin-mismatch detection.
-- **Code**: `server/auth.go`, `server/server.go`
-  (handleRegister, NOT handleServerInfo),
-  `server/ratelimit/limiter.go`.
+- **Mitigation** 🛡️: token-bucket rate limiter, five buckets:
+  - `AcquireAuthAttempt` (per-IP) — fires before body read and signature verify; covers every authenticated handler via `verifyHTTPSig`.
+  - `AcquireRegister` (per-IP, low cap) — covers `handleRegister` only.
+  - `AcquireProof` (per-IP, default 120/min) — covers public translog endpoints `handleSTH`, `handleInclusionProof`, `handleConsistencyProof`. These walk SQL per request and are not cached, so without a cap an attacker could drive non-trivial CPU + IO unauthenticated. The cap is generous: a legitimate client verifying many proofs in one pull stays under it.
+  - `AcquireWrite` (per-pubkey, post-auth) — operations rate.
+  - `AcquireBytes` (per-pubkey, post-auth) — bytes rate.
+- **`handleServerInfo` is intentionally NOT rate-limited**. It returns a cached ~256-byte blob from memory; clients refetch it on every sync for pin-mismatch detection, so even a 5/hour cap would 429 legitimate users behind a NAT.
+- **Code**: `server/auth.go`, `server/server.go`, `server/ratelimit/limiter.go`.
 
 #### T49 — Witness archive storage growth
-- **Adversary**: A1 (operationally) — not actually exploitable
-  by an attacker.
+- **Adversary**: A1 (operationally). Not exploitable by an attacker.
 - **Status**: 📋 acknowledged operational consideration.
-- **Codex threat-model review correction**: the original entry
-  claimed witness has an `IngestSTH` rate-limited path. That is
-  **incorrect** — the witness has no inbound ingest endpoint;
-  it polls upstream servers OUTBOUND on a schedule
-  (`witness.Witness.poll`).
-- **Storage growth bound (corrected per codex 2nd-round
-  review)**: at most one **distinct-root** row per polling
-  interval per chain. T35 / T40 explicitly preserve same-size
-  divergent roots as evidence, so a malicious server feeding
-  different roots at the same tree_size grows the table by
-  one row per *distinct* root seen, not one per tree_size.
-  In the honest case (server is monogamous), it's one row per
-  tree_size advance. The witness layer DOES bound response
-  read size on the outbound poll so a malicious upstream
-  cannot OOM-crash the witness. Operational bound: the
-  operator runs storage GC / archives older STHs.
-- **Code**: `witness/witness.go` (poll loop, bounded reads),
-  `witness/store.go` Insert (per-distinct-root storage).
+- **Mitigation**: the witness has no inbound ingest endpoint — it polls upstream servers outbound on a schedule (`witness.Witness.poll`). Storage grows by at most one row per *distinct* `(server, chain, tree_size, root_hash)` tuple. In the honest case (server is monogamous), one row per `tree_size` advance. Same-size divergent roots are intentionally preserved as evidence (T35, T40). The poll loop bounds response read size, so a malicious upstream cannot OOM-crash the witness. Operational bound: the operator archives or GCs older STHs.
+- **Code**: `witness/witness.go` (poll loop, bounded reads), `witness/store.go` Insert (per-distinct-root storage).
 
 ### 3.8 Operational / metadata
 

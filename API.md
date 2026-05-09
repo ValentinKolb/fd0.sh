@@ -14,28 +14,36 @@ Authorization: fd0-sig v1
     sig=<base64(signature)>
 
 signed_input = "fd0-http-request-v1" || cbor({
-    method   : <uppercase HTTP method>,
-    path     : <URL path, no query>,
-    query    : { * tstr => tstr },          ; canonical: keys sorted lexicographically;
+    method     : <uppercase HTTP method>,
+    path       : <URL path, no query>,
+    query      : { * tstr => tstr },        ; canonical: keys sorted lexicographically;
                                              ; multi-value keys forbidden in v1
-    ts       : ts,
-    nonce    : nonce,
-    body_sha : SHA-256(request body, or SHA-256("") if empty),
+    ts         : ts,
+    nonce      : nonce,
+    body_sha   : SHA-256(request body, or SHA-256("") if empty),
+    server_pub : <recipient server's translog pubkey>,
 })
 signature = Ed25519(super_priv, signed_input)
 ```
 
-Server checks (in order):
+`server_pub` binds the signature to a specific server (T21) — clients use the pinned translog pubkey from `/v1/server-info`.
+
+Server checks (in `verifyHTTPSig`, in order):
 
 ```
-1. |now - ts| ≤ 300 s                    → else 401 stale_ts
-2. (pk, nonce) not seen in last 600 s    → else 401 replay
-3. pk matches a registered user          → else 401 unknown_identity
-4. signature verifies                    → else 401 bad_sig
-5. for scope endpoints: pk ∈ scope.auth_list → else 403 not_authorized
+1. per-IP pre-auth rate limit                → else 429
+2. header well-formed (scheme, pk, nonce, ts, sig sizes) → else 401 bad scheme/pk/nonce/ts/sig
+3. |now - ts| ≤ 300 s                        → else 401 stale_ts
+4. read body; reject multi-value query keys  → else 400
+5. build signed_input; signature verifies    → else 401 bad_sig
+6. pk is a registered user                   → else 401 unregistered_pk
+7. (pk, nonce) inserted into nonce table (ts stored) → else 401 replay
+8. per-pubkey post-auth rate limit           → else 429
 ```
 
-`POST /users` and `GET /users/<shortId>/events` are unauthenticated; the embedded event signature (or the public-fetch nature) provides authentication.
+Per-endpoint authorization runs after `verifyHTTPSig`. Examples: `GET /users/<shortId>/events` requires `pk == user_super_pub` (else 403); `/sync` push items return `bad_author` per item when `author ≠ pk`; `/sync` pull of a non-member scope returns `200` with `denied: true` (not 403).
+
+`POST /users` is unauthenticated; the embedded event signature provides binding to the new identity. All other authenticated user-chain endpoints additionally require the signing pubkey to equal the chain's `user_super_pub`.
 
 ---
 
@@ -54,12 +62,13 @@ Request:
 }
 
 Errors:
-  400 bad_event        seq != 0, prev_hash != nil, kind != "auth.set", or invariant
-  400 bad_sig          signature does not verify
+  400 bad_event        schema, kind, or signature invariant (incl. signature does not verify)
   409 super_pub_taken  user_super_pub already registered
 ```
 
 ### 2.2 `GET /users/<shortId>/events` — fetch identity chain
+
+Authenticated. `pk` MUST equal the chain's `user_super_pub`.
 
 Query modes:
 
@@ -98,8 +107,8 @@ Request:
 { event_id : tstr, seq : uint }
 
 Errors:
-  400 bad_event        schema or kind invariant (e.g., empty active set)
-  400 bad_sig          signature does not verify
+  400 bad_event        schema, kind, or signature invariant (e.g., empty active set,
+                       signature does not verify)
   409 divergence       prev_hash does not match chain tip
                        (response includes current_tip_seq, current_tip_hash)
   409 dup              event_id already exists
@@ -142,19 +151,22 @@ PushResult =
 
 `pull` returns events contiguous from `cursor.seq + 1`. Clients verify the chain link to their stored `cursor.hash` before advancing the cursor.
 
-Push rejection reasons:
+Push reasons (always with `accepted: false`):
 
-| reason                    | optional fields                                                  |
+| reason                    | meaning                                                          |
 | ------------------------- | ---------------------------------------------------------------- |
-| `bad_sig`                 |                                                                  |
-| `bad_author`              | (author not in scope.auth_list)                                  |
-| `divergence`              | `current_tip_event_id`, `current_tip_hash`, `current_oek_version_max` |
-| `dup`                     | `existing_event_id`                                              |
-| `bad_kind`                |                                                                  |
-| `stale_oek_version`       | `current_oek_version_max`                                        |
-| `future_oek_version`      | `current_oek_version_max`                                        |
-| `invalid_key_deliveries`  | one of: `missing_recipients`, `extra_recipients`                 |
-| `payload_too_large`       | `limit_bytes`                                                    |
+| `bad_sig`                 | event signature does not verify                                  |
+| `bad_author`              | event author ≠ HTTP auth pk                                      |
+| `bad_kind`                | unrecognised kind or generic schema invariant                    |
+| `divergence`              | `prev_hash` or seq mismatch                                      |
+| `stale_oek_version`       | event's `oek_version` < server's current                         |
+| `future_oek_version`      | event's `oek_version` > server's current                         |
+| `invalid_key_deliveries`  | recipient set doesn't match post-mutation member set             |
+| `scope_mismatch`          | `signed_prefix.scope` ≠ outer push frame `scope`                 |
+| `not_found`               | scope unknown                                                    |
+| `out_of_range`            | translog index/size invalid for this chain                       |
+| `internal`                | server-side error                                                |
+| `dup`                     | `event_id` already stored; idempotent — reply still carries `event_id`, `seq`, `scope_id`, STH, inclusion proof, and (if requested) consistency proof |
 
 Scope creation has no dedicated endpoint: a scope is created by pushing a `member.change` with `prev_hash=nil`, `op="add"`, `member == author`, and one `KeyDelivery` to the author. The server derives `scope_id = "s_" + base32(truncate_128(SHA-256(event_id)))` and assigns it in the `PushResult`.
 
@@ -187,7 +199,7 @@ Content-Type: application/json
 | 201  | Created                                                |
 | 400  | Malformed body, invariant violation                    |
 | 401  | Auth header invalid, missing, or replayed              |
-| 403  | Authenticated but not authorized for this scope        |
+| 403  | Authenticated but not authorized (e.g. user-chain owner mismatch) |
 | 404  | User or scope not found                                |
 | 409  | Divergence, duplicate, or version conflict             |
 | 413  | Payload exceeds limit (`STORAGE.md` §9)                |

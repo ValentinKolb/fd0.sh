@@ -428,7 +428,14 @@ func saveWithWraps(path string, userSuperPub []byte, body *proto.VaultBody, payl
 // unwrapPayloadKey iterates resolvers, finds the WrappedKey whose K_unlock
 // successfully decrypts the payload_key, and returns it together with that
 // K_unlock. Caller wipes the returned unlockKey when done.
+//
+// On full failure we surface the LAST resolver error rather than a generic
+// "no matching auth method" — otherwise a YubiKey parse / PIN / card error
+// gets swallowed and the user sees a misleading message. The fallback
+// "no matching auth method" only fires when no wrap matched any
+// resolver's MethodType (i.e. mismatched build, not credential failure).
 func unwrapPayloadKey(v *proto.VaultFile, resolvers []MethodResolver) (*proto.WrappedKey, []byte, []byte, error) {
+	var lastErr error
 	for _, r := range resolvers {
 		mt := r.MethodType()
 		for i, w := range v.WrappedPayloadKeys {
@@ -437,6 +444,7 @@ func unwrapPayloadKey(v *proto.VaultFile, resolvers []MethodResolver) (*proto.Wr
 			}
 			uk, err := r.UnlockKey(w.PublicParams)
 			if err != nil {
+				lastErr = err
 				continue
 			}
 			hdr := proto.WrappedKeyHeader{
@@ -455,11 +463,15 @@ func unwrapPayloadKey(v *proto.VaultFile, resolvers []MethodResolver) (*proto.Wr
 			pk, err := crypto.AEADOpen(uk, w.WrapNonce, w.Wrapped, aad)
 			if err != nil {
 				crypto.Wipe(uk)
+				lastErr = fmt.Errorf("vault: AEAD-open wrap %s: %w", w.MethodID, err)
 				continue
 			}
 			wk := v.WrappedPayloadKeys[i]
 			return &wk, pk, uk, nil
 		}
+	}
+	if lastErr != nil {
+		return nil, nil, nil, lastErr
 	}
 	return nil, nil, nil, errors.New("vault: no matching auth method or wrong credential")
 }

@@ -54,6 +54,38 @@ func ReadPassphrase(prompt string) ([]byte, error) {
 	return []byte(line), nil
 }
 
+// ReadOptionalPIN prompts on stderr and reads a (possibly-empty) PIN
+// from stdin. Mirrors ReadPassphrase's TTY/non-TTY split; the only
+// difference is that an empty input is a valid response (signalling
+// "touch-only YubiKey, no PIN policy"). Returns a nil byte slice for
+// empty input so the caller can dispatch on len(pin) == 0.
+func ReadOptionalPIN(prompt string) ([]byte, error) {
+	if IsTTY(os.Stdin) {
+		fmt.Fprint(os.Stderr, prompt)
+		b, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Fprintln(os.Stderr)
+		if err != nil {
+			return nil, err
+		}
+		if len(b) == 0 {
+			return nil, nil
+		}
+		return b, nil
+	}
+	r := sharedStdin()
+	line, err := r.ReadString('\n')
+	if err != nil && err != io.EOF {
+		return nil, err
+	}
+	for len(line) > 0 && (line[len(line)-1] == '\n' || line[len(line)-1] == '\r') {
+		line = line[:len(line)-1]
+	}
+	if line == "" {
+		return nil, nil
+	}
+	return []byte(line), nil
+}
+
 // ReadPassphraseConfirm prompts twice and rejects if the two reads differ.
 func ReadPassphraseConfirm(prompt1, prompt2 string) ([]byte, error) {
 	a, err := ReadPassphrase(prompt1)

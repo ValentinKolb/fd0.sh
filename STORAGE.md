@@ -6,11 +6,13 @@ Companion to `PROTOCOL.md`. Server uses SQLite; client uses append-only CBOR fil
 
 ## 1. Properties
 
-- Server and client store the same protocol-defined CBOR bytes.
-- Each `auth.set`, `secret.set`, and `member.change` is a self-contained snapshot. Client reads are O(1) lookups against an in-memory index.
-- Decrypted secret material is never written to disk. `super_priv` and OEKs live only in `vault.enc`.
-- Clients store events for their own user chain plus scopes they are currently a member of. The server stores all events.
-- The vault binds the latest accepted seq+hash for each chain. Single-file rollback is detected on open.
+- Server and client store byte-identical protocol-defined CBOR.
+- Every `auth.set`, `secret.set`, and `member.change` is a self-contained snapshot.
+- Client reads are O(1) lookups against an in-memory index rebuilt at open.
+- Decrypted secret material never touches disk; `super_priv` and OEKs live only inside `vault.enc`.
+- Clients store events only for their own user chain and current-membership scopes.
+- The server stores every event forever.
+- The vault binds the latest accepted seq+hash for each chain, so single-file rollback is detected on open.
 - Local size grows with the active key set, not chain lifetime or member churn.
 
 ---
@@ -79,7 +81,7 @@ Layout under `~/.fd0/` (override with `FD0_HOME`):
     recovery/                    -- optional, user-managed exports (see PROTOCOL.md §6.3)
 ```
 
-In-memory state (current member set, secret_index, OEK selection per event) is rebuilt at process start by the replay function in §4.
+In-memory state (member set, secret_index, OEK selection per event) is rebuilt at process start by the replay function in §4.
 
 ### 3.1 Chain files
 
@@ -101,8 +103,8 @@ Append rules:
 
 Crash recovery on open:
 
-- Decode events sequentially. On a partial decode, `truncate` at the start offset of the failing event.
-- Tail-truncation is safe only under the single-writer lock (§3.4). A partial event from one writer followed by a complete event from another would lead to incorrect truncation without the lock.
+- Decode events sequentially. On partial decode, `truncate` at the start offset of the failing event.
+- Tail-truncation is safe only under the single-writer lock (§3.4); without the lock, a partial event from one writer followed by a complete event from another would truncate incorrectly.
 
 ### 3.2 `vault.enc`
 
@@ -132,7 +134,7 @@ clear_after_seconds = 30
 
 ### 3.4 Concurrency
 
-A single advisory exclusive lock at `~/.fd0/.lock` (`flock(LOCK_EX)`) covers append, compaction, tail-truncation on open, vault re-seal, scope unlink, and config writes. v1 assumes a single fd0 process per `FD0_HOME`.
+One advisory exclusive lock at `~/.fd0/.lock` (`flock(LOCK_EX)`) covers append, compaction, tail-truncation on open, vault re-seal, scope unlink, and config writes. v1 assumes one fd0 process per `FD0_HOME`.
 
 ---
 
@@ -282,7 +284,7 @@ Kept events do not form a contiguous prev_hash chain in the local file. Verifica
 
 ## 6. Subscriptions and discovery
 
-A client maintains chain files for its own user chain and for each scope it is a current member of. Other events are not requested in `/sync` and not stored locally.
+A client maintains chain files for its own user chain and for each scope it is a current member of. Other events are neither requested in `/sync` nor stored locally.
 
 ### 6.1 New memberships
 
@@ -362,7 +364,7 @@ Steps 1–5 as in 7.3, then:
 cp -r ~/.fd0/  /backup/
 ```
 
-The vault is encrypted; events are public-equivalent. A torn backup is recovered on next open via §4 + §4.5.
+The vault is encrypted; events are public-equivalent. A torn backup self-heals on next open via §4 + §4.5.
 
 ### 8.2 Server
 

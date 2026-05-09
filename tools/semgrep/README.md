@@ -1,8 +1,6 @@
 # fd0 semgrep rules
 
-Each rule corresponds to a real bug class found during the
-multi-module security review. The rules act as guardrails so
-the same bug class can never re-emerge silently.
+Each rule covers a real bug class found during security review. Rules act as guardrails so the same class cannot reappear silently.
 
 ## Rules
 
@@ -44,12 +42,10 @@ Add to your CI pipeline:
 
 When a new bug is found:
 
-1. Reproduce as a unit test FIRST.
+1. Reproduce as a unit test first.
 2. Fix the bug.
-3. Write a semgrep rule that would have caught the bug pattern.
-4. Document it here with a link to the bug commit.
-5. Add a `// fd0-semgrep:disable=<rule-id>` comment for any
-   intentional exception (rare; the goal is no exceptions).
+3. Write a semgrep rule that would have caught the pattern.
+4. Document it in the table above with a link to the bug commit.
+5. Add a `// fd0-semgrep:disable=<rule-id>` comment for any intentional exception (rare; the goal is none).
 
-The rule should be precise enough that hand-written exceptions
-are NEVER needed. A noisy rule is a broken rule.
+The rule should be precise enough that hand-written exceptions are never needed. A noisy rule is a broken rule.

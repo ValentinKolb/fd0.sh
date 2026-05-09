@@ -41,6 +41,7 @@ type rootCLI struct {
 type initCmd struct{}
 type unlockCmd struct {
 	AgentBin string `name:"agent-bin" help:"Path to fd0-agent binary." env:"FD0_AGENT_BIN"`
+	Method   string `name:"method" help:"Auth method to use ('passphrase' or 'yubikey'). Default: pick the only enrolled method, or first by method_id when multiple."`
 }
 type lockCmd struct{}
 type statusCmd struct{}
@@ -177,7 +178,7 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 	case "init":
 		return cli.RunInit(ctx)
 	case "unlock":
-		return cli.RunUnlock(ctx, c.Unlock.AgentBin)
+		return cli.RunUnlock(ctx, c.Unlock.AgentBin, c.Unlock.Method)
 	case "lock":
 		return cli.RunLock(ctx)
 	case "status":

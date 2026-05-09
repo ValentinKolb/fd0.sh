@@ -1,9 +1,6 @@
 # Wire-format compat snapshot v1
 
-Golden-file snapshot pinning the on-disk format produced by fd0 v1.0.
-Any change to vault.enc / chain CBOR layout, vault wrap construction,
-AAD inputs, or replay semantics that breaks compatibility with these
-files will fail `TestWireCompatV1Verify`.
+Golden-file snapshot pinning the on-disk format produced by fd0 v1.0. `TestWireCompatV1Verify` fails on any change to vault.enc / chain CBOR layout, vault wrap construction, AAD inputs, or replay semantics that breaks compatibility with these files.
 
 ## Files
 
@@ -15,20 +12,11 @@ files will fail `TestWireCompatV1Verify`.
 
 ## Reproducibility
 
-The identity (user_super_pub) is derived from a fixed
-`sha-512("fd0-wire-compat-v1-identity")[:32]` seed, so regenerating
-the snapshot from the same code reliably produces the same
-`user_super_pub`. Random nonces inside AEAD wraps + the OEK make the
-binary bytes non-deterministic across regenerations — the test only
-cares that the snapshot decrypts cleanly and replays to the expected
-state, not byte-equality.
+The identity (`user_super_pub`) is derived from a fixed `sha-512("fd0-wire-compat-v1-identity")[:32]` seed, so regenerating from the same code reliably produces the same pubkey. Random nonces inside AEAD wraps and the OEK make the binary bytes non-deterministic across regenerations; the test asserts that the snapshot decrypts cleanly and replays to the expected state, not byte equality.
 
 ## When to regenerate
 
-ONLY when a wire-format break is intentional. Bump to `testdata/v2/`,
-duplicate the regenerator + verifier with v2 expectations, leave the
-v1 snapshot in place so we keep test coverage of the old format
-(useful for migration logic if a future version adds one).
+Only when a wire-format break is intentional. Bump to `testdata/v2/`, duplicate the regenerator and verifier with v2 expectations, and leave the v1 snapshot in place so old-format coverage stays (useful for migration logic if a future version adds one).
 
 ```sh
 WIRE_COMPAT_REGEN=1 go test ./internal/wirecompat \

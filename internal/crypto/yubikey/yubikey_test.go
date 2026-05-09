@@ -22,7 +22,7 @@ func TestValidatePIN(t *testing.T) {
 		{"abc🙂12", true},   // multi-byte UTF-8 rejected (Yubico PIV is ASCII)
 	}
 	for _, c := range cases {
-		err := ValidatePIN(c.pin)
+		err := ValidatePIN([]byte(c.pin))
 		if (err != nil) != c.wantErr {
 			t.Errorf("ValidatePIN(%q) err=%v, wantErr=%v", c.pin, err, c.wantErr)
 		}

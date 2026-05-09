@@ -55,14 +55,33 @@ func Open(opts OpenOptions) (Card, error) {
 	if err != nil {
 		return nil, fmt.Errorf("yubikey: open %q: %w", cards[0], err)
 	}
-	if opts.PIN != "" {
-		if err := yk.VerifyPIN(opts.PIN); err != nil {
+	if len(opts.PIN) > 0 {
+		// go-piv's VerifyPIN takes string; the conversion here is a
+		// single immutable copy that lives only for the duration of
+		// the call. We don't store this string anywhere; the long-
+		// lived state is the caller-owned []byte they can wipe.
+		if err := yk.VerifyPIN(string(opts.PIN)); err != nil {
 			yk.Close()
 			return nil, fmt.Errorf("yubikey: verify PIN: %w", err)
 		}
 	}
 
-	w := &pivWrapper{yk: yk, slot: slot, pivSlot: pivSlot, pin: opts.PIN}
+	// pivWrapper takes ownership of the PIN bytes for the duration of
+	// the session so SharedSecret can re-authenticate under
+	// PINPolicyOnce slots. We copy rather than alias so the caller is
+	// free to wipe their copy as soon as Open returns.
+	var pinCopy []byte
+	if len(opts.PIN) > 0 {
+		pinCopy = append([]byte(nil), opts.PIN...)
+	}
+	w := &pivWrapper{yk: yk, slot: slot, pivSlot: pivSlot, pin: pinCopy}
+
+	// closeOnErr wipes the cached PIN copy and releases the card. Used
+	// on every Open error path below so a half-constructed pivWrapper
+	// does not leak the PIN bytes on the heap.
+	closeOnErr := func() {
+		_ = w.Close()
+	}
 
 	// Load the slot's metadata so PublicX25519 / SharedSecret answer
 	// without an extra round trip per call. Three outcomes:
@@ -76,12 +95,12 @@ func Open(opts OpenOptions) (Card, error) {
 	switch {
 	case err == nil:
 		if info.Algorithm != piv.AlgorithmX25519 {
-			yk.Close()
+			closeOnErr()
 			return nil, fmt.Errorf("yubikey: slot 0x%02x has algorithm %v, want X25519 (firmware ≥ 5.7 required)", byte(slot), info.Algorithm)
 		}
 		ecdhPub, ok := info.PublicKey.(*ecdh.PublicKey)
 		if !ok || ecdhPub.Curve() != ecdh.X25519() {
-			yk.Close()
+			closeOnErr()
 			return nil, fmt.Errorf("yubikey: slot 0x%02x KeyInfo did not return an X25519 public key", byte(slot))
 		}
 		w.slotPub = ecdhPub
@@ -91,7 +110,7 @@ func Open(opts OpenOptions) (Card, error) {
 		// Slot has not been provisioned. Leave slotPub nil; Enroll
 		// populates it on the next session.
 	default:
-		yk.Close()
+		closeOnErr()
 		return nil, fmt.Errorf("yubikey: slot 0x%02x KeyInfo: %w", byte(slot), err)
 	}
 
@@ -123,7 +142,7 @@ func Initialize(slot SlotID, pin string, touch TouchPolicy, pinPolicy PinPolicy)
 //   - Existing keys in that slot are overwritten. The caller is
 //     responsible for confirming this is intended.
 func Enroll(opts EnrollOptions) (*EnrollResult, error) {
-	if opts.PIN != "" {
+	if len(opts.PIN) > 0 {
 		if err := ValidatePIN(opts.PIN); err != nil {
 			return nil, err
 		}
@@ -156,7 +175,7 @@ func Enroll(opts EnrollOptions) (*EnrollResult, error) {
 	}
 
 	pinPolicy := piv.PINPolicyNever
-	if opts.PIN != "" {
+	if len(opts.PIN) > 0 {
 		pinPolicy = piv.PINPolicyOnce
 	}
 	touchPolicy := mapTouchPolicy(opts.TouchPolicy)
@@ -183,7 +202,7 @@ func Enroll(opts EnrollOptions) (*EnrollResult, error) {
 	return &EnrollResult{
 		Slot:      slot,
 		X25519Pub: out,
-		HasPIN:    opts.PIN != "",
+		HasPIN:    len(opts.PIN) > 0,
 	}, nil
 }
 
@@ -199,7 +218,7 @@ type pivWrapper struct {
 	yk          *piv.YubiKey
 	slot        SlotID
 	pivSlot     piv.Slot
-	pin         string
+	pin         []byte // owned copy; wiped by Close
 	slotPub     *ecdh.PublicKey // nil iff slot has not been provisioned
 	pinPolicy   piv.PINPolicy   // populated alongside slotPub
 	touchPolicy piv.TouchPolicy // populated alongside slotPub
@@ -252,8 +271,11 @@ func (p *pivWrapper) SharedSecret(ephPub []byte) ([]byte, error) {
 		return nil, fmt.Errorf("yubikey: slot 0x%02x SharedSecret: parse ephPub: %w", byte(p.slot), err)
 	}
 
+	// Convert PIN to string at the go-piv call boundary only. The
+	// resulting immutable string lives for the duration of this stack
+	// frame; long-lived storage stays as the wipeable []byte above.
 	priv, err := p.yk.PrivateKey(p.pivSlot, p.slotPub, piv.KeyAuth{
-		PIN:       p.pin,
+		PIN:       string(p.pin),
 		PINPolicy: p.pinPolicy,
 	})
 	if err != nil {
@@ -283,8 +305,16 @@ func (p *pivWrapper) SharedSecret(ephPub []byte) ([]byte, error) {
 	return shared, nil
 }
 
-// Close releases the smartcard handle.
-func (p *pivWrapper) Close() error { return p.yk.Close() }
+// Close wipes the cached PIN copy and releases the smartcard handle.
+func (p *pivWrapper) Close() error {
+	if len(p.pin) > 0 {
+		for i := range p.pin {
+			p.pin[i] = 0
+		}
+		p.pin = nil
+	}
+	return p.yk.Close()
+}
 
 // ---- helpers ----
 

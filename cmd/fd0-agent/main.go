@@ -103,7 +103,11 @@ func main() {
 		}
 	}
 	srv, err := agent.Listen(paths, agent.Config{
-		IdleTimeout: idle, MaxLifetime: maxLife, Logger: log, Scheduler: sched,
+		IdleTimeout:        idle,
+		MaxLifetime:        maxLife,
+		Logger:             log,
+		Scheduler:          sched,
+		NewYubikeyResolver: newYubikeyResolverFactory(),
 	})
 	if err != nil {
 		log.Error("listen", "err", err)

@@ -28,7 +28,7 @@ func run() error {
 		// v1 only supports SlotKeyManagement; the fixture's textual
 		// slot field is hard-coded in Record() to match.
 		Slot: yubikey.SlotKeyManagement,
-		PIN:  *pin,
+		PIN:  []byte(*pin),
 	})
 	if err != nil {
 		return fmt.Errorf("open YubiKey: %w", err)

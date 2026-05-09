@@ -32,6 +32,14 @@ type Config struct {
 	// Scheduler is optional. When set, the agent runs auto-sync per its
 	// configuration and triggers an immediate sync after every unlock.
 	Scheduler *Scheduler
+	// NewYubikeyResolver, when set, lets the agent unlock vaults whose
+	// active method is a YubiKey. The factory receives the PIN (empty
+	// for touch-only slots) and returns a vault.MethodResolver that
+	// will run the on-card sealed-box open. Build-tag split lives in
+	// cmd/fd0-agent: the yubikey-tagged build injects a real factory;
+	// the pure-Go build leaves it nil and the agent rejects yubikey
+	// unlocks with a clean error.
+	NewYubikeyResolver func(pin []byte) vault.MethodResolver
 }
 
 // Server is the running agent. Construct with Listen.
@@ -262,12 +270,23 @@ func (s *Server) handleUnlock(u *UnlockReq) *Response {
 	if err != nil {
 		return errResp(err.Error())
 	}
+	// Sensitive credentials decoded from the wire frame: wipe before
+	// returning so the bytes don't linger on the heap past their use.
+	// (The wire-frame buffer itself was already wiped in ReadFrame.)
+	defer crypto.Wipe(u.Passphrase)
+	defer crypto.Wipe(u.YubikeyPIN)
+
 	var resolver vault.MethodResolver
 	switch u.MethodType {
 	case proto.AuthPassphrase:
 		resolver = vault.PassphraseResolver{Passphrase: u.Passphrase}
+	case proto.AuthYubikey:
+		if s.cfg.NewYubikeyResolver == nil {
+			return errResp(vault.ErrYubikeyNotConfigured.Error())
+		}
+		resolver = s.cfg.NewYubikeyResolver(u.YubikeyPIN)
 	default:
-		return errResp("unsupported method_type")
+		return errResp(fmt.Sprintf("unsupported method_type %q", u.MethodType))
 	}
 	res, err := vault.Open(v, []vault.MethodResolver{resolver})
 	if err != nil {

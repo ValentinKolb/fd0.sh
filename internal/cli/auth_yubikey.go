@@ -154,15 +154,13 @@ func RunAuthAddYubikey(ctx context.Context) error {
 // Pulled out so the CLI flow has a single failure point to map to the
 // user-facing message.
 //
-// We accept []byte (not string) for the PIN so the source memory is the
-// caller's wipeable buffer. The conversion to string happens once, here,
-// inline at the call boundary; the resulting immutable copy lives only
-// for the duration of the Enroll call (the yubikey package is the
-// stable boundary at which PIN must be a string per its API contract).
+// PIN is forwarded as []byte through the yubikey package; the only
+// string conversion happens at the go-piv VerifyPIN boundary inside
+// the package, with no long-lived retention.
 func enrollYubikeySlot(pin []byte) ([]byte, error) {
 	res, err := yubikey.Enroll(yubikey.EnrollOptions{
 		Slot: yubikey.SlotKeyManagement,
-		PIN:  string(pin),
+		PIN:  pin,
 	})
 	if err != nil {
 		return nil, err
@@ -210,10 +208,9 @@ func promptYubikeyPIN(stdin *os.File, stderr *os.File) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	// ValidatePIN takes a string per the yubikey package's API. The
-	// string conversion here lives only for the duration of this call;
-	// the original wipeable byte buffer is what we return.
-	if err := yubikey.ValidatePIN(string(pinBytes)); err != nil {
+	// ValidatePIN takes []byte directly so no immutable string copy is
+	// created — the wipeable byte buffer flows all the way through.
+	if err := yubikey.ValidatePIN(pinBytes); err != nil {
 		crypto.Wipe(pinBytes)
 		return nil, err
 	}

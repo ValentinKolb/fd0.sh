@@ -18,6 +18,7 @@ import (
 	"io"
 	"net"
 
+	"github.com/valentinkolb/fd0.sh/internal/crypto"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
 )
 
@@ -136,6 +137,11 @@ type UnlockReq struct {
 	UserChainPath string `cbor:"user_chain_path,omitempty"`
 	MethodType    string `cbor:"method_type"` // "passphrase" | "yubikey"
 	Passphrase    []byte `cbor:"passphrase,omitempty"`
+	// YubikeyPIN is forwarded to the YubiKey resolver when MethodType
+	// is "yubikey". Empty for slots provisioned with PINPolicyNever
+	// (touch-only mode). The agent does not retain the PIN beyond
+	// the resolver call.
+	YubikeyPIN []byte `cbor:"yubikey_pin,omitempty"`
 }
 
 // UnlockResp returns the redacted VaultBody (super_priv replaced with zeros).
@@ -197,11 +203,17 @@ type ReSealWrap struct {
 // ---- frame I/O ----
 
 // WriteFrame writes one length-prefixed CBOR frame.
+//
+// The marshaled body may carry sensitive material (passphrases, YubiKey
+// PINs, K_unlock bytes embedded in UnlockReq / ReSealReq frames). We
+// wipe the local buffer before returning so the bytes don't outlive
+// the call on the heap. Bytes already on the wire are out of our reach.
 func WriteFrame(w io.Writer, v any) error {
 	body, err := proto.Marshal(v)
 	if err != nil {
 		return err
 	}
+	defer crypto.Wipe(body)
 	if len(body) > MaxFrame {
 		return fmt.Errorf("agent: frame too large (%d > %d)", len(body), MaxFrame)
 	}
@@ -215,6 +227,11 @@ func WriteFrame(w io.Writer, v any) error {
 }
 
 // ReadFrame reads one length-prefixed CBOR frame into v.
+//
+// Same hygiene as WriteFrame: the on-the-wire buffer is wiped after
+// Unmarshal copies the relevant fields into v. v itself can still
+// hold sensitive bytes; the caller is responsible for wiping its
+// fields.
 func ReadFrame(r io.Reader, v any) error {
 	var hdr [4]byte
 	if _, err := io.ReadFull(r, hdr[:]); err != nil {
@@ -228,6 +245,7 @@ func ReadFrame(r io.Reader, v any) error {
 	if _, err := io.ReadFull(r, buf); err != nil {
 		return err
 	}
+	defer crypto.Wipe(buf)
 	return proto.Unmarshal(buf, v)
 }
 

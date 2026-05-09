@@ -41,11 +41,11 @@ func requireHardware(t *testing.T) {
 	}
 }
 
-func hardwarePIN() string {
+func hardwarePIN() []byte {
 	if v := os.Getenv(pinEnvVar); v != "" {
-		return v
+		return []byte(v)
 	}
-	return defaultPIN
+	return []byte(defaultPIN)
 }
 
 // TestYubikeyIntegration_AutoEnroll provisions slot 0x9d with a fresh

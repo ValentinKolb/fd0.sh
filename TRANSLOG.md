@@ -16,7 +16,7 @@ Properties enforced by the protocol against a malicious server, given correct cl
 - **Compaction-safe verification.** Local compaction (`STORAGE.md` §5.4) drops superseded events from the client's chain file. The transparency log is anchored by STHs, not local events, so compaction does not reduce verifiability of new appends.
 - **Witness publishability.** A passive `fd0-witness` observer (§8) can fetch and archive STHs from any number of servers without needing membership in any scope. Witnesses see only `(chain_id, tree_size, root_hash, timestamp, signature)`; never plaintext events, never cleartext membership.
 
-The transparency log adds one new trust input — the server's signing pubkey — and one new ceremony — pubkey pinning on first contact, analogous to the safety-number ceremony for identity cards (`PROTOCOL.md` §2.3, `THREATS.md` §3).
+The transparency log adds one trust input (the server's signing pubkey) and one ceremony (first-contact pinning, analogous to identity-card safety-number verification — see `PROTOCOL.md` §2.3, `THREATS.md` §3).
 
 ---
 
@@ -155,7 +155,7 @@ Information leak: an unauthenticated `/v1/sth/{chain_id}` reveals (a) that the c
 
 `/sync` and the `/users` endpoints continue to require signed-request authentication per `API.md` §1.
 
-**Wire-additivity rule (cross-cutting).** As of v1, all CBOR map decoders in fd0 — server, client, witness — MUST silently ignore unknown keys. New optional fields can be added to existing map schemas without bumping the protocol. Strict-mode union matching is forbidden. (This rule is added to `API.md` §0.)
+**Wire-additivity rule (cross-cutting).** All CBOR map decoders in fd0 — server, client, witness — MUST silently ignore unknown keys. Optional fields can be added to existing map schemas without bumping the protocol version. Strict-mode union matching is forbidden.
 
 ### 5.1 Current STH
 
@@ -406,37 +406,41 @@ CREATE TABLE translog_server_key (
 
 ## 8. Witness binary
 
-`fd0-witness` is a separate binary that polls server STH endpoints and archives them. It does NOT cosign in v1.0 (deferred to v1.x).
+`fd0-witness` is a separate binary. It polls server STH endpoints, archives them, signs cosigns, and exposes a read API for clients.
 
 ### 8.1 Operation
 
-- Configured with one or more `(server_url, server_pub_pin, [chain_id…])` tuples.
-- Polls `GET /v1/sth/{chain_id}` per tuple at a configurable interval (default `1h`).
-- For each new STH the witness MUST execute, in order:
-  1. Verify `sth.signature` against the pinned server pubkey. Drop on failure (logs at WARN).
-  2. Verify `tree_size` is monotonically non-decreasing relative to the most recent persisted STH for `(server_url, chain_id)`. A regression is logged at **ERROR** and the offending STH is archived as evidence.
-  3. **Verify consistency** between the most recent persisted STH and the new STH via `GET /v1/proof/consistency?chain_id=…&from_size=A&to_size=B`. A failed proof — including a missing/refused proof endpoint — is logged at ERROR and both STHs are archived.
+Configured with one or more `(server_url, server_pub_pin, [chain_id…])` tuples. Polls `GET /v1/sth/{chain_id}` per tuple at a configurable interval (default `1h`).
 
-Step 3 is the critical one: it catches "different-size forks" where the server gives one history at size A and an incompatible history at size B with `B > A`. Same-size forks (step 2 special case via the unique-violation handler in §8.2) are only one of several equivocation shapes; consistency-proof verification across successive STHs catches the rest.
+For each new STH the witness MUST, in order:
+
+1. Verify `sth.signature` against the pinned server pubkey. Drop on failure (logs at WARN).
+2. Check `tree_size` is monotonically non-decreasing for `(server_url, chain_id)`. A regression is logged at ERROR and archived as evidence.
+3. Verify consistency from the most recent persisted STH to the new STH via `GET /v1/proof/consistency`. Failure (including a refused proof endpoint) is logged at ERROR; both STHs are archived.
+
+Step 3 catches "different-size forks" where the server presents history A at size N and incompatible history B at size N+k. Same-size forks are caught in §8.2 by the storage UNIQUE constraint.
 
 ### 8.2 Storage
 
-A SQLite file with one row per fetched STH:
+SQLite. One row per `(server_url, chain_id, tree_size, root_hash)`:
 
 ```sql
 CREATE TABLE witness_sths (
-    server_url  TEXT    NOT NULL,
-    chain_id    TEXT    NOT NULL,
-    tree_size   INTEGER NOT NULL,
-    root_hash   BLOB    NOT NULL,
-    timestamp   INTEGER NOT NULL,
-    signature   BLOB    NOT NULL,
-    fetched_at  INTEGER NOT NULL,
-    PRIMARY KEY (server_url, chain_id, tree_size)
+    server_url        TEXT    NOT NULL,
+    chain_id          TEXT    NOT NULL,
+    tree_size         INTEGER NOT NULL,
+    root_hash         BLOB    NOT NULL CHECK (length(root_hash) = 32),
+    timestamp         INTEGER NOT NULL,
+    signature         BLOB    NOT NULL CHECK (length(signature) = 64),
+    fetched_at        INTEGER NOT NULL,
+    witness_signature BLOB CHECK (witness_signature IS NULL OR length(witness_signature) = 64),
+    PRIMARY KEY (server_url, chain_id, tree_size, root_hash)
 );
 ```
 
-A unique-violation on insert with a different `root_hash` is the equivocation-detection event: same server, same chain, same tree size, different root. The witness logs:
+`root_hash` in the primary key is intentional: two STHs at the same `tree_size` with different roots coexist as evidence. Same-size equivocation is detected by counting distinct `root_hash` per `(server, chain, tree_size)` after insert. Different-size forks are detected via §8.1 step 3 and durably recorded in `witness_consistency_failures`.
+
+When same-size equivocation is detected the witness logs:
 
 ```
 fd0-witness: EQUIVOCATION DETECTED
@@ -448,19 +452,43 @@ fd0-witness: EQUIVOCATION DETECTED
 Both signatures verify under the pinned server pubkey.
 ```
 
-Both signed STHs are evidence: each is a server commitment to a different root at the same size. Publishing both proves the server equivocated.
+Both signed STHs are evidence: each is a server commitment to a different root at the same size.
 
-### 8.3 Cross-check by clients
+### 8.3 Cosign and cross-check
 
-A client MAY (v1.0 OPTIONAL, future MANDATORY) configure one or more witness URLs. On every sync round it fetches `GET /v1/sth/{cid}` from each witness, compares against its own most recent STH for the chain, and refuses to advance if a witness reports a divergent root for any `tree_size` the client has observed. Witnesses expose:
+The witness signs a cosign per archived STH using domain `fd0-witness-cosign-v1`:
 
 ```
-GET /v1/witness/sth/{server_url}/{chain_id}?tree_size={n}
-→ 200 STH (the one stored at that size, if known)
-→ 404 if not observed yet
+WitnessedSTH = {
+    sth         : STH,
+    server_url  : tstr,            ; canonical server URL
+    witness_pub : bstr .size 32,
+    witness_sig : bstr .size 64,   ; Ed25519(witness_priv,
+                                   ;   "fd0-witness-cosign-v1" || cbor({sth, server_url}))
+}
 ```
 
-Client cross-check is out of v1.0 spec scope — included here only to fix the design space.
+Cosigns are withheld whenever the consistency check in §8.1 step 3 fails — the witness will not become a signing oracle for forks.
+
+Witness HTTP API (all responses are `application/cbor`):
+
+```
+GET /v1/witness/server-info
+→ 200 — { witness_pub, witness_pub_hex }      ; not signed; pin out of band
+
+GET /v1/witness/sth/{server_b64}/{chain_id}[?tree_size=N]
+→ 200 — WitnessedSTH (latest cosigned, or at the requested tree_size)
+→ 404 if not observed, or no cosigned STH is available at the requested size
+→ 409 if multiple distinct roots are archived at the requested tree_size (equivocation evidence)
+
+GET /v1/witness/highest/{server_b64}/{chain_id}
+→ 200 — { observed: bool, tree_size: uint }   ; highest tree_size ever archived for (server, chain)
+
+GET /v1/witness/equivocation/{server_b64}/{chain_id}
+→ 200 — { equivocated: bool }                 ; true iff any tree_size has multiple distinct roots
+```
+
+Clients configure pinned witnesses in `[[witness]]` config and a quorum threshold via `[witness_policy] min_cosigns`. On every sync the client requires `min_cosigns` matching cosigns at the server-supplied STH; queries `/highest` to detect first-fetch rollback (T41); queries `/equivocation` to detect historical equivocation across the chain (T35). A 409 from `/sth` or a positive `/equivocation` is a hard refusal.
 
 ---
 
@@ -479,10 +507,8 @@ A fresh device performing a full pull (`cursor=0`) effectively gets `last_sth_si
 
 ## 10. Deferred to v1.x and beyond
 
-- **Witness cosign protocol.** Witnesses in v1.0 are observers. v1.x can add a cosign endpoint where witnesses sign `WitnessedSTH = {sth, witness_pub, witness_sig}` and clients require `≥N` witness cosigns before accepting. Wire format reserved here.
-- **Client-witness cross-check.** §8.3 sketches the client-side verification that closes the loop ("client refuses to advance if a witness reports a divergent root"). Wire format is reserved (`/v1/witness/sth/{server_url}/{chain_id}?tree_size={n}`); client implementation is v1.x.
-- **STH archive endpoint.** `translog_sths` is populated server-side; exposing it via `GET /v1/sth/{cid}?at_size={n}` enables witnesses to backfill, but is not strictly needed for v1.0. Optional in v1.0; mandatory once cross-check ships.
-- **Signature batching.** Each `/sync` round signs one STH per affected chain. With N pulled scopes the server signs N STHs. For large N, a future optimisation could sign a single "combined STH" over all N `(chain_id, root_hash)` pairs. Out of scope for v1.0.
+- **Server STH archive endpoint.** `translog_sths` is populated server-side; exposing `GET /v1/sth/{cid}?at_size={n}` would let witnesses backfill historical STHs. v1.0 serves only the current STH.
+- **Signature batching.** Each `/sync` round signs one STH per affected chain. With N pulled scopes the server signs N STHs. A combined STH over all N `(chain_id, root_hash)` pairs is a v2 optimisation.
 
 ---
 

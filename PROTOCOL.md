@@ -168,7 +168,7 @@ Login does not modify the chain.
 
 A credential change posts a new `auth.set` with the resulting active set. Removing a method requires that the new active set is non-empty.
 
-If `super_priv` is held only by a method suspected to be compromised, the user adds a new method first, then posts a follow-up event removing the old method. Both events are signed with `super_priv` accessible through any active method at signing time.
+If `super_priv` is held only by a method suspected to be compromised, the user adds a new method first, then posts a follow-up event removing the old one. Both events are signed with `super_priv` accessed via any active method at signing time.
 
 If `super_priv` is lost without a recovery export (§6.3), the identity is unrecoverable.
 
@@ -303,7 +303,7 @@ Existing members verify each `member.change` on receipt:
 
 For `op = "remove"` with `member == self`: skip steps 2–4 (the body is undecryptable). Verify signature, prev_hash, op, target, and that `key_deliveries` excludes self. Then drop the scope locally (`STORAGE.md` §5.4).
 
-A new member receiving `op = "add"` with `member == self` cannot run the comparison (no prior state) and trusts the inviter for the projection.
+A new member receiving `op = "add"` with `member == self` has no prior state to compare against and trusts the inviter's projection.
 
 ---
 
@@ -404,7 +404,7 @@ Re-seal:
 5. Zeroize payload_key and content from memory.
 ```
 
-A fresh `payload_key` is generated on credential rotation (i.e. on each call that re-wraps for every auth method: `init`, `recovery import`, and the `auth add`/`auth rm` paths that rebuild every wrap). The agent's routine body-only re-saves keep the cached `payload_key` stable across saves — rotating it per-save would require every auth method's `K_unlock`, which the agent does not hold for non-active methods.
+A fresh `payload_key` is generated on every path that re-wraps for every auth method: `init`, `recovery import`, and any `auth add`/`auth rm` path that rebuilds every wrap. Routine body-only re-saves keep the cached `payload_key` stable. Rotating it per-save would require every auth method's `K_unlock`, which the agent does not hold for non-active methods.
 
 Forward-secrecy bound: an attacker who recovers BOTH an old vault snapshot AND a K_unlock for any active wrap can decrypt all subsequent body snapshots until the next credential rotation. Closing this gap without per-save user interaction (e.g. via a per-body DEK chain) is reserved for v2.
 
@@ -457,7 +457,7 @@ Per-request `(pk, nonce, ts)` window of 300 s; nonces cached for 600 s. The sign
 
 ### 7.4 Identity-chain replay
 
-The user identity chain is hash-linked. A device with a local copy detects any server attempt to omit or reorder events. A first-fetch from a brand-new device trusts the server's response; cross-device chain-tip comparison out of band is the user-ceremony mitigation.
+The user identity chain is hash-linked. A device with a local copy detects any server attempt to omit or reorder events. First-fetch on a brand-new device trusts the server's response; the user-ceremony mitigation is out-of-band cross-device chain-tip comparison.
 
 ### 7.5 Cursor advancement
 
@@ -480,6 +480,6 @@ Implementations MUST NOT:
 - Mutate or delete events server-side.
 - Accept ciphertext under one AAD domain at another site.
 - Derive X25519 from Ed25519 by any path other than §1.2.
-- Garbage-collect events client-side based on protocol metadata alone; GC is permitted only after the corresponding event has been stored, decrypted, and applied to the local index.
+- Garbage-collect events client-side based on protocol metadata alone. GC is permitted only after the event has been stored, decrypted, and applied to the local index.
 
 Future versions preserve compatibility with v1 events at rest.

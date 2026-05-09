@@ -98,7 +98,7 @@ func TestEnroll_NoCard(t *testing.T) {
 	}
 	_, err := Enroll(EnrollOptions{
 		Slot:        SlotKeyManagement,
-		PIN:         "",
+		PIN:         nil,
 		TouchPolicy: TouchNever,
 	})
 	if err == nil {
@@ -118,7 +118,7 @@ func TestEnroll_RejectsBadPIN(t *testing.T) {
 	for _, pin := range []string{"123", "very-long-pin-over-eight", "12\x00345"} {
 		_, err := Enroll(EnrollOptions{
 			Slot:        SlotKeyManagement,
-			PIN:         pin,
+			PIN:         []byte(pin),
 			TouchPolicy: TouchNever,
 		})
 		if err == nil {

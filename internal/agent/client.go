@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"time"
+
+	"github.com/valentinkolb/fd0.sh/internal/vault"
 )
 
 // Client is a thin RPC wrapper over the agent socket. One Client per fd0
@@ -61,14 +64,38 @@ func (c *Client) Status() (*StatusResp, error) {
 	return r.Status, nil
 }
 
+// UnlockCredential carries the per-method secret(s) Client.Unlock needs.
+// Exactly one of Passphrase / YubikeyPIN should be populated for the
+// chosen MethodType; the agent ignores the irrelevant fields.
+type UnlockCredential struct {
+	Passphrase []byte
+	// YubikeyPIN is the PIV PIN required for SharedSecret operations
+	// when the slot was provisioned with PINPolicyOnce. Empty for
+	// touch-only enrollments (PINPolicyNever).
+	YubikeyPIN []byte
+}
+
 // Unlock calls OpUnlock. userChainPath is REQUIRED for the
 // rollback-detection check on the agent side; pass an empty string
 // only in tests that don't care.
-func (c *Client) Unlock(vaultPath, userChainPath, methodType string, passphrase []byte) (*UnlockResp, error) {
+//
+// Errors that match a known agent-side sentinel are mapped back so
+// callers can use errors.Is for control flow. Right now the only
+// mapped sentinel is vault.ErrYubikeyNotConfigured ("rebuild agent
+// with -tags=yubikey") — the helpful CLI message lives downstream of
+// errors.Is.
+func (c *Client) Unlock(vaultPath, userChainPath, methodType string, cred UnlockCredential) (*UnlockResp, error) {
 	r, err := c.do(&Request{Op: OpUnlock, Unlock: &UnlockReq{
-		VaultPath: vaultPath, UserChainPath: userChainPath, MethodType: methodType, Passphrase: passphrase,
+		VaultPath:     vaultPath,
+		UserChainPath: userChainPath,
+		MethodType:    methodType,
+		Passphrase:    cred.Passphrase,
+		YubikeyPIN:    cred.YubikeyPIN,
 	}})
 	if err != nil {
+		if strings.Contains(err.Error(), vault.ErrYubikeyNotConfigured.Error()) {
+			return nil, fmt.Errorf("%w", vault.ErrYubikeyNotConfigured)
+		}
 		return nil, err
 	}
 	if r.Unlock == nil {

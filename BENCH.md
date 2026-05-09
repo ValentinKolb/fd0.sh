@@ -1,9 +1,6 @@
 # fd0 performance baseline
 
-Snapshot of where fd0 performance sits on a developer machine, taken
-2026-05-06 against the post-Wave-E codebase. Used as a regression
-target — a future commit that pushes any of these numbers >25% in
-the wrong direction wants explicit justification.
+Snapshot taken 2026-05-06 against the post-Wave-E codebase on a developer machine. Used as a regression target: a future commit that pushes any number more than 25% in the wrong direction needs explicit justification.
 
 **Hardware**: Apple M1 Max, macOS, single-threaded.
 **Reproduce**:
@@ -33,42 +30,15 @@ tree with per-leaf signature.
 
 ### Notes
 
-- **AppendLeaf** scales sub-linearly between 1k → 10k (+64%), then
-  jumps **9× from 10k → 100k** for only a 10× scale increase. The
-  inflection at ~10k is when the leaves-table B-tree starts to
-  spill the SQLite page cache; from there the per-append cost is
-  bounded by SQL row-lookup latency, not SHA-256 / signature
-  cost.
-- The 100k figure (~9 ms / append) bounds throughput at **~110
-  push/sec per chain** on a single machine. Multi-chain throughput
-  is higher because each chain has its own incremental-tree state
-  and the store doesn't hold a global lock per append.
-- **Inclusion / consistency proofs** show the same inflection:
-  inclusion is ~13× slower from 10k → 100k, consistency ~10.6×.
-  Path length only grows by ~3.3 Merkle levels (log₂(100k) -
-  log₂(10k) ≈ 3.3) — the rest is SQL row-lookup. A future
-  Wave-H optimisation candidate IF a deployment shows real
-  load: pre-warm the page cache, OR cache the most-recent N
-  proof results, OR move the merkle frontier into an in-memory
-  structure (current schema stores every internal-node hash in
-  SQLite for replay-after-crash).
+- **AppendLeaf** scales sub-linearly from 1k → 10k (+64%), then jumps 9× from 10k → 100k for a 10× scale increase. The inflection at ~10k is the leaves-table B-tree spilling the SQLite page cache; from there per-append cost is bounded by SQL row-lookup latency, not SHA-256 or signature cost.
+- The 100k figure (~9 ms/append) caps single-chain throughput at ~110 push/sec on one machine. Multi-chain throughput is higher: each chain has its own incremental-tree state and the store does not hold a global lock per append.
+- **Inclusion / consistency proofs** show the same inflection: inclusion ~13× slower from 10k → 100k, consistency ~10.6×. Path length only grows by ~3.3 Merkle levels (log₂(100k) − log₂(10k) ≈ 3.3); the rest is SQL row-lookup. Wave-H optimisation candidates if a deployment shows real load: pre-warm the page cache, cache the most-recent N proof results, or move the Merkle frontier in-memory (current schema stores every internal-node hash in SQLite for replay-after-crash).
 
 ### Extrapolation to 1M leaves
 
-100k → 1M is another 10× scale. If the 10k → 100k ratio (9.2×)
-held, 1M would land around 85 ms/op = **~12 leaves/sec sustained**.
-That extrapolation is shaky — at 1M the working set is well past
-any reasonable page cache and the constant becomes "B-tree
-walks at log₂(1M) ≈ 20 levels of disk I/O per insert", which on
-SSD is closer to 50–100 ms.
+100k → 1M is another 10× scale. If the 9.2× ratio held, 1M would land around 85 ms/op ≈ ~12 leaves/sec sustained. The extrapolation is shaky: at 1M the working set is well past any reasonable page cache and the constant becomes "B-tree walks at log₂(1M) ≈ 20 levels of disk I/O per insert", which on SSD is closer to 50–100 ms.
 
-Either way, **>100k events per single chain is not a comfortable
-v1.0 deployment shape on this storage backend**. Production
-deployments expecting that scale want either: chain-level
-horizontal partitioning, a separate translog backend, or
-periodic checkpoint-and-prune of the leaves table once
-inclusion-proof requests for old events stop arriving. Tracked
-as Wave H performance work.
+Either way, more than 100k events per single chain is not a comfortable v1.0 deployment shape on this storage backend. Larger deployments need chain-level horizontal partitioning, a separate translog backend, or periodic checkpoint-and-prune of the leaves table once inclusion-proof requests for old events stop arriving. Tracked as Wave H performance work.
 
 ## Client-side scope replay (`internal/chain`)
 
@@ -85,21 +55,10 @@ state.
 
 ### Notes
 
-- Replay is **perfectly linear**. ~56 µs per event regardless of
-  chain depth — the per-event cost is dominated by ed25519
-  signature verify (~30 µs) plus CBOR decode + AAD construction.
-- Implication: at **10 000 events per scope, every CLI command
-  takes ~555 ms** of replay before doing anything. STORAGE.md §5
-  compaction is the answer; CompactScope thresholds should
-  trigger well before this point in production.
-- Allocation cost is steep — 870k allocs for a 10k-event replay
-  (87 allocs/event). Most are CBOR decode buffers. Halving this
-  would halve replay wall-time. Optimisation candidate IF replay
-  ever shows up in user-perceived latency profiling.
-- `AppendScope` is ~6 ms because of the per-event fsync. Going to
-  unbuffered group-commit would help integration-test throughput
-  but compromises the crash-consistency story for real users
-  (current per-event fsync is correct).
+- Replay is perfectly linear: ~56 µs per event regardless of chain depth. The per-event cost is dominated by ed25519 signature verify (~30 µs) plus CBOR decode and AAD construction.
+- At 10 000 events per scope, every CLI command spends ~555 ms in replay before doing anything. STORAGE.md §5 compaction is the answer; `CompactScope` thresholds should trigger well before this point in production.
+- Allocation cost is steep: 870k allocs for a 10k-event replay (87 allocs/event). Most are CBOR decode buffers. Halving this would halve replay wall-time. Optimisation candidate if replay shows up in user-perceived latency profiling.
+- `AppendScope` is ~6 ms because of the per-event fsync. Group-commit would help integration-test throughput but compromises the crash-consistency story for real users; per-event fsync is correct.
 
 ## Vault unlock (`internal/vault`)
 
@@ -114,53 +73,24 @@ that opens the vault hits this path.
 
 ### Notes
 
-- **`Open` is dominated by Argon2id**. The KDF alone takes 142 ms;
-  the rest of `Open` (AEAD body decrypt + CBOR decode + magic /
-  version checks) is ~5 ms — negligible by design.
-- The 67 MiB allocation is **on-spec**: `crypto.DefaultArgon2 =
-  Argon2Params{M: 64*1024 KiB, T: 3, P: 1}`. The benchmark sanity-
-  checks that nobody accidentally weakens M.
-- **`Save` is ~13 ms** (no KDF — only AEAD-reseal + fsync). This is
-  the cost on every state mutation (every secret.set, every
-  member.change after replay-and-vault-update).
-- A 150 ms unlock is generous on modern hardware but absolutely
-  visible to the user. If we ever want to go below this, options
-  are: lower memory cost (security regression), agent-cache the
-  payload key (already done — agent unlocks once, holds for the
-  session), or move to interactive-TUI feedback ("KDF in progress").
-  The current architecture (agent + once-per-session unlock) makes
-  this latency acceptable.
+- `Open` is dominated by Argon2id: the KDF alone takes 142 ms; the rest (AEAD body decrypt, CBOR decode, magic / version checks) is ~5 ms.
+- The 67 MiB allocation is on-spec: `crypto.DefaultArgon2 = Argon2Params{M: 64*1024 KiB, T: 3, P: 1}`. The benchmark sanity-checks that no commit accidentally weakens M.
+- `Save` is ~13 ms (no KDF, only AEAD-reseal + fsync). It runs on every state mutation: every `secret.set` and every `member.change` after replay-and-vault-update.
+- A 150 ms unlock is visible but acceptable. Options to go lower: weaken Argon2 memory cost (security regression), agent-cache the payload key (already done — agent unlocks once and holds for the session), or add interactive TUI feedback ("KDF in progress").
 
 ## What this catches
 
-- **Argon2 weakening**: any commit that drops M below 64 MiB will
-  show `BenchmarkVaultDeriveKeyOnly` allocate <67 MiB and run
-  faster. Codex audit guard.
-- **Replay cost regression**: a future change that doubles
-  per-event allocations would push 10k replay from 555 ms to ~1 s
-  — a clear signal in CI bench drift.
-- **AppendLeaf O(n²)**: if a future schema change adds an
-  unbounded SELECT in the append path, the warm-10k figure would
-  blow past linear; compare against the warm-1k baseline.
-- **Index loss**: dropping the SQLite leaves index would push
-  inclusion-proof at 10k from <1 ms to >>10 ms.
+- **Argon2 weakening**: any commit that drops M below 64 MiB makes `BenchmarkVaultDeriveKeyOnly` allocate <67 MiB and run faster.
+- **Replay cost regression**: a change that doubles per-event allocations pushes 10k replay from 555 ms to ~1 s.
+- **AppendLeaf O(n²)**: a schema change that adds an unbounded SELECT in the append path makes the warm-10k figure blow past linear vs. warm-1k.
+- **Index loss**: dropping the SQLite leaves index pushes 10k inclusion-proof from <1 ms to >>10 ms.
 
 ## Not covered (defer to v1.x bench-pass)
 
-- **End-to-end sync wall-time** (multi-scope, multi-event): would
-  need a stable test server harness and `hyperfine` against the
-  actual `fd0` binary. Skipped for v1.0; the per-component numbers
-  give upper bounds.
-- **Multi-tenant translog throughput** (concurrent push from N
-  clients): single-threaded numbers above bound the lower limit.
-- **1M-leaf translog**: pre-fill takes ~10 minutes; not reproduced
-  here. Honest ratio-based guess in §"Extrapolation to 1M leaves"
-  above is shaky — at 1M the working set is well past any
-  reasonable page cache and the cost becomes I/O-bound, not
-  CPU-bound.
-- **Memory under load** on the server side — the SQLite store
-  doesn't pre-load the chain into memory, so steady-state RSS is
-  bounded by SQLite's page cache (configurable; default 2 MiB).
+- **End-to-end sync wall-time** (multi-scope, multi-event): needs a stable test-server harness and `hyperfine` against the `fd0` binary. Skipped for v1.0; per-component numbers above give upper bounds.
+- **Multi-tenant translog throughput** (concurrent push from N clients): the single-threaded numbers bound the per-chain lower limit.
+- **1M-leaf translog**: pre-fill takes ~10 minutes; not reproduced here. The ratio-based estimate above is shaky — at 1M the working set is well past any reasonable page cache and cost becomes I/O-bound, not CPU-bound.
+- **Server memory under load**: the SQLite store does not preload the chain, so steady-state RSS is bounded by the SQLite page cache (configurable; default 2 MiB).
 
 ## How to compare against this baseline
 

@@ -74,7 +74,7 @@ func TestAgentRoundtrip(t *testing.T) {
 	// matching user.cbor chain, which the production-path check
 	// would (correctly) reject. Integration tests cover the
 	// real path.
-	ur, err := cli.Unlock(paths.Vault, "", proto.AuthPassphrase, pass)
+	ur, err := cli.Unlock(paths.Vault, "", proto.AuthPassphrase, UnlockCredential{Passphrase: pass})
 	if err != nil {
 		t.Fatal(err)
 	}
