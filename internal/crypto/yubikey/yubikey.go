@@ -18,7 +18,11 @@
 // Implementation notes:
 //   - Slot 9d (Key Management) is the conventional ECDH slot.
 //   - X25519 is required (YubiKey firmware 5.7+); older firmware is rejected.
-//   - PIN is required for use; touch policy is configurable at init.
+//   - PIN policy is chosen at enrollment: a non-empty PIN sets PINPolicyOnce
+//     (one PIN entry per session); an empty PIN sets PINPolicyNever
+//     (touch-only mode).
+//   - Touch policy defaults to TouchAlways; tests can override to
+//     TouchNever.
 package yubikey
 
 import "errors"
@@ -35,11 +39,14 @@ const (
 )
 
 // TouchPolicy mirrors the on-card setting.
+//
+// The zero value is TouchAlways — secure-by-default for any caller that
+// allocates an EnrollOptions without explicitly choosing a policy.
 type TouchPolicy uint8
 
 const (
-	TouchNever  TouchPolicy = iota // PIN-only, no touch.
-	TouchAlways                    // every operation requires touch.
+	TouchAlways TouchPolicy = iota // every operation requires touch (default).
+	TouchNever                     // no touch; PIN-only.
 	TouchCached                    // touch valid for 15s after the prompt.
 )
 
@@ -102,17 +109,28 @@ func Default() OpenOptions {
 
 // EnrollOptions captures the user's choices at `fd0 auth add --yubikey`.
 //
-// PIN, when non-empty, is set on the slot at provisioning time: subsequent
-// unlocks will require the PIN AND a touch. An empty PIN provisions the
-// slot with pin_policy=never, so unlock requires only a touch.
+// PIN, when non-empty, is the PIV PIN that already authenticates the
+// device (set out of band — on a fresh YubiKey it is "123456"). Enroll
+// uses it (a) to authenticate the slot operation if the management key
+// requires PIN-then-mgmt mode, and (b) to set the slot's PIN policy:
+// non-empty PIN ⇒ PINPolicyOnce on the new slot, empty ⇒ PINPolicyNever.
 //
-// Touch is always required regardless of PIN choice — that is the minimum
-// safety bar (without it, malware with USB access could silently exercise
-// the slot).
+// Touch is configurable; the default is TouchAlways for production
+// (without it, same-UID malware with USB access could silently exercise
+// the slot once an unlocked session exists). Test runs can override to
+// TouchNever to avoid the per-operation tap.
+//
+// ManagementKey is required to authorise the slot key generation. An
+// empty value falls back to piv's published default. A real deployment
+// should change the management key before enrolling and pass it here.
 type EnrollOptions struct {
-	Slot             SlotID
-	PIN              string // empty = touch-only, no PIN
-	ManagementKey    []byte // empty = use go-piv default management key
+	Slot          SlotID
+	PIN           string
+	ManagementKey []byte
+	// TouchPolicy controls whether the on-card key requires a physical
+	// touch on each operation. Default (zero value) maps to TouchAlways.
+	// Set explicitly to TouchNever for unattended test runs.
+	TouchPolicy TouchPolicy
 }
 
 // EnrollResult bundles what the agent needs after a successful enrollment.
