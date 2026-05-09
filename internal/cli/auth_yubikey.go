@@ -28,11 +28,14 @@ import (
 //  6. Encrypt super_priv under K_unlock (via the agent), append a new
 //     auth.set, add a vault wrap.
 //
+// touchPolicy is one of "" (default = always), "always", "never",
+// "cached"; anything else is rejected.
+//
 // Until the hardware-day integration of the yubikey package is complete,
 // step 4 returns ErrNotEnabled (or "pending hardware-day integration").
 // We surface that error verbatim so the user sees what's blocked, but we
 // do NOT half-enroll: the user-chain stays untouched on any failure.
-func RunAuthAddYubikey(ctx context.Context) error {
+func RunAuthAddYubikey(ctx context.Context, touchPolicy string) error {
 	// Detect a YubiKey early. List() is cheap and gives a friendlier error
 	// than letting Enroll fail downstream.
 	cards, err := yubikey.List()
@@ -70,10 +73,13 @@ func RunAuthAddYubikey(ctx context.Context) error {
 		return errors.New("no auth methods on user chain")
 	}
 
-	// Provision the slot. This is the step still pending hardware-day
-	// completion — surfacing the underlying error verbatim helps the user
-	// distinguish "no card" from "card but driver unfinished".
-	slotPub, err := enrollYubikeySlot(pin)
+	tp, err := parseTouchPolicy(touchPolicy)
+	if err != nil {
+		return err
+	}
+
+	// Provision the slot.
+	slotPub, err := enrollYubikeySlot(pin, tp)
 	if err != nil {
 		return err
 	}
@@ -136,18 +142,52 @@ func RunAuthAddYubikey(ctx context.Context) error {
 		return err
 	}
 
-	policy := "touch-only"
-	if len(pin) > 0 {
-		policy = "PIN+touch"
+	pinPart := "PIN+"
+	pinHint := "Enter the PIN AND "
+	if len(pin) == 0 {
+		pinPart = ""
+		pinHint = ""
+	}
+	touchPart := touchPolicySuffix(tp)
+	touchHint := touchHintLine(tp)
+	policy := pinPart + touchPart
+	if policy == "" {
+		policy = "(none — neither PIN nor touch required)"
 	}
 	fmt.Fprintf(os.Stderr, "✓ added YubiKey auth method %s (policy: %s)\n", newID, policy)
-	if len(pin) == 0 {
-		fmt.Fprintln(os.Stderr, "  Touch the YubiKey on every fd0 unlock.")
-	} else {
-		fmt.Fprintln(os.Stderr, "  Enter the PIN AND touch the YubiKey on every fd0 unlock.")
+	if pinHint != "" || touchHint != "" {
+		fmt.Fprintf(os.Stderr, "  %s%s on every fd0 unlock.\n", pinHint, touchHint)
+	}
+	if len(pin) > 0 {
 		fmt.Fprintln(os.Stderr, "  Three wrong PINs lock the slot — only the YubiKey PUK can recover it.")
 	}
 	return nil
+}
+
+func touchPolicySuffix(tp yubikey.TouchPolicy) string {
+	switch tp {
+	case yubikey.TouchAlways:
+		return "touch (always)"
+	case yubikey.TouchCached:
+		return "touch (cached 15s)"
+	case yubikey.TouchNever:
+		return ""
+	default:
+		return "touch"
+	}
+}
+
+func touchHintLine(tp yubikey.TouchPolicy) string {
+	switch tp {
+	case yubikey.TouchAlways:
+		return "touch the YubiKey"
+	case yubikey.TouchCached:
+		return "touch the YubiKey (then cached 15s)"
+	case yubikey.TouchNever:
+		return ""
+	default:
+		return "touch the YubiKey"
+	}
 }
 
 // enrollYubikeySlot calls the yubikey package and returns the slot's pubkey.
@@ -157,10 +197,11 @@ func RunAuthAddYubikey(ctx context.Context) error {
 // PIN is forwarded as []byte through the yubikey package; the only
 // string conversion happens at the go-piv VerifyPIN boundary inside
 // the package, with no long-lived retention.
-func enrollYubikeySlot(pin []byte) ([]byte, error) {
+func enrollYubikeySlot(pin []byte, tp yubikey.TouchPolicy) ([]byte, error) {
 	res, err := yubikey.Enroll(yubikey.EnrollOptions{
-		Slot: yubikey.SlotKeyManagement,
-		PIN:  pin,
+		Slot:        yubikey.SlotKeyManagement,
+		PIN:         pin,
+		TouchPolicy: tp,
 	})
 	if err != nil {
 		return nil, err
@@ -169,6 +210,22 @@ func enrollYubikeySlot(pin []byte) ([]byte, error) {
 		return nil, errors.New("yubikey: Enroll returned nil result")
 	}
 	return res.X25519Pub, nil
+}
+
+// parseTouchPolicy maps the --touch flag value to a TouchPolicy.
+// Empty string defaults to TouchAlways (secure default for production
+// enrollments). Tests opt into TouchNever explicitly.
+func parseTouchPolicy(s string) (yubikey.TouchPolicy, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "always":
+		return yubikey.TouchAlways, nil
+	case "never":
+		return yubikey.TouchNever, nil
+	case "cached":
+		return yubikey.TouchCached, nil
+	default:
+		return 0, fmt.Errorf("--touch=%q: must be 'always', 'never', or 'cached'", s)
+	}
 }
 
 // promptYubikeyPIN walks the user through the touch-only-vs-PIN choice

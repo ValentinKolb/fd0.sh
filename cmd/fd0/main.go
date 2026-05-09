@@ -140,7 +140,8 @@ type authCmd struct {
 }
 type authListCmd struct{}
 type authAddCmd struct {
-	Yubikey bool `name:"yubikey" help:"Enroll a YubiKey instead of a passphrase."`
+	Yubikey bool   `name:"yubikey" help:"Enroll a YubiKey instead of a passphrase."`
+	Touch   string `name:"touch" help:"YubiKey touch policy: 'always' (default, secure), 'never' (no touch), 'cached' (15s cache after first touch)."`
 }
 type authRemoveCmd struct {
 	ID string `arg:"" help:"method_id (am_...) — see 'fd0 auth ls'."`
@@ -234,7 +235,7 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 		return cli.RunAuthList(ctx)
 	case "auth add":
 		if c.Auth.Add.Yubikey {
-			return cli.RunAuthAddYubikey(ctx)
+			return cli.RunAuthAddYubikey(ctx, c.Auth.Add.Touch)
 		}
 		return cli.RunAuthAdd(ctx)
 	case "auth rm <id>":
