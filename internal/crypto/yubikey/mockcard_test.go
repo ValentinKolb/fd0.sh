@@ -219,6 +219,17 @@ func TestMockCard_SharedSecret_RejectsSmallSubgroup(t *testing.T) {
 	}
 }
 
+// MockCard MUST satisfy the shared Card contract. This pins the
+// contract for downstream fakes that compose with MockCard.
+func TestMockCard_AssertContract(t *testing.T) {
+	t.Parallel()
+	c, err := NewMockCard(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	AssertCardContract(t, "MockCard", c)
+}
+
 func TestMockCard_Close_IsNoop(t *testing.T) {
 	t.Parallel()
 	c, _ := NewMockCard(rand.Reader)

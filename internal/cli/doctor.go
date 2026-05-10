@@ -166,6 +166,33 @@ func RunDoctor(ctx context.Context) error {
 					pr("OK", fmt.Sprintf("  %d method(s); chain ↔ vault wraps match", len(activeIDs)))
 				}
 			}
+
+			// YubiKey-method content checks: each yubikey wrap MUST
+			// carry a decodable YubikeyPublicParams with a 32-byte
+			// X25519 pubkey AND a non-empty SealedKUnlock. A vault
+			// that's been hand-edited or hit a corruption path
+			// could keep the method_id list looking fine while the
+			// embedded sealed-K_unlock is gone — that would surface
+			// only at unlock time as a confusing AEAD error.
+			for _, w := range v.WrappedPayloadKeys {
+				if w.MethodType != proto.AuthYubikey {
+					continue
+				}
+				var pp proto.YubikeyPublicParams
+				if err := proto.Unmarshal(w.PublicParams, &pp); err != nil {
+					pr("ERR", fmt.Sprintf("  yubikey wrap %s: public_params won't decode: %v", w.MethodID, err))
+					continue
+				}
+				if len(pp.X25519Pub) != 32 {
+					pr("ERR", fmt.Sprintf("  yubikey wrap %s: x25519_pub is %d bytes, want 32", w.MethodID, len(pp.X25519Pub)))
+				}
+				if len(pp.SealedKUnlock) == 0 {
+					pr("ERR", fmt.Sprintf("  yubikey wrap %s: sealed_k_unlock is empty (unlock would fail)", w.MethodID))
+				}
+				if len(pp.X25519Pub) == 32 && len(pp.SealedKUnlock) > 0 {
+					pr("OK", fmt.Sprintf("  yubikey wrap %s: pub + sealed K_unlock present", w.MethodID))
+				}
+			}
 		}
 	}
 

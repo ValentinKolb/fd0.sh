@@ -86,6 +86,51 @@ func TestPickUnlockMethod_SingleMethodNoFlag(t *testing.T) {
 	}
 }
 
+// pickUnlockMethod sorts by method_id ascending. Non-ULID method_ids
+// (legacy fixtures, hand-edited chains, future-format keys) MUST
+// still produce a deterministic, predictable choice. Specifically a
+// short or non-prefix id like "0" or "x" should NOT silently
+// dominate a normal "am_..." id without the user noticing — when the
+// CLI auto-picks, it logs which id it took. We pin the deterministic
+// behaviour here.
+func TestPickUnlockMethod_NonULIDMethodID(t *testing.T) {
+	t.Parallel()
+	active := []proto.AuthMethod{
+		{MethodID: "am_01HVWZZ", MethodType: proto.AuthPassphrase},
+		// "0" sorts before any "am_..." string lexicographically.
+		// If it wins, the agent had better not crash — and the CLI
+		// must surface the auto-pick logging so the user notices.
+		{MethodID: "0", MethodType: proto.AuthYubikey},
+	}
+	got, err := pickUnlockMethod(active, "")
+	if err != nil {
+		t.Fatalf("pickUnlockMethod: %v", err)
+	}
+	if got.MethodID != "0" {
+		t.Fatalf("got method_id=%s, want 0 (smallest by lexicographic sort)", got.MethodID)
+	}
+	if got.MethodType != proto.AuthYubikey {
+		t.Fatalf("got method_type=%s, want yubikey", got.MethodType)
+	}
+}
+
+// Empty method_id is an unusual case — fixture or corruption. The
+// function should still terminate and pick something, not crash.
+func TestPickUnlockMethod_EmptyMethodID(t *testing.T) {
+	t.Parallel()
+	active := []proto.AuthMethod{
+		{MethodID: "", MethodType: proto.AuthYubikey},
+		{MethodID: "am_b", MethodType: proto.AuthPassphrase},
+	}
+	got, err := pickUnlockMethod(active, "")
+	if err != nil {
+		t.Fatalf("pickUnlockMethod: %v", err)
+	}
+	if got.MethodID != "" {
+		t.Fatalf("empty string sorts smallest; got %s want \"\"", got.MethodID)
+	}
+}
+
 func TestDistinctMethodTypes(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

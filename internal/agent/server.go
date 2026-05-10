@@ -274,6 +274,16 @@ func (s *Server) handleUnlock(u *UnlockReq) *Response {
 	defer crypto.Wipe(u.Passphrase)
 	defer crypto.Wipe(u.YubikeyPIN)
 
+	// Refuse ambiguous credential bundles. The wire schema permits
+	// both Passphrase and YubikeyPIN to be set, but exactly one
+	// must be populated for the chosen method_type. Accepting a
+	// request with both lets a buggy / malicious client smuggle
+	// extra material into a session in case the agent ever changes
+	// which credential it consumes; fail closed instead.
+	if len(u.Passphrase) > 0 && len(u.YubikeyPIN) > 0 {
+		return errResp("agent: UnlockReq carries both Passphrase and YubikeyPIN; exactly one must be set for the chosen method_type")
+	}
+
 	// Validate the method type BEFORE doing any I/O. A misconfigured
 	// client (or a deliberately-bad request) shouldn't make us read
 	// the vault file just to discover we can't unlock it. The early
@@ -282,8 +292,14 @@ func (s *Server) handleUnlock(u *UnlockReq) *Response {
 	var resolver vault.MethodResolver
 	switch u.MethodType {
 	case proto.AuthPassphrase:
+		if len(u.YubikeyPIN) > 0 {
+			return errResp("agent: method_type=passphrase but YubikeyPIN is set; reject ambiguous credential")
+		}
 		resolver = vault.PassphraseResolver{Passphrase: u.Passphrase}
 	case proto.AuthYubikey:
+		if len(u.Passphrase) > 0 {
+			return errResp("agent: method_type=yubikey but Passphrase is set; reject ambiguous credential")
+		}
 		if s.cfg.NewYubikeyResolver == nil {
 			return errResp(vault.ErrYubikeyNotConfigured.Error())
 		}

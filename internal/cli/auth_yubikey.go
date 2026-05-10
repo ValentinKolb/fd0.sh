@@ -222,28 +222,43 @@ func enrollYubikeySlot(pin []byte, tp yubikey.TouchPolicy) ([]byte, error) {
 }
 
 // confirmSlotOverwrite probes slot 0x9d for an existing X25519 key.
-// If one is present, the function (a) refuses immediately when stdin
-// is not a TTY and force is false (no silent overwrite in scripts),
-// and (b) prompts the user for an explicit "yes" otherwise. Empty
-// slot ⇒ no prompt, no error.
+// Fail-closed semantics: the probe MUST observe the slot's actual
+// state. If the probe can't open the card (PCSC contention, no
+// reader, transient hardware error), we refuse rather than risk
+// silently overwriting an existing key — unless --force is given.
+//
+// Outcomes:
+//   - probe success + slot empty:    proceed (no prompt)
+//   - probe success + slot populated: TTY 'yes' confirm OR --force
+//   - probe failure:                  refuse OR --force
 //
 // The probe opens the card without a PIN — KeyInfo only needs read
 // access — so this does not consume a PIN-retry attempt.
 func confirmSlotOverwrite(force bool) error {
 	card, err := yubikey.Open(yubikey.OpenOptions{Slot: yubikey.SlotKeyManagement})
 	if err != nil {
-		// If the card is unreachable, defer the error to the actual
-		// Enroll call so the user sees one consistent failure
-		// message rather than a probe + a real error.
-		return nil
+		if force {
+			fmt.Fprintf(os.Stderr, "! slot probe failed (%v); --force given, proceeding.\n", err)
+			return nil
+		}
+		return fmt.Errorf("yubikey: cannot probe slot 0x9d before enrollment (%w); pass --force to skip the probe (DANGEROUS — may overwrite an existing key)", err)
 	}
 	defer card.Close()
 	pub, err := card.PublicX25519()
 	if err != nil {
-		// Slot is empty or unreadable. Leave the empty-slot path to
-		// fall through to Enroll (which generates a fresh key); the
-		// "unreadable" case will surface there with a useful error.
-		return nil
+		// PublicX25519 fails when the slot is empty (the cached pub
+		// in pivWrapper is nil). That is the expected "fresh slot"
+		// case — proceed with no prompt. We distinguish "empty
+		// slot" from "card-side error" by string-matching the
+		// known empty-slot error from pivWrapper.PublicX25519.
+		if strings.Contains(err.Error(), "no key (run Enroll first)") {
+			return nil
+		}
+		if force {
+			fmt.Fprintf(os.Stderr, "! slot probe inconclusive (%v); --force given, proceeding.\n", err)
+			return nil
+		}
+		return fmt.Errorf("yubikey: cannot read slot 0x9d pubkey before enrollment (%w); pass --force to skip the probe (DANGEROUS — may overwrite an existing key)", err)
 	}
 	if force {
 		fmt.Fprintf(os.Stderr, "! slot 0x9d has an existing X25519 key (pub %x); --force given, overwriting.\n", pub[:8])

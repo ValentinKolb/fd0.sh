@@ -109,6 +109,73 @@ func TestAgentUnlock_PINIsWipedAfterResolverCall(t *testing.T) {
 	}
 }
 
+// A buggy / malicious client could send a YubiKey unlock with both
+// Passphrase AND YubikeyPIN populated. The agent MUST refuse — there
+// is no legitimate reason to carry both, and accepting silently would
+// let a method_type swap smuggle a credential the user didn't intend
+// to use. Tested for both method_type values.
+func TestAgentUnlock_RejectsBothCredentials(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ name, mt string }{
+		{"yubikey-with-passphrase", proto.AuthYubikey},
+		{"passphrase-with-yubikey-pin", proto.AuthPassphrase},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := Config{
+				NewYubikeyResolver: func([]byte) vault.MethodResolver {
+					t.Fatal("resolver factory should NOT run when both creds are set")
+					return nil
+				},
+			}
+			srv := &Server{cfg: cfg}
+			resp := srv.handleUnlock(&UnlockReq{
+				MethodType: c.mt,
+				VaultPath:  "/dev/null",
+				Passphrase: []byte("secret"),
+				YubikeyPIN: []byte("123456"),
+			})
+			if resp == nil || resp.Err == "" {
+				t.Fatalf("expected error response, got %#v", resp)
+			}
+			if !(strings.Contains(resp.Err, "ambiguous") || strings.Contains(resp.Err, "exactly one")) {
+				t.Fatalf("error should describe credential ambiguity, got: %s", resp.Err)
+			}
+		})
+	}
+}
+
+// method_type=passphrase MUST refuse a YubikeyPIN even if Passphrase
+// is empty (caller intent is unclear; fail closed). Symmetric for
+// method_type=yubikey + non-empty Passphrase.
+func TestAgentUnlock_RejectsCrossCredential(t *testing.T) {
+	t.Parallel()
+	cfg := Config{NewYubikeyResolver: func([]byte) vault.MethodResolver {
+		return vault.YubikeyResolver{}
+	}}
+	srv := &Server{cfg: cfg}
+
+	// passphrase request with non-empty YubikeyPIN
+	resp := srv.handleUnlock(&UnlockReq{
+		MethodType: proto.AuthPassphrase,
+		VaultPath:  "/dev/null",
+		YubikeyPIN: []byte("123456"),
+	})
+	if resp == nil || resp.Err == "" || !(strings.Contains(resp.Err, "ambiguous") || strings.Contains(resp.Err, "exactly one")) {
+		t.Fatalf("passphrase+pin: expected ambiguity error, got: %#v", resp)
+	}
+
+	// yubikey request with non-empty Passphrase
+	resp = srv.handleUnlock(&UnlockReq{
+		MethodType: proto.AuthYubikey,
+		VaultPath:  "/dev/null",
+		Passphrase: []byte("hunter2"),
+	})
+	if resp == nil || resp.Err == "" || !(strings.Contains(resp.Err, "ambiguous") || strings.Contains(resp.Err, "exactly one")) {
+		t.Fatalf("yubikey+passphrase: expected ambiguity error, got: %#v", resp)
+	}
+}
+
 // The fake-factory plumbing must thread expectedPub through unchanged.
 // This is the precondition for the wrong-card check downstream.
 func TestAgentUnlock_FakeFactory_ResolverArgsForwarded(t *testing.T) {
