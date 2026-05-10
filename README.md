@@ -56,7 +56,7 @@ fd0 scope add-member bob --scope work
 fd0 sync
 
 # bob's next sync auto-discovers the scope and decrypts via the agent's
-# sealed-box (Ed25519-derived X25519 in v1; YubiKey-PIV is scaffold-only):
+# sealed-box (Ed25519-derived X25519 by default; YubiKey-PIV X25519 if enrolled):
 fd0 sync
 fd0 ls                                   # sees alice's secrets
 
@@ -128,11 +128,30 @@ cd fd0.sh
 go install ./cmd/...
 ```
 
-YubiKey support is scaffolded but unfinished. The build tag exists and CI verifies it compiles, but on-card unlock is pending hardware-day integration (slot pub-key retrieval, sealed-box completion). The pure-Go (passphrase-only) build is the supported path.
+### YubiKey-PIV (firmware ≥ 5.7, X25519)
+
+Build with `-tags=yubikey` to enable on-card unlock. Both binaries need the tag because the agent's resolver factory and the CLI's enrollment flow are tag-conditional.
 
 ```bash
-go install -tags=yubikey ./cmd/fd0-agent   # scaffold; not functional yet
+# Build with YubiKey support
+go install -tags=yubikey ./cmd/fd0 ./cmd/fd0-agent
+
+# Add a YubiKey method to an existing identity
+fd0 auth add --yubikey                  # touch=always (production default)
+fd0 auth add --yubikey --touch=never    # touch-only-on-unlock; faster for daily use
+fd0 auth add --yubikey --force          # overwrite an existing slot 9d key
+                                        # (DESTRUCTIVE: any vault still bound
+                                        #  to the old slot pub is locked out)
+
+# Unlock — auto-picks the first method by id when multiple types exist
+fd0 unlock                              # picks deterministically; logs the choice
+fd0 unlock --method=yubikey             # explicit
+fd0 unlock --method=passphrase          # explicit
 ```
+
+A connected YubiKey on a system with multiple PCSC readers can be selected via `FD0_YUBIKEY_CARD=<substring>` (case-insensitive match against the reader name). Without the env var fd0 refuses to act when more than one YubiKey-shaped reader is present.
+
+The pure-Go build (no `-tags=yubikey`) refuses YubiKey unlock with a clean error pointing at the rebuild requirement. Existing passphrase methods continue to work without the tag.
 
 ## Status
 

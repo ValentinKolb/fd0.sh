@@ -2,6 +2,7 @@ package agent
 
 import (
 	"errors"
+	"net"
 	"strings"
 	"testing"
 
@@ -173,6 +174,68 @@ func TestAgentUnlock_RejectsCrossCredential(t *testing.T) {
 	})
 	if resp == nil || resp.Err == "" || !(strings.Contains(resp.Err, "ambiguous") || strings.Contains(resp.Err, "exactly one")) {
 		t.Fatalf("yubikey+passphrase: expected ambiguity error, got: %#v", resp)
+	}
+}
+
+// End-to-end wire-layer test for the credential-ambiguity rejection.
+// The unit tests above call handleUnlock directly. This one round-
+// trips a Request{OpUnlock, both creds set} through proto.Marshal +
+// WriteFrame + ReadFrame + proto.Unmarshal — the same path real
+// clients take. Catches a regression where the wire codec drops one
+// of the credential fields before the server's check runs.
+func TestAgentUnlock_AmbiguityRejectedOverWire(t *testing.T) {
+	t.Parallel()
+	srv := &Server{cfg: Config{
+		NewYubikeyResolver: func([]byte) vault.MethodResolver {
+			t.Fatal("YubiKey factory must NOT run when the wire request carries both creds")
+			return nil
+		},
+	}}
+
+	// Build a Request the way Client.do would.
+	req := &Request{
+		Op: OpUnlock,
+		Unlock: &UnlockReq{
+			MethodType: proto.AuthYubikey,
+			VaultPath:  "/dev/null",
+			Passphrase: []byte("secret"),
+			YubikeyPIN: []byte("123456"),
+		},
+	}
+
+	// Round-trip through the wire: marshal, frame-write, frame-read,
+	// unmarshal. The server's frame handler in Listen() does the
+	// same thing per request; we drive it directly via net.Pipe.
+	cliConn, srvConn := net.Pipe()
+	defer cliConn.Close()
+	defer srvConn.Close()
+
+	go func() {
+		if err := WriteFrame(cliConn, req); err != nil {
+			t.Errorf("WriteFrame: %v", err)
+		}
+	}()
+
+	var got Request
+	if err := ReadFrame(srvConn, &got); err != nil {
+		t.Fatalf("ReadFrame: %v", err)
+	}
+	if got.Unlock == nil {
+		t.Fatalf("decoded request lost UnlockReq")
+	}
+	if len(got.Unlock.Passphrase) == 0 || len(got.Unlock.YubikeyPIN) == 0 {
+		t.Fatalf("wire round-trip dropped a credential: passphrase=%d yubikey_pin=%d",
+			len(got.Unlock.Passphrase), len(got.Unlock.YubikeyPIN))
+	}
+
+	// Now drive handleUnlock with the round-tripped request and assert
+	// the same ambiguity rejection.
+	resp := srv.handleUnlock(got.Unlock)
+	if resp == nil || resp.Err == "" {
+		t.Fatalf("expected ambiguity error, got %#v", resp)
+	}
+	if !strings.Contains(resp.Err, "ambiguous") && !strings.Contains(resp.Err, "exactly one") {
+		t.Fatalf("expected ambiguity error, got: %s", resp.Err)
 	}
 }
 

@@ -175,6 +175,63 @@ func TestYubikeyResolver_RejectsBadKUnlockLen(t *testing.T) {
 	}
 }
 
+// A v2 author who reused the 'slot' tag for a different type (e.g.
+// []byte instead of uint8) would produce CBOR that the v1 decoder
+// MUST reject — silently coercing would give us a half-decoded
+// struct with semantically wrong values. The resolver's strict
+// decoder catches this at parse time before any callback runs.
+func TestYubikeyResolver_RejectsWrongFieldTypes(t *testing.T) {
+	t.Parallel()
+	r := YubikeyResolver{
+		OpenSealed: func(_, _ []byte) ([]byte, error) {
+			t.Fatal("OpenSealed must NOT run when CBOR types are wrong")
+			return nil, nil
+		},
+	}
+	cases := []struct {
+		name string
+		body map[string]any
+	}{
+		{
+			name: "slot as []byte instead of uint8",
+			body: map[string]any{
+				"x25519_pub":      bytes.Repeat([]byte{1}, 32),
+				"sealed_k_unlock": bytes.Repeat([]byte{2}, 80),
+				"slot":            []byte{0x9d}, // wrong type
+			},
+		},
+		{
+			name: "x25519_pub as text string instead of bytes",
+			body: map[string]any{
+				"x25519_pub":      "thirtytwobytestring---------test",
+				"sealed_k_unlock": bytes.Repeat([]byte{2}, 80),
+				"slot":            uint8(0x9d),
+			},
+		},
+		{
+			name: "sealed_k_unlock as int instead of bytes",
+			body: map[string]any{
+				"x25519_pub":      bytes.Repeat([]byte{1}, 32),
+				"sealed_k_unlock": 42,
+				"slot":            uint8(0x9d),
+			},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			b, err := proto.Marshal(c.body)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			_, err = r.UnlockKey(b)
+			if err == nil {
+				t.Fatalf("expected rejection of wrong CBOR type for %q, got nil", c.name)
+			}
+		})
+	}
+}
+
 // Successful path: callback returns 32 bytes; resolver returns them
 // verbatim. Pins the happy-path contract so a future refactor that
 // e.g. copies into a new buffer doesn't silently change behaviour.

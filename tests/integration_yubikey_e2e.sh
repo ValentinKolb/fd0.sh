@@ -327,6 +327,21 @@ CA_unlock_pass && ok "Carol unlock via passphrase fallback" || no "Carol passphr
 PASSPHRASE_DEPLOY=$(CA get DEPLOY_KEY --scope work 2>/dev/null || true)
 expect_eq "$PASSPHRASE_DEPLOY" "carol-deploy-1" "secrets decrypt under passphrase-method too"
 
+# Cross-method invariant: super_priv is identity-bound, not method-
+# bound. Whether Carol unlocks via passphrase or YubiKey, the
+# resulting agent state must produce signatures that other members
+# accept. We exercise this by writing a NEW secret while unlocked
+# via passphrase, syncing, then asserting Alice (different user)
+# can read it. If the agent somehow tied super_priv to the unlock
+# method, this would surface as a sign / verify mismatch downstream.
+CA set MIXED_SIGN_PROBE "carol-via-passphrase-while-yubikey-also-active" --scope work >/dev/null 2>&1 \
+    && ok "Carol set MIXED_SIGN_PROBE under passphrase unlock" || no "Carol set under passphrase failed"
+CA sync >/dev/null 2>&1
+AL sync >/dev/null 2>&1
+MIXED_AL_GOT=$(AL get MIXED_SIGN_PROBE --scope work 2>/dev/null || true)
+expect_eq "$MIXED_AL_GOT" "carol-via-passphrase-while-yubikey-also-active" \
+    "Alice reads passphrase-era write (super_priv is identity-bound, not method-bound)"
+
 # ─── Phase 11: Carol removes the passphrase method (yubikey-only) ─
 phase "Carol removes passphrase, becomes YubiKey-only"
 
@@ -510,6 +525,19 @@ else
 fi
 RC_HAS_PASS=$(RC auth ls 2>/dev/null | grep -c passphrase || true)
 expect_eq "$RC_HAS_PASS" "1" "recovered device's chain has the passphrase method from import"
+
+# Document a v1 design limit (NOT a bug we are fixing here): the
+# recovered device's local user chain is a fresh genesis (seq=0 with
+# the new passphrase auth.set); the server still has Carol's
+# original full chain. EnsureUserRegistered treats this as a 409
+# super_pub_taken / idempotent registration — by design for v1. This
+# means the recovered device CAN read scope secrets (super_priv
+# unchanged) but cannot append auth.set events that anchor on the
+# server's tip. A real-world `auth add` on the recovered device
+# would fail at sync. We assert the read path works and leave the
+# limit documented; v1.x will add full user-chain sync per TODO.md.
+RC_LOCAL_TIP=$(env FD0_HOME="$HOME_RC" "$FD0" auth ls 2>/dev/null | grep -c "^" || true)
+ok "recovered device local chain has $RC_LOCAL_TIP method(s); divergence with server's view is a documented v1 limit"
 
 # Lock the recovered device's agent so it doesn't linger.
 RC lock >/dev/null 2>&1 || true

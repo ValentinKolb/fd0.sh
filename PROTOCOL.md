@@ -123,9 +123,16 @@ UserEvent = {
 AuthMethod = {
     method_id            : tstr,                ; "am_…", ULID
     method_type          : "passphrase" / "yubikey",
-    public_params        : bstr,                ; passphrase: salt(16) || argon2_params
-                                                ; yubikey:    yubikey_x25519_pub(32)
+    public_params        : bstr,                ; method-specific; see below
     encrypted_super_priv : bstr,                ; AEAD ciphertext
+}
+
+YubikeyPublicParams = {                         ; cbor-encoded into AuthMethod.public_params
+                                                ; when method_type = "yubikey"
+    x25519_pub      : bstr .size 32,            ; the YubiKey slot's pubkey
+    sealed_k_unlock : bstr,                     ; libsodium crypto_box_seal of K_unlock
+                                                ; to x25519_pub (≥ 80 B for a 32-B K_unlock)
+    slot            : uint .size 1,             ; PIV slot id (v1 = 0x9d Key Management only)
 }
 
 signed_input   = "fd0-user-event-v1" || cbor(UserEvent without signature)
@@ -134,8 +141,13 @@ prev_hash[N+1] = SHA-256(cbor(UserEvent[N] without signature))
 
 K_unlock derivation:
     passphrase : Argon2id(passphrase, salt = public_params[0:16], params = public_params[16:])
-    yubikey    : ECDH-derived key from crypto_box_seal_open(local_yubikey_priv,
-                                                              recipient_pub = public_params)
+    yubikey    : K_unlock = crypto_box_seal_open(YubikeyPublicParams.sealed_k_unlock,
+                                                  on-card_x25519_priv,
+                                                  YubikeyPublicParams.x25519_pub)
+                 The sealed_k_unlock is opened on-card via X25519 ECDH against the
+                 slot's private key; nothing leaves the card. Raw 32-byte K_unlock
+                 is recovered host-side and consumed exactly like a passphrase-
+                 derived K_unlock.
 
 encrypted_super_priv = AEAD(
     key   = K_unlock,

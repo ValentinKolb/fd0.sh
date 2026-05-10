@@ -7,6 +7,8 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/go-piv/piv-go/v2/piv"
 )
@@ -44,16 +46,13 @@ func Open(opts OpenOptions) (Card, error) {
 		return nil, fmt.Errorf("yubikey: unsupported slot 0x%02x", byte(slot))
 	}
 
-	cards, err := piv.Cards()
+	card, err := pickYubikeyCard()
 	if err != nil {
 		return nil, err
 	}
-	if len(cards) == 0 {
-		return nil, errors.New("yubikey: no smartcards detected")
-	}
-	yk, err := piv.Open(cards[0])
+	yk, err := piv.Open(card)
 	if err != nil {
-		return nil, fmt.Errorf("yubikey: open %q: %w", cards[0], err)
+		return nil, fmt.Errorf("yubikey: open %q: %w", card, err)
 	}
 	if len(opts.PIN) > 0 {
 		// go-piv's VerifyPIN takes string; the conversion here is a
@@ -156,16 +155,13 @@ func Enroll(opts EnrollOptions) (*EnrollResult, error) {
 		return nil, fmt.Errorf("yubikey: unsupported slot 0x%02x", byte(slot))
 	}
 
-	cards, err := piv.Cards()
+	card, err := pickYubikeyCard()
 	if err != nil {
 		return nil, err
 	}
-	if len(cards) == 0 {
-		return nil, errors.New("yubikey: no smartcards detected")
-	}
-	yk, err := piv.Open(cards[0])
+	yk, err := piv.Open(card)
 	if err != nil {
-		return nil, fmt.Errorf("yubikey: open %q: %w", cards[0], err)
+		return nil, fmt.Errorf("yubikey: open %q: %w", card, err)
 	}
 	defer yk.Close()
 
@@ -328,6 +324,72 @@ func (p *pivWrapper) Close() error {
 }
 
 // ---- helpers ----
+
+// pickYubikeyCard returns the single connected YubiKey on the bus.
+// Refuses to act when:
+//
+//   - no PCSC reader / no card is detected,
+//   - multiple cards are present and we can't unambiguously pick
+//     a YubiKey (overrideable via the FD0_YUBIKEY_CARD env var,
+//     which selects by case-insensitive substring match against
+//     the PCSC reader name).
+//
+// Without this guard, fd0 would silently use cards[0] in a
+// multi-reader / multi-token environment (CCID NFC reader plus
+// physical YubiKey, or two YubiKeys plugged in for testing) and
+// could enroll / unlock against the wrong device.
+func pickYubikeyCard() (string, error) {
+	cards, err := piv.Cards()
+	if err != nil {
+		return "", err
+	}
+	if len(cards) == 0 {
+		return "", errors.New("yubikey: no smartcards detected")
+	}
+
+	// Optional caller override: FD0_YUBIKEY_CARD=<substring> selects
+	// the first PCSC reader whose name contains the substring
+	// (case-insensitive). Useful for CI that has multiple readers.
+	if want := strings.TrimSpace(os.Getenv("FD0_YUBIKEY_CARD")); want != "" {
+		wantLower := strings.ToLower(want)
+		var matched []string
+		for _, c := range cards {
+			if strings.Contains(strings.ToLower(c), wantLower) {
+				matched = append(matched, c)
+			}
+		}
+		switch len(matched) {
+		case 0:
+			return "", fmt.Errorf("yubikey: FD0_YUBIKEY_CARD=%q matched no readers; have %v", want, cards)
+		case 1:
+			return matched[0], nil
+		default:
+			return "", fmt.Errorf("yubikey: FD0_YUBIKEY_CARD=%q is ambiguous; matched %v", want, matched)
+		}
+	}
+
+	if len(cards) == 1 {
+		return cards[0], nil
+	}
+
+	// Multiple readers and no override: try to find exactly one whose
+	// name looks like a YubiKey. If still ambiguous, refuse — better
+	// to surface the configuration than to silently pick wrong.
+	var ykish []string
+	for _, c := range cards {
+		if strings.Contains(strings.ToLower(c), "yubikey") {
+			ykish = append(ykish, c)
+		}
+	}
+	switch len(ykish) {
+	case 1:
+		return ykish[0], nil
+	case 0:
+		return "", fmt.Errorf("yubikey: multiple PCSC readers and none look like a YubiKey: %v (set FD0_YUBIKEY_CARD=<substring> to disambiguate)", cards)
+	default:
+		return "", fmt.Errorf("yubikey: multiple YubiKey-shaped readers detected: %v (set FD0_YUBIKEY_CARD=<substring> to pick one)", ykish)
+	}
+}
 
 // mapSlot translates our SlotID into go-piv's typed Slot. Only
 // SlotKeyManagement is supported in v1.

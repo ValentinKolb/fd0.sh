@@ -186,10 +186,11 @@ func RunDoctor(ctx context.Context) error {
 			// path, not the doctor.
 			//
 			// Sanity bound on SealedKUnlock length: libsodium
-			// crypto_box_seal of a 32-byte K_unlock produces 32 +
-			// 16 + 32 = 80 bytes (eph_pub + Poly1305 + plaintext).
-			// Anything below 48 bytes (eph_pub + tag, no plaintext)
-			// could not authenticate even an empty payload.
+			// crypto_box_seal of a 32-byte K_unlock produces
+			// exactly eph_pub(32) + Poly1305(16) + ct(32) = 80 B.
+			// Our wrap layer always seals a 32-byte K_unlock, so
+			// anything below 80 bytes is a corruption signal.
+			const sealedKUnlockMinLen = 80
 			for _, w := range v.WrappedPayloadKeys {
 				if w.MethodType != proto.AuthYubikey {
 					continue
@@ -205,10 +206,10 @@ func RunDoctor(ctx context.Context) error {
 				switch {
 				case len(pp.SealedKUnlock) == 0:
 					pr("ERR", fmt.Sprintf("  yubikey wrap %s: sealed_k_unlock is empty (unlock would fail)", w.MethodID))
-				case len(pp.SealedKUnlock) < 48:
-					pr("ERR", fmt.Sprintf("  yubikey wrap %s: sealed_k_unlock is %d bytes, < 48 (truncated; unlock would fail)", w.MethodID, len(pp.SealedKUnlock)))
+				case len(pp.SealedKUnlock) < sealedKUnlockMinLen:
+					pr("ERR", fmt.Sprintf("  yubikey wrap %s: sealed_k_unlock is %d bytes, < %d (truncated 32-B K_unlock seal; unlock would fail)", w.MethodID, len(pp.SealedKUnlock), sealedKUnlockMinLen))
 				}
-				if len(pp.X25519Pub) == 32 && len(pp.SealedKUnlock) >= 48 {
+				if len(pp.X25519Pub) == 32 && len(pp.SealedKUnlock) >= sealedKUnlockMinLen {
 					// Honest message: structural-only check, not a
 					// guarantee the unlock will succeed.
 					pr("OK", fmt.Sprintf("  yubikey wrap %s: structural check OK (sealed_k_unlock content verified only at unlock)", w.MethodID))
