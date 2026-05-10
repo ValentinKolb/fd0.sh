@@ -31,6 +31,18 @@ import "errors"
 // without the `yubikey` tag.
 var ErrNotEnabled = errors.New("yubikey: build fd0 with -tags=yubikey to enable PIV support")
 
+// ErrSlotEmpty is the typed sentinel returned by Card.PublicX25519
+// (and any other slot-reading method) when the slot has not yet been
+// provisioned with an X25519 key. Callers MUST check via errors.Is —
+// a string-match would be brittle if the wrapped message ever moves.
+//
+// confirmSlotOverwrite (cli/auth_yubikey.go) and the doctor command
+// rely on this sentinel to distinguish "fresh slot" from "card-side
+// fault". Production code that sees this error should route the user
+// to Enroll; tests use it to drive the empty-slot path without
+// hardware.
+var ErrSlotEmpty = errors.New("yubikey: slot has no key (run Enroll first)")
+
 // SlotID identifies a PIV slot. v1 only uses Key Management.
 type SlotID uint8
 
@@ -92,9 +104,28 @@ type Card interface {
 	SharedSecret(ephPub []byte) ([]byte, error)
 	// PINRetries returns the number of PIN-verify attempts remaining
 	// before the PIV PIN blocks (typical YubiKey: starts at 3,
-	// successful verify resets to 3, blocked at 0). Used by callers
-	// to refuse "wrong PIN" tests when the card is one wrong attempt
-	// away from blocking. Software MockCard reports a fixed 3.
+	// successful verify resets to 3, blocked at 0).
+	//
+	// CAVEAT: the production pivWrapper implementation calls
+	// go-piv's yk.Retries(), whose underlying empty-VERIFY APDU
+	// behaves UNRELIABLY on YubiKey 5.7+ — once the card has been
+	// VerifyPIN'd in the same session, the empty VERIFY returns
+	// success and go-piv reports an "expected error code from
+	// empty pin" error. As a result, this method is NOT used in
+	// production code paths today; the integration shell test
+	// uses `ykman piv info` for retry-counter probes, which is
+	// portable and Yubico-supported.
+	//
+	// The interface method is kept for:
+	//   - Test fakes that need a stable retry indicator (MockCard
+	//     reports a fixed 3; errCard / stubCard report 3).
+	//   - Future firmware/firmware-detection paths where a reliable
+	//     query becomes available.
+	//
+	// New production callers SHOULD shell out to ykman or use a
+	// version-gated path; do not rely on the value returned here
+	// without a clear comment explaining how the firmware quirk is
+	// handled.
 	PINRetries() (int, error)
 	// Close releases the smartcard handle (no-op for software cards).
 	Close() error

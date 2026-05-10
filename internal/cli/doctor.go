@@ -174,6 +174,22 @@ func RunDoctor(ctx context.Context) error {
 			// could keep the method_id list looking fine while the
 			// embedded sealed-K_unlock is gone — that would surface
 			// only at unlock time as a confusing AEAD error.
+			//
+			// Bound on what doctor can verify: it can read the
+			// vault and check structure, but it CANNOT verify the
+			// sealed_k_unlock decrypts correctly — that requires
+			// the YubiKey itself + on-card ECDH. We're explicit
+			// about that limit so a future caller doesn't read
+			// "OK" as "this will unlock". A non-empty but corrupted
+			// sealed_k_unlock passes our checks and only fails at
+			// actual unlock — the right place is the unlock error
+			// path, not the doctor.
+			//
+			// Sanity bound on SealedKUnlock length: libsodium
+			// crypto_box_seal of a 32-byte K_unlock produces 32 +
+			// 16 + 32 = 80 bytes (eph_pub + Poly1305 + plaintext).
+			// Anything below 48 bytes (eph_pub + tag, no plaintext)
+			// could not authenticate even an empty payload.
 			for _, w := range v.WrappedPayloadKeys {
 				if w.MethodType != proto.AuthYubikey {
 					continue
@@ -186,11 +202,16 @@ func RunDoctor(ctx context.Context) error {
 				if len(pp.X25519Pub) != 32 {
 					pr("ERR", fmt.Sprintf("  yubikey wrap %s: x25519_pub is %d bytes, want 32", w.MethodID, len(pp.X25519Pub)))
 				}
-				if len(pp.SealedKUnlock) == 0 {
+				switch {
+				case len(pp.SealedKUnlock) == 0:
 					pr("ERR", fmt.Sprintf("  yubikey wrap %s: sealed_k_unlock is empty (unlock would fail)", w.MethodID))
+				case len(pp.SealedKUnlock) < 48:
+					pr("ERR", fmt.Sprintf("  yubikey wrap %s: sealed_k_unlock is %d bytes, < 48 (truncated; unlock would fail)", w.MethodID, len(pp.SealedKUnlock)))
 				}
-				if len(pp.X25519Pub) == 32 && len(pp.SealedKUnlock) > 0 {
-					pr("OK", fmt.Sprintf("  yubikey wrap %s: pub + sealed K_unlock present", w.MethodID))
+				if len(pp.X25519Pub) == 32 && len(pp.SealedKUnlock) >= 48 {
+					// Honest message: structural-only check, not a
+					// guarantee the unlock will succeed.
+					pr("OK", fmt.Sprintf("  yubikey wrap %s: structural check OK (sealed_k_unlock content verified only at unlock)", w.MethodID))
 				}
 			}
 		}

@@ -247,11 +247,10 @@ func confirmSlotOverwrite(force bool) error {
 	pub, err := card.PublicX25519()
 	if err != nil {
 		// PublicX25519 fails when the slot is empty (the cached pub
-		// in pivWrapper is nil). That is the expected "fresh slot"
-		// case — proceed with no prompt. We distinguish "empty
-		// slot" from "card-side error" by string-matching the
-		// known empty-slot error from pivWrapper.PublicX25519.
-		if strings.Contains(err.Error(), "no key (run Enroll first)") {
+		// in pivWrapper is nil). Typed sentinel — string-matching
+		// the message would be brittle if the wrapped text ever
+		// moves. errors.Is decouples the policy from the prose.
+		if errors.Is(err, yubikey.ErrSlotEmpty) {
 			return nil
 		}
 		if force {

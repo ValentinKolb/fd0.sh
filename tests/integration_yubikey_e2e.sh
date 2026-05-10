@@ -489,25 +489,28 @@ printf "carol-rec\nrecovered-pass\nrecovered-pass\n" \
 printf "recovered-pass\n" | RC unlock >/dev/null 2>&1 \
     && ok "recovered device unlocks (passphrase)" || no "recovered device unlock"
 RC sync >/dev/null 2>&1; RC sync >/dev/null 2>&1
-# After 2 syncs the recovered device should have re-discovered
+# After 2 syncs the recovered device must have re-discovered
 # Carol's scopes via the user-chain replay + scope-discovery flow.
+# Earlier soft-pass tolerance allowed an empty read to count as
+# success — that masked a real degradation. Now we require the
+# exact value Carol wrote in Phase 7.
 RECOVERED_DEPLOY=$(RC get DEPLOY_KEY --scope work 2>/dev/null || true)
-case "$RECOVERED_DEPLOY" in
-    "carol-deploy-1")
-        ok "recovered device reads Carol's secret (DEPLOY_KEY)"
-        ;;
-    "")
-        # Recovery via passphrase on a yubikey-only chain may need
-        # an explicit passphrase auth.set after import. Document
-        # the degradation: the user has identity (super_priv) but
-        # no passphrase wrap on the server-anchored chain. Test
-        # surfaces it as a soft outcome rather than a hard fail —
-        # the v1 spec has no automatic re-add.
-        ok "recovered device can authenticate (super_priv intact); secret read requires post-import auth.set (documented v1 limit)"
-        ;;
-    *)
-        no "recovered device read returned unexpected value: $RECOVERED_DEPLOY" ;;
-esac
+expect_eq "$RECOVERED_DEPLOY" "carol-deploy-1" "recovered device reads Carol's secret (DEPLOY_KEY)"
+
+# The recovered device should ALSO have at least one auth method
+# active on its chain — the freshly-added passphrase one (Carol's
+# old yubikey method may or may not survive depending on whether
+# the import flow re-uses or replaces the chain). Either way, the
+# new device must have AT LEAST the passphrase method.
+RC_METHODS=$(RC auth ls 2>/dev/null | grep -c "^" || true)
+if [ "$RC_METHODS" -ge 1 ] 2>/dev/null; then
+    ok "recovered device has $RC_METHODS active auth method(s)"
+else
+    no "recovered device has no auth methods after import"
+fi
+RC_HAS_PASS=$(RC auth ls 2>/dev/null | grep -c passphrase || true)
+expect_eq "$RC_HAS_PASS" "1" "recovered device's chain has the passphrase method from import"
+
 # Lock the recovered device's agent so it doesn't linger.
 RC lock >/dev/null 2>&1 || true
 
@@ -618,6 +621,39 @@ fi
 phase "PIN retry postflight (must end at 3/3)"
 RETRIES_POST=$(ykman piv info 2>/dev/null | awk '/PIN tries remaining/ {print $4}')
 expect_eq "$RETRIES_POST" "3/3" "PIN retry counter restored to 3/3 at end of test"
+
+# ─── Phase 20: multi-method auto-pick logs to stderr ──────────────
+# DESTRUCTIVE: this phase re-provisions slot 0x9d, invalidating
+# Carol's yubikey wrap. It runs LAST so previous phases that depend
+# on Carol's yubikey-bound vault (stress loop, recovery, unlock
+# cycles) execute against the original slot pub. After this phase,
+# Carol's vault on this YubiKey is permanently locked out of the
+# card; her recovery file remains valid for fresh-device flows.
+phase "auto-pick logs the chosen method on stderr (DESTRUCTIVE — runs last)"
+HOME_AMB=$HOME/.fd0-yk-ambig
+mkfd0 "$HOME_AMB"
+AMB() { env FD0_HOME="$HOME_AMB" FD0_AGENT_BIN="$FD0_AGENT" "$FD0" "$@"; }
+printf "amb-pass\namb-pass\n" | env FD0_HOME="$HOME_AMB" "$FD0" init >/dev/null 2>&1
+printf "amb-pass\n" | AMB unlock >/dev/null 2>&1
+printf "n\n" | AMB auth add --yubikey --touch=never --force >/tmp/fd0-yk-amb-add.log 2>&1 \
+    && ok "ambig-home: yubikey method added (touch-only, no PIN)" \
+    || no "ambig-home: yubikey enroll failed: $(tail -3 /tmp/fd0-yk-amb-add.log)"
+AMB lock >/dev/null 2>&1
+AMB_OUT=$(printf "amb-pass\n" | AMB unlock 2>&1 >/dev/null || true)
+case "$AMB_OUT" in
+    *"multiple unlock methods available"*)
+        ok "auto-pick logged the multi-method notice"
+        ;;
+    *)
+        no "expected 'multiple unlock methods available' in stderr; got: $(echo "$AMB_OUT" | head -3)" ;;
+esac
+AMB lock >/dev/null 2>&1 || true
+PF="$HOME_AMB/agent.pid"
+if [ -r "$PF" ]; then
+    APID=$(cat "$PF")
+    [ -n "$APID" ] && [ "$APID" -gt 0 ] 2>/dev/null && kill "$APID" 2>/dev/null || true
+fi
+rm -rf "$HOME_AMB" /tmp/fd0-yk-amb-add.log
 
 # ─── Result ───────────────────────────────────────────────────────
 phase "result"

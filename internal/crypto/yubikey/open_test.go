@@ -193,6 +193,9 @@ func (s *stubCard) PublicX25519() ([]byte, error) {
 }
 
 func (s *stubCard) SharedSecret(ephPub []byte) ([]byte, error) {
+	if len(ephPub) != 32 {
+		return nil, errors.New("stubCard: ephPub must be 32 bytes")
+	}
 	if s.sharedErr != nil {
 		return nil, s.sharedErr
 	}
@@ -205,6 +208,20 @@ func (s *stubCard) SharedSecret(ephPub []byte) ([]byte, error) {
 
 func (s *stubCard) PINRetries() (int, error) { return 3, nil }
 func (s *stubCard) Close() error              { return nil }
+
+// stubCard MUST satisfy the shared Card contract — same observable
+// behaviour as MockCard, even though it's a hand-rolled mock for
+// error-injection tests. This pin catches the case where a future
+// Card method addition silently breaks one of the fakes.
+func TestStubCard_AssertContract(t *testing.T) {
+	t.Parallel()
+	pub := make([]byte, 32)
+	for i := range pub {
+		pub[i] = 0x55 // valid 32-byte length; content irrelevant for contract checks
+	}
+	stub := &stubCard{pub: pub}
+	AssertCardContract(t, "stubCard", stub)
+}
 
 // validSealedBlob produces a length-valid (parse-passing) blob using
 // a fresh MockCard, so error tests can drive the OpenSealedBox path

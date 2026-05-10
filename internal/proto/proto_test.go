@@ -318,6 +318,45 @@ func TestScopeVaultDataPushFloorDefaultsToZero(t *testing.T) {
 	}
 }
 
+// TestYubikeyPublicParamsForwardCompat: a future v2 may add fields
+// (e.g. firmware string, pin_policy hint, touch_policy hint). The
+// CBOR decoder MUST silently ignore unknown keys so a v1 reader
+// loading a v2-shaped wrap still succeeds, with the known fields
+// intact. Pin this so a future strict-decoder change can't break
+// rolling deployments.
+//
+// We synthesise a v2 shape via map[string]any → Marshal → decode
+// into v1 YubikeyPublicParams. Known fields must round-trip;
+// unknown fields must be silently dropped without an error.
+func TestYubikeyPublicParamsForwardCompat(t *testing.T) {
+	v2 := map[string]any{
+		"x25519_pub":      bytes.Repeat([]byte{0x55}, 32),
+		"sealed_k_unlock": bytes.Repeat([]byte{0x66}, 80),
+		"slot":            uint8(0x9d),
+		// Hypothetical v2 additions:
+		"firmware":        "5.7.4",
+		"pin_policy_hint": "once",
+		"touch_policy":    "never",
+	}
+	b, err := Marshal(v2)
+	if err != nil {
+		t.Fatalf("marshal v2: %v", err)
+	}
+	var out YubikeyPublicParams
+	if err := Unmarshal(b, &out); err != nil {
+		t.Fatalf("v1 decoder rejected v2 shape: %v (this would block rolling deployment)", err)
+	}
+	if !bytes.Equal(out.X25519Pub, bytes.Repeat([]byte{0x55}, 32)) {
+		t.Fatalf("X25519Pub did not round-trip from v2 shape: %x", out.X25519Pub)
+	}
+	if !bytes.Equal(out.SealedKUnlock, bytes.Repeat([]byte{0x66}, 80)) {
+		t.Fatalf("SealedKUnlock did not round-trip from v2 shape")
+	}
+	if out.Slot != 0x9d {
+		t.Fatalf("Slot did not round-trip from v2 shape: 0x%02x", out.Slot)
+	}
+}
+
 // TestYubikeyPublicParamsRoundtrip exercises the new struct used by the
 // `auth add --yubikey` flow.
 func TestYubikeyPublicParamsRoundtrip(t *testing.T) {

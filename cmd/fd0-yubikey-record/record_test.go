@@ -317,6 +317,9 @@ func (c *errCard) PublicX25519() ([]byte, error) {
 }
 
 func (c *errCard) SharedSecret(ephPub []byte) ([]byte, error) {
+	if len(ephPub) != 32 {
+		return nil, errors.New("errCard: ephPub must be 32 bytes")
+	}
 	if c.sharedErr != nil {
 		return nil, c.sharedErr
 	}
@@ -330,6 +333,20 @@ func (c *errCard) SharedSecret(ephPub []byte) ([]byte, error) {
 
 func (c *errCard) PINRetries() (int, error) { return 3, nil }
 func (c *errCard) Close() error              { return nil }
+
+// errCard MUST satisfy the same observable Card contract as MockCard
+// (length validation, fresh-copy returns, idempotent Close). Without
+// this assertion, a future Card method addition could add an
+// untested method to errCard that silently violates the contract.
+func TestErrCard_AssertContract(t *testing.T) {
+	t.Parallel()
+	pub := make([]byte, 32)
+	for i := range pub {
+		pub[i] = 0x77
+	}
+	stub := &errCard{pub: pub}
+	yubikey.AssertCardContract(t, "errCard", stub)
+}
 
 func contains(s, sub string) bool {
 	for i := 0; i+len(sub) <= len(s); i++ {

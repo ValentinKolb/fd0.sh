@@ -230,7 +230,7 @@ type pivWrapper struct {
 // never called, or the slot was wiped after Open).
 func (p *pivWrapper) PublicX25519() ([]byte, error) {
 	if p.slotPub == nil {
-		return nil, fmt.Errorf("yubikey: slot 0x%02x has no key (run Enroll first)", byte(p.slot))
+		return nil, fmt.Errorf("%w: slot 0x%02x", ErrSlotEmpty, byte(p.slot))
 	}
 	raw := p.slotPub.Bytes()
 	if len(raw) != 32 {
@@ -260,7 +260,7 @@ func (p *pivWrapper) PublicX25519() ([]byte, error) {
 //     depth required by the yubikey.Card contract).
 func (p *pivWrapper) SharedSecret(ephPub []byte) ([]byte, error) {
 	if p.slotPub == nil {
-		return nil, fmt.Errorf("yubikey: slot 0x%02x has no key (run Enroll first)", byte(p.slot))
+		return nil, fmt.Errorf("%w: slot 0x%02x", ErrSlotEmpty, byte(p.slot))
 	}
 	if len(ephPub) != 32 {
 		return nil, fmt.Errorf("yubikey: slot 0x%02x SharedSecret: ephPub must be 32 bytes, got %d", byte(p.slot), len(ephPub))
