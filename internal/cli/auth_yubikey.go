@@ -31,11 +31,12 @@ import (
 // touchPolicy is one of "" (default = always), "always", "never",
 // "cached"; anything else is rejected.
 //
-// Until the hardware-day integration of the yubikey package is complete,
-// step 4 returns ErrNotEnabled (or "pending hardware-day integration").
-// We surface that error verbatim so the user sees what's blocked, but we
-// do NOT half-enroll: the user-chain stays untouched on any failure.
-func RunAuthAddYubikey(ctx context.Context, touchPolicy string) error {
+// force, when true, suppresses the overwrite-confirmation prompt that
+// fires when slot 9d already holds a key. Default false: enrollment
+// asks the user to confirm before destroying an existing slot-key,
+// because that is irreversible (any vault wrap that depends on the
+// old slot-pub is permanently locked out).
+func RunAuthAddYubikey(ctx context.Context, touchPolicy string, force bool) error {
 	// Detect a YubiKey early. List() is cheap and gives a friendlier error
 	// than letting Enroll fail downstream.
 	cards, err := yubikey.List()
@@ -46,6 +47,14 @@ func RunAuthAddYubikey(ctx context.Context, touchPolicy string) error {
 		return errors.New("yubikey: no smartcard detected — insert your YubiKey and retry")
 	}
 	fmt.Fprintf(os.Stderr, "✓ YubiKey detected: %s\n", cards[0])
+
+	// SECURITY: enrollment overwrites slot 0x9d unconditionally on the
+	// card. If the slot already has a key, that key is GONE. Any prior
+	// vault that bound K_unlock to the OLD slot pub is permanently
+	// unrecoverable from this card. Probe + confirm before destroying.
+	if err := confirmSlotOverwrite(force); err != nil {
+		return err
+	}
 
 	// PIN choice prompt. Default to touch-only (`n`) since most users
 	// expect a hardware key to be one-factor.
@@ -210,6 +219,49 @@ func enrollYubikeySlot(pin []byte, tp yubikey.TouchPolicy) ([]byte, error) {
 		return nil, errors.New("yubikey: Enroll returned nil result")
 	}
 	return res.X25519Pub, nil
+}
+
+// confirmSlotOverwrite probes slot 0x9d for an existing X25519 key.
+// If one is present, the function (a) refuses immediately when stdin
+// is not a TTY and force is false (no silent overwrite in scripts),
+// and (b) prompts the user for an explicit "yes" otherwise. Empty
+// slot ⇒ no prompt, no error.
+//
+// The probe opens the card without a PIN — KeyInfo only needs read
+// access — so this does not consume a PIN-retry attempt.
+func confirmSlotOverwrite(force bool) error {
+	card, err := yubikey.Open(yubikey.OpenOptions{Slot: yubikey.SlotKeyManagement})
+	if err != nil {
+		// If the card is unreachable, defer the error to the actual
+		// Enroll call so the user sees one consistent failure
+		// message rather than a probe + a real error.
+		return nil
+	}
+	defer card.Close()
+	pub, err := card.PublicX25519()
+	if err != nil {
+		// Slot is empty or unreadable. Leave the empty-slot path to
+		// fall through to Enroll (which generates a fresh key); the
+		// "unreadable" case will surface there with a useful error.
+		return nil
+	}
+	if force {
+		fmt.Fprintf(os.Stderr, "! slot 0x9d has an existing X25519 key (pub %x); --force given, overwriting.\n", pub[:8])
+		return nil
+	}
+	fmt.Fprintf(os.Stderr, "! slot 0x9d already has an X25519 key (pub %x).\n", pub[:8])
+	fmt.Fprintln(os.Stderr, "! Enrolling a new method OVERWRITES this key. Any vault still bound to the old key will be permanently locked out of THIS card.")
+	if !IsTTY(os.Stdin) {
+		return errors.New("yubikey: slot 0x9d already provisioned; pass --force to overwrite (refusing to do so silently from a non-interactive stdin)")
+	}
+	fmt.Fprint(os.Stderr, "Type 'yes' to overwrite, anything else to abort: ")
+	r := sharedStdin()
+	line, _ := r.ReadString('\n')
+	line = strings.TrimSpace(strings.ToLower(line))
+	if line != "yes" {
+		return errors.New("yubikey: overwrite aborted by user")
+	}
+	return nil
 }
 
 // parseTouchPolicy maps the --touch flag value to a TouchPolicy.

@@ -305,6 +305,17 @@ func (p *pivWrapper) SharedSecret(ephPub []byte) ([]byte, error) {
 	return shared, nil
 }
 
+// PINRetries returns the number of PIV PIN-verify attempts remaining
+// before the card blocks the PIN. The query is read-only and does NOT
+// consume a retry attempt itself.
+func (p *pivWrapper) PINRetries() (int, error) {
+	n, err := p.yk.Retries()
+	if err != nil {
+		return 0, fmt.Errorf("yubikey: query PIN retries: %w", err)
+	}
+	return n, nil
+}
+
 // Close wipes the cached PIN copy and releases the smartcard handle.
 func (p *pivWrapper) Close() error {
 	if len(p.pin) > 0 {

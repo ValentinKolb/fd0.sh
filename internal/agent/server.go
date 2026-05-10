@@ -266,16 +266,19 @@ func (s *Server) handleStatus() *Response {
 }
 
 func (s *Server) handleUnlock(u *UnlockReq) *Response {
-	v, err := vault.Read(u.VaultPath)
-	if err != nil {
-		return errResp(err.Error())
-	}
 	// Sensitive credentials decoded from the wire frame: wipe before
-	// returning so the bytes don't linger on the heap past their use.
+	// returning, regardless of which path runs. We register the
+	// wipes BEFORE any fallible call so a vault.Read / parse / RPC
+	// error can't leave PIN or passphrase bytes on the heap.
 	// (The wire-frame buffer itself was already wiped in ReadFrame.)
 	defer crypto.Wipe(u.Passphrase)
 	defer crypto.Wipe(u.YubikeyPIN)
 
+	// Validate the method type BEFORE doing any I/O. A misconfigured
+	// client (or a deliberately-bad request) shouldn't make us read
+	// the vault file just to discover we can't unlock it. The early
+	// check also keeps the error message scoped to the actual
+	// problem.
 	var resolver vault.MethodResolver
 	switch u.MethodType {
 	case proto.AuthPassphrase:
@@ -287,6 +290,11 @@ func (s *Server) handleUnlock(u *UnlockReq) *Response {
 		resolver = s.cfg.NewYubikeyResolver(u.YubikeyPIN)
 	default:
 		return errResp(fmt.Sprintf("unsupported method_type %q", u.MethodType))
+	}
+
+	v, err := vault.Read(u.VaultPath)
+	if err != nil {
+		return errResp(err.Error())
 	}
 	res, err := vault.Open(v, []vault.MethodResolver{resolver})
 	if err != nil {

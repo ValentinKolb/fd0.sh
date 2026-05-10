@@ -91,6 +91,11 @@ func (c *MockCard) SharedSecret(ephPub []byte) ([]byte, error) {
 	return curve25519.X25519(c.priv[:], ephPub)
 }
 
+// PINRetries reports a fixed 3 for the software card. Real cards count
+// down per failed VerifyPIN; MockCard does not perform PIN auth, so a
+// constant value is the only sensible response.
+func (c *MockCard) PINRetries() (int, error) { return 3, nil }
+
 // Close is a no-op for software cards.
 func (c *MockCard) Close() error { return nil }
 

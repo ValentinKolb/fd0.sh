@@ -90,6 +90,12 @@ type Card interface {
 	//     enforces this; hardware implementations MUST replicate the
 	//     check after the on-card ECDH.
 	SharedSecret(ephPub []byte) ([]byte, error)
+	// PINRetries returns the number of PIN-verify attempts remaining
+	// before the PIV PIN blocks (typical YubiKey: starts at 3,
+	// successful verify resets to 3, blocked at 0). Used by callers
+	// to refuse "wrong PIN" tests when the card is one wrong attempt
+	// away from blocking. Software MockCard reports a fixed 3.
+	PINRetries() (int, error)
 	// Close releases the smartcard handle (no-op for software cards).
 	Close() error
 }

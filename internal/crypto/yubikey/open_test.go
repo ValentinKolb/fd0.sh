@@ -203,7 +203,8 @@ func (s *stubCard) SharedSecret(ephPub []byte) ([]byte, error) {
 	return out, nil
 }
 
-func (s *stubCard) Close() error { return nil }
+func (s *stubCard) PINRetries() (int, error) { return 3, nil }
+func (s *stubCard) Close() error              { return nil }
 
 // validSealedBlob produces a length-valid (parse-passing) blob using
 // a fresh MockCard, so error tests can drive the OpenSealedBox path

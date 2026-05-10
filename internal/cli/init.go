@@ -153,6 +153,14 @@ func RunUnlock(ctx context.Context, agentBin, method string) error {
 	if err != nil {
 		return err
 	}
+	// When more than one method type is available and the user did
+	// NOT pass --method, surface the auto-pick on stderr so they can
+	// see which method was used. Silent picking is a footgun: a user
+	// who wants the YubiKey path could end up unlocked via passphrase
+	// and not realise.
+	if method == "" && len(distinctMethodTypes(uctx.LatestAuthSet.Payload.Active)) > 1 {
+		fmt.Fprintf(os.Stderr, "ℹ multiple unlock methods available — picked %q (override with --method=...)\n", chosen.MethodType)
+	}
 
 	c := agent.NewClient(paths.AgentSock)
 	if !c.IsRunning() {
@@ -218,6 +226,21 @@ func pickUnlockMethod(active []proto.AuthMethod, requested string) (proto.AuthMe
 		}
 	}
 	return out, nil
+}
+
+// distinctMethodTypes returns the set of distinct method types
+// present in `active`. Used to detect ambiguous method choices.
+func distinctMethodTypes(active []proto.AuthMethod) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(active))
+	for _, m := range active {
+		if _, ok := seen[m.MethodType]; ok {
+			continue
+		}
+		seen[m.MethodType] = struct{}{}
+		out = append(out, m.MethodType)
+	}
+	return out
 }
 
 func summariseMethodTypes(active []proto.AuthMethod) string {

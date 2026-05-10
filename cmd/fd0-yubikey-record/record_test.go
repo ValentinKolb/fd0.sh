@@ -328,7 +328,8 @@ func (c *errCard) SharedSecret(ephPub []byte) ([]byte, error) {
 	return out, nil
 }
 
-func (c *errCard) Close() error { return nil }
+func (c *errCard) PINRetries() (int, error) { return 3, nil }
+func (c *errCard) Close() error              { return nil }
 
 func contains(s, sub string) bool {
 	for i := 0; i+len(sub) <= len(s); i++ {

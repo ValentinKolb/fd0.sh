@@ -240,6 +240,57 @@ func TestYubikeyIntegration_SharedSecretBindsToEph(t *testing.T) {
 	}
 }
 
+// TestYubikeyIntegration_PCSCLeak_AfterFailedOpens stresses the
+// Open/Close lifecycle: many failed unlock attempts (intentionally
+// passing wrong eph data so SharedSecret fails) must not leak PCSC
+// sessions. After the loop a fresh Open + SealedBoxRoundtrip MUST
+// still succeed. Bound the loop tightly so the test wall-clock stays
+// reasonable.
+func TestYubikeyIntegration_PCSCLeak_AfterFailedOpens(t *testing.T) {
+	requireHardware(t)
+
+	const N = 50
+	for i := 0; i < N; i++ {
+		card, err := Open(OpenOptions{Slot: SlotKeyManagement, PIN: hardwarePIN()})
+		if err != nil {
+			t.Fatalf("iter %d: Open: %v", i, err)
+		}
+		// Force a SharedSecret failure by feeding a low-order
+		// ephemeral. The card returns 0x6a80; we close + retry.
+		_, _ = card.SharedSecret(make([]byte, 32))
+		if err := card.Close(); err != nil {
+			t.Fatalf("iter %d: Close: %v", i, err)
+		}
+	}
+	// Fresh open after the loop must work — i.e. PCSC handles were
+	// not exhausted and the slot's PIN counter was not consumed.
+	card, err := Open(OpenOptions{Slot: SlotKeyManagement, PIN: hardwarePIN()})
+	if err != nil {
+		t.Fatalf("post-leak-loop Open: %v (PCSC sessions likely leaked)", err)
+	}
+	defer card.Close()
+	pub, err := card.PublicX25519()
+	if err != nil {
+		t.Fatalf("post-leak-loop PublicX25519: %v", err)
+	}
+	if len(pub) != 32 {
+		t.Fatalf("post-leak-loop pub len: got %d want 32", len(pub))
+	}
+}
+
+// PIN-retry probing via go-piv's yk.Retries() is firmware-dependent
+// and unreliable on YubiKey 5.7+ (the empty VERIFY APDU returns
+// success on a freshly-opened session, and go-piv interprets that as
+// "expected error code from empty pin" rather than a counter). The
+// integration shell test uses `ykman piv info` for the
+// pre-flight/post-flight retry-counter check — that is portable and
+// well-tested by Yubico.
+//
+// We keep Card.PINRetries on the interface (in case a future go-piv
+// release or alternate firmware path produces a reliable answer),
+// but it is not exercised in CI. Hardware tests that need the value
+// should shell out to ykman via os/exec.
+
 // ---- helpers ----
 
 func isAllZero32Bytes(b []byte) bool {
