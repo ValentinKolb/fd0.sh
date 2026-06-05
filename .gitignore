@@ -33,3 +33,11 @@ vendor/
 
 # Local-only working notes
 TODO.md
+
+# website/ — Bun + Hono + Solid (via @valentinkolb/ssr) homepage
+website/node_modules/
+website/.bun/
+website/dist/
+# Dev-mode Tailwind output (regenerated on every `bun run dev` boot).
+# The production build writes its own copy into website/dist/public/.
+website/public/styles.css

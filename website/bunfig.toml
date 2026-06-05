@@ -1,0 +1,7 @@
+# Solid SSR runtime. @valentinkolb/ssr renders pages with renderToString
+# from solid-js/web; the Bun runtime needs `solid-js` as the JSX import
+# source. bunfig.toml is the authoritative override at runtime; the
+# matching keys live in tsconfig.json for the typechecker.
+[jsx]
+runtime = "automatic"
+importSource = "solid-js"

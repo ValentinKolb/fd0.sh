@@ -1,0 +1,11 @@
+<svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+  <!--
+    fd0 favicon — port-designation mark (option D from /logos).
+    Transparent background so it adapts to dark and light tab strips;
+    the amber stroke and dot carry the contrast.
+    Geometry is the 16×16 variant scaled to a 32 viewBox: thin border
+    box (the 0xFD0 cell) with a centred dot (the byte inside).
+  -->
+  <rect x="3" y="3" width="26" height="26" fill="none" stroke="#ffb000" stroke-width="2.5"/>
+  <circle cx="16" cy="16" r="4" fill="#ffb000"/>
+</svg>

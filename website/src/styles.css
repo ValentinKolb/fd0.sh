@@ -1,0 +1,150 @@
+/*
+ * fd0.sh — homepage styles.
+ *
+ * One terminal-aesthetic palette: phosphor amber on near-black, Geist
+ * Mono throughout. Ligatures are turned off so `--`, `==`, `>=` render
+ * as the characters they actually are — shell + protocol material
+ * should look the way it types, not the way the typeface composes it.
+ */
+
+/* Additional families are loaded for the alternative homepage drafts
+ * under /v1–/v5. The main / homepage and /impressum continue to use
+ * Geist Mono exclusively; the other faces are referenced via Tailwind
+ * arbitrary `font-[…]` utilities on the per-page root elements only.
+ */
+@import url("https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300..700&family=Geist:wght@100..900&family=Inter:wght@300..900&family=Source+Serif+4:opsz,wght@8..60,400..700&display=swap");
+
+@import "tailwindcss";
+
+@source "../src/**/*.{ts,tsx,html}";
+
+@layer base {
+  html,
+  body {
+    height: 100%;
+    margin: 0;
+  }
+  body {
+    -webkit-font-smoothing: antialiased;
+  }
+  /* Global text-selection highlight. Translucent amber on dark backgrounds
+     reads as the brand colour without going stark white-on-black; the alpha
+     means it sits on top of any underlying surface without losing
+     contrast. The .term page overrides with its own opaque amber/bg pair
+     below. */
+  ::selection {
+    background: rgba(255, 176, 0, 0.28);
+    color: inherit;
+  }
+  ::-moz-selection {
+    background: rgba(255, 176, 0, 0.28);
+    color: inherit;
+  }
+}
+
+/* ─── terminal palette ──────────────────────────────────────────────── */
+.term {
+  --bg: #0a0a0a;
+  --fg: #e8e6e0;
+  --dim: #6b6960;
+  --acc: #ffb000;
+  --rule: rgba(232, 230, 224, 0.08);
+
+  background: var(--bg);
+  color: var(--fg);
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 14px;
+  line-height: 1.6;
+  min-height: 100vh;
+
+  /* Hard kill of programming ligatures. Without this, Geist Mono
+     composes `--` into an em-dash glyph; `flag --system` then reads
+     as `flag —system`. We don't want that. */
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "calt" 0;
+}
+
+.term ::selection {
+  background: var(--acc);
+  color: var(--bg);
+}
+
+.term .dim {
+  color: var(--dim);
+}
+.term .acc {
+  color: var(--acc);
+}
+.term .rule {
+  border-color: var(--rule);
+}
+.term .frame {
+  border: 1px solid var(--rule);
+  padding: 1.25rem 1.5rem;
+}
+
+.term a {
+  color: var(--acc);
+  text-underline-offset: 4px;
+}
+.term a:hover {
+  text-decoration: underline;
+}
+
+.term pre {
+  white-space: pre;
+  overflow-x: auto;
+}
+
+/* ─── shell syntax highlighting (root-scope) ──────────────────────
+ *
+ * Tokens emitted by the custom fd0 highlighter built with
+ * highlight.compile from @valentinkolb/stdlib (src/lib/shell.tsx).
+ * Colours are literal so the rules apply in any page context — not
+ * just inside the .term palette.
+ *
+ *   amber   commands, flags, arrows   — active grammar
+ *   sage    strings                    — literal data
+ *   teal    URLs                       — counter to amber
+ *   dim     comments, prompts          — background voice
+ *   fg      everything else            — neutral payload
+ */
+.hl-comment,
+.hl-prompt {
+  color: #6b6960;
+}
+.hl-string {
+  color: #a3c97a;
+}
+.hl-url {
+  color: #7ab8b8;
+}
+.hl-cmd,
+.hl-flag,
+.hl-arrow {
+  color: #ffb000;
+}
+
+/* The Shell component wraps its output in <pre class="shell …">; this
+ * rule kills programming ligatures (so `--`, `==`, `<-` render as the
+ * chars they actually are) and makes long lines scroll horizontally
+ * instead of breaking the box layout. Independent of .term. */
+.shell {
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "calt" 0;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+/* Blinking block cursor next to the `$ man fd0` line. */
+.term-cursor::after {
+  content: "▊";
+  color: var(--acc);
+  animation: term-blink 1.1s steps(2, end) infinite;
+  margin-left: 2px;
+}
+@keyframes term-blink {
+  50% {
+    opacity: 0;
+  }
+}

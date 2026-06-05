@@ -1,0 +1,15 @@
+<svg viewBox="0 0 220 80" xmlns="http://www.w3.org/2000/svg">
+  <!--
+    fd0 logo — port-designation mark (option D from /logos).
+    0xFD0 = 4048 = the server's default listen port; the literal hex
+    rendered as a network-port designation rather than a wordmark.
+
+    Text uses Geist Mono so this only fully matches the brand when that
+    font is loaded (it is, sitewide). For standalone use (off-site
+    embedding) convert the text to a path beforehand.
+  -->
+  <rect x="2" y="14" width="216" height="52" fill="none" stroke="#ffb000" stroke-width="2"/>
+  <text x="110" y="52" text-anchor="middle"
+        font-family="Geist Mono, ui-monospace, monospace"
+        font-size="32" font-weight="500" fill="#ffb000">0xFD0</text>
+</svg>
