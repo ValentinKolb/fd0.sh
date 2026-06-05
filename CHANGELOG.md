@@ -7,7 +7,7 @@ release. Wire-format breaks are called out explicitly.
 
 First public release. Wire protocol, on-disk formats, and HTTP API
 are frozen at this version. Future versions preserve compatibility
-with v1 events at rest (`PROTOCOL.md` §8 conformance).
+with v1 events at rest (`docs/PROTOCOL.md` §8 conformance).
 
 ### Identity, vault, and unlock
 
@@ -119,7 +119,7 @@ with v1 events at rest (`PROTOCOL.md` §8 conformance).
   200-cycle stress phase (`FD0_YUBIKEY_STRESS=N`).
 - 4 rounds of brutal adversarial code review (4 P0 + 20 P1 + 16
   P2 findings total; 10 production-bug-class fixes).
-- Performance baseline (`BENCH.md`) covering server-side translog,
+- Performance baseline (`docs/BENCH.md`) covering server-side translog,
   client-side chain replay, and vault unlock.
 
 ### Out of scope for v1.0 — deferred to v1.x or later

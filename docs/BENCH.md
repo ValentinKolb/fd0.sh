@@ -108,7 +108,7 @@ A future bench run:
 go test -bench=. -benchmem -benchtime=2s -run=^$ \
     ./internal/server/store ./internal/chain ./internal/vault \
     > bench-current.txt
-diff -u <(grep -E '^Benchmark' BENCH.md) \
+diff -u <(grep -E '^Benchmark' docs/BENCH.md) \
        <(grep -E '^Benchmark' bench-current.txt)
 ```
 

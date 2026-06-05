@@ -196,7 +196,12 @@ func main() {
 	if len(os.Args) > 1 {
 		root = os.Args[1]
 	}
-	threatsPath := filepath.Join(root, "THREATS.md")
+	// THREATS.md lives in docs/ since the docs split. Fall back to the
+	// legacy root location so older checkouts still run cleanly.
+	threatsPath := filepath.Join(root, "docs", "THREATS.md")
+	if _, err := os.Stat(threatsPath); err != nil {
+		threatsPath = filepath.Join(root, "THREATS.md")
+	}
 
 	catalogue, err := loadCatalogue(threatsPath)
 	if err != nil {

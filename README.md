@@ -11,17 +11,35 @@ Four components:
 - **`fd0-server`** — HTTP API + SQLite. Stores ciphertext and signed metadata only; never sees plaintext.
 - **`fd0-witness`** — Optional passive observer. Polls server STHs, cosigns honest ones, archives divergent ones. Detects server equivocation.
 
-The server cannot read secrets. Membership changes rotate the per-scope key. Full spec: [PROTOCOL.md](./PROTOCOL.md), [API.md](./API.md), [STORAGE.md](./STORAGE.md), [TRANSLOG.md](./TRANSLOG.md), [THREATS.md](./THREATS.md). Release notes: [CHANGELOG.md](./CHANGELOG.md).
+The server cannot read secrets. Membership changes rotate the per-scope key. Full spec: [docs/PROTOCOL.md](./docs/PROTOCOL.md), [docs/API.md](./docs/API.md), [docs/STORAGE.md](./docs/STORAGE.md), [docs/TRANSLOG.md](./docs/TRANSLOG.md), [docs/THREATS.md](./docs/THREATS.md). Release notes: [CHANGELOG.md](./CHANGELOG.md).
+
+## Layout
+
+This repo holds three things:
+
+- **Go code** at the root (`cmd/`, `internal/`, `tools/`, `tests/`). Single module — `go install ./cmd/…` from the root builds everything.
+- **Specs and reference docs** under [`docs/`](./docs/) — protocol, API, storage, transparency log, threat model, benchmarks.
+- **Homepage** under [`website/`](./website/) — Bun + Hono + Tailwind, one static page rendered server-side.
+
+The three are intentionally one repo: cross-cutting changes (a protocol revision that updates the spec, the implementation, and the homepage's wire-format example) land as one PR with one CHANGELOG entry.
 
 ## Install
 
-The script installs `fd0`, `fd0-agent`, `fd0-server`, `fd0-witness` into `~/.local/bin` and seeds `~/.fd0/config.toml`. Pass `--system` to write to `/usr/local/bin`.
+Two scripts. Both detect an existing install, ask before upgrading, and verify the release manifest with cosign (auto-skip if cosign isn't installed; `--no-verify` to silence).
+
+**Client** — workstation, laptop, any device that holds keys. Installs `fd0` and `fd0-agent` into `~/.local/bin` and seeds `~/.fd0/config.toml`. Pass `--system` for `/usr/local/bin`.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ValentinKolb/fd0.sh/main/scripts/install.sh | sh
 ```
 
-Server-only via Docker:
+**Server** — host that stores ciphertext + transparency log. Installs `fd0-server` and `fd0-witness` into `/usr/local/bin`, creates the `fd0` system user, drops a hardened systemd unit at `/etc/systemd/system/fd0.service`, seeds `/etc/default/fd0-server`. Does **not** start the service — review the config first, then `sudo systemctl enable --now fd0`. Refuses to upgrade while the service is active (stop it first).
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ValentinKolb/fd0.sh/main/scripts/install-server.sh | sudo sh
+```
+
+Or run the server in Docker:
 
 ```bash
 docker run -d --name fd0-server -p 4048:4048 -v fd0-data:/data \
@@ -176,7 +194,7 @@ The pure-Go build (no `-tags=yubikey`) refuses YubiKey unlock with a clean error
 
 v1.0. Wire protocol, on-disk formats, and HTTP API are frozen. Future
 versions preserve compatibility with v1 events at rest (see
-[PROTOCOL.md](./PROTOCOL.md) §8 conformance).
+[docs/PROTOCOL.md](./docs/PROTOCOL.md) §8 conformance).
 
 The YubiKey-PIV path has been exercised end-to-end on real hardware
 across four adversarial review rounds; the multi-user shell suite
