@@ -12,7 +12,36 @@ under those capabilities, and **the mitigation each threat receives**
 Every threat has a stable identifier (`T01`–`T54`). Source code that
 implements a mitigation carries a `// THREAT: Txx` annotation
 referencing the catalogue below — `grep -rn '// THREAT:' --include='*.go'`
-walks the doc-↔-code link in either direction.
+walks the doc-↔-code link in either direction. The
+`tools/threat-coverage` linter (run via `make lint`) enforces that
+every catalogued non-📋/⛔ threat has at least one Go annotation and
+every annotation references a known T-ID.
+
+## Contents
+
+1. [Adversary model](#1-adversary-model) — six attacker classes.
+2. [Trust boundaries](#2-trust-boundaries) — six boundaries crossed.
+3. [Threats](#3-threats) — T01 to T54, grouped by plane:
+   3.1 identity/unlock · 3.2 crypto primitives · 3.3 storage ·
+   3.4 wire/replay · 3.5 membership · 3.6 translog/equivocation ·
+   3.7 server boundary · 3.8 operational/metadata.
+4. [Coverage matrix](#4-coverage-matrix-one-line-per-threat) — one
+   line per threat: status, code reference, spec section.
+5. [Acknowledged limits](#5-acknowledged-limits-consolidated) —
+   what v1 does not promise.
+6. [User-ceremony properties](#6-user-ceremony-properties) — hold
+   only if the user does the right thing.
+7. [Out of scope](#7-out-of-scope-explicit-non-goals) — explicit
+   non-goals (distinct from §5 acknowledged limits).
+8. [Maintenance](#8-maintenance) — how to keep this doc and the
+   code annotations in sync.
+
+**§5 vs §7 boundary.** §5 lists *acknowledged limits*: real threats
+in scope of the adversary model where v1's mitigation reduces to a
+ceremony, a documented gap, or "best effort". §7 lists *explicit
+non-goals*: classes of attack we never intended to defend against
+(kernel bugs, supply-chain, TLS PKI). The matrix in §4 marks both as
+📋 (acknowledged) and ⛔ (out of scope) respectively.
 
 ---
 
@@ -67,7 +96,7 @@ Status legend:
   the user's `super_priv`. The server doesn't hold `super_priv`, so
   cannot produce a valid signature. **Code**: `chain/user.go`
   `ReplayUser` ⇒ `crypto.VerifyBytes` of every event.
-- **Spec ref**: PROTOCOL.md §3.
+- **Spec ref**: `PROTOCOL.md` §3.
 
 #### T02 — Stolen vault file → offline brute-force passphrase
 - **Adversary**: A3, A1 (if user pulled from a server that holds
@@ -77,19 +106,19 @@ Status legend:
   (`crypto.DefaultArgon2`). User-ceremony: strong passphrase (CLI
   shows a strength estimate but does not enforce a minimum).
 - **Code**: `vault/resolver.go` PassphraseResolver, `crypto.DeriveKey`.
-- **Spec ref**: PROTOCOL.md §6.1.
+- **Spec ref**: `PROTOCOL.md` §6.1.
 
 #### T03 — Coerced unlock
 - **Adversary**: A6.
 - **Mitigation** 📋: out of cryptographic scope. Threat is
-  acknowledged in the original THREATS.md §3.
+  acknowledged in the original `THREATS.md` §3.
 
 #### T04 — Server rolls back the user chain to expose a revoked credential
 - **Adversary**: A1.
 - **Threat**: user removes a compromised `AuthMethod`, server still
   serves an older `auth.set` that contains it; a fresh device fetches
   `?latest=true` and unlocks with the revoked credential.
-- **Mitigation** 🛡️ + 🤝: vault binds `AuthTip(seq, hash)` (PROTOCOL.md
+- **Mitigation** 🛡️ + 🤝: vault binds `AuthTip(seq, hash)` (`PROTOCOL.md`
   §6.0). On every open, `chain.CompareUserTip` rejects when the file's
   tip lags the vault. **First-fetch case** (fresh device, no vault
   yet) is acknowledged: cross-device tip comparison out of band is
@@ -102,7 +131,7 @@ Status legend:
 - **Mitigation** 🟢: vault `AuthTip` and `ScopeVaultData.ChainTip` bind
   the chain file's expected tip. A chain file alone (without the
   matching vault update) fails `CompareScopeTip`.
-- **Code**: `chain/tipbind.go`. **Spec**: STORAGE.md §6.
+- **Code**: `chain/tipbind.go`. **Spec**: `STORAGE.md` §6.
 
 #### T06 — Coordinated local rollback (vault + chain replaced together)
 - **Adversary**: A3.
@@ -121,14 +150,14 @@ Status legend:
 - **Code**: `internal/agent/server.go` mlocked buffers,
   `internal/crypto/wipe.go`, `internal/crypto/keys.go`
   `Ed25519Priv.Wipe`.
-- **Spec ref**: PROTOCOL.md §1.1, §6.
+- **Spec ref**: `PROTOCOL.md` §1.1, §6.
 
 #### T08 — Recovery-file theft
 - **Adversary**: A3 + offline brute-force.
 - **Mitigation** 🤝: `RecoveryFile` is AEAD-sealed under K_recovery
   (Argon2id over a separate recovery passphrase). Strength of
   protection reduces to user's recovery-passphrase choice.
-- **Spec ref**: PROTOCOL.md §6.3.
+- **Spec ref**: `PROTOCOL.md` §6.3.
 
 ### 3.2 Cryptographic primitives plane
 
@@ -244,7 +273,7 @@ Status legend:
 #### T19 — Local audit gap after compaction
 - **Adversary**: not an attacker — operational consequence.
 - **Mitigation** 📋: compacted chain files drop superseded events
-  by design (STORAGE.md §5.4); the local prev_hash chain has gaps.
+  by design (`STORAGE.md` §5.4); the local prev_hash chain has gaps.
   Audit-grade verification requires fetching from server with
   `cursor=0`. Documented limit.
 
@@ -420,7 +449,7 @@ Status legend:
   fetchEquivocationProbe, `witness/store.go` Insert +
   DetectEquivocationAt + DetectChainEquivocation,
   `witness/http.go` handleEquivocation.
-- **Spec**: TRANSLOG.md §6.
+- **Spec**: `TRANSLOG.md` §6.
 
 #### T36 — Server returns wrong consistency proof (forks history)
 - **Adversary**: A1.
@@ -493,7 +522,7 @@ Status legend:
 - **Code**: `cli/witness_check.go` CrossCheckSTH +
   fetchHighestProbe, `witness/store.go` HighestTreeSize,
   `witness/http.go` handleHighest.
-- **Spec**: TRANSLOG.md §6.1, §6.4.
+- **Spec**: `TRANSLOG.md` §6.1, §6.4.
 
 #### T42 — STH for a different chain_id served as ours
 - **Adversary**: A1, A5.
@@ -584,7 +613,7 @@ Status legend:
   on a card; the mitigation is that the encrypted user chain
   is not network-readable.
 - **Code**: `server/server.go` handleFetchUser auth check.
-- **Spec**: PROTOCOL.md §6.0, API.md §2.
+- **Spec**: `PROTOCOL.md` §6.0, `API.md` §2.
 
 #### T51 — Card-channel substitution
 - **Adversary**: A2.
@@ -614,6 +643,10 @@ Status legend:
 ---
 
 ## 4. Coverage matrix (one-line per threat)
+
+Status: 🟢 structural · 🛡️ runtime guard · 🤝 user ceremony ·
+📋 acknowledged limit · ⛔ out of scope. Full definitions in §3
+opening paragraph.
 
 | ID  | Status | Code reference                                   | Spec §          |
 | --- | :----: | ------------------------------------------------ | --------------- |

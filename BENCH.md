@@ -1,6 +1,14 @@
 # fd0 performance baseline
 
-Snapshot taken 2026-05-06 against the post-Wave-E codebase on a developer machine. Used as a regression target: a future commit that pushes any number more than 25% in the wrong direction needs explicit justification.
+Microbenchmarks for the three hottest internal paths: server-side
+translog append + proof generation, client-side chain replay, and
+vault unlock. Captured to fix a regression target — a future commit
+that pushes any number more than 25% in the wrong direction needs
+explicit justification.
+
+Snapshot taken 2026-05-06 against commit `0de52b1` (the introduction
+of `chain.AppendTx` uniform append-with-rollback) on a developer
+machine.
 
 **Hardware**: Apple M1 Max, macOS, single-threaded.
 **Reproduce**:
@@ -56,7 +64,7 @@ state.
 ### Notes
 
 - Replay is perfectly linear: ~56 µs per event regardless of chain depth. The per-event cost is dominated by ed25519 signature verify (~30 µs) plus CBOR decode and AAD construction.
-- At 10 000 events per scope, every CLI command spends ~555 ms in replay before doing anything. STORAGE.md §5 compaction is the answer; `CompactScope` thresholds should trigger well before this point in production.
+- At 10 000 events per scope, every CLI command spends ~555 ms in replay before doing anything. `STORAGE.md` §5 compaction is the answer; `CompactScope` thresholds should trigger well before this point in production.
 - Allocation cost is steep: 870k allocs for a 10k-event replay (87 allocs/event). Most are CBOR decode buffers. Halving this would halve replay wall-time. Optimisation candidate if replay shows up in user-perceived latency profiling.
 - `AppendScope` is ~6 ms because of the per-event fsync. Group-commit would help integration-test throughput but compromises the crash-consistency story for real users; per-event fsync is correct.
 

@@ -1,8 +1,22 @@
-# fd0 Transparency Log (v1 draft)
+# fd0 Transparency Log (v1)
 
-Companion to `PROTOCOL.md`, `STORAGE.md`, `API.md`, `THREATS.md`. The transparency log lifts the existing "tamper detection on the server-held chain" guarantee from "any client that pulls from `cursor=0` can detect modification" to "any pair of clients (or a third-party witness) can detect equivocation between divergent server views". It addresses `THREATS.md` §2 "Server equivocation".
+Companion to `PROTOCOL.md`, `STORAGE.md`, `API.md`, `THREATS.md`. The transparency log lifts the existing "tamper detection on the server-held chain" guarantee from "any client that pulls from `cursor=0` can detect modification" to "any pair of clients (or a third-party witness) can detect equivocation between divergent server views". It addresses `THREATS.md` T35 "Server equivocation".
 
 The wire format and cryptographic constructions follow `PROTOCOL.md` conventions: deterministic CBOR (RFC 8949 §4.2.1), domain-separated signatures, byte concatenation `||`. The Merkle tree construction follows RFC 6962 with SHA-256.
+
+## Contents
+
+1. [Properties](#1-properties)
+2. [Domain separators](#2-domain-separators)
+3. [Tree construction](#3-tree-construction)
+4. [Server keypair](#4-server-keypair)
+5. [API endpoints](#5-api-endpoints)
+6. [Client verification](#6-client-verification)
+7. [Storage](#7-storage)
+8. [Witness binary](#8-witness-binary)
+9. [Compaction](#9-compaction)
+10. [Deferred to v1.x and beyond](#10-deferred-to-v1x-and-beyond)
+11. [Threat-model implications](#11-threat-model-implications)
 
 ---
 
@@ -107,7 +121,7 @@ The server holds one Ed25519 keypair used exclusively for signing STHs and the s
 
   ```
   fd0-server: WARN — generated new transparency-log key at <path>.
-              BACK THIS UP NOW. Loss requires a key-rotation ceremony (TRANSLOG.md §4.3)
+              BACK THIS UP NOW. Loss requires a key-rotation ceremony (`TRANSLOG.md` §4.3)
               and forces every client to re-pin on next contact, dropping equivocation
               evidence for STHs signed under the old key.
   ```
@@ -115,18 +129,6 @@ The server holds one Ed25519 keypair used exclusively for signing STHs and the s
 - The keyfile MUST contain exactly 64 bytes (raw Ed25519 private key, the standard `seed || pub` Go layout). Anything else is a startup-FATAL.
 - Keyfile writes are atomic: write to `<path>.tmp` with mode `0600`, `fsync` the file, `rename` to `<path>`, `fsync` the parent directory. A crash between steps leaves either the old keyfile (no DB persistence yet, regenerate next boot) or a complete new keyfile (DB persistence on next boot reconciles).
 - DB persistence (`INSERT INTO translog_server_key`) is committed BEFORE the server accepts any HTTP traffic. A crash between keyfile-write and DB-commit on first boot is recovered by retrying generation with the existing keyfile (matrix row 1).
-
-### 4.3 Key rotation (operational ceremony)
-
-If the server's translog signing key is lost or compromised, equivocation evidence under the old key is no longer enforceable. Recovery requires every client to re-pin:
-
-1. Operator generates a new keypair, places it at the configured keyfile path.
-2. Operator clears `translog_server_key` from the DB and restarts the server.
-3. The server loads the new keyfile, persists the new pubkey to DB, signs a fresh STH for every chain at its current `tree_size` under the new key.
-4. Clients pinning the old key see `pinned-key-mismatch` on next sync (§6.4) and surface a manual ceremony.
-5. Existing STHs signed under the old key remain valid evidence for any equivocation that occurred before rotation; they are not retroactively useful for the new key.
-
-Out-of-band: the operator MUST publish the new fingerprint via the same channel used at first contact.
 
 ### 4.2 Server-info endpoint
 
@@ -143,7 +145,19 @@ ServerInfo = {
 }
 ```
 
-Self-signed — the only thing this proves is that the holder of `server_priv` issued the record. The first-contact pinning ceremony (§7.1) is what binds the key to the operator the user trusts.
+Self-signed — the only thing this proves is that the holder of `server_priv` issued the record. The first-contact pinning ceremony (§6.1) is what binds the key to the operator the user trusts.
+
+### 4.3 Key rotation (operational ceremony)
+
+If the server's translog signing key is lost or compromised, equivocation evidence under the old key is no longer enforceable. Recovery requires every client to re-pin:
+
+1. Operator generates a new keypair, places it at the configured keyfile path.
+2. Operator clears `translog_server_key` from the DB and restarts the server.
+3. The server loads the new keyfile, persists the new pubkey to DB, signs a fresh STH for every chain at its current `tree_size` under the new key.
+4. Clients pinning the old key see `pinned-key-mismatch` on next sync (§6.4) and surface a manual ceremony.
+5. Existing STHs signed under the old key remain valid evidence for any equivocation that occurred before rotation; they are not retroactively useful for the new key.
+
+Out-of-band: the operator MUST publish the new fingerprint via the same channel used at first contact.
 
 ---
 
@@ -456,6 +470,18 @@ Both signed STHs are evidence: each is a server commitment to a different root a
 
 ### 8.3 Cosign and cross-check
 
+Four read endpoints make the witness archive externally queryable.
+Summary:
+
+| Endpoint                         | Returns                       | Use |
+|----------------------------------|-------------------------------|-----|
+| `/v1/witness/server-info`        | `witness_pub`                 | first-contact pinning |
+| `/v1/witness/sth/<srv>/<chain>`  | `WitnessedSTH` or 404 / 409  | per-sync cosign check |
+| `/v1/witness/highest/<srv>/<chain>` | `{observed, tree_size}`     | first-fetch rollback probe (T41) |
+| `/v1/witness/equivocation/<srv>/<chain>` | `{equivocated}`        | historical-equivocation probe (T35) |
+
+Detail follows.
+
 The witness signs a cosign per archived STH using domain `fd0-witness-cosign-v1`:
 
 ```
@@ -512,17 +538,22 @@ A fresh device performing a full pull (`cursor=0`) effectively gets `last_sth_si
 
 ---
 
-## 11. THREATS.md update
+## 11. Threat-model implications
 
-The following entry in `THREATS.md` §2 changes from **acknowledged limit** to **engineering guarantee** when the transparency log is deployed:
+The transparency log changes how `THREATS.md` reasons about server
+equivocation:
 
-> **Server equivocation.** A malicious server can present different consistent prefixes — or different parallel branches — of an event log to different clients.
+- **T35 server equivocation between clients** — promoted from
+  acknowledged limit to detected-by-construction. Divergent
+  histories produce divergent STHs at the same `tree_size`;
+  any party comparing STHs out of band (cross-device, witness
+  archive, client-witness cross-check) catches them.
+- **T46 server-key compromise** — terminates equivocation
+  detection for STHs signed under the compromised key. Operators
+  rotate via the ceremony in §4.3; every client re-pins.
+- **T41 first-fetch checkpoint rollback** — requires at least one
+  witness to have observed the chain before the rollback. A
+  truly-first-contact client with no witness has only the
+  cross-device tip-comparison user-ceremony fallback.
 
-becomes
-
-> **Server equivocation (detectable).** A malicious server that presents divergent histories produces divergent STHs at the same `tree_size`. Detected by any party comparing STHs out of band (cross-device, witness archive, or future client-witness cross-check).
-
-Two new acknowledged limits are added:
-
-- **Server-key compromise terminates equivocation detection.** A server that loses control of its translog signing key cannot prove non-equivocation for STHs signed under the compromised key. Operators MUST rotate via a manual ceremony: publish a new pubkey, every client re-pins.
-- **Witness availability.** Equivocation detection requires SOMEBODY to compare STHs. A user with one device, one server, and no witness has the cryptographic evidence available to detect equivocation but no automatic mechanism to do so.
+See `THREATS.md` for the full catalog entries.

@@ -1,22 +1,25 @@
 # fd0
 
-Zero-knowledge encrypted secret store for individuals and teams. Written in Go.
+**Zero-knowledge encrypted secret store for individuals and teams.** Written in Go.
 
-Three components:
+[Install](#install) · [Quickstart](#quickstart) · [Multi-member scopes](#multi-member-scopes) · [Configuration](#configuration) · [Recovery](#recovery) · [Build from source](#build-from-source) · [Security](#security) · [License](#license)
+
+Four components:
 
 - **`fd0`** — CLI client with inline TUI: passphrase/yubikey unlock, scope and secret commands, fuzzy search.
 - **`fd0-agent`** — Unix-socket daemon. Holds `super_priv` mlocked, performs Ed25519 / X25519 / sealed-box on demand, runs periodic sync.
 - **`fd0-server`** — HTTP API + SQLite. Stores ciphertext and signed metadata only; never sees plaintext.
+- **`fd0-witness`** — Optional passive observer. Polls server STHs, cosigns honest ones, archives divergent ones. Detects server equivocation.
 
-The server cannot read secrets. Membership changes rotate the per-scope key. Full spec: [PROTOCOL.md](./PROTOCOL.md), [API.md](./API.md), [STORAGE.md](./STORAGE.md), [THREATS.md](./THREATS.md).
+The server cannot read secrets. Membership changes rotate the per-scope key. Full spec: [PROTOCOL.md](./PROTOCOL.md), [API.md](./API.md), [STORAGE.md](./STORAGE.md), [TRANSLOG.md](./TRANSLOG.md), [THREATS.md](./THREATS.md). Release notes: [CHANGELOG.md](./CHANGELOG.md).
 
 ## Install
+
+The script installs `fd0`, `fd0-agent`, `fd0-server`, `fd0-witness` into `~/.local/bin` and seeds `~/.fd0/config.toml`. Pass `--system` to write to `/usr/local/bin`.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ValentinKolb/fd0.sh/main/scripts/install.sh | sh
 ```
-
-Installs `fd0`, `fd0-agent`, `fd0-server` into `~/.local/bin` and seeds `~/.fd0/config.toml`. Use `--system` for `/usr/local/bin`.
 
 Server-only via Docker:
 
@@ -118,7 +121,23 @@ fd0 sync                                  # discovers all scopes you were a memb
 fd0 doctor
 ```
 
-Verifies: vault opens, agent unlocked, every chain replays, vault tip-binding consistent, current OEK present per scope, vault wraps and active auth methods match, no orphan files.
+Read-only health check. Sections, in order:
+
+- **agent** — running and unlocked.
+- **user chain** — replays clean, vault `auth_tip` matches chain tip.
+- **scopes** — per scope: chain replays, vault `chain_tip` matches,
+  current OEK is in the vault, our `super_pub` is in the member set,
+  secret count.
+- **auth method consistency** — for every active auth method on the
+  user chain there is a matching wrap in `vault.enc`; for every
+  wrap there is an active method. For YubiKey wraps, additional
+  structural checks on `public_params` (32-byte X25519 pub,
+  sealed K_unlock ≥ 80 bytes).
+- **files** — no chain files exist for scopes not listed in the
+  vault.
+
+Exits non-zero on any error-class finding. Warnings (e.g. file
+ahead of vault) do not fail the run.
 
 ## Build from source
 
@@ -155,7 +174,24 @@ The pure-Go build (no `-tags=yubikey`) refuses YubiKey unlock with a clean error
 
 ## Status
 
-Pre-1.0. Wire protocol is stabilising; on-disk formats are versioned. Breaking changes between minor versions are possible until v1.0.
+v1.0. Wire protocol, on-disk formats, and HTTP API are frozen. Future
+versions preserve compatibility with v1 events at rest (see
+[PROTOCOL.md](./PROTOCOL.md) §8 conformance).
+
+The YubiKey-PIV path has been exercised end-to-end on real hardware
+across four adversarial review rounds; the multi-user shell suite
+runs 91 assertions including a 200-cycle stress phase that asserts
+zero FD growth on the agent. The threat model catalogs 54 threats
+with code-↔-doc annotations enforced by `tools/threat-coverage`.
+
+## Security
+
+Report vulnerabilities privately to **mail@valentin-kolb.com** with
+the subject prefix `fd0-security:`. Include the affected version,
+the construction or code path you believe is wrong, and any
+reproducer.
+
+For non-security bug reports, file a GitHub issue.
 
 ## License
 

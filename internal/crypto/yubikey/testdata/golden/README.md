@@ -44,9 +44,12 @@ git add internal/crypto/yubikey/testdata/golden/v1.json
 git commit -m "yubikey: record golden vectors (firmware 5.7.1)"
 ```
 
-The placeholder `vectors: []` ships with the repo so the replay test
-runs (and skips cleanly) until real vectors land. CI passes either
-way.
+`v1.json` carries 8 recorded vectors against YubiKey firmware 5.7.4,
+slot 9d, spanning plaintext lengths 0, 13, 32, 64, 256, 1024 bytes.
+CI replays them through the pure-Go path on every push to detect
+open-path drift. When the fixture is intentionally empty (vectors
+array `[]`), the replay test skips cleanly with a hint pointing at
+this workflow.
 
 ## Regenerating
 

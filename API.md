@@ -1,6 +1,18 @@
-# fd0 HTTP API (v1 draft)
+# fd0 HTTP API (v1)
 
 Companion to `PROTOCOL.md`. Requests and responses use `application/cbor` with deterministic CBOR (RFC 8949 §4.2.1) unless noted. Authentication is per-request via signed headers; no sessions, no cookies.
+
+## Contents
+
+1. [Authentication header](#1-authentication-header)
+2. [Endpoints](#2-endpoints) — `/users`, `/sync`, `/healthz`,
+   `/version`.
+3. [Status codes](#3-status-codes)
+
+Translog endpoints (`/v1/server-info`, `/v1/sth/...`,
+`/v1/proof/inclusion`, `/v1/proof/consistency`) are documented in
+`TRANSLOG.md` §5. Witness endpoints (`/v1/witness/...`) are in
+`TRANSLOG.md` §8.3.
 
 ---
 

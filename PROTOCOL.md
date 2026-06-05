@@ -1,8 +1,19 @@
-# fd0 Protocol — Cryptographic Specification (v1 draft)
+# fd0 Protocol — Cryptographic Specification (v1)
 
-Wire format and cryptographic constructions. Companion specs: `API.md`, `STORAGE.md`, `THREATS.md`.
+Wire format and cryptographic constructions. Companion specs: `API.md`, `STORAGE.md`, `TRANSLOG.md`, `THREATS.md`.
 
 Schemas use CDDL. `||` denotes byte concatenation. `cbor(x)` denotes deterministic CBOR (RFC 8949 §4.2.1). `bstr .size N` is an N-byte byte string. AEAD ciphertext layout is `nonce(12) || ct || tag(16)`.
+
+## Contents
+
+1. [Primitives](#1-primitives) — algorithms, domain separators, identifiers.
+2. [Identity](#2-identity) — `super_keypair`, `shortId`, identity cards, safety numbers.
+3. [User identity event chain](#3-user-identity-event-chain) — `auth.set`, login, credential rotation.
+4. [Scope event log](#4-scope-event-log) — `member.change`, `secret.set`, OEK distribution, projection verification.
+5. [AEAD bindings](#5-aead-bindings) — site-to-AAD table.
+6. [Vault and recovery files](#6-vault-and-recovery-files) — vault file format, unwrap/re-seal, recovery export.
+7. [Replay and concurrency](#7-replay-and-concurrency) — CAS, de-duplication, HTTP replay, chain replay, cursor advancement.
+8. [Conformance](#8-conformance) — MUST / MUST NOT for implementers.
 
 ---
 
@@ -101,6 +112,22 @@ display as 3 lines of 4 groups
 ```
 
 Compared out of band during first-trust verification.
+
+Worked example:
+
+```
+shortId   = "jg379se4"
+super_pub = ba921a98 c96c8274 52f61ae4 75ddbbe4
+            e5938bd4 b560faa0 b141adb8 730a8b20
+
+display:
+  40010 36850 12295 00838
+  20844 20977 47468 34175
+  07128 20851 42294 58206
+```
+
+Two devices comparing these 12 groups over a trusted channel verify
+the identity binding without exchanging the raw public key.
 
 ---
 

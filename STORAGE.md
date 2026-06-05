@@ -2,6 +2,20 @@
 
 Companion to `PROTOCOL.md`. Server uses SQLite; client uses append-only CBOR files. Both store byte-identical events.
 
+## Contents
+
+1. [Properties](#1-properties)
+2. [Server storage (SQLite)](#2-server-storage-sqlite)
+3. [Client storage (CBOR files)](#3-client-storage-cbor-files)
+4. [Replay](#4-replay)
+5. [Compaction and scope-leave](#5-compaction-and-scope-leave)
+6. [Subscriptions and discovery](#6-subscriptions-and-discovery)
+7. [Read and write paths](#7-read-and-write-paths)
+8. [Backup and restore](#8-backup-and-restore)
+9. [Limits](#9-limits)
+10. [Growth (order of magnitude)](#10-growth-order-of-magnitude-small-team)
+11. [Conformance](#11-conformance)
+
 ---
 
 ## 1. Properties
@@ -78,7 +92,7 @@ Layout under `~/.fd0/` (override with `FD0_HOME`):
         <scope_id>.cbor          -- one file per joined scope
     vault.enc                    -- encrypted material
     config.toml                  -- non-secret config
-    recovery/                    -- optional, user-managed exports (see PROTOCOL.md §6.3)
+    recovery/                    -- optional, user-managed exports (see `PROTOCOL.md` §6.3)
 ```
 
 In-memory state (member set, secret_index, OEK selection per event) is rebuilt at process start by the replay function in §4.
@@ -370,6 +384,28 @@ The vault is encrypted; events are public-equivalent. A torn backup self-heals o
 
 `sqlite3 .backup` for hot backups. `chains` and `auth_nonces` are rebuildable from `events` if corrupted.
 
+### 8.2.1 Server translog signing key
+
+Critical. Loss of the translog signing key forces every client to
+re-pin per `TRANSLOG.md` §4.3, dropping equivocation evidence for
+STHs signed under the old key.
+
+Backup procedure:
+
+1. The key lives at `<data-dir>/server-translog.key` (or whatever
+   `--server-priv-file` points at). 64 bytes raw Ed25519
+   (`seed || pub`), mode `0600`.
+2. Copy out-of-band (encrypted backup, HSM, paper QR) after first
+   boot. The server writes the key once at first start; the same
+   pubkey is also persisted in the DB's `translog_server_key` table
+   for boot-time consistency check.
+3. To restore: place the keyfile back; restart the server. The
+   keyfile-↔-DB cross-check verifies the pubkey matches.
+4. If only the keyfile is lost but the DB pubkey persists, the
+   server refuses to start (matrix row 4 in `TRANSLOG.md` §4.1).
+   Recovery requires either restoring the file from backup or
+   running the key-rotation ceremony in `TRANSLOG.md` §4.3.
+
 ### 8.3 Recovery scenarios
 
 - **Lost client artifacts, identity intact via recovery export:** restore `super_priv` from the recovery file (`PROTOCOL.md` §6.3), bootstrap a fresh vault, post a new `auth.set` with the new device's method, sync.
@@ -382,17 +418,22 @@ The vault is encrypted; events are public-equivalent. A torn backup self-heals o
 
 ## 9. Limits
 
-| Constraint                              | Value                  |
-| --------------------------------------- | ---------------------- |
-| `cbor` (full event) per row             | ≤ 8 MB                 |
-| `secret.set` body                       | ≤ 64 KB                |
-| `member.change` body                    | ≤ 1 MB                 |
-| Active auth methods per `auth.set`      | ≤ 50                   |
-| Active members per scope                | ≤ 1 000                |
-| Active secrets per scope                | ≤ 10 000               |
-| Events/sec per `super_pub`              | sustained 10, burst 100|
-| Concurrent connections per `super_pub`  | ≤ 4                    |
-| Request body bytes                      | ≤ 8 MB                 |
+"Enforced" — the server rejects requests that exceed the limit.
+"Advisory" — documented for operators; not currently enforced in
+code. Operators expecting deployments to approach an advisory
+limit should add their own checks (or open an issue).
+
+| Constraint                              | Value                   | Enforcement |
+| --------------------------------------- | ----------------------- | ----------- |
+| `cbor` (full event) per row             | ≤ 8 MB                  | Enforced (via `MaxBody`) |
+| `secret.set` body                       | ≤ 64 KB                 | Enforced |
+| `member.change` body                    | ≤ 1 MB                  | Enforced |
+| Active auth methods per `auth.set`      | ≤ 50                    | Advisory |
+| Active members per scope                | ≤ 1 000                 | Advisory |
+| Active secrets per scope                | ≤ 10 000                | Advisory |
+| Events/sec per `super_pub`              | sustained 10, burst 100 | Enforced (token bucket, `AcquireWrite`) |
+| Concurrent connections per `super_pub`  | ≤ 4                     | Advisory |
+| Request body bytes                      | ≤ 8 MB                  | Enforced (`FD0_MAX_BODY`) |
 
 ---
 
