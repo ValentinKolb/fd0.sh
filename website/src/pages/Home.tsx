@@ -354,9 +354,9 @@ ghp_xxxxxxxxxxxxxxxxxxxx`}</Shell>
             <BackendCol
               badge="Self-host"
               title="Run fd0-server yourself."
-              body="One script installs fd0-server and fd0-witness, drops a hardened systemd unit, creates the fd0 system user. The server refuses to upgrade while active — stop it first."
+              body="Two paths. Bare metal — one script installs fd0-server + fd0-witness and drops a hardened systemd unit. Docker — a reference compose stack brings up Traefik + all three services with TLS in one command."
               code="curl -fsSL https://fd0.sh/install-server.sh | sudo sh"
-              codeNote="Listens on :4048 by default. State in /var/lib/fd0. Configure via /etc/default/fd0-server."
+              codeNote="Or: docker compose -f deploy/compose.yml up -d — Traefik routes fd0.sh / api.fd0.sh / witness.fd0.sh, Let's Encrypt via TLS-ALPN-01, shared METRICS_TOKEN across all three. See deploy/ in the repo."
             />
             <BackendCol
               badge="Hosted at fd0.sh"
