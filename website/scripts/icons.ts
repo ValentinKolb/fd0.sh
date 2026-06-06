@@ -56,4 +56,11 @@ console.log(`✓ ${OUT}/${APPLE.name}`);
 await $`magick ${OUT}/favicon-16.png ${OUT}/favicon-32.png ${OUT}/favicon-48.png ${OUT}/favicon.ico`;
 console.log(`✓ ${OUT}/favicon.ico`);
 
-console.log("\nDone. Commit public/favicon-*.png + apple-touch-icon.png + favicon.ico.");
+// OpenGraph / Twitter card. 1200×630 is the LinkedIn/Twitter/Slack
+// default. Rendered at native size with solid bg so transparent edges
+// don't pick up whatever colour the social platform uses to pad.
+const OG = "public/og-card.svg";
+await $`rsvg-convert -w 1200 -h 630 --background-color ${PALETTE_BG} ${OG} -o ${OUT}/og-card.png`;
+console.log(`✓ ${OUT}/og-card.png`);
+
+console.log("\nDone. Commit public/favicon-*.png + apple-touch-icon.png + favicon.ico + og-card.png.");

@@ -35,8 +35,10 @@ export const LogoMark = (p: { size?: number }) => {
   );
 };
 
-export const Nav = (p: { current?: "home" | "docs" | "spec" }) => {
-  const link = (key: "home" | "docs" | "spec", href: string, label: string) => (
+type NavKey = "home" | "docs" | "spec" | "witness";
+
+export const Nav = (p: { current?: NavKey }) => {
+  const link = (key: NavKey, href: string, label: string) => (
     <a
       href={href}
       class="transition-colors"
@@ -65,6 +67,7 @@ export const Nav = (p: { current?: "home" | "docs" | "spec" }) => {
         {link("home", "/", "Home")}
         {link("docs", "/docs", "Docs")}
         {link("spec", "/spec", "Spec")}
+        {link("witness", "/witness", "Witness")}
         <a
           href="https://github.com/ValentinKolb/fd0.sh"
           class="hidden md:inline transition-colors"
