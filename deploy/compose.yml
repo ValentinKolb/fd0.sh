@@ -1,24 +1,23 @@
-# fd0 demo deployment — Traefik + the three fd0 services.
+# fd0 — single-file deployment.
 #
-#   fd0.sh          → fd0-website  (landing + /witness dashboard)
-#   api.fd0.sh      → fd0-server   (data API; what clients sync against)
-#   witness.fd0.sh  → fd0-witness  (public verifier, polls fd0-server)
+# Stack: Traefik + fd0-server + fd0-witness + fd0-website. Everything
+# below — domain, ACME email, image owner, version, metrics token,
+# witness config — lives in this one file. Edit the defaults in-place
+# or set them as stack environment variables (Portainer, Coolify, plain
+# `docker compose --env-file …`, host env). No external `.env` needed.
 #
-# Quick start:
+#   fd0.sh          → fd0-website
+#   api.fd0.sh      → fd0-server
+#   witness.fd0.sh  → fd0-witness
 #
-#   cp .env.example .env             # then edit DOMAIN, ACME_EMAIL, METRICS_TOKEN, GHCR_OWNER
-#   cp witness.toml.example witness.toml   # then fill in [[target]] for your server
-#   docker compose up -d
-#
-# Traefik handles TLS via Let's Encrypt (TLS-ALPN-01). Plain HTTP on :80
-# is permanent-redirected to HTTPS.
-#
-# This file is a STARTING POINT — adapt resource limits, log drivers,
-# backup, and monitoring to your environment.
+# Quick deploy: `docker compose up -d`. First run leaves the witness
+# config's `chains = []` empty; after a user registers, populate the
+# inline witness-config below (see the discover snippet) and restart
+# fd0-witness.
 
 services:
 
-  # ─── Traefik — TLS + routing ──────────────────────────────────────────
+  # ─── Traefik — TLS termination + Host-based routing ───────────────────
   traefik:
     image: traefik:v3.2
     restart: unless-stopped
@@ -29,11 +28,9 @@ services:
       - --entrypoints.web.http.redirections.entrypoint.to=websecure
       - --entrypoints.web.http.redirections.entrypoint.scheme=https
       - --entrypoints.websecure.address=:443
-      - --certificatesresolvers.le.acme.email=${ACME_EMAIL}
+      - --certificatesresolvers.le.acme.email=${ACME_EMAIL:-admin@fd0.sh}
       - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
       - --certificatesresolvers.le.acme.tlschallenge=true
-      # The Traefik dashboard is OFF by default. To turn it on, add
-      # --api.dashboard=true + a Host() router with basic-auth.
     ports:
       - "80:80"
       - "443:443"
@@ -44,12 +41,12 @@ services:
 
   # ─── fd0-server — data API at api.${DOMAIN} ───────────────────────────
   fd0-server:
-    image: ghcr.io/${GHCR_OWNER}/fd0-server:${FD0_VERSION:-latest}
+    image: ghcr.io/${GHCR_OWNER:-valentinkolb}/fd0-server:${FD0_VERSION:-latest}
     restart: unless-stopped
     environment:
       FD0_BIND: ":4048"
       FD0_DB: /data/fd0.db
-      FD0_METRICS_TOKEN: ${METRICS_TOKEN}
+      FD0_METRICS_TOKEN: ${METRICS_TOKEN:-CHANGE_ME_openssl_rand_hex_32}
     volumes:
       - fd0-server-data:/data
     healthcheck:
@@ -60,7 +57,7 @@ services:
       start_period: 10s
     labels:
       - traefik.enable=true
-      - traefik.http.routers.fd0-server.rule=Host(`api.${DOMAIN}`)
+      - traefik.http.routers.fd0-server.rule=Host(`api.${DOMAIN:-fd0.sh}`)
       - traefik.http.routers.fd0-server.entrypoints=websecure
       - traefik.http.routers.fd0-server.tls.certresolver=le
       - traefik.http.services.fd0-server.loadbalancer.server.port=4048
@@ -68,7 +65,7 @@ services:
 
   # ─── fd0-witness — public verifier at witness.${DOMAIN} ───────────────
   fd0-witness:
-    image: ghcr.io/${GHCR_OWNER}/fd0-witness:${FD0_VERSION:-latest}
+    image: ghcr.io/${GHCR_OWNER:-valentinkolb}/fd0-witness:${FD0_VERSION:-latest}
     restart: unless-stopped
     depends_on:
       fd0-server:
@@ -79,10 +76,12 @@ services:
       - --key=/data/cosign.key
       - --bind=:4049
     environment:
-      FD0_WITNESS_METRICS_TOKEN: ${METRICS_TOKEN}
+      FD0_WITNESS_METRICS_TOKEN: ${METRICS_TOKEN:-CHANGE_ME_openssl_rand_hex_32}
     volumes:
       - fd0-witness-data:/data
-      - ./witness.toml:/etc/fd0-witness/witness.toml:ro
+    configs:
+      - source: witness-config
+        target: /etc/fd0-witness/witness.toml
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4049/health"]
       interval: 30s
@@ -91,7 +90,7 @@ services:
       start_period: 10s
     labels:
       - traefik.enable=true
-      - traefik.http.routers.fd0-witness.rule=Host(`witness.${DOMAIN}`)
+      - traefik.http.routers.fd0-witness.rule=Host(`witness.${DOMAIN:-fd0.sh}`)
       - traefik.http.routers.fd0-witness.entrypoints=websecure
       - traefik.http.routers.fd0-witness.tls.certresolver=le
       - traefik.http.services.fd0-witness.loadbalancer.server.port=4049
@@ -99,21 +98,20 @@ services:
 
   # ─── fd0-website — landing + /witness dashboard at ${DOMAIN} ──────────
   fd0-website:
-    image: ghcr.io/${GHCR_OWNER}/fd0-website:${FD0_VERSION:-latest}
+    image: ghcr.io/${GHCR_OWNER:-valentinkolb}/fd0-website:${FD0_VERSION:-latest}
     restart: unless-stopped
     depends_on:
       fd0-witness:
         condition: service_started
     environment:
-      # PUBLIC URL of the server (rendered in the UI for "where to point
-      # `fd0 sync`"). Must be the URL clients actually hit.
-      FD0_SERVER_URL: https://api.${DOMAIN}
-      # The witness is fetched server-side by SSR. Going via the docker
-      # network is faster than round-tripping through Traefik+TLS for
-      # every page render. Public verifiers (the `curl` snippets shown
-      # on the page) still use the witness.${DOMAIN} URL above.
+      # Public URL of the server — shown to users so they can point
+      # `fd0 sync` at the right host.
+      FD0_SERVER_URL: https://api.${DOMAIN:-fd0.sh}
+      # Witness fetched server-side via the docker network — faster
+      # than a TLS round-trip per page render. The "Verify yourself"
+      # curls on /witness still display witness.${DOMAIN}.
       FD0_WITNESS_URL: http://fd0-witness:4049
-      FD0_WEBSITE_METRICS_TOKEN: ${METRICS_TOKEN}
+      FD0_WEBSITE_METRICS_TOKEN: ${METRICS_TOKEN:-CHANGE_ME_openssl_rand_hex_32}
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5173/health"]
       interval: 30s
@@ -122,11 +120,37 @@ services:
       start_period: 10s
     labels:
       - traefik.enable=true
-      - traefik.http.routers.fd0-website.rule=Host(`${DOMAIN}`)
+      - traefik.http.routers.fd0-website.rule=Host(`${DOMAIN:-fd0.sh}`)
       - traefik.http.routers.fd0-website.entrypoints=websecure
       - traefik.http.routers.fd0-website.tls.certresolver=le
       - traefik.http.services.fd0-website.loadbalancer.server.port=5173
     networks: [edge]
+
+# ─── Inline witness config ──────────────────────────────────────────────
+# Compose interpolates ${VAR} into config content at parse time, so the
+# server_url tracks ${DOMAIN}. The other two fields — server_pub and
+# chains — you fill in after the server is running and a user has
+# registered:
+#
+#   server_pub:  fd0 doctor | grep server_pub          (or decode the
+#                CBOR returned by GET /v1/server-info)
+#   chains:      docker compose exec fd0-server \
+#                  sqlite3 /data/fd0.db \
+#                  'SELECT chain_id FROM chains'
+#
+# Then edit the inline content below and `docker compose restart
+# fd0-witness`. The witness ignores unknown chains gracefully.
+configs:
+  witness-config:
+    content: |
+      [[target]]
+      server_url    = "https://api.${DOMAIN:-fd0.sh}"
+      server_pub    = "0000000000000000000000000000000000000000000000000000000000000000"
+      poll_interval = "30s"
+      chains = [
+          # "user:abc12345",
+          # "scope:s_xxxxxxxxxxxxxxxxxxxxxxxx",
+      ]
 
 volumes:
   traefik-letsencrypt:

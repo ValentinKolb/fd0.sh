@@ -99,15 +99,13 @@ fd0-witness   ~18 MB, scratch base, port 4049
 fd0-website   Bun runtime, port 5173
 ```
 
-For a working stack — Traefik + TLS + all three services — copy [`deploy/`](./deploy):
+For a working stack — Traefik + TLS + all three services — drop [`deploy/compose.yml`](./deploy/compose.yml) into Portainer or run it directly:
 
 ```bash
-cp deploy/.env.example deploy/.env             # edit DOMAIN, ACME_EMAIL, METRICS_TOKEN
-cp deploy/witness.toml.example deploy/witness.toml
 docker compose -f deploy/compose.yml up -d
 ```
 
-What's in there: Traefik v3.2 routing `Host(${DOMAIN})` to website, `api.${DOMAIN}` to server, `witness.${DOMAIN}` to witness; Let's Encrypt via TLS-ALPN-01; HTTP→HTTPS redirect; healthchecks; a single shared `METRICS_TOKEN` so one Prometheus job covers the whole stack. Adapt — resource limits, log drivers, backups are out of scope. [`deploy/README.md`](./deploy/README.md) has the chain-discovery + upgrade flow.
+Single file. No external `.env`, no `witness.toml` — defaults baked in, every knob overridable as a stack env var (`DOMAIN`, `ACME_EMAIL`, `GHCR_OWNER`, `FD0_VERSION`, `METRICS_TOKEN`). The file contains: Traefik v3.2 routing `Host(${DOMAIN})` to website, `api.${DOMAIN}` to server, `witness.${DOMAIN}` to witness; Let's Encrypt via TLS-ALPN-01; HTTP→HTTPS redirect; healthchecks; one shared `METRICS_TOKEN` so a single Prometheus job covers the whole stack; the witness config inlined via Compose `configs:` so chain IDs are edited in the same file. [`deploy/README.md`](./deploy/README.md) has the chain-discovery + upgrade flow.
 
 Bare-metal alternative — the install-server script — drops the same binaries into `/usr/local/bin` plus a hardened systemd unit at `/etc/systemd/system/fd0.service`:
 
