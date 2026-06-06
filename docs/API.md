@@ -9,7 +9,7 @@ Companion to `PROTOCOL.md`. Requests and responses use `application/cbor` with d
    `/version`.
 3. [Status codes](#3-status-codes)
 
-Translog endpoints (`/v1/server-info`, `/v1/sth/...`,
+Translog endpoints (`/v1/server-info`, `/v1/chains`, `/v1/sth/...`,
 `/v1/proof/inclusion`, `/v1/proof/consistency`) are documented in
 `TRANSLOG.md` §5. Witness endpoints (`/v1/...`) are in
 `TRANSLOG.md` §8.3.

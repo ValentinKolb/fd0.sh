@@ -1,19 +1,19 @@
 # fd0 — single-file deployment.
 #
 # Stack: Traefik + fd0-server + fd0-witness + fd0-website. Everything
-# below — domain, ACME email, image owner, version, metrics token,
-# witness config — lives in this one file. Edit the defaults in-place
-# or set them as stack environment variables (Portainer, Coolify, plain
-# `docker compose --env-file …`, host env). No external `.env` needed.
+# below — domain, ACME email, metrics token, witness config — lives in
+# this one file. Three knobs (DOMAIN, ACME_EMAIL, METRICS_TOKEN) read
+# from the host/Portainer/Coolify stack environment with sane defaults;
+# the images are hardcoded to ghcr.io/valentinkolb/fd0-* :latest.
 #
 #   fd0.sh          → fd0-website
 #   api.fd0.sh      → fd0-server
 #   witness.fd0.sh  → fd0-witness
 #
-# Quick deploy: `docker compose up -d`. First run leaves the witness
-# config's `chains = []` empty; after a user registers, populate the
-# inline witness-config below (see the discover snippet) and restart
-# fd0-witness.
+# Quick deploy: `docker compose up -d`. The witness auto-discovers
+# chains from the server (GET /v1/chains) so there's no manual chain
+# bookkeeping — only the server's cosign pubkey needs to be filled into
+# the inline witness-config once the server is running.
 
 services:
 
@@ -41,7 +41,7 @@ services:
 
   # ─── fd0-server — data API at api.${DOMAIN} ───────────────────────────
   fd0-server:
-    image: ghcr.io/${GHCR_OWNER:-valentinkolb}/fd0-server:${FD0_VERSION:-latest}
+    image: ghcr.io/valentinkolb/fd0-server:latest
     restart: unless-stopped
     environment:
       FD0_BIND: ":4048"
@@ -65,7 +65,7 @@ services:
 
   # ─── fd0-witness — public verifier at witness.${DOMAIN} ───────────────
   fd0-witness:
-    image: ghcr.io/${GHCR_OWNER:-valentinkolb}/fd0-witness:${FD0_VERSION:-latest}
+    image: ghcr.io/valentinkolb/fd0-witness:latest
     restart: unless-stopped
     depends_on:
       fd0-server:
@@ -98,7 +98,7 @@ services:
 
   # ─── fd0-website — landing + /witness dashboard at ${DOMAIN} ──────────
   fd0-website:
-    image: ghcr.io/${GHCR_OWNER:-valentinkolb}/fd0-website:${FD0_VERSION:-latest}
+    image: ghcr.io/valentinkolb/fd0-website:latest
     restart: unless-stopped
     depends_on:
       fd0-witness:
@@ -127,19 +127,23 @@ services:
     networks: [edge]
 
 # ─── Inline witness config ──────────────────────────────────────────────
+# Two knobs need attention before first use:
+#
+#   server_pub   — fill in after the server is running:
+#                  fd0 doctor | grep server_pub
+#                  (or CBOR-decode the response from GET /v1/server-info)
+#
+#   auto_discover — when true (the default below), the witness fetches
+#                   the chain list from the server's GET /v1/chains on
+#                   every poll round, so new users and scopes are
+#                   covered automatically. Flip to false and fill in
+#                   `chains = [...]` explicitly if you want to pin a
+#                   fixed allow-list instead.
+#
 # Compose interpolates ${VAR} into config content at parse time, so the
-# server_url tracks ${DOMAIN}. The other two fields — server_pub and
-# chains — you fill in after the server is running and a user has
-# registered:
+# server_url tracks ${DOMAIN}.
 #
-#   server_pub:  fd0 doctor | grep server_pub          (or decode the
-#                CBOR returned by GET /v1/server-info)
-#   chains:      docker compose exec fd0-server \
-#                  sqlite3 /data/fd0.db \
-#                  'SELECT chain_id FROM chains'
-#
-# Then edit the inline content below and `docker compose restart
-# fd0-witness`. The witness ignores unknown chains gracefully.
+# After editing: `docker compose restart fd0-witness`.
 configs:
   witness-config:
     content: |
@@ -147,10 +151,8 @@ configs:
       server_url    = "https://api.${DOMAIN:-fd0.sh}"
       server_pub    = "0000000000000000000000000000000000000000000000000000000000000000"
       poll_interval = "30s"
-      chains = [
-          # "user:abc12345",
-          # "scope:s_xxxxxxxxxxxxxxxxxxxxxxxx",
-      ]
+      auto_discover = true
+      chains        = []
 
 volumes:
   traefik-letsencrypt:

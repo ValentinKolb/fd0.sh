@@ -34,6 +34,18 @@ type Target struct {
 	ServerPub    []byte        `toml:"-"`              // decoded; populated by Validate
 	Chains       []string      `toml:"chains"`         // e.g. ["user:abc12345", "scope:s_..."]
 	PollInterval time.Duration `toml:"poll_interval"`  // e.g. "1h"; default 1h
+
+	// AutoDiscover pulls the chain list from GET /v1/chains on every
+	// poll round and merges it with the static Chains slice above.
+	// New chains start being polled the next round; deleted ones (if
+	// the server ever removed any) are still re-polled until removed
+	// from the static list. Safe to combine with Chains — the union
+	// is deduplicated.
+	//
+	// Off by default to preserve the explicit-pinning posture of the
+	// original config. Recommended on for self-hosted deployments
+	// where one operator owns both server and witness.
+	AutoDiscover bool `toml:"auto_discover"`
 }
 
 // LoadConfig reads and validates a TOML config file.
@@ -77,8 +89,8 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("target %s: server_pub must be 32 bytes (got %d)", t.ServerURL, len(raw))
 		}
 		t.ServerPub = raw
-		if len(t.Chains) == 0 {
-			return fmt.Errorf("target %s: at least one chain required", t.ServerURL)
+		if len(t.Chains) == 0 && !t.AutoDiscover {
+			return fmt.Errorf("target %s: at least one chain required (or set auto_discover=true)", t.ServerURL)
 		}
 		for _, ch := range t.Chains {
 			if !strings.HasPrefix(ch, "user:") && !strings.HasPrefix(ch, "scope:") {

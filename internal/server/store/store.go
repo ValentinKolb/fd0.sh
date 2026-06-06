@@ -310,6 +310,30 @@ func (s *Store) CountUsers(ctx context.Context) (int64, error) {
 	return n, err
 }
 
+// ListChainIDs returns every chain_id sorted alphabetically. Used by
+// the public GET /v1/chains endpoint so independent witnesses can
+// auto-discover what to poll without operator-side configuration.
+//
+// Chain IDs are not secret — every cosigned STH a witness publishes
+// already includes its chain_id, so exposing the list here doesn't
+// leak more than the witness output already does.
+func (s *Store) ListChainIDs(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT chain_id FROM chains ORDER BY chain_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // CountChainsByKind returns chain counts grouped by their kind prefix
 // (e.g. "user", "scope"). The chain_id column is "kind:short_id", so
 // substring-before-':' gives the kind. Cheap on the small chains table.

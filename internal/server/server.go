@@ -199,6 +199,7 @@ func (s *Server) routes() {
 	// and witness archivers (which are not members of any scope) need
 	// to fetch them to detect equivocation.
 	s.mux.HandleFunc("GET /v1/server-info", s.handleServerInfo)
+	s.mux.HandleFunc("GET /v1/chains", s.handleChains)
 	s.mux.HandleFunc("GET /v1/sth/{chainId}", s.handleSTH)
 	s.mux.HandleFunc("GET /v1/proof/inclusion", s.handleInclusionProof)
 	s.mux.HandleFunc("GET /v1/proof/consistency", s.handleConsistencyProof)
@@ -246,6 +247,31 @@ func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/cbor")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(s.serverInfo)
+}
+
+// GET /v1/chains — list every chain the server has at least one event for.
+//
+// Unauthenticated. Chain IDs are not secret in the v1 protocol: every
+// cosigned STH a witness publishes already embeds chain_id, and clients
+// receive proofs that carry chain_id in clear. Exposing the list here
+// gives independent witnesses a single discovery hop — they can sync
+// the chains-to-poll set straight from the server without operator-side
+// configuration.
+//
+// Response: CBOR `{"chains": ["user:<id>", "scope:<id>", ...]}`.
+func (s *Server) handleChains(w http.ResponseWriter, r *http.Request) {
+	if s.rl != nil {
+		if d := s.rl.AcquireProof(clientIP(r)); !d.Allow {
+			s.writeRateLimited(w, d.Retry)
+			return
+		}
+	}
+	ids, err := s.store.ListChainIDs(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeCBOR(w, http.StatusOK, map[string]any{"chains": ids})
 }
 
 // GET /v1/sth/{chainId} — current STH for chainId.

@@ -109,11 +109,45 @@ func (w *Witness) EnsurePins(ctx context.Context) error {
 // itself can't proceed (e.g., DB shutting down).
 func (w *Witness) PollOnce(ctx context.Context) error {
 	for _, t := range w.Config.Targets {
-		for _, chainID := range t.Chains {
+		for _, chainID := range w.effectiveChains(ctx, t) {
 			w.pollOne(ctx, t, chainID)
 		}
 	}
 	return nil
+}
+
+// effectiveChains returns the union of t.Chains (static) and the
+// server-discovered chain list when t.AutoDiscover is true. Dedupe is
+// O(n) via a set. Discovery failures degrade gracefully — the witness
+// keeps polling whatever's in t.Chains so a flaky /v1/chains can't
+// silently drop coverage.
+func (w *Witness) effectiveChains(ctx context.Context, t Target) []string {
+	if !t.AutoDiscover {
+		return t.Chains
+	}
+	discovered, err := w.fetchChains(ctx, t.ServerURL)
+	if err != nil {
+		w.Log.Warn("witness: chain discovery failed — falling back to static config",
+			"server", t.ServerURL, "err", err)
+		return t.Chains
+	}
+	seen := make(map[string]struct{}, len(t.Chains)+len(discovered))
+	out := make([]string, 0, len(t.Chains)+len(discovered))
+	for _, c := range t.Chains {
+		if _, ok := seen[c]; ok {
+			continue
+		}
+		seen[c] = struct{}{}
+		out = append(out, c)
+	}
+	for _, c := range discovered {
+		if _, ok := seen[c]; ok {
+			continue
+		}
+		seen[c] = struct{}{}
+		out = append(out, c)
+	}
+	return out
 }
 
 // Run starts the polling loop. Returns when ctx is canceled.
@@ -156,7 +190,7 @@ func (w *Witness) Run(ctx context.Context) error {
 				if nextPoll[i].After(now) {
 					continue
 				}
-				for _, chainID := range t.Chains {
+				for _, chainID := range w.effectiveChains(ctx, t) {
 					w.pollOne(ctx, t, chainID)
 				}
 				nextPoll[i] = now.Add(t.PollInterval)
@@ -467,6 +501,39 @@ func (w *Witness) fetchSTH(ctx context.Context, serverURL, chainID string) (tran
 		return translog.STH{}, fmt.Errorf("decode sth: %w", err)
 	}
 	return sth, nil
+}
+
+// fetchChains issues GET /v1/chains and returns the server's chain
+// list. Used by effectiveChains when Target.AutoDiscover is set.
+//
+// No signature check on the response: chain IDs are not authenticated
+// individually (they get authenticated implicitly when the witness
+// tries to fetch an STH for one — a MITM-injected fake chain ID just
+// produces a 404 or an unverifiable STH and gets logged + skipped).
+func (w *Witness) fetchChains(ctx context.Context, serverURL string) ([]string, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", serverURL+"/v1/chains", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := w.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GET /v1/chains: %s", resp.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTranslogResponseBytes))
+	if err != nil {
+		return nil, err
+	}
+	var payload struct {
+		Chains []string `cbor:"chains"`
+	}
+	if err := proto.Unmarshal(body, &payload); err != nil {
+		return nil, fmt.Errorf("decode /v1/chains: %w", err)
+	}
+	return payload.Chains, nil
 }
 
 // fetchConsistencyProof issues GET /v1/proof/consistency.
