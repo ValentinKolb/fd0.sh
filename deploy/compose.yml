@@ -1,0 +1,138 @@
+# fd0 demo deployment — Traefik + the three fd0 services.
+#
+#   fd0.sh          → fd0-website  (landing + /witness dashboard)
+#   api.fd0.sh      → fd0-server   (data API; what clients sync against)
+#   witness.fd0.sh  → fd0-witness  (public verifier, polls fd0-server)
+#
+# Quick start:
+#
+#   cp .env.example .env             # then edit DOMAIN, ACME_EMAIL, METRICS_TOKEN, GHCR_OWNER
+#   cp witness.toml.example witness.toml   # then fill in [[target]] for your server
+#   docker compose up -d
+#
+# Traefik handles TLS via Let's Encrypt (TLS-ALPN-01). Plain HTTP on :80
+# is permanent-redirected to HTTPS.
+#
+# This file is a STARTING POINT — adapt resource limits, log drivers,
+# backup, and monitoring to your environment.
+
+services:
+
+  # ─── Traefik — TLS + routing ──────────────────────────────────────────
+  traefik:
+    image: traefik:v3.2
+    restart: unless-stopped
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --entrypoints.websecure.address=:443
+      - --certificatesresolvers.le.acme.email=${ACME_EMAIL}
+      - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
+      - --certificatesresolvers.le.acme.tlschallenge=true
+      # The Traefik dashboard is OFF by default. To turn it on, add
+      # --api.dashboard=true + a Host() router with basic-auth.
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik-letsencrypt:/letsencrypt
+    networks: [edge]
+
+  # ─── fd0-server — data API at api.${DOMAIN} ───────────────────────────
+  fd0-server:
+    image: ghcr.io/${GHCR_OWNER}/fd0-server:${FD0_VERSION:-latest}
+    restart: unless-stopped
+    environment:
+      FD0_BIND: ":4048"
+      FD0_DB: /data/fd0.db
+      FD0_METRICS_TOKEN: ${METRICS_TOKEN}
+    volumes:
+      - fd0-server-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4048/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.fd0-server.rule=Host(`api.${DOMAIN}`)
+      - traefik.http.routers.fd0-server.entrypoints=websecure
+      - traefik.http.routers.fd0-server.tls.certresolver=le
+      - traefik.http.services.fd0-server.loadbalancer.server.port=4048
+    networks: [edge]
+
+  # ─── fd0-witness — public verifier at witness.${DOMAIN} ───────────────
+  fd0-witness:
+    image: ghcr.io/${GHCR_OWNER}/fd0-witness:${FD0_VERSION:-latest}
+    restart: unless-stopped
+    depends_on:
+      fd0-server:
+        condition: service_healthy
+    command:
+      - --config=/etc/fd0-witness/witness.toml
+      - --db=/data/witness.db
+      - --key=/data/cosign.key
+      - --bind=:4049
+    environment:
+      FD0_WITNESS_METRICS_TOKEN: ${METRICS_TOKEN}
+    volumes:
+      - fd0-witness-data:/data
+      - ./witness.toml:/etc/fd0-witness/witness.toml:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4049/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.fd0-witness.rule=Host(`witness.${DOMAIN}`)
+      - traefik.http.routers.fd0-witness.entrypoints=websecure
+      - traefik.http.routers.fd0-witness.tls.certresolver=le
+      - traefik.http.services.fd0-witness.loadbalancer.server.port=4049
+    networks: [edge]
+
+  # ─── fd0-website — landing + /witness dashboard at ${DOMAIN} ──────────
+  fd0-website:
+    image: ghcr.io/${GHCR_OWNER}/fd0-website:${FD0_VERSION:-latest}
+    restart: unless-stopped
+    depends_on:
+      fd0-witness:
+        condition: service_started
+    environment:
+      # PUBLIC URL of the server (rendered in the UI for "where to point
+      # `fd0 sync`"). Must be the URL clients actually hit.
+      FD0_SERVER_URL: https://api.${DOMAIN}
+      # The witness is fetched server-side by SSR. Going via the docker
+      # network is faster than round-tripping through Traefik+TLS for
+      # every page render. Public verifiers (the `curl` snippets shown
+      # on the page) still use the witness.${DOMAIN} URL above.
+      FD0_WITNESS_URL: http://fd0-witness:4049
+      FD0_WEBSITE_METRICS_TOKEN: ${METRICS_TOKEN}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5173/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.fd0-website.rule=Host(`${DOMAIN}`)
+      - traefik.http.routers.fd0-website.entrypoints=websecure
+      - traefik.http.routers.fd0-website.tls.certresolver=le
+      - traefik.http.services.fd0-website.loadbalancer.server.port=5173
+    networks: [edge]
+
+volumes:
+  traefik-letsencrypt:
+  fd0-server-data:
+  fd0-witness-data:
+
+networks:
+  edge:
+    driver: bridge

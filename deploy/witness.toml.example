@@ -1,0 +1,29 @@
+# fd0-witness configuration.
+#
+# A witness watches one or more transparency-log chains on one or more
+# fd0-servers. Per target you declare the server's URL, its long-term
+# pubkey (the one your clients pin), and the chain IDs to poll.
+#
+# Chain IDs are formed as `<kind>:<short_id>`. Discover them on the
+# server by reading the `chains` table:
+#
+#   sqlite3 /var/lib/fd0-server/fd0.db \
+#     'SELECT chain_id FROM chains'
+#
+# Server cosign pubkey (the `server_pub` below) is the hex-encoded 32-
+# byte Ed25519 key returned by GET /v1/server-info. Read it with:
+#
+#   curl -sS https://api.fd0.sh/v1/server-info | xxd -p   # decode CBOR
+#
+# Or — easier — copy it from your fd0 client after the first sync:
+#
+#   fd0 doctor | grep 'server_pub'
+
+[[target]]
+server_url   = "https://api.fd0.sh"
+server_pub   = "0000000000000000000000000000000000000000000000000000000000000000"
+poll_interval = "30s"
+chains = [
+    # "user:abc12345",
+    # "scope:s_xxxxxxxxxxxxxxxxxxxxxxxx",
+]
