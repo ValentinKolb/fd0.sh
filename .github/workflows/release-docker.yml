@@ -1,0 +1,83 @@
+# Docker-image release. Triggers on every git tag matching `v*` and
+# publishes three images to ghcr.io: fd0-website, fd0-server, fd0-witness.
+#
+# Tagging scheme:
+#
+#   ghcr.io/<owner>/fd0-<service>:v1.2.3        amd64 (the version tag)
+#   ghcr.io/<owner>/fd0-<service>:latest        amd64 ("the" latest)
+#   ghcr.io/<owner>/fd0-<service>:v1.2.3-arm64  arm64 (opt-in suffix)
+#   ghcr.io/<owner>/fd0-<service>:latest-arm64  arm64
+#
+# amd64 owns the bare version + :latest tags so a typical x86_64
+# `docker pull <image>:latest` just works. arm64 lives behind a
+# suffixed tag for Pi / Apple-Silicon admins who opt in explicitly.
+
+name: release-docker
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    name: ${{ matrix.service }} (${{ matrix.platform }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [fd0-website, fd0-server, fd0-witness]
+        platform: [amd64, arm64]
+        include:
+          - service: fd0-website
+            context: ./website
+            dockerfile: ./website/Dockerfile
+          - service: fd0-server
+            context: .
+            dockerfile: ./cmd/fd0-server/Dockerfile
+          - service: fd0-witness
+            context: .
+            dockerfile: ./cmd/fd0-witness/Dockerfile
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve tags
+        id: meta
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          owner_lc=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          # amd64 gets the bare version + :latest. arm64 gets suffixed tags.
+          if [ "${{ matrix.platform }}" = "amd64" ]; then
+            echo "tags=ghcr.io/${owner_lc}/${{ matrix.service }}:${version},ghcr.io/${owner_lc}/${{ matrix.service }}:latest" >> "$GITHUB_OUTPUT"
+          else
+            echo "tags=ghcr.io/${owner_lc}/${{ matrix.service }}:${version}-arm64,ghcr.io/${owner_lc}/${{ matrix.service }}:latest-arm64" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/setup-qemu-action@v3
+        if: matrix.platform == 'arm64'
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/${{ matrix.platform }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+          cache-from: type=gha,scope=${{ matrix.service }}-${{ matrix.platform }}
+          cache-to: type=gha,scope=${{ matrix.service }}-${{ matrix.platform }},mode=max
