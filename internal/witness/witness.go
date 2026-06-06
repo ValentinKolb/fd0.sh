@@ -95,12 +95,72 @@ func New(store *Store, cfg Config, log *slog.Logger) *Witness {
 // If the operator changes a config pubkey for an already-pinned URL,
 // the store rejects with ErrPinMismatch — see Store.PinServer.
 func (w *Witness) EnsurePins(ctx context.Context) error {
-	for _, t := range w.Config.Targets {
+	for i := range w.Config.Targets {
+		t := &w.Config.Targets[i]
+		if len(t.ServerPub) == 0 {
+			// TOFU mode. If a prior run already pinned, reuse the DB
+			// row as canonical and don't even talk to the server. If
+			// not, fetch /v1/server-info, verify the self-signature,
+			// and persist.
+			pub, err := w.Store.PinnedPub(ctx, t.ServerURL)
+			if err == nil {
+				w.Log.Info("witness: using existing TOFU pin from store",
+					"server", t.ServerURL,
+					"pub", fmt.Sprintf("%x", pub[:8]))
+				t.ServerPub = pub
+				continue
+			}
+			if !errors.Is(err, ErrNotPinned) {
+				return fmt.Errorf("pin lookup %s: %w", t.ServerURL, err)
+			}
+			pub, ferr := w.fetchAndVerifyServerPub(ctx, t.ServerURL)
+			if ferr != nil {
+				return fmt.Errorf("pin_on_first_use %s: %w", t.ServerURL, ferr)
+			}
+			t.ServerPub = pub
+			w.Log.Warn("witness: pinning server pubkey on first contact (TOFU) — verify out-of-band",
+				"server", t.ServerURL,
+				"pub_hex", fmt.Sprintf("%x", pub))
+		}
 		if err := w.Store.PinServer(ctx, t.ServerURL, ed25519.PublicKey(t.ServerPub)); err != nil {
 			return fmt.Errorf("pin %s: %w", t.ServerURL, err)
 		}
 	}
 	return nil
+}
+
+// fetchAndVerifyServerPub fetches /v1/server-info, validates the
+// self-signature, and returns the embedded pubkey. The self-signature
+// only proves "this server has the key"; out-of-band verification
+// against website + other witnesses is still the operator's job.
+func (w *Witness) fetchAndVerifyServerPub(ctx context.Context, serverURL string) (ed25519.PublicKey, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", serverURL+"/v1/server-info", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := w.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GET /v1/server-info: %s", resp.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTranslogResponseBytes))
+	if err != nil {
+		return nil, err
+	}
+	var info translog.ServerInfo
+	if err := proto.Unmarshal(body, &info); err != nil {
+		return nil, fmt.Errorf("decode server-info: %w", err)
+	}
+	if err := translog.VerifyServerInfo(info); err != nil {
+		return nil, fmt.Errorf("verify server-info: %w", err)
+	}
+	if len(info.ServerPub) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("server-info pub wrong size: %d", len(info.ServerPub))
+	}
+	return ed25519.PublicKey(info.ServerPub), nil
 }
 
 // PollOnce runs a single polling pass over every (target, chain).

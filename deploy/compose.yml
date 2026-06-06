@@ -10,10 +10,9 @@
 #   api.fd0.sh      → fd0-server
 #   witness.fd0.sh  → fd0-witness
 #
-# Quick deploy: `docker compose up -d`. The witness auto-discovers
-# chains from the server (GET /v1/chains) so there's no manual chain
-# bookkeeping — only the server's cosign pubkey needs to be filled into
-# the inline witness-config once the server is running.
+# Quick deploy: `docker compose up -d`. Zero manual fields after first
+# boot: the witness pins the server's pubkey on first contact (TOFU,
+# SSH-style) and auto-discovers chains from /v1/chains.
 
 services:
 
@@ -127,32 +126,34 @@ services:
     networks: [edge]
 
 # ─── Inline witness config ──────────────────────────────────────────────
-# Two knobs need attention before first use:
+# Zero manual fields. The witness:
 #
-#   server_pub   — fill in after the server is running:
-#                  fd0 doctor | grep server_pub
-#                  (or CBOR-decode the response from GET /v1/server-info)
+#   pin_on_first_use  — fetches /v1/server-info on first run, validates
+#                       the self-signature, and pins whatever pubkey
+#                       the server announced. SSH-known_hosts model.
+#                       Any subsequent change → ErrPinMismatch.
 #
-#   auto_discover — when true (the default below), the witness fetches
-#                   the chain list from the server's GET /v1/chains on
-#                   every poll round, so new users and scopes are
-#                   covered automatically. Flip to false and fill in
-#                   `chains = [...]` explicitly if you want to pin a
-#                   fixed allow-list instead.
+#   auto_discover     — polls /v1/chains every round and watches every
+#                       chain the server returns. New users and scopes
+#                       are covered without intervention.
 #
-# Compose interpolates ${VAR} into config content at parse time, so the
-# server_url tracks ${DOMAIN}.
+# Safe for self-host where one operator owns both server and witness
+# (this stack). For an independent witness watching a third-party
+# server, replace `pin_on_first_use = true` with an explicit
+# `server_pub = "<hex>"` line — TOFU first-contact is otherwise
+# subject to MITM. See deploy/README.md for the trust-model details.
 #
-# After editing: `docker compose restart fd0-witness`.
+# To inspect the pinned key after first run:
+#   docker compose exec fd0-witness fd0-witness-status
+# or query the witness store directly.
 configs:
   witness-config:
     content: |
       [[target]]
-      server_url    = "https://api.${DOMAIN:-fd0.sh}"
-      server_pub    = "0000000000000000000000000000000000000000000000000000000000000000"
-      poll_interval = "30s"
-      auto_discover = true
-      chains        = []
+      server_url       = "https://api.${DOMAIN:-fd0.sh}"
+      poll_interval    = "30s"
+      pin_on_first_use = true
+      auto_discover    = true
 
 volumes:
   traefik-letsencrypt:

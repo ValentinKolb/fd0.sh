@@ -46,6 +46,30 @@ type Target struct {
 	// original config. Recommended on for self-hosted deployments
 	// where one operator owns both server and witness.
 	AutoDiscover bool `toml:"auto_discover"`
+
+	// PinOnFirstUse fetches the server pubkey from GET /v1/server-info
+	// on the first poll and pins whatever the server returns. SSH-
+	// known_hosts model: subsequent changes get rejected via
+	// Store.ErrPinMismatch, so a witness that pinned correctly on day 1
+	// catches a key swap on day 2.
+	//
+	// Footgun: `/v1/server-info` is self-signed — the server signs the
+	// pubkey announcement with the very key it presents. A MITM at
+	// first contact pins the attacker's key. The witness is then
+	// cosigning the attacker's STHs, not the real server's; anyone
+	// who cross-checks the witness's published cosigns against the
+	// real server pubkey (shown on the website, in another witness's
+	// archive) detects the divergence.
+	//
+	// Safe for self-hosted deployments where the same operator owns
+	// both server and witness — the bootstrap window is under that
+	// operator's control. Not safe for independent witnesses watching
+	// a server they don't control: pin server_pub explicitly out-of-
+	// band.
+	//
+	// When set, ServerPubHex may be empty. The pin lives in the
+	// witness store after first contact regardless of config.
+	PinOnFirstUse bool `toml:"pin_on_first_use"`
 }
 
 // LoadConfig reads and validates a TOML config file.
@@ -81,14 +105,24 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("target #%d: server_url must include scheme and host: %q", i, t.ServerURL)
 		}
 		t.ServerURL = strings.TrimRight(t.ServerURL, "/")
-		raw, err := hex.DecodeString(strings.TrimSpace(t.ServerPubHex))
-		if err != nil {
-			return fmt.Errorf("target %s: server_pub hex decode: %w", t.ServerURL, err)
+		hexStr := strings.TrimSpace(t.ServerPubHex)
+		if hexStr == "" {
+			if !t.PinOnFirstUse {
+				return fmt.Errorf("target %s: server_pub required (or set pin_on_first_use=true)", t.ServerURL)
+			}
+			// TOFU mode — the pub is fetched from /v1/server-info on
+			// first poll and persisted by Store.PinServer.
+			t.ServerPub = nil
+		} else {
+			raw, err := hex.DecodeString(hexStr)
+			if err != nil {
+				return fmt.Errorf("target %s: server_pub hex decode: %w", t.ServerURL, err)
+			}
+			if len(raw) != 32 {
+				return fmt.Errorf("target %s: server_pub must be 32 bytes (got %d)", t.ServerURL, len(raw))
+			}
+			t.ServerPub = raw
 		}
-		if len(raw) != 32 {
-			return fmt.Errorf("target %s: server_pub must be 32 bytes (got %d)", t.ServerURL, len(raw))
-		}
-		t.ServerPub = raw
 		if len(t.Chains) == 0 && !t.AutoDiscover {
 			return fmt.Errorf("target %s: at least one chain required (or set auto_discover=true)", t.ServerURL)
 		}

@@ -43,22 +43,25 @@ docker compose logs -f
 
 Traefik provisions a Let's Encrypt cert per host via TLS-ALPN-01 on first request. First request takes ~30 s while the cert issues.
 
-## Pin the witness to the server
+## Witness trust model
 
-The witness needs the server's cosign pubkey to verify STH signatures. Chain discovery is automatic — the witness polls `GET /v1/chains` on the server and watches every chain it returns, so new users and scopes are covered without intervention.
+Out of the box, the witness self-bootstraps:
 
-1. Bring the stack up. The witness logs `BAD STH SIGNATURE` until you pin the real key, which is expected.
-2. Register a user against `https://api.${DOMAIN}` (`fd0 init && fd0 unlock && fd0 sync`).
-3. Read the server's pubkey:
+- **`pin_on_first_use = true`** — on first poll, the witness fetches `GET /v1/server-info`, verifies the server's self-signature, and persists the pubkey to its store. Subsequent runs use the pinned key. A later change in the server's key (rotation, attack) is rejected with `ErrPinMismatch`. SSH-`known_hosts` semantics.
+- **`auto_discover = true`** — the witness polls `GET /v1/chains` every round and watches every chain the server returns. New users and scopes are covered without intervention.
 
-   ```sh
-   fd0 doctor | grep server_pub
-   ```
+**Trust caveat.** `/v1/server-info` is self-signed — the server signs the pubkey announcement with the key it presents. The signature proves the server has the corresponding private key, not that the pubkey is the "real" one. A MITM at first contact pins the attacker's key. For a self-host where the same operator runs server + witness in the same compose, the bootstrap window is under your control and TOFU is fine. For an **independent** witness watching a server you don't control, replace `pin_on_first_use = true` with an explicit `server_pub = "<hex>"` line obtained out-of-band (the server operator's website, signed announcement, etc).
 
-4. Edit `configs.witness-config.content` in `compose.yml`, replace the `server_pub` placeholder.
-5. `docker compose up -d fd0-witness`.
+The published cosigns are the audit artefact: anyone can verify them against the real server's pubkey shown on its `/v1/server-info` endpoint or the project's website. A witness that pinned a fake key on day 1 produces cosigns that don't verify under the real key — detection is automatic for anyone cross-checking.
 
-To pin a fixed chain allow-list instead of auto-discovery, set `auto_discover = false` and populate `chains = [...]`. The witness ignores unknown chains gracefully either way.
+To inspect the pinned key after first run, query the witness store:
+
+```sh
+docker compose exec fd0-witness sh -c 'sqlite3 /data/witness.db \
+  "SELECT hex(server_pub) FROM pinned_servers"'
+```
+
+To pin a fixed chain allow-list instead of auto-discovery, set `auto_discover = false` and populate `chains = [...]`.
 
 ## Metrics
 
