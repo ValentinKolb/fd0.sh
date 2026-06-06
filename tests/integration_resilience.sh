@@ -36,9 +36,9 @@ start_server() {
     local extra=("$@")
     "$FD0_SERVER_BIN" --bind=":${SERVER_PORT}" --db="$SERVER_DB" "${extra[@]}" > "$SERVER_LOG" 2>&1 &
     SERVER_PID=$!
-    # Wait for /healthz.
+    # Wait for /health.
     for _ in 1 2 3 4 5 6 7 8 9 10; do
-        if curl -fsS "http://127.0.0.1:${SERVER_PORT}/healthz" >/dev/null 2>&1; then return 0; fi
+        if curl -fsS "http://127.0.0.1:${SERVER_PORT}/health" >/dev/null 2>&1; then return 0; fi
         sleep 0.2
     done
     return 1

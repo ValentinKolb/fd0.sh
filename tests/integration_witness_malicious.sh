@@ -198,7 +198,7 @@ rm -rf "$HOME_AL" "$SERVER_DB" "$SERVER_LOG" "$SERVER_KEY" "$WITNESS_KEY" "$WITN
     --no-ratelimit > "$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 sleep 0.5
-curl -fs "http://127.0.0.1:${SERVER_PORT}/healthz" >/dev/null || { no "server failed"; exit 1; }
+curl -fs "http://127.0.0.1:${SERVER_PORT}/health" >/dev/null || { no "server failed"; exit 1; }
 ok "server up"
 
 # Bootstrap client + a scope, sync once (no witness yet).

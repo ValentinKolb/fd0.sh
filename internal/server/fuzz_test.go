@@ -33,13 +33,13 @@ func FuzzServerEndpoints(f *testing.F) {
 	f.Cleanup(ts.Close)
 
 	// Seeds derived from real API patterns.
-	f.Add("/healthz", "", "")
+	f.Add("/health", "", "")
 	f.Add("/version", "", "")
 	f.Add("/v1/server-info", "", "")
 	f.Add("/v1/sth/scope:s_aaaaaaaaaaaaaaaaaaaaaaaaaa", "", "")
 	f.Add("/v1/proof/inclusion", "chain_id=user:abc12345&leaf_index=0&tree_size=1", "")
-	f.Add("/users", "", "anything")
-	f.Add("/sync", "", "anything")
+	f.Add("/v1/users", "", "anything")
+	f.Add("/v1/sync", "", "anything")
 
 	allowed := map[int]bool{
 		200: true, 201: true, 400: true, 401: true, 403: true,

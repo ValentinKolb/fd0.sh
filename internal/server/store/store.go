@@ -302,6 +302,39 @@ func (s *Store) RegisterUser(ctx context.Context, superPub []byte, shortID strin
 	return err
 }
 
+// CountUsers returns the total number of registered users. Used by
+// the /metrics gauge — cheap (SELECT COUNT on a small indexed table).
+func (s *Store) CountUsers(ctx context.Context) (int64, error) {
+	var n int64
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&n)
+	return n, err
+}
+
+// CountChainsByKind returns chain counts grouped by their kind prefix
+// (e.g. "user", "scope"). The chain_id column is "kind:short_id", so
+// substring-before-':' gives the kind. Cheap on the small chains table.
+func (s *Store) CountChainsByKind(ctx context.Context) (map[string]int64, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT substr(chain_id, 1, instr(chain_id, ':') - 1) AS kind, COUNT(*)
+		 FROM chains
+		 WHERE instr(chain_id, ':') > 0
+		 GROUP BY kind`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int64{}
+	for rows.Next() {
+		var kind string
+		var n int64
+		if err := rows.Scan(&kind, &n); err != nil {
+			return nil, err
+		}
+		out[kind] = n
+	}
+	return out, rows.Err()
+}
+
 // IsUserRegistered returns true iff super_pub appears in the users
 // table. Codex audit (🔴 auth.go:87): every authenticated endpoint
 // MUST check this before honouring a request — otherwise a self-

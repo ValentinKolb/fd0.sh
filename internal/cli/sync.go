@@ -169,7 +169,7 @@ func RunSync(ctx context.Context, server string) error {
 	if err != nil {
 		return err
 	}
-	resp, err := s.signedPOST(ctx, serverURL.JoinPath("/sync"), body)
+	resp, err := s.signedPOST(ctx, serverURL.JoinPath("/v1/sync"), body)
 	if err != nil {
 		return err
 	}

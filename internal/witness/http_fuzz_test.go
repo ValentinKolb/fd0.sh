@@ -65,28 +65,28 @@ func TestFuzzHTTPNeverPanics(t *testing.T) {
 		"",
 		"/",
 		"/v1",
-		"/v1/witness",
-		"/v1/witness/",
-		"/v1/witness/sth",
-		"/v1/witness/sth/",
-		"/v1/witness/sth//chain",
-		"/v1/witness/sth/aaa/",
-		"/v1/witness/sth/" + strings.Repeat("A", 10000) + "/scope:s_x",
-		"/v1/witness/sth/AA/" + strings.Repeat("z", 10000),
-		"/v1/witness/sth/!!!/scope:s_x",
-		"/v1/witness/sth/AA/notaprefix:bad",
-		"/v1/witness/sth/AA/scope:" + strings.Repeat("x", 200),
-		"/v1/witness/sth/AA/user:" + strings.Repeat("x", 200),
-		"/v1/witness/sth/AA/scope:s_x?tree_size=notanint",
-		"/v1/witness/sth/AA/scope:s_x?tree_size=-1",
-		"/v1/witness/sth/AA/scope:s_x?tree_size=99999999999999999999999",
-		"/v1/witness/sth/AA/scope:s_x?tree_size=" + strings.Repeat("9", 200),
-		"/v1/witness/server-info",
-		"/v1/witness/server-info?junk=x",
-		"/v1/witness/sth/" + strings.Repeat("/", 100),
-		"/v1/witness/sth/AA/scope:s_x/" + strings.Repeat("/", 100),
-		"/v1/witness/sth/AA/scope:" + string([]byte{0, 1, 2, 3}),
-		"/v1/witness/sth/" + string([]byte{0xFF, 0xFE, 0xFD}) + "/scope:s_x",
+		"/v1",
+		"/v1/",
+		"/v1/sth",
+		"/v1/sth/",
+		"/v1/sth//chain",
+		"/v1/sth/aaa/",
+		"/v1/sth/" + strings.Repeat("A", 10000) + "/scope:s_x",
+		"/v1/sth/AA/" + strings.Repeat("z", 10000),
+		"/v1/sth/!!!/scope:s_x",
+		"/v1/sth/AA/notaprefix:bad",
+		"/v1/sth/AA/scope:" + strings.Repeat("x", 200),
+		"/v1/sth/AA/user:" + strings.Repeat("x", 200),
+		"/v1/sth/AA/scope:s_x?tree_size=notanint",
+		"/v1/sth/AA/scope:s_x?tree_size=-1",
+		"/v1/sth/AA/scope:s_x?tree_size=99999999999999999999999",
+		"/v1/sth/AA/scope:s_x?tree_size=" + strings.Repeat("9", 200),
+		"/v1/server-info",
+		"/v1/server-info?junk=x",
+		"/v1/sth/" + strings.Repeat("/", 100),
+		"/v1/sth/AA/scope:s_x/" + strings.Repeat("/", 100),
+		"/v1/sth/AA/scope:" + string([]byte{0, 1, 2, 3}),
+		"/v1/sth/" + string([]byte{0xFF, 0xFE, 0xFD}) + "/scope:s_x",
 	}
 	// Add 100 random-ish paths.
 	for i := 0; i < 100; i++ {
@@ -95,7 +95,7 @@ func TestFuzzHTTPNeverPanics(t *testing.T) {
 		for j := range b {
 			b[j] = byte(r.Intn(256))
 		}
-		nasties = append(nasties, "/v1/witness/sth/"+string(b))
+		nasties = append(nasties, "/v1/sth/"+string(b))
 	}
 
 	for _, p := range nasties {
@@ -160,7 +160,7 @@ func isLocalTransportRejection(err error, path string) bool {
 func TestFuzzHTTPLargeServerSegmentReturns414(t *testing.T) {
 	srv := freshHTTPFixture(t)
 	huge := strings.Repeat("A", maxServerB64Len+1)
-	resp, err := srv.Client().Get(srv.URL + "/v1/witness/sth/" + huge + "/scope:s_x")
+	resp, err := srv.Client().Get(srv.URL + "/v1/sth/" + huge + "/scope:s_x")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +175,7 @@ func TestFuzzHTTPLargeServerSegmentReturns414(t *testing.T) {
 func TestFuzzHTTPLargeChainSegmentReturns414(t *testing.T) {
 	srv := freshHTTPFixture(t)
 	huge := "scope:" + strings.Repeat("x", maxChainIDLen+10)
-	resp, err := srv.Client().Get(srv.URL + "/v1/witness/sth/AA/" + huge)
+	resp, err := srv.Client().Get(srv.URL + "/v1/sth/AA/" + huge)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,8 +190,8 @@ func TestFuzzHTTPLargeChainSegmentReturns414(t *testing.T) {
 func TestFuzzHTTPMethodNotAllowed(t *testing.T) {
 	srv := freshHTTPFixture(t)
 	endpoints := []string{
-		"/v1/witness/server-info",
-		"/v1/witness/sth/AA/scope:s_x",
+		"/v1/server-info",
+		"/v1/sth/AA/scope:s_x",
 	}
 	methods := []string{"POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}
 	for _, ep := range endpoints {
@@ -230,7 +230,7 @@ func TestFuzzHTTPQueryParamNoise(t *testing.T) {
 		"?" + strings.Repeat("a=b&", 100) + "tree_size=1",
 	}
 	for _, q := range cases {
-		resp, err := srv.Client().Get(srv.URL + "/v1/witness/sth/AA/scope:s_x" + q)
+		resp, err := srv.Client().Get(srv.URL + "/v1/sth/AA/scope:s_x" + q)
 		if err != nil {
 			t.Fatalf("%s: %v", q, err)
 		}
@@ -252,7 +252,7 @@ func TestFuzzHTTPConcurrentRequests(t *testing.T) {
 	errs := make(chan error, N)
 	for i := 0; i < N; i++ {
 		go func(i int) {
-			resp, err := srv.Client().Get(srv.URL + "/v1/witness/server-info")
+			resp, err := srv.Client().Get(srv.URL + "/v1/server-info")
 			if err != nil {
 				errs <- err
 				return

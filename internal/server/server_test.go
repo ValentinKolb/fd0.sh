@@ -53,7 +53,7 @@ func TestRegisterAndAppend(t *testing.T) {
 		t.Fatal(err)
 	}
 	body, _ := proto.Marshal(map[string]any{"event": g})
-	resp, err := http.Post(ts.URL+"/users", "application/cbor", bytes.NewReader(body))
+	resp, err := http.Post(ts.URL+"/v1/users", "application/cbor", bytes.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestRegisterAndAppend(t *testing.T) {
 	// Fetch latest. Codex security audit fix: this endpoint now
 	// requires HTTP-sig auth (super_priv must match the chain's
 	// user_super_pub) — a plain http.Get returns 401.
-	req2, _ := http.NewRequest("GET", ts.URL+"/users/"+reg.ShortID+"/events?latest=true", nil)
+	req2, _ := http.NewRequest("GET", ts.URL+"/v1/users/"+reg.ShortID+"/events?latest=true", nil)
 	signRequest(t, srv, req2, nil, pub.Bytes(), priv.Bytes())
 	r2, err := http.DefaultClient.Do(req2)
 	if err != nil {
@@ -110,7 +110,7 @@ func TestRegisterAndAppend(t *testing.T) {
 		t.Fatal(err)
 	}
 	body2, _ := proto.Marshal(map[string]any{"event": e2})
-	url := ts.URL + "/users/" + reg.ShortID + "/events"
+	url := ts.URL + "/v1/users/" + reg.ShortID + "/events"
 	req, _ := http.NewRequest("POST", url, bytes.NewReader(body2))
 	signRequest(t, srv, req, body2, pub.Bytes(), priv.Bytes())
 	r3, err := http.DefaultClient.Do(req)
@@ -165,7 +165,7 @@ func TestTranslogEndpoints(t *testing.T) {
 		PublicParams: make([]byte, 16), EncryptedSuperPriv: []byte{0x42},
 	}})
 	body, _ := proto.Marshal(map[string]any{"event": g})
-	r2, err := http.Post(ts.URL+"/users", "application/cbor", bytes.NewReader(body))
+	r2, err := http.Post(ts.URL+"/v1/users", "application/cbor", bytes.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +240,7 @@ func TestTranslogEndpoints(t *testing.T) {
 		PublicParams: make([]byte, 16), EncryptedSuperPriv: []byte{0x43},
 	}})
 	body2, _ := proto.Marshal(map[string]any{"event": e2, "last_sth_size": uint64(1)})
-	url := ts.URL + "/users/" + reg.ShortID + "/events"
+	url := ts.URL + "/v1/users/" + reg.ShortID + "/events"
 	req, _ := http.NewRequest("POST", url, bytes.NewReader(body2))
 	signRequest(t, srv, req, body2, pub.Bytes(), priv.Bytes())
 	r5, err := http.DefaultClient.Do(req)
@@ -329,7 +329,7 @@ func TestRateLimitRegister420(t *testing.T) {
 		return body
 	}
 	// 1st: ok
-	resp, err := http.Post(ts.URL+"/users", "application/cbor", bytes.NewReader(mkBody(t)))
+	resp, err := http.Post(ts.URL+"/v1/users", "application/cbor", bytes.NewReader(mkBody(t)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -338,7 +338,7 @@ func TestRateLimitRegister420(t *testing.T) {
 		t.Fatalf("first register should succeed: %d %s", resp.StatusCode, b)
 	}
 	// 2nd: limited
-	resp2, err := http.Post(ts.URL+"/users", "application/cbor", bytes.NewReader(mkBody(t)))
+	resp2, err := http.Post(ts.URL+"/v1/users", "application/cbor", bytes.NewReader(mkBody(t)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -397,7 +397,7 @@ func TestRateLimitWritesAfterAuth(t *testing.T) {
 			},
 			"push": []any{},
 		})
-		req, _ := http.NewRequest("POST", ts.URL+"/sync", bytes.NewReader(body))
+		req, _ := http.NewRequest("POST", ts.URL+"/v1/sync", bytes.NewReader(body))
 		signRequest(t, srv, req, body, pub.Bytes(), priv.Bytes())
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -454,7 +454,7 @@ func TestRateLimitDisabled(t *testing.T) {
 			t.Fatal(err)
 		}
 		body, _ := proto.Marshal(map[string]any{"event": g})
-		resp, err := http.Post(ts.URL+"/users", "application/cbor", bytes.NewReader(body))
+		resp, err := http.Post(ts.URL+"/v1/users", "application/cbor", bytes.NewReader(body))
 		if err != nil {
 			t.Fatal(err)
 		}

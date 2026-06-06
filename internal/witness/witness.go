@@ -24,6 +24,44 @@ import (
 // §10). When non-nil, every successfully-verified STH is also signed
 // and the cosign is persisted alongside the row. May be nil in unit
 // tests that don't exercise the cosign protocol.
+// Observer receives per-poll events so external collectors (Prometheus
+// metrics, audit feeds) can be wired in without coupling the witness to
+// any specific instrumentation. All methods take a server+chain pair so
+// dashboards can pivot by either.
+//
+// Pass a nil Observer (or noopObserver{}) to disable. The witness calls
+// these synchronously from pollOne — implementations must not block on
+// network IO or panic; the package's NoopObserver does nothing and is
+// safe to leave wired in production until a real one is plugged in.
+type Observer interface {
+	// OnPoll fires once per chain per polling round. `result` is
+	// "ok" / "fetch_failed" / "bad_signature" / "chain_mismatch" /
+	// "archive_failed".
+	OnPoll(server, chain, result string)
+	// OnCosign fires when the witness has just signed a new STH —
+	// the operational signal "this witness is actually working".
+	OnCosign(server, chain string)
+	// OnEquivocation fires every time the archive detects a fork at
+	// any tree_size. A counter going > 0 means the server has lied.
+	OnEquivocation(server, chain string)
+	// OnConsistencyFailure fires when a consistency-proof check
+	// between two STHs fails.
+	OnConsistencyFailure(server, chain string)
+	// OnTreeSize is called after a successful archive so collectors
+	// can publish the current max tree_size as a gauge.
+	OnTreeSize(server, chain string, size uint64)
+}
+
+// NoopObserver does nothing. Useful as the default so callers don't
+// need to nil-check; safe to plug in tests.
+type NoopObserver struct{}
+
+func (NoopObserver) OnPoll(string, string, string)                {}
+func (NoopObserver) OnCosign(string, string)                      {}
+func (NoopObserver) OnEquivocation(string, string)                {}
+func (NoopObserver) OnConsistencyFailure(string, string)          {}
+func (NoopObserver) OnTreeSize(string, string, uint64)            {}
+
 type Witness struct {
 	Store      *Store
 	HTTP       *http.Client
@@ -31,6 +69,7 @@ type Witness struct {
 	Now        func() time.Time // injectable for tests
 	Config     Config
 	CosignPriv ed25519.PrivateKey
+	Observer   Observer
 }
 
 // New constructs a Witness with sensible defaults. cfg drives the
@@ -40,11 +79,12 @@ func New(store *Store, cfg Config, log *slog.Logger) *Witness {
 		log = slog.Default()
 	}
 	return &Witness{
-		Store:  store,
-		HTTP:   &http.Client{Timeout: 30 * time.Second},
-		Log:    log,
-		Now:    time.Now,
-		Config: cfg,
+		Store:    store,
+		HTTP:     &http.Client{Timeout: 30 * time.Second},
+		Log:      log,
+		Now:      time.Now,
+		Config:   cfg,
+		Observer: NoopObserver{},
 	}
 }
 
@@ -161,17 +201,26 @@ func (w *Witness) smallestInterval() time.Duration {
 // `fd0-witness run | tee /var/log/fd0-witness.log` gets a clean
 // audit trail.
 func (w *Witness) pollOne(ctx context.Context, t Target, chainID string) {
+	// Observer hooks. result is set on every early-return branch; the
+	// deferred OnPoll fires once per call regardless of how pollOne
+	// exits. Collectors get RED-style observability over the loop.
+	result := "ok"
+	defer func() { w.Observer.OnPoll(t.ServerURL, chainID, result) }()
+
 	pub, err := w.Store.PinnedPub(ctx, t.ServerURL)
 	if err != nil {
+		result = "missing_pin"
 		w.Log.Warn("witness: missing pin", "server", t.ServerURL, "err", err)
 		return
 	}
 	sth, err := w.fetchSTH(ctx, t.ServerURL, chainID)
 	if err != nil {
+		result = "fetch_failed"
 		w.Log.Warn("witness: fetch sth failed", "server", t.ServerURL, "chain", chainID, "err", err)
 		return
 	}
 	if err := translog.VerifySTH(pub, sth); err != nil {
+		result = "bad_signature"
 		w.Log.Error("witness: BAD STH SIGNATURE — possible MITM or wrong pin",
 			"server", t.ServerURL, "chain", chainID, "err", err)
 		return
@@ -181,6 +230,7 @@ func (w *Witness) pollOne(ctx context.Context, t Target, chainID string) {
 	// different chain and the witness would archive it under the
 	// wrong chain (codex C5 review #3).
 	if sth.Head.ChainID != chainID {
+		result = "chain_mismatch"
 		w.Log.Error("witness: STH chain_id mismatch — server returned a different chain",
 			"server", t.ServerURL, "requested_chain", chainID, "sth_chain", sth.Head.ChainID)
 		return
@@ -216,14 +266,23 @@ func (w *Witness) pollOne(ctx context.Context, t Target, chainID string) {
 		// First contact for this (server, chain). Archive directly.
 		res, ierr := w.Store.Insert(ctx, t.ServerURL, sth, w.Now().Unix(), cosign)
 		if ierr != nil {
+			result = "archive_failed"
 			w.Log.Error("witness: archive failed", "err", ierr)
 			return
 		}
 		w.Log.Info("witness: first STH archived",
 			"server", t.ServerURL, "chain", chainID,
 			"tree_size", sth.Head.TreeSize, "stored", res.Stored, "cosigned", cosign != nil)
+		w.Observer.OnTreeSize(t.ServerURL, chainID, sth.Head.TreeSize)
+		if cosign != nil {
+			w.Observer.OnCosign(t.ServerURL, chainID)
+		}
+		if res.EquivocationDetected {
+			w.Observer.OnEquivocation(t.ServerURL, chainID)
+		}
 		return
 	case err != nil:
+		result = "store_failed"
 		w.Log.Error("witness: store lookup failed", "err", err)
 		return
 	}
@@ -287,7 +346,12 @@ func (w *Witness) compareAndArchive(ctx context.Context, t Target, chainID strin
 			w.Log.Error("witness: archive failed", "err", err)
 			return
 		}
+		w.Observer.OnTreeSize(t.ServerURL, chainID, sth.Head.TreeSize)
+		if cosign != nil {
+			w.Observer.OnCosign(t.ServerURL, chainID)
+		}
 		if res.EquivocationDetected {
+			w.Observer.OnEquivocation(t.ServerURL, chainID)
 			w.emitEquivocationEvidence(ctx, t.ServerURL, chainID, sth.Head.TreeSize)
 		}
 
@@ -315,6 +379,7 @@ func (w *Witness) compareAndArchive(ctx context.Context, t Target, chainID strin
 				w.Log.Error("witness: FAILED to record consistency-fetch failure",
 					"server", t.ServerURL, "chain", chainID, "err", rerr)
 			}
+			w.Observer.OnConsistencyFailure(t.ServerURL, chainID)
 			return
 		}
 		if err := translog.VerifyConsistency(prior.Head.TreeSize, sth.Head.TreeSize, proof.Nodes, prior.Head.RootHash, sth.Head.RootHash); err != nil {
@@ -332,6 +397,7 @@ func (w *Witness) compareAndArchive(ctx context.Context, t Target, chainID strin
 				w.Log.Error("witness: FAILED to record consistency-verify failure",
 					"server", t.ServerURL, "chain", chainID, "err", rerr)
 			}
+			w.Observer.OnConsistencyFailure(t.ServerURL, chainID)
 			return
 		}
 		res, err := w.Store.Insert(ctx, t.ServerURL, sth, now, cosign)
@@ -343,6 +409,10 @@ func (w *Witness) compareAndArchive(ctx context.Context, t Target, chainID strin
 			w.Log.Info("witness: STH advanced + verified",
 				"server", t.ServerURL, "chain", chainID,
 				"prior_size", prior.Head.TreeSize, "new_size", sth.Head.TreeSize, "cosigned", cosign != nil)
+			w.Observer.OnTreeSize(t.ServerURL, chainID, sth.Head.TreeSize)
+			if cosign != nil {
+				w.Observer.OnCosign(t.ServerURL, chainID)
+			}
 		}
 	}
 }

@@ -47,7 +47,38 @@ type Config struct {
 	// missing file at this path is auto-generated on first boot and
 	// the operator is WARNed to back it up.
 	TranslogKeyPath string
+
+	// Observer receives per-operation events for Prometheus
+	// instrumentation. nil falls back to NoopObserver — safe in tests
+	// or when /metrics isn't wired.
+	Observer Observer
 }
+
+// Observer hooks the server emits on every domain operation. Implementations
+// must be cheap (called synchronously in the handler hot path) and concurrent
+// safe — Prometheus counter/gauge collectors already are.
+//
+// Pass a nil Observer to disable; the constructor swaps in NoopObserver so
+// the rest of the codebase never has to nil-check.
+type Observer interface {
+	// OnRegister fires once per POST /v1/users. result is "ok", "taken",
+	// "bad_input", "ratelimit", "internal".
+	OnRegister(result string)
+	// OnEventPushed fires once per accepted-or-rejected event in a sync
+	// push. chainKind is "user" or "scope". result is "ok" / the
+	// pushResult.Reason string (e.g. "divergence", "dup", "bad_author").
+	OnEventPushed(chainKind, result string)
+	// OnEventsPulled fires once per /v1/sync pull with the count of
+	// events returned. chainKind is "user" or "scope".
+	OnEventsPulled(chainKind string, count int)
+}
+
+// NoopObserver does nothing. Default when Config.Observer is nil.
+type NoopObserver struct{}
+
+func (NoopObserver) OnRegister(string)              {}
+func (NoopObserver) OnEventPushed(string, string)   {}
+func (NoopObserver) OnEventsPulled(string, int)     {}
 
 // Server is the HTTP service. New constructs it; ServeHTTP routes requests.
 type Server struct {
@@ -80,6 +111,9 @@ func New(cfg Config) (*Server, error) {
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
+	}
+	if cfg.Observer == nil {
+		cfg.Observer = NoopObserver{}
 	}
 	st, err := store.Open(cfg.DBPath)
 	if err != nil {
@@ -146,12 +180,19 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) routes() {
-	s.mux.HandleFunc("GET /healthz", s.handleHealth)
+	// Operational endpoints — version-neutral, never under /v1/.
+	s.mux.HandleFunc("GET /health", s.handleHealth)
 	s.mux.HandleFunc("GET /version", s.handleVersion)
-	s.mux.HandleFunc("POST /users", s.handleRegister)
-	s.mux.HandleFunc("GET /users/{shortId}/events", s.handleFetchUser)
-	s.mux.HandleFunc("POST /users/{shortId}/events", s.handleAppendUser)
-	s.mux.HandleFunc("POST /sync", s.handleSync)
+	// /metrics is wired in cmd/fd0-server/main.go behind the metrics
+	// auth middleware; not registered here so the metrics path stays
+	// opt-in and per-binary configurable.
+
+	// Data API — every path under /v1/ so the wire version is visible
+	// in every URL and future v2/v3 endpoints can coexist.
+	s.mux.HandleFunc("POST /v1/users", s.handleRegister)
+	s.mux.HandleFunc("GET /v1/users/{shortId}/events", s.handleFetchUser)
+	s.mux.HandleFunc("POST /v1/users/{shortId}/events", s.handleAppendUser)
+	s.mux.HandleFunc("POST /v1/sync", s.handleSync)
 
 	// Transparency log endpoints (TRANSLOG.md §5). All four are
 	// UNAUTHENTICATED — they expose only commitments to a public log,
@@ -166,13 +207,18 @@ func (s *Server) routes() {
 // ---- handlers ----
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/plain")
-	_, _ = w.Write([]byte("ok"))
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"status":  "ok",
+		"service": "fd0-server",
+		"version": s.cfg.Version,
+	})
 }
 
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{
+		"service":        "fd0-server",
 		"server_version": s.cfg.Version,
 		"api_version":    "v1",
 	})
@@ -335,15 +381,23 @@ func (s *Server) handleConsistencyProof(w http.ResponseWriter, r *http.Request) 
 // THREAT: T45 (user-registration replay — UNIQUE on (pubkey, short_id)),
 //         T48 (DoS — per-IP rate limit on register).
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+	// Observer hook fires once per attempt regardless of exit branch.
+	// Branches set result on early-return; the trailing `return` after
+	// the chain commit leaves result as the default "ok".
+	result := "ok"
+	defer func() { s.cfg.Observer.OnRegister(result) }()
+
 	if s.rl != nil {
 		ip := clientIP(r)
 		if d := s.rl.AcquireRegister(ip); !d.Allow {
+			result = "ratelimit"
 			s.writeRateLimited(w, d.Retry)
 			return
 		}
 	}
 	body, err := readBody(r)
 	if err != nil {
+		result = "bad_input"
 		writeErr(w, http.StatusBadRequest, "bad_body", err.Error())
 		return
 	}
@@ -351,10 +405,12 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		Event proto.UserEvent `cbor:"event"`
 	}
 	if err := proto.Unmarshal(body, &req); err != nil {
+		result = "bad_input"
 		writeErr(w, http.StatusBadRequest, "bad_body", err.Error())
 		return
 	}
 	if err := validate.UserEvent(&req.Event, nil, nil, 0); err != nil {
+		result = "bad_input"
 		writeErr(w, http.StatusBadRequest, "bad_event", err.Error())
 		return
 	}
@@ -364,9 +420,11 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// across the server's view in a way that breaks deduplication
 	// downstream.
 	if exists, err := s.store.IsUserRegistered(r.Context(), req.Event.UserSuperPub); err != nil {
+		result = "internal"
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	} else if exists {
+		result = "taken"
 		writeErr(w, http.StatusConflict, "super_pub_taken", "user_super_pub is already registered")
 		return
 	}
@@ -380,17 +438,20 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	prefix, err := req.Event.PrevHashInput()
 	if err != nil {
+		result = "internal"
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
 	tipHash := proto.HashPrefix(prefix)
 	meta, err := proto.Marshal(validate.UserMeta{SuperPub: req.Event.UserSuperPub, ShortID: sid})
 	if err != nil {
+		result = "internal"
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
 	cb, err := proto.Marshal(&req.Event)
 	if err != nil {
+		result = "internal"
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
@@ -412,10 +473,12 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		},
 	}, tipHash[:], uint64(time.Now().Unix()))
 	if errors.Is(err, store.ErrDuplicate) {
+		result = "dup"
 		writeErr(w, http.StatusConflict, "dup", "event_id collision")
 		return
 	}
 	if err != nil {
+		result = "internal"
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
@@ -582,6 +645,7 @@ func (s *Server) handleFetchUser(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal", perr.Error())
 		return
 	}
+	s.cfg.Observer.OnEventsPulled("user", len(out))
 	writeCBOR(w, http.StatusOK, map[string]any{
 		"user_super_pub":    meta.SuperPub,
 		"events":            out,
@@ -884,6 +948,7 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		resp.Pull[sid] = ps
+		s.cfg.Observer.OnEventsPulled("scope", len(ps.Events))
 	}
 	// Discover.
 	if req.Pull.DiscoverMemberships {
@@ -894,7 +959,21 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 	}
 	// Push.
 	for _, p := range req.Push {
-		resp.Push = append(resp.Push, s.applyPush(r.Context(), auth.Pub, p))
+		pr := s.applyPush(r.Context(), auth.Pub, p)
+		resp.Push = append(resp.Push, pr)
+		// Metrics: count every push outcome by chain_kind+result so
+		// dashboards can tell apart "all client divergences" from
+		// "server internal-errors". chain_kind comes from the scope
+		// being empty (user chain) or set (scope chain).
+		kind := "scope"
+		if pr.ScopeID == "" && p.Scope == "" {
+			kind = "user"
+		}
+		result := "ok"
+		if !pr.Accepted {
+			result = pr.Reason
+		}
+		s.cfg.Observer.OnEventPushed(kind, result)
 	}
 	writeCBOR(w, http.StatusOK, resp)
 }

@@ -144,31 +144,31 @@ func mutate(mode, path string, body []byte) ([]byte, bool, error) {
 		case strings.HasPrefix(path, "/v1/sth/"):
 			out, n, err := tamperSTHBytes(body)
 			return out, err == nil && n > 0, err
-		case path == "/sync":
+		case path == "/v1/sync":
 			out, n, err := tamperFieldInSync(body, "sth")
 			return out, err == nil && n > 0, err
 		}
 
 	case "tamper-inclusion":
-		if path == "/sync" {
+		if path == "/v1/sync" {
 			out, n, err := tamperFieldInSync(body, "inclusion_proofs")
 			return out, err == nil && n > 0, err
 		}
 
 	case "tamper-consistency":
-		if path == "/sync" {
+		if path == "/v1/sync" {
 			out, n, err := tamperFieldInSync(body, "consistency_proof")
 			return out, err == nil && n > 0, err
 		}
 
 	case "drop-sth":
-		if path == "/sync" {
+		if path == "/v1/sync" {
 			out, n, err := stripFieldFromSync(body, "sth")
 			return out, err == nil && n > 0, err
 		}
 
 	case "drop-inclusion":
-		if path == "/sync" {
+		if path == "/v1/sync" {
 			out, n, err := stripFieldFromSync(body, "inclusion_proofs")
 			return out, err == nil && n > 0, err
 		}
@@ -178,7 +178,7 @@ func mutate(mode, path string, body []byte) ([]byte, bool, error) {
 			out, n, err := swapChainIDInSTH(body)
 			return out, err == nil && n > 0, err
 		}
-		if path == "/sync" {
+		if path == "/v1/sync" {
 			out, n, err := swapChainIDInSync(body)
 			return out, err == nil && n > 0, err
 		}
@@ -187,7 +187,7 @@ func mutate(mode, path string, body []byte) ([]byte, bool, error) {
 		// Mutate inclusion proof leaf_index in /sync responses.
 		// Targets the chain_id binding via inclusion verification —
 		// proof says leaf_index=999 but client expects leaf_index=N.
-		if path == "/sync" {
+		if path == "/v1/sync" {
 			out, n, err := mutateInclusionProofIndex(body)
 			return out, err == nil && n > 0, err
 		}

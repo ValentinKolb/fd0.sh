@@ -73,7 +73,7 @@ rm -rf "$HOME_AL" "$SERVER_DB" "$SERVER_LOG" "$SERVER_KEY"
     --no-ratelimit > "$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 sleep 0.5
-curl -fs "http://127.0.0.1:${SERVER_PORT}/healthz" >/dev/null || { no "server failed"; exit 1; }
+curl -fs "http://127.0.0.1:${SERVER_PORT}/health" >/dev/null || { no "server failed"; exit 1; }
 ok "server up (pid=$SERVER_PID)"
 
 # Bootstrap a client.
@@ -209,7 +209,7 @@ sleep 0.5
 # ---- Scenario 5: server SIGTERM mid-request --------------------------
 
 phase "5) Server SIGTERM mid-request: in-flight requests drain"
-# Codex test audit (🔴) caught: /healthz returns in <1ms, so a
+# Codex test audit (🔴) caught: /health returns in <1ms, so a
 # `sleep 0.05` before SIGTERM meant all requests had completed
 # before the signal landed and the test was a no-op. Fix: high
 # concurrency + no pre-SIGTERM sleep, distinguish curl outcomes
@@ -228,7 +228,7 @@ for i in $(seq 1 $N_CONCURRENT); do
     : > /tmp/fd0-life-curl-$i.out
 done
 for i in $(seq 1 $N_CONCURRENT); do
-    ( curl -m 10 -s -o /dev/null "http://127.0.0.1:${SERVER_PORT}/healthz" 2>/dev/null ; echo $? > /tmp/fd0-life-curl-$i.out ) &
+    ( curl -m 10 -s -o /dev/null "http://127.0.0.1:${SERVER_PORT}/health" 2>/dev/null ; echo $? > /tmp/fd0-life-curl-$i.out ) &
 done
 # Send SIGTERM IMMEDIATELY (no sleep) — race with curl.
 kill -TERM $SERVER_PID

@@ -22,6 +22,10 @@ out/
 *.test
 *.out
 vendor/
+# Stray binaries from `go build .` at repo root
+/fd0
+/fd0-server
+/fd0-witness
 
 # Local environment
 .env

@@ -79,7 +79,7 @@ rm -rf "$HOME_DIR" "$HOME_DIR2" "$SERVER_DB" "$SERVER_LOG" "$RECOVERY"
 "$FD0_SERVER_BIN" --bind=":${SERVER_PORT}" --db="$SERVER_DB" --no-ratelimit > "$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 sleep 0.3
-curl -fsS "http://127.0.0.1:${SERVER_PORT}/healthz" >/dev/null && ok "server up"
+curl -fsS "http://127.0.0.1:${SERVER_PORT}/health" >/dev/null && ok "server up"
 
 # Helper: configure home with sync server.
 write_cfg() {

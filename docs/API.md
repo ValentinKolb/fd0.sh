@@ -5,13 +5,13 @@ Companion to `PROTOCOL.md`. Requests and responses use `application/cbor` with d
 ## Contents
 
 1. [Authentication header](#1-authentication-header)
-2. [Endpoints](#2-endpoints) — `/users`, `/sync`, `/healthz`,
+2. [Endpoints](#2-endpoints) — `/v1/users`, `/v1/sync`, `/health`,
    `/version`.
 3. [Status codes](#3-status-codes)
 
 Translog endpoints (`/v1/server-info`, `/v1/sth/...`,
 `/v1/proof/inclusion`, `/v1/proof/consistency`) are documented in
-`TRANSLOG.md` §5. Witness endpoints (`/v1/witness/...`) are in
+`TRANSLOG.md` §5. Witness endpoints (`/v1/...`) are in
 `TRANSLOG.md` §8.3.
 
 ---
@@ -53,15 +53,15 @@ Server checks (in `verifyHTTPSig`, in order):
 8. per-pubkey post-auth rate limit           → else 429
 ```
 
-Per-endpoint authorization runs after `verifyHTTPSig`. Examples: `GET /users/<shortId>/events` requires `pk == user_super_pub` (else 403); `/sync` push items return `bad_author` per item when `author ≠ pk`; `/sync` pull of a non-member scope returns `200` with `denied: true` (not 403).
+Per-endpoint authorization runs after `verifyHTTPSig`. Examples: `GET /v1/users/<shortId>/events` requires `pk == user_super_pub` (else 403); `/v1/sync` push items return `bad_author` per item when `author ≠ pk`; `/v1/sync` pull of a non-member scope returns `200` with `denied: true` (not 403).
 
-`POST /users` is unauthenticated; the embedded event signature provides binding to the new identity. All other authenticated user-chain endpoints additionally require the signing pubkey to equal the chain's `user_super_pub`.
+`POST /v1/users` is unauthenticated; the embedded event signature provides binding to the new identity. All other authenticated user-chain endpoints additionally require the signing pubkey to equal the chain's `user_super_pub`.
 
 ---
 
 ## 2. Endpoints
 
-### 2.1 `POST /users` — register identity
+### 2.1 `POST /v1/users` — register identity
 
 ```
 Request:
@@ -78,7 +78,7 @@ Errors:
   409 super_pub_taken  user_super_pub already registered
 ```
 
-### 2.2 `GET /users/<shortId>/events` — fetch identity chain
+### 2.2 `GET /v1/users/<shortId>/events` — fetch identity chain
 
 Authenticated. `pk` MUST equal the chain's `user_super_pub`.
 
@@ -107,7 +107,7 @@ Query modes:
 404 not_found
 ```
 
-### 2.3 `POST /users/<shortId>/events` — append to identity chain
+### 2.3 `POST /v1/users/<shortId>/events` — append to identity chain
 
 Authenticated. `pk` MUST equal the chain's `user_super_pub`.
 
@@ -126,7 +126,7 @@ Errors:
   409 dup              event_id already exists
 ```
 
-### 2.4 `POST /sync` — pull, push, discover
+### 2.4 `POST /v1/sync` — pull, push, discover
 
 Authenticated.
 
@@ -182,12 +182,18 @@ Push reasons (always with `accepted: false`):
 
 Scope creation has no dedicated endpoint: a scope is created by pushing a `member.change` with `prev_hash=nil`, `op="add"`, `member == author`, and one `KeyDelivery` to the author. The server derives `scope_id = "s_" + base32(truncate_128(SHA-256(event_id)))` and assigns it in the `PushResult`.
 
-### 2.5 `GET /healthz`
+### 2.5 `GET /health`
+
+Liveness probe. Unauthenticated, version-neutral.
 
 ```
 200 OK
-Content-Type: text/plain
-Body: "ok"
+Content-Type: application/json
+{
+    "status"  : "ok",
+    "service" : "fd0-server",
+    "version" : "x.y.z"
+}
 ```
 
 ### 2.6 `GET /version`
@@ -196,10 +202,26 @@ Body: "ok"
 200 OK
 Content-Type: application/json
 {
+    "service"        : "fd0-server",
     "server_version" : "x.y.z",
     "api_version"    : "v1"
 }
 ```
+
+### 2.7 `GET /metrics`
+
+Prometheus exposition. RED metrics (requests, errors, duration, in-flight, response bytes) plus the standard process + Go runtime collectors. Guarded by a bearer token when `FD0_METRICS_TOKEN` is set; otherwise serves openly.
+
+```
+200 OK
+Content-Type: text/plain; version=0.0.4
+# HELP fd0_http_requests_total HTTP requests processed, partitioned by service, operation and status class.
+# TYPE fd0_http_requests_total counter
+fd0_http_requests_total{service="fd0-server",op="POST /v1/sync",status_class="2xx"} 1247
+...
+```
+
+Set `Authorization: Bearer <token>` when the env is configured. Unauthorised requests return `404 Not Found` — the endpoint never confirms its own existence to anonymous scrapers.
 
 ---
 

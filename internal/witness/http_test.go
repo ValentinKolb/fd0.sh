@@ -71,7 +71,7 @@ func newHTTPFixture(t *testing.T) *httpFixture {
 
 func TestHTTPServerInfoReturnsWitnessPub(t *testing.T) {
 	f := newHTTPFixture(t)
-	resp, err := http.Get(f.srv.URL + "/v1/witness/server-info")
+	resp, err := http.Get(f.srv.URL + "/v1/server-info")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestHTTPServerInfoReturnsWitnessPub(t *testing.T) {
 
 func TestHTTPLatestSTHHappyPath(t *testing.T) {
 	f := newHTTPFixture(t)
-	url := f.srv.URL + "/v1/witness/sth/" + EncodeServerURL(f.serverURL) + "/" + f.chainID
+	url := f.srv.URL + "/v1/sth/" + EncodeServerURL(f.serverURL) + "/" + f.chainID
 	resp, err := http.Get(url)
 	if err != nil {
 		t.Fatal(err)
@@ -122,7 +122,7 @@ func TestHTTPLatestSTHHappyPath(t *testing.T) {
 
 func TestHTTPLookupAtSpecificSize(t *testing.T) {
 	f := newHTTPFixture(t)
-	url := f.srv.URL + "/v1/witness/sth/" + EncodeServerURL(f.serverURL) + "/" + f.chainID + "?tree_size=7"
+	url := f.srv.URL + "/v1/sth/" + EncodeServerURL(f.serverURL) + "/" + f.chainID + "?tree_size=7"
 	resp, err := http.Get(url)
 	if err != nil {
 		t.Fatal(err)
@@ -135,7 +135,7 @@ func TestHTTPLookupAtSpecificSize(t *testing.T) {
 
 func TestHTTPLookupAtUnknownSize404(t *testing.T) {
 	f := newHTTPFixture(t)
-	url := f.srv.URL + "/v1/witness/sth/" + EncodeServerURL(f.serverURL) + "/" + f.chainID + "?tree_size=999"
+	url := f.srv.URL + "/v1/sth/" + EncodeServerURL(f.serverURL) + "/" + f.chainID + "?tree_size=999"
 	resp, err := http.Get(url)
 	if err != nil {
 		t.Fatal(err)
@@ -148,7 +148,7 @@ func TestHTTPLookupAtUnknownSize404(t *testing.T) {
 
 func TestHTTPRejectsBadServerB64(t *testing.T) {
 	f := newHTTPFixture(t)
-	url := f.srv.URL + "/v1/witness/sth/" + "not-base64-!@#" + "/" + f.chainID
+	url := f.srv.URL + "/v1/sth/" + "not-base64-!@#" + "/" + f.chainID
 	resp, err := http.Get(url)
 	if err != nil {
 		t.Fatal(err)
@@ -161,7 +161,7 @@ func TestHTTPRejectsBadServerB64(t *testing.T) {
 
 func TestHTTPRejectsBadChainPrefix(t *testing.T) {
 	f := newHTTPFixture(t)
-	url := f.srv.URL + "/v1/witness/sth/" + EncodeServerURL(f.serverURL) + "/wrongprefix:abc"
+	url := f.srv.URL + "/v1/sth/" + EncodeServerURL(f.serverURL) + "/wrongprefix:abc"
 	resp, err := http.Get(url)
 	if err != nil {
 		t.Fatal(err)
@@ -174,7 +174,7 @@ func TestHTTPRejectsBadChainPrefix(t *testing.T) {
 
 func TestHTTPRejectsNonGET(t *testing.T) {
 	f := newHTTPFixture(t)
-	url := f.srv.URL + "/v1/witness/server-info"
+	url := f.srv.URL + "/v1/server-info"
 	req, _ := http.NewRequest("POST", url, nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -209,7 +209,7 @@ func TestHTTPLookupReturns404WhenCosignMissing(t *testing.T) {
 	hs := &HTTPServer{Store: store, WitnessPub: witnessPub, Log: slog.Default()}
 	srv := httptest.NewServer(hs.Handler())
 	defer srv.Close()
-	url := srv.URL + "/v1/witness/sth/" + EncodeServerURL("https://x") + "/scope:s_xx"
+	url := srv.URL + "/v1/sth/" + EncodeServerURL("https://x") + "/scope:s_xx"
 	resp, err := http.Get(url)
 	if err != nil {
 		t.Fatal(err)

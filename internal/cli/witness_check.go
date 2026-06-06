@@ -277,7 +277,7 @@ var (
 )
 
 func (c *WitnessCheckClient) fetchWitnessedSTH(ctx context.Context, witnessURL, serverURL, chainID string, treeSize uint64) (translog.WitnessedSTH, error) {
-	endpoint := fmt.Sprintf("%s/v1/witness/sth/%s/%s?tree_size=%d",
+	endpoint := fmt.Sprintf("%s/v1/sth/%s/%s?tree_size=%d",
 		witnessURL,
 		encodeServerURL(serverURL),
 		chainID,
@@ -336,7 +336,7 @@ type equivProbeResponse struct {
 }
 
 // fetchHighestProbe queries
-// GET /v1/witness/highest/<server>/<chain> for the C4 freshness
+// GET /v1/highest/<server>/<chain> for the C4 freshness
 // probe. Returns (max_tree_size, observed, error). A 404 / non-OK
 // response or any decode error returns observed=false so the
 // caller treats it as "witness can't help here, fall through to
@@ -344,7 +344,7 @@ type equivProbeResponse struct {
 // only when observed=true AND the witness's max > server-supplied
 // size.
 func (c *WitnessCheckClient) fetchHighestProbe(ctx context.Context, witnessURL, serverURL, chainID string) (uint64, bool, error) {
-	endpoint := fmt.Sprintf("%s/v1/witness/highest/%s/%s",
+	endpoint := fmt.Sprintf("%s/v1/highest/%s/%s",
 		witnessURL, encodeServerURL(serverURL), chainID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -370,13 +370,13 @@ func (c *WitnessCheckClient) fetchHighestProbe(ctx context.Context, witnessURL, 
 }
 
 // fetchEquivocationProbe queries
-// GET /v1/witness/equivocation/<server>/<chain> for the C5
+// GET /v1/equivocation/<server>/<chain> for the C5
 // chain-level equivocation probe. Returns (equivocated, error).
 // On any non-OK / decode failure returns false so the caller
 // treats the probe as "witness can't help here" rather than
 // refusing.
 func (c *WitnessCheckClient) fetchEquivocationProbe(ctx context.Context, witnessURL, serverURL, chainID string) (bool, error) {
-	endpoint := fmt.Sprintf("%s/v1/witness/equivocation/%s/%s",
+	endpoint := fmt.Sprintf("%s/v1/equivocation/%s/%s",
 		witnessURL, encodeServerURL(serverURL), chainID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {

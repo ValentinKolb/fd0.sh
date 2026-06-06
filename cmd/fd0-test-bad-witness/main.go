@@ -49,8 +49,8 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/witness/server-info", bw.handleServerInfo)
-	mux.HandleFunc("/v1/witness/sth/", bw.handleSTH)
+	mux.HandleFunc("/v1/server-info", bw.handleServerInfo)
+	mux.HandleFunc("/v1/sth/", bw.handleSTH)
 	log.Printf("bad-witness mode=%s listening on %s upstream=%s", *mode, *listen, *upstream)
 	if err := http.ListenAndServe(*listen, mux); err != nil {
 		log.Fatal(err)
@@ -94,7 +94,7 @@ func (b *badWitness) handleSTH(w http.ResponseWriter, r *http.Request) {
 	// integration test's "this request actually hit me" assertion.
 	log.Printf("REQUEST mode=%s path=%s", b.mode, r.URL.Path)
 	// Parse server_b64 / chain / tree_size.
-	rest := strings.TrimPrefix(r.URL.Path, "/v1/witness/sth/")
+	rest := strings.TrimPrefix(r.URL.Path, "/v1/sth/")
 	parts := strings.SplitN(rest, "/", 2)
 	if len(parts) != 2 {
 		http.Error(w, "bad path", 400)

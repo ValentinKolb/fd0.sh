@@ -242,7 +242,7 @@ func (s *Session) EnsureUserRegistered(ctx context.Context, serverURL canon.URL)
 	if err != nil {
 		return fmt.Errorf("registration: marshal: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, canonical+"/users", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, canonical+"/v1/users", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}

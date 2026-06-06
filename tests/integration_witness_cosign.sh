@@ -5,7 +5,7 @@
 #
 # Verifies the new v1 features:
 #
-#   1. fd0-witness exposes /v1/witness/server-info + /v1/witness/sth/...
+#   1. fd0-witness exposes /v1/server-info + /v1/sth/...
 #   2. Witness cosigns every successfully-verified STH and serves it.
 #   3. Client with [[witness]] config + min_cosigns=1 successfully
 #      syncs when the cosign matches the server STH.
@@ -139,7 +139,7 @@ rm -rf "$HOME_AL" "$SERVER_DB" "$SERVER_LOG" "$SERVER_KEY" \
     --no-ratelimit > "$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 sleep 0.5
-if ! curl -fs "http://127.0.0.1:${SERVER_PORT}/healthz" >/dev/null 2>&1; then
+if ! curl -fs "http://127.0.0.1:${SERVER_PORT}/health" >/dev/null 2>&1; then
     no "server failed to come up"; exit 1
 fi
 ok "server up on :${SERVER_PORT}"
@@ -185,11 +185,11 @@ W_PUB_HEX=$(extract_witness_pub_hex "$WITNESS_KEY")
 step "Direct HTTP probes against witness1"
 
 # server-info should return the witness pub.
-INFO=$(curl -sf "http://127.0.0.1:${WITNESS_PORT}/v1/witness/server-info" -o /tmp/wi-info.bin -w "%{http_code}")
+INFO=$(curl -sf "http://127.0.0.1:${WITNESS_PORT}/v1/server-info" -o /tmp/wi-info.bin -w "%{http_code}")
 if [ "$INFO" = "200" ]; then
-    ok "GET /v1/witness/server-info returned 200"
+    ok "GET /v1/server-info returned 200"
 else
-    no "GET /v1/witness/server-info returned $INFO"
+    no "GET /v1/server-info returned $INFO"
 fi
 
 # server URL -> base64url (no padding) for the path segment.
@@ -200,7 +200,7 @@ sys.stdout.write(base64.urlsafe_b64encode(b'http://127.0.0.1:${SERVER_PORT}').rs
 
 # Latest STH endpoint.
 STATUS=$(curl -s -o /tmp/wi-latest.bin -w "%{http_code}" \
-    "http://127.0.0.1:${WITNESS_PORT}/v1/witness/sth/${SRV_B64}/${SCOPE_CHAIN}")
+    "http://127.0.0.1:${WITNESS_PORT}/v1/sth/${SRV_B64}/${SCOPE_CHAIN}")
 if [ "$STATUS" = "200" ]; then
     ok "witness has latest STH for scope (200)"
 else
@@ -209,7 +209,7 @@ fi
 
 # Unobserved size → 404.
 STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-    "http://127.0.0.1:${WITNESS_PORT}/v1/witness/sth/${SRV_B64}/${SCOPE_CHAIN}?tree_size=999999")
+    "http://127.0.0.1:${WITNESS_PORT}/v1/sth/${SRV_B64}/${SCOPE_CHAIN}?tree_size=999999")
 if [ "$STATUS" = "404" ]; then
     ok "GET unobserved tree_size returns 404 (lag handling)"
 else

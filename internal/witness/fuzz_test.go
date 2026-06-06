@@ -34,14 +34,14 @@ func FuzzHTTPHandler(f *testing.F) {
 	f.Cleanup(srv.Close)
 
 	// Seeds derived from real client patterns + curated nasties.
-	f.Add("/v1/witness/server-info", "")
-	f.Add("/v1/witness/sth/AA/scope:s_aaaaaaaaaaaaaaaaaaaaaaaaaa", "")
-	f.Add("/v1/witness/sth/AA/scope:s_aaaaaaaaaaaaaaaaaaaaaaaaaa", "tree_size=1")
-	f.Add("/v1/witness/sth/", "")
-	f.Add("/v1/witness/sth/AA", "")
+	f.Add("/v1/server-info", "")
+	f.Add("/v1/sth/AA/scope:s_aaaaaaaaaaaaaaaaaaaaaaaaaa", "")
+	f.Add("/v1/sth/AA/scope:s_aaaaaaaaaaaaaaaaaaaaaaaaaa", "tree_size=1")
+	f.Add("/v1/sth/", "")
+	f.Add("/v1/sth/AA", "")
 	f.Add("", "")
 	f.Add("/", "")
-	f.Add("/v1/witness/sth/AA/scope:s_x", "tree_size=99999999999999999999")
+	f.Add("/v1/sth/AA/scope:s_x", "tree_size=99999999999999999999")
 
 	f.Fuzz(func(t *testing.T, path, query string) {
 		// Reject obviously-invalid URLs before NewRequest panics.

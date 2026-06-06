@@ -316,8 +316,8 @@ for dev in AL BL; do
 done
 
 # Server still healthy.
-if curl -fs "http://127.0.0.1:${SERVER_PORT}/healthz" >/dev/null 2>&1; then
-    ok "server still serving /healthz after chaos"
+if curl -fs "http://127.0.0.1:${SERVER_PORT}/health" >/dev/null 2>&1; then
+    ok "server still serving /health after chaos"
 else
     no "server unreachable after chaos"
 fi

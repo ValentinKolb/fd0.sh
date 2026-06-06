@@ -136,7 +136,7 @@ rm -rf "$HOME_AL" "$SERVER_DB" "$SERVER_LOG" "$SERVER_KEY" \
     --no-ratelimit > "$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 sleep 0.5
-curl -fs "http://127.0.0.1:${SERVER_PORT}/healthz" >/dev/null || { no "server failed"; exit 1; }
+curl -fs "http://127.0.0.1:${SERVER_PORT}/health" >/dev/null || { no "server failed"; exit 1; }
 ok "server up"
 
 SRV_PUB_HEX=$(extract_pub_hex "$SERVER_KEY")

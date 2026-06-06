@@ -177,7 +177,7 @@ func (s *Session) fullPullScope(ctx context.Context, wcc *WitnessCheckClient, se
 		if err != nil {
 			return nil, nil, err
 		}
-		resp, err := s.signedPOST(ctx, server.JoinPath("/sync"), body)
+		resp, err := s.signedPOST(ctx, server.JoinPath("/v1/sync"), body)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -528,7 +528,7 @@ func (s *Session) pushRebuiltEvent(ctx context.Context, wcc *WitnessCheckClient,
 	if perr != nil {
 		return false, perr
 	}
-	resp, err := s.signedPOST(ctx, server.JoinPath("/sync"), body)
+	resp, err := s.signedPOST(ctx, server.JoinPath("/v1/sync"), body)
 	if err != nil {
 		return false, err
 	}

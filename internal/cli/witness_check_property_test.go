@@ -51,9 +51,9 @@ func newWitnessFake(t *testing.T, seed int64) *witnessFake {
 	pub, priv := keyseedCli(t, seed)
 	wf := &witnessFake{pub: pub, priv: priv}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/witness/sth/", func(w http.ResponseWriter, r *http.Request) {
-		// Parse path: /v1/witness/sth/<server_b64>/<chain>?tree_size=N
-		rest := strings.TrimPrefix(r.URL.Path, "/v1/witness/sth/")
+	mux.HandleFunc("/v1/sth/", func(w http.ResponseWriter, r *http.Request) {
+		// Parse path: /v1/sth/<server_b64>/<chain>?tree_size=N
+		rest := strings.TrimPrefix(r.URL.Path, "/v1/sth/")
 		parts := strings.SplitN(rest, "/", 2)
 		if len(parts) != 2 {
 			http.Error(w, "bad path", http.StatusBadRequest)

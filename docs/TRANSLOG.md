@@ -475,10 +475,10 @@ Summary:
 
 | Endpoint                         | Returns                       | Use |
 |----------------------------------|-------------------------------|-----|
-| `/v1/witness/server-info`        | `witness_pub`                 | first-contact pinning |
-| `/v1/witness/sth/<srv>/<chain>`  | `WitnessedSTH` or 404 / 409  | per-sync cosign check |
-| `/v1/witness/highest/<srv>/<chain>` | `{observed, tree_size}`     | first-fetch rollback probe (T41) |
-| `/v1/witness/equivocation/<srv>/<chain>` | `{equivocated}`        | historical-equivocation probe (T35) |
+| `/v1/server-info`        | `witness_pub`                 | first-contact pinning |
+| `/v1/sth/<srv>/<chain>`  | `WitnessedSTH` or 404 / 409  | per-sync cosign check |
+| `/v1/highest/<srv>/<chain>` | `{observed, tree_size}`     | first-fetch rollback probe (T41) |
+| `/v1/equivocation/<srv>/<chain>` | `{equivocated}`        | historical-equivocation probe (T35) |
 
 Detail follows.
 
@@ -499,18 +499,18 @@ Cosigns are withheld whenever the consistency check in §8.1 step 3 fails — th
 Witness HTTP API (all responses are `application/cbor`):
 
 ```
-GET /v1/witness/server-info
+GET /v1/server-info
 → 200 — { witness_pub, witness_pub_hex }      ; not signed; pin out of band
 
-GET /v1/witness/sth/{server_b64}/{chain_id}[?tree_size=N]
+GET /v1/sth/{server_b64}/{chain_id}[?tree_size=N]
 → 200 — WitnessedSTH (latest cosigned, or at the requested tree_size)
 → 404 if not observed, or no cosigned STH is available at the requested size
 → 409 if multiple distinct roots are archived at the requested tree_size (equivocation evidence)
 
-GET /v1/witness/highest/{server_b64}/{chain_id}
+GET /v1/highest/{server_b64}/{chain_id}
 → 200 — { observed: bool, tree_size: uint }   ; highest tree_size ever archived for (server, chain)
 
-GET /v1/witness/equivocation/{server_b64}/{chain_id}
+GET /v1/equivocation/{server_b64}/{chain_id}
 → 200 — { equivocated: bool }                 ; true iff any tree_size has multiple distinct roots
 ```
 

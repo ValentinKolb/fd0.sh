@@ -92,7 +92,7 @@ rm -rf "$HOME/.fd0-alice-laptop" "$HOME/.fd0-alice-desktop" \
 SERVER_PID=$!
 trap 'kill $SERVER_PID 2>/dev/null || true; pkill -f fd0-agent 2>/dev/null || true' EXIT
 sleep 0.5
-curl -fsS "http://127.0.0.1:${SERVER_PORT}/healthz" >/dev/null
+curl -fsS "http://127.0.0.1:${SERVER_PORT}/health" >/dev/null
 ok "fd0-server up on :${SERVER_PORT}"
 
 # Auto-sync interval — short for fast iteration.

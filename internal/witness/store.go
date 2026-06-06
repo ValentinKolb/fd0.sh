@@ -248,7 +248,7 @@ func (s *Store) LatestVerifiedSTH(ctx context.Context, serverURL, chainID string
 // branch that matches the malicious server back to the client.
 //
 // Used by the witness's HTTP handler when a client asks
-// `GET /v1/witness/sth/<server>/<chain>?tree_size=N`.
+// `GET /v1/sth/<server>/<chain>?tree_size=N`.
 func (s *Store) LookupAt(ctx context.Context, serverURL, chainID string, treeSize uint64) (translog.STH, []byte, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT root_hash, timestamp, signature, witness_signature

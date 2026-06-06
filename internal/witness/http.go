@@ -21,23 +21,27 @@ import (
 // HTTP API so clients can cross-check server-provided STHs against
 // what the witness independently observed (TRANSLOG.md §8.3 / §10).
 //
-// Endpoints:
+// Data endpoints (all under /v1/):
 //
-//	GET /v1/witness/server-info
+//	GET /v1/server-info
 //	    → CBOR { witness_pub: bytes(32) }
 //
-//	GET /v1/witness/sth/<server_url_b64>/<chain_id>[?tree_size=N]
+//	GET /v1/sth/<server_url_b64>/<chain_id>[?tree_size=N]
 //	    → CBOR translog.WitnessedSTH (latest, or at exact size when given)
 //	    → 404 if the witness has not observed that (server, chain, size)
+//
+//	GET /v1/highest/<server_url_b64>/<chain_id>      C4 freshness probe
+//	GET /v1/equivocation/<server_url_b64>/<chain_id> C5 fork detection
+//	GET /v1/observed/<server_url_b64>                aggregate dashboard
 //
 // `<server_url_b64>` is a base64url (no padding) encoding of the
 // upstream server URL — keeps slashes and colons out of the path
 // without forcing the witness to do per-request URL parsing on
 // untrusted input.
 //
-// Healthz is intentionally omitted; clients use the server-info
-// endpoint as a liveness probe (any 200 implies the witness is up
-// AND has its keypair loaded).
+// Operational endpoints (/health, /version, /metrics) are wired in
+// cmd/fd0-witness/main.go around this handler so the metrics path
+// stays opt-in and the auth middleware is per-binary configurable.
 type HTTPServer struct {
 	Store      *Store
 	WitnessPub ed25519.PublicKey
@@ -49,13 +53,16 @@ type HTTPServer struct {
 // (e.g., behind a reverse proxy with TLS termination).
 func (s *HTTPServer) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/witness/server-info", s.handleServerInfo)
-	mux.HandleFunc("/v1/witness/sth/", s.handleWitnessSTH)
+	mux.HandleFunc("/v1/server-info", s.handleServerInfo)
+	mux.HandleFunc("/v1/sth/", s.handleWitnessSTH)
 	// C4: T41 freshness probe — highest tree_size archived per chain.
-	mux.HandleFunc("/v1/witness/highest/", s.handleHighest)
+	mux.HandleFunc("/v1/highest/", s.handleHighest)
 	// C5: T35 chain-level equivocation probe — has the witness ever
 	// archived multi-roots at any tree_size for this chain?
-	mux.HandleFunc("/v1/witness/equivocation/", s.handleEquivocation)
+	mux.HandleFunc("/v1/equivocation/", s.handleEquivocation)
+	// Dashboard aggregate — all chains the witness has ever observed
+	// for the named server, with latest tree_size + equivocation flag.
+	mux.HandleFunc("/v1/observed/", s.handleObserved)
 	return mux
 }
 
@@ -94,7 +101,7 @@ func DecodeServerURL(enc string) (string, error) {
 
 // ---- handlers ----
 
-// handleServerInfo serves GET /v1/witness/server-info.
+// handleServerInfo serves GET /v1/server-info.
 func (s *HTTPServer) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -122,7 +129,7 @@ const (
 	maxChainIDLen   = 256
 )
 
-// handleWitnessSTH serves GET /v1/witness/sth/<server_b64>/<chain>[?tree_size=N].
+// handleWitnessSTH serves GET /v1/sth/<server_b64>/<chain>[?tree_size=N].
 //
 // The handler is deliberately strict on the request shape — the
 // route is small enough that surprising URLs almost certainly
@@ -132,10 +139,10 @@ func (s *HTTPServer) handleWitnessSTH(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	rest := strings.TrimPrefix(r.URL.Path, "/v1/witness/sth/")
+	rest := strings.TrimPrefix(r.URL.Path, "/v1/sth/")
 	parts := strings.SplitN(rest, "/", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		http.Error(w, "expected /v1/witness/sth/<server_b64>/<chain_id>", http.StatusBadRequest)
+		http.Error(w, "expected /v1/sth/<server_b64>/<chain_id>", http.StatusBadRequest)
 		return
 	}
 	if len(parts[0]) > maxServerB64Len {
@@ -209,7 +216,7 @@ func (s *HTTPServer) handleWitnessSTH(w http.ResponseWriter, r *http.Request) {
 }
 
 // HighestResponse is the body of GET
-// /v1/witness/highest/<server_b64>/<chain_id>. `Observed` is true
+// /v1/highest/<server_b64>/<chain_id>. `Observed` is true
 // iff the witness has archived at least one STH for the
 // (server_url, chain_id) pair; `TreeSize` is the maximum observed.
 //
@@ -222,7 +229,7 @@ type HighestResponse struct {
 }
 
 // EquivocationResponse is the body of GET
-// /v1/witness/equivocation/<server_b64>/<chain_id>. `Equivocated`
+// /v1/equivocation/<server_b64>/<chain_id>. `Equivocated`
 // is true iff the witness has ever archived multi-root STHs at
 // the SAME tree_size for the (server_url, chain_id) pair.
 //
@@ -235,14 +242,14 @@ type EquivocationResponse struct {
 }
 
 // handleHighest serves
-// GET /v1/witness/highest/<server_b64>/<chain_id> for the C4
+// GET /v1/highest/<server_b64>/<chain_id> for the C4
 // T41 freshness probe.
 func (s *HTTPServer) handleHighest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	serverURL, chainID, ok := parseHighestEquivocPath(w, r, "/v1/witness/highest/")
+	serverURL, chainID, ok := parseHighestEquivocPath(w, r, "/v1/highest/")
 	if !ok {
 		return
 	}
@@ -256,14 +263,14 @@ func (s *HTTPServer) handleHighest(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleEquivocation serves
-// GET /v1/witness/equivocation/<server_b64>/<chain_id> for the
+// GET /v1/equivocation/<server_b64>/<chain_id> for the
 // C5 T35 chain-level equivocation probe.
 func (s *HTTPServer) handleEquivocation(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	serverURL, chainID, ok := parseHighestEquivocPath(w, r, "/v1/witness/equivocation/")
+	serverURL, chainID, ok := parseHighestEquivocPath(w, r, "/v1/equivocation/")
 	if !ok {
 		return
 	}
@@ -307,6 +314,85 @@ func parseHighestEquivocPath(w http.ResponseWriter, r *http.Request, prefix stri
 		return "", "", false
 	}
 	return serverURL, chainID, true
+}
+
+// ObservedChain is one row of /v1/observed/<server_b64>'s response —
+// one chain the witness has ever archived an STH for, with the
+// freshness (max tree_size + cosign count) and the equivocation flag
+// that the public-dashboard / /witness page renders directly.
+type ObservedChain struct {
+	ChainID                 string `cbor:"chain_id"`
+	MaxTreeSize             uint64 `cbor:"max_tree_size"`
+	CosignCount             int64  `cbor:"cosign_count"`
+	Equivocated             bool   `cbor:"equivocated"`
+	ConsistencyFailureCount int64  `cbor:"consistency_failure_count"`
+}
+
+// ObservedResponse is the body returned by /v1/observed/<server_b64>.
+type ObservedResponse struct {
+	ServerURL string          `cbor:"server_url"`
+	Chains    []ObservedChain `cbor:"chains"`
+}
+
+// handleObserved serves GET /v1/observed/<server_b64>.
+//
+// Returns the union of every chain this witness has ever archived an
+// STH for against `<server_b64>`, with each chain's max tree_size, the
+// number of stored cosigns, the equivocation flag, and the count of
+// consistency-proof failures. Suitable for driving a public dashboard
+// — no per-chain client polling required.
+//
+// Empty list (200 OK with `chains: []`) means the witness has not
+// observed any chains for that server. A malformed server segment
+// yields 400; an empty base64url yields 400 ("expected non-empty
+// server segment"). The path /v1/observed/ alone (no segment) is 404.
+func (s *HTTPServer) handleObserved(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	rest := strings.TrimPrefix(r.URL.Path, "/v1/observed/")
+	// reject extra path segments — /v1/observed/<server_b64> only.
+	rest = strings.TrimSuffix(rest, "/")
+	if rest == "" {
+		http.Error(w, "expected /v1/observed/<server_b64>", http.StatusBadRequest)
+		return
+	}
+	if strings.Contains(rest, "/") {
+		http.Error(w, "trailing path segments not allowed", http.StatusBadRequest)
+		return
+	}
+	if len(rest) > maxServerB64Len {
+		http.Error(w, "server segment too long", http.StatusRequestURITooLong)
+		return
+	}
+	serverURL, err := DecodeServerURL(rest)
+	if err != nil {
+		http.Error(w, "server segment is not valid base64url", http.StatusBadRequest)
+		return
+	}
+
+	rows, err := s.Store.Summary(r.Context())
+	if err != nil {
+		s.Log.Error("witness http: summary lookup failed", "err", err)
+		http.Error(w, "internal lookup error", http.StatusInternalServerError)
+		return
+	}
+
+	out := ObservedResponse{ServerURL: serverURL, Chains: []ObservedChain{}}
+	for _, row := range rows {
+		if row.ServerURL != serverURL {
+			continue
+		}
+		out.Chains = append(out.Chains, ObservedChain{
+			ChainID:                 row.ChainID,
+			MaxTreeSize:             row.MaxTreeSize,
+			CosignCount:             row.RowCount,
+			Equivocated:             row.HasEquivAt,
+			ConsistencyFailureCount: row.ConsistencyFailureCount,
+		})
+	}
+	writeCBOR(w, http.StatusOK, out)
 }
 
 // writeCBOR serializes v as CBOR and writes it. Mirror of the

@@ -40,7 +40,7 @@ func (s *Session) discoverScope(ctx context.Context, wcc *WitnessCheckClient, se
 	if err != nil {
 		return err
 	}
-	resp, err := s.signedPOST(ctx, server.JoinPath("/sync"), body)
+	resp, err := s.signedPOST(ctx, server.JoinPath("/v1/sync"), body)
 	if err != nil {
 		return err
 	}

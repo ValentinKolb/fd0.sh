@@ -52,8 +52,8 @@ S1_PID=$!
 "$FD0_SERVER_BIN" --bind=":${SERVER_ALT_PORT}" --db="$SERVER_ALT_DB" --no-ratelimit > "$SERVER_ALT_LOG" 2>&1 &
 S2_PID=$!
 sleep 0.4
-curl -fsS "http://127.0.0.1:${SERVER_PORT}/healthz" >/dev/null && ok "primary server up on :$SERVER_PORT"
-curl -fsS "http://127.0.0.1:${SERVER_ALT_PORT}/healthz" >/dev/null && ok "alt server up on :$SERVER_ALT_PORT"
+curl -fsS "http://127.0.0.1:${SERVER_PORT}/health" >/dev/null && ok "primary server up on :$SERVER_PORT"
+curl -fsS "http://127.0.0.1:${SERVER_ALT_PORT}/health" >/dev/null && ok "alt server up on :$SERVER_ALT_PORT"
 
 A() { env FD0_HOME="$HOME_DIR" "$FD0" "$@"; }
 
