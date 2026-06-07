@@ -1,17 +1,16 @@
 # fd0 — single-file deployment.
 #
-# Stack: Traefik + fd0-server + fd0-witness + fd0-website. Everything
-# below — domain, ACME email, metrics token, witness config — lives in
-# this one file. Three knobs (DOMAIN, ACME_EMAIL, METRICS_TOKEN) read
-# from the host/Portainer/Coolify stack environment with sane defaults;
-# the images are hardcoded to ghcr.io/valentinkolb/fd0-* :latest.
+# Stack: Traefik + fd0-server + fd0-witness + fd0-website. Pure env —
+# no inline configs, no side files. Three stack env vars (DOMAIN,
+# ACME_EMAIL, METRICS_TOKEN) override the baked-in defaults; the
+# images are hardcoded to ghcr.io/valentinkolb/fd0-* :latest.
 #
 #   fd0.sh          → fd0-website
 #   api.fd0.sh      → fd0-server
 #   witness.fd0.sh  → fd0-witness
 #
-# Quick deploy: `docker compose up -d`. Zero manual fields after first
-# boot: the witness pins the server's pubkey on first contact (TOFU,
+# Quick deploy: `docker compose up -d`. Zero manual fields on first
+# boot — the witness pins the server's pubkey on first contact (TOFU,
 # SSH-style) and auto-discovers chains from /v1/chains.
 
 services:
@@ -69,18 +68,20 @@ services:
     depends_on:
       fd0-server:
         condition: service_healthy
-    command:
-      - --config=/etc/fd0-witness/witness.toml
-      - --db=/data/witness.db
-      - --key=/data/cosign.key
-      - --bind=:4049
     environment:
+      FD0_WITNESS_DB: /data/witness.db
+      FD0_WITNESS_KEY: /data/cosign.key
+      FD0_WITNESS_BIND: ":4049"
       FD0_WITNESS_METRICS_TOKEN: ${METRICS_TOKEN:-CHANGE_ME_openssl_rand_hex_32}
+      # Target — the server this witness watches. One witness per
+      # server (process isolation). To watch multiple servers, copy
+      # this whole service block.
+      FD0_WITNESS_SERVER_URL: https://api.${DOMAIN:-fd0.sh}
+      FD0_WITNESS_PIN_ON_FIRST_USE: "true"
+      FD0_WITNESS_AUTO_DISCOVER: "true"
+      FD0_WITNESS_POLL_INTERVAL: "30s"
     volumes:
       - fd0-witness-data:/data
-    configs:
-      - source: witness-config
-        target: /etc/fd0-witness/witness.toml
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4049/health"]
       interval: 30s
@@ -124,36 +125,6 @@ services:
       - traefik.http.routers.fd0-website.tls.certresolver=le
       - traefik.http.services.fd0-website.loadbalancer.server.port=5173
     networks: [edge]
-
-# ─── Inline witness config ──────────────────────────────────────────────
-# Zero manual fields. The witness:
-#
-#   pin_on_first_use  — fetches /v1/server-info on first run, validates
-#                       the self-signature, and pins whatever pubkey
-#                       the server announced. SSH-known_hosts model.
-#                       Any subsequent change → ErrPinMismatch.
-#
-#   auto_discover     — polls /v1/chains every round and watches every
-#                       chain the server returns. New users and scopes
-#                       are covered without intervention.
-#
-# Safe for self-host where one operator owns both server and witness
-# (this stack). For an independent witness watching a third-party
-# server, replace `pin_on_first_use = true` with an explicit
-# `server_pub = "<hex>"` line — TOFU first-contact is otherwise
-# subject to MITM. See deploy/README.md for the trust-model details.
-#
-# To inspect the pinned key after first run:
-#   docker compose exec fd0-witness fd0-witness-status
-# or query the witness store directly.
-configs:
-  witness-config:
-    content: |
-      [[target]]
-      server_url       = "https://api.${DOMAIN:-fd0.sh}"
-      poll_interval    = "30s"
-      pin_on_first_use = true
-      auto_discover    = true
 
 volumes:
   traefik-letsencrypt:

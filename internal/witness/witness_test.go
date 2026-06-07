@@ -150,12 +150,10 @@ func newWitness(t *testing.T, fs *fakeServer) *Witness {
 	}
 	t.Cleanup(func() { store.Close() })
 	cfg := Config{
-		Targets: []Target{{
-			ServerURL:    fs.srv.URL,
-			ServerPub:    fs.pub,
-			Chains:       []string{fs.chainID},
-			PollInterval: time.Second,
-		}},
+		ServerURL:    fs.srv.URL,
+		ServerPub:    fs.pub,
+		Chains:       []string{fs.chainID},
+		PollInterval: time.Second,
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	w := New(store, cfg, logger)
@@ -259,10 +257,10 @@ func TestWitnessRejectsBadSignature(t *testing.T) {
 	if err := badStore.PinServer(ctx, fs.srv.URL, otherPub); err != nil {
 		t.Fatal(err)
 	}
-	cfg := Config{Targets: []Target{{
+	cfg := Config{
 		ServerURL: fs.srv.URL, ServerPub: otherPub,
 		Chains: []string{fs.chainID}, PollInterval: time.Second,
-	}}}
+	}
 	bw := New(badStore, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	if err := bw.PollOnce(ctx); err != nil {
@@ -358,10 +356,10 @@ func TestWitnessArchivesOnConsistencyFetchFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { store.Close() })
-	cfg := Config{Targets: []Target{{
+	cfg := Config{
 		ServerURL: srv.URL, ServerPub: pub,
 		Chains: []string{chainID}, PollInterval: time.Second,
-	}}}
+	}
 	w := New(store, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	ctx := context.Background()
 	if err := w.EnsurePins(ctx); err != nil {
@@ -426,19 +424,19 @@ func TestConfigValidate(t *testing.T) {
 		cfg     Config
 		wantErr bool
 	}{
-		{"valid", Config{Targets: []Target{{
+		{"valid", Config{
 			ServerURL: "https://x", ServerPubHex: pubHex,
 			Chains: []string{"scope:s_test"}, PollInterval: time.Second,
-		}}}, false},
-		{"no targets", Config{}, true},
-		{"empty url", Config{Targets: []Target{{ServerPubHex: pubHex, Chains: []string{"scope:s_x"}}}}, true},
-		{"bad pubhex", Config{Targets: []Target{{ServerURL: "https://u", ServerPubHex: "ZZ", Chains: []string{"scope:s_x"}}}}, true},
-		{"short pubhex", Config{Targets: []Target{{ServerURL: "https://u", ServerPubHex: "abcd", Chains: []string{"scope:s_x"}}}}, true},
-		{"no chains", Config{Targets: []Target{{ServerURL: "https://u", ServerPubHex: pubHex}}}, true},
-		{"bad chain prefix", Config{Targets: []Target{{ServerURL: "https://u", ServerPubHex: pubHex, Chains: []string{"witness:foo"}}}}, true},
-		{"sub-second interval", Config{Targets: []Target{{ServerURL: "https://u", ServerPubHex: pubHex, Chains: []string{"scope:s_x"}, PollInterval: time.Millisecond}}}, true},
-		{"url without scheme", Config{Targets: []Target{{ServerURL: "u", ServerPubHex: pubHex, Chains: []string{"scope:s_x"}}}}, true},
-		{"url without host", Config{Targets: []Target{{ServerURL: "https://", ServerPubHex: pubHex, Chains: []string{"scope:s_x"}}}}, true},
+		}, false},
+		{"empty config", Config{}, true},
+		{"empty url", Config{ServerPubHex: pubHex, Chains: []string{"scope:s_x"}}, true},
+		{"bad pubhex", Config{ServerURL: "https://u", ServerPubHex: "ZZ", Chains: []string{"scope:s_x"}}, true},
+		{"short pubhex", Config{ServerURL: "https://u", ServerPubHex: "abcd", Chains: []string{"scope:s_x"}}, true},
+		{"no chains", Config{ServerURL: "https://u", ServerPubHex: pubHex}, true},
+		{"bad chain prefix", Config{ServerURL: "https://u", ServerPubHex: pubHex, Chains: []string{"witness:foo"}}, true},
+		{"sub-second interval", Config{ServerURL: "https://u", ServerPubHex: pubHex, Chains: []string{"scope:s_x"}, PollInterval: time.Millisecond}, true},
+		{"url without scheme", Config{ServerURL: "u", ServerPubHex: pubHex, Chains: []string{"scope:s_x"}}, true},
+		{"url without host", Config{ServerURL: "https://", ServerPubHex: pubHex, Chains: []string{"scope:s_x"}}, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -453,28 +451,25 @@ func TestConfigValidate(t *testing.T) {
 	}
 }
 
-func TestSaveLoadConfigRoundtrip(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "w.toml")
+// TestConfigValidateRoundtrip exercises a representative valid config
+// end-to-end through Validate (the TOML round-trip from the multi-
+// target era is gone — env/flags is the only config surface now).
+func TestConfigValidateRoundtrip(t *testing.T) {
 	pub, _, _ := ed25519.GenerateKey(rand.Reader)
-	cfg := Config{Targets: []Target{{
+	cfg := Config{
 		ServerURL:    "https://example.com",
 		ServerPubHex: hex.EncodeToString(pub),
 		Chains:       []string{"scope:s_aaaaaaaaaaaaaaaaaaaaaaaaaa"},
 		PollInterval: time.Hour,
-	}}}
-	if err := SaveConfig(path, cfg); err != nil {
+	}
+	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	loaded, err := LoadConfig(path)
-	if err != nil {
-		t.Fatal(err)
+	if cfg.ServerURL != "https://example.com" {
+		t.Fatal("ServerURL trimming changed canonical value")
 	}
-	if len(loaded.Targets) != 1 {
-		t.Fatalf("loaded %d targets, want 1", len(loaded.Targets))
-	}
-	if loaded.Targets[0].ServerURL != cfg.Targets[0].ServerURL {
-		t.Fatal("ServerURL roundtrip mismatch")
+	if len(cfg.ServerPub) != ed25519.PublicKeySize {
+		t.Fatal("ServerPub not decoded from hex")
 	}
 }
 

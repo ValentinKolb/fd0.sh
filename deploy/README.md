@@ -12,7 +12,7 @@ This is a starting point. Resource limits, log drivers, backups, monitoring, mul
 
 ## Prerequisites
 
-- Docker Engine ≥ 24 with the Compose plugin (`configs.content` needs Compose ≥ v2.20)
+- Docker Engine ≥ 24 with the Compose plugin
 - A box reachable on TCP/80 and TCP/443
 - DNS — A records for `${DOMAIN}`, `api.${DOMAIN}`, `witness.${DOMAIN}` pointed at the box
 
@@ -43,25 +43,37 @@ docker compose logs -f
 
 Traefik provisions a Let's Encrypt cert per host via TLS-ALPN-01 on first request. First request takes ~30 s while the cert issues.
 
-## Witness trust model
+## Witness configuration
 
-Out of the box, the witness self-bootstraps:
+Pure env. No config file, no inline compose blocks. The witness reads:
 
-- **`pin_on_first_use = true`** — on first poll, the witness fetches `GET /v1/server-info`, verifies the server's self-signature, and persists the pubkey to its store. Subsequent runs use the pinned key. A later change in the server's key (rotation, attack) is rejected with `ErrPinMismatch`. SSH-`known_hosts` semantics.
-- **`auto_discover = true`** — the witness polls `GET /v1/chains` every round and watches every chain the server returns. New users and scopes are covered without intervention.
+| Env | Default in compose | Purpose |
+|---|---|---|
+| `FD0_WITNESS_SERVER_URL` | `https://api.${DOMAIN}` | The fd0-server this witness watches |
+| `FD0_WITNESS_PIN_ON_FIRST_USE` | `true` | TOFU pin — fetch pubkey from `/v1/server-info` on first poll |
+| `FD0_WITNESS_AUTO_DISCOVER` | `true` | Pull chain list from `/v1/chains` every round |
+| `FD0_WITNESS_POLL_INTERVAL` | `30s` | Time between rounds |
+| `FD0_WITNESS_SERVER_PUB` | (unset) | Explicit hex pubkey — alternative to TOFU |
+| `FD0_WITNESS_CHAINS` | (unset) | Comma-separated allow-list — alternative to auto-discover |
 
-**Trust caveat.** `/v1/server-info` is self-signed — the server signs the pubkey announcement with the key it presents. The signature proves the server has the corresponding private key, not that the pubkey is the "real" one. A MITM at first contact pins the attacker's key. For a self-host where the same operator runs server + witness in the same compose, the bootstrap window is under your control and TOFU is fine. For an **independent** witness watching a server you don't control, replace `pin_on_first_use = true` with an explicit `server_pub = "<hex>"` line obtained out-of-band (the server operator's website, signed announcement, etc).
+### Multi-server
 
-The published cosigns are the audit artefact: anyone can verify them against the real server's pubkey shown on its `/v1/server-info` endpoint or the project's website. A witness that pinned a fake key on day 1 produces cosigns that don't verify under the real key — detection is automatic for anyone cross-checking.
+One witness watches one server. To watch a second server, copy the `fd0-witness` service block, change the `FD0_WITNESS_SERVER_URL`, give it its own volume and Traefik Host(), and run both. Independent processes, independent DBs, independent metrics — smaller failure domain than a multi-target mega-witness.
 
-To inspect the pinned key after first run, query the witness store:
+### Trust model
+
+Out of the box the witness self-bootstraps via TOFU: first poll fetches `/v1/server-info`, validates the server's self-signature, persists the pubkey. SSH-`known_hosts` semantics — later changes fail with `ErrPinMismatch`.
+
+**Caveat.** `/v1/server-info` is self-signed: the server signs the pubkey announcement with the key it presents. The signature proves the server has the corresponding private key, not that the pubkey is the "real" one. A MITM at first contact pins the attacker's key. For self-host (this stack), the bootstrap window is under your control. For an **independent** witness watching a server you don't control, set `FD0_WITNESS_SERVER_PUB` to the pubkey obtained out-of-band (operator's website, signed announcement, etc).
+
+Published cosigns are the audit artefact — anyone cross-checking witness output against the server's real pubkey catches a TOFU mispin.
+
+Inspect the pinned key after first run:
 
 ```sh
-docker compose exec fd0-witness sh -c 'sqlite3 /data/witness.db \
-  "SELECT hex(server_pub) FROM pinned_servers"'
+docker compose exec fd0-witness sh -c \
+  'sqlite3 /data/witness.db "SELECT hex(server_pub) FROM pinned_servers"'
 ```
-
-To pin a fixed chain allow-list instead of auto-discovery, set `auto_discover = false` and populate `chains = [...]`.
 
 ## Metrics
 

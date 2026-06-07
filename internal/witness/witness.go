@@ -95,36 +95,33 @@ func New(store *Store, cfg Config, log *slog.Logger) *Witness {
 // If the operator changes a config pubkey for an already-pinned URL,
 // the store rejects with ErrPinMismatch — see Store.PinServer.
 func (w *Witness) EnsurePins(ctx context.Context) error {
-	for i := range w.Config.Targets {
-		t := &w.Config.Targets[i]
-		if len(t.ServerPub) == 0 {
-			// TOFU mode. If a prior run already pinned, reuse the DB
-			// row as canonical and don't even talk to the server. If
-			// not, fetch /v1/server-info, verify the self-signature,
-			// and persist.
-			pub, err := w.Store.PinnedPub(ctx, t.ServerURL)
-			if err == nil {
-				w.Log.Info("witness: using existing TOFU pin from store",
-					"server", t.ServerURL,
-					"pub", fmt.Sprintf("%x", pub[:8]))
-				t.ServerPub = pub
-				continue
-			}
+	c := &w.Config
+	if len(c.ServerPub) == 0 {
+		// TOFU mode. If a prior run already pinned, reuse the DB row
+		// as canonical and don't even talk to the server. If not,
+		// fetch /v1/server-info, verify the self-signature, persist.
+		pub, err := w.Store.PinnedPub(ctx, c.ServerURL)
+		if err == nil {
+			w.Log.Info("witness: using existing TOFU pin from store",
+				"server", c.ServerURL,
+				"pub", fmt.Sprintf("%x", pub[:8]))
+			c.ServerPub = pub
+		} else {
 			if !errors.Is(err, ErrNotPinned) {
-				return fmt.Errorf("pin lookup %s: %w", t.ServerURL, err)
+				return fmt.Errorf("pin lookup %s: %w", c.ServerURL, err)
 			}
-			pub, ferr := w.fetchAndVerifyServerPub(ctx, t.ServerURL)
+			pub, ferr := w.fetchAndVerifyServerPub(ctx, c.ServerURL)
 			if ferr != nil {
-				return fmt.Errorf("pin_on_first_use %s: %w", t.ServerURL, ferr)
+				return fmt.Errorf("pin_on_first_use %s: %w", c.ServerURL, ferr)
 			}
-			t.ServerPub = pub
+			c.ServerPub = pub
 			w.Log.Warn("witness: pinning server pubkey on first contact (TOFU) — verify out-of-band",
-				"server", t.ServerURL,
+				"server", c.ServerURL,
 				"pub_hex", fmt.Sprintf("%x", pub))
 		}
-		if err := w.Store.PinServer(ctx, t.ServerURL, ed25519.PublicKey(t.ServerPub)); err != nil {
-			return fmt.Errorf("pin %s: %w", t.ServerURL, err)
-		}
+	}
+	if err := w.Store.PinServer(ctx, c.ServerURL, ed25519.PublicKey(c.ServerPub)); err != nil {
+		return fmt.Errorf("pin %s: %w", c.ServerURL, err)
 	}
 	return nil
 }
@@ -168,27 +165,26 @@ func (w *Witness) fetchAndVerifyServerPub(ctx context.Context, serverURL string)
 // shouldn't take down the whole loop. Returns nil unless the loop
 // itself can't proceed (e.g., DB shutting down).
 func (w *Witness) PollOnce(ctx context.Context) error {
-	for _, t := range w.Config.Targets {
-		for _, chainID := range w.effectiveChains(ctx, t) {
-			w.pollOne(ctx, t, chainID)
-		}
+	for _, chainID := range w.effectiveChains(ctx) {
+		w.pollOne(ctx, chainID)
 	}
 	return nil
 }
 
-// effectiveChains returns the union of t.Chains (static) and the
-// server-discovered chain list when t.AutoDiscover is true. Dedupe is
-// O(n) via a set. Discovery failures degrade gracefully — the witness
-// keeps polling whatever's in t.Chains so a flaky /v1/chains can't
-// silently drop coverage.
-func (w *Witness) effectiveChains(ctx context.Context, t Target) []string {
+// effectiveChains returns the union of Config.Chains (static) and the
+// server-discovered chain list when Config.AutoDiscover is true.
+// Dedupe is O(n) via a set. Discovery failures degrade gracefully —
+// the witness keeps polling whatever's in Config.Chains so a flaky
+// /v1/chains can't silently drop coverage.
+func (w *Witness) effectiveChains(ctx context.Context) []string {
+	t := w.Config
 	if !t.AutoDiscover {
 		return t.Chains
 	}
-	discovered, err := w.fetchChains(ctx, t.ServerURL)
+	discovered, err := w.fetchChains(ctx, w.Config.ServerURL)
 	if err != nil {
 		w.Log.Warn("witness: chain discovery failed — falling back to static config",
-			"server", t.ServerURL, "err", err)
+			"server", w.Config.ServerURL, "err", err)
 		return t.Chains
 	}
 	seen := make(map[string]struct{}, len(t.Chains)+len(discovered))
@@ -221,52 +217,31 @@ func (w *Witness) Run(ctx context.Context) error {
 	if err := w.EnsurePins(ctx); err != nil {
 		return err
 	}
-	w.Log.Info("witness running", "targets", len(w.Config.Targets))
+	w.Log.Info("witness running", "server", w.Config.ServerURL, "poll_interval", w.Config.PollInterval)
 	// First pass.
 	_ = w.PollOnce(ctx)
-	// Use the smallest configured interval as the global tick. Each
-	// target keeps its own "next poll" time so longer-interval ones
-	// just skip ticks. Simple, no goroutine-per-target zoo.
-	tick := w.smallestInterval()
+	tick := w.Config.PollInterval
 	if tick < time.Second {
 		tick = time.Second
 	}
 	timer := time.NewTicker(tick)
 	defer timer.Stop()
-	// Key by target index (not URL) so two targets sharing the same
-	// URL but with different chains/intervals are tracked
-	// independently — codex C5 review #4.
-	nextPoll := make(map[int]time.Time, len(w.Config.Targets))
-	for i, t := range w.Config.Targets {
-		nextPoll[i] = w.Now().Add(t.PollInterval)
-	}
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-timer.C:
-			now := w.Now()
-			for i, t := range w.Config.Targets {
-				if nextPoll[i].After(now) {
-					continue
-				}
-				for _, chainID := range w.effectiveChains(ctx, t) {
-					w.pollOne(ctx, t, chainID)
-				}
-				nextPoll[i] = now.Add(t.PollInterval)
+			for _, chainID := range w.effectiveChains(ctx) {
+				w.pollOne(ctx, chainID)
 			}
 		}
 	}
 }
 
+// smallestInterval is no longer needed (single target). Kept as a
+// stub returning Config.PollInterval for any in-tree caller.
 func (w *Witness) smallestInterval() time.Duration {
-	min := time.Hour
-	for _, t := range w.Config.Targets {
-		if t.PollInterval > 0 && t.PollInterval < min {
-			min = t.PollInterval
-		}
-	}
-	return min
+	return w.Config.PollInterval
 }
 
 // pollOne handles a single (target, chain_id):
@@ -294,29 +269,29 @@ func (w *Witness) smallestInterval() time.Duration {
 // All log emissions go through w.Log so an operator running
 // `fd0-witness run | tee /var/log/fd0-witness.log` gets a clean
 // audit trail.
-func (w *Witness) pollOne(ctx context.Context, t Target, chainID string) {
+func (w *Witness) pollOne(ctx context.Context, chainID string) {
 	// Observer hooks. result is set on every early-return branch; the
 	// deferred OnPoll fires once per call regardless of how pollOne
 	// exits. Collectors get RED-style observability over the loop.
 	result := "ok"
-	defer func() { w.Observer.OnPoll(t.ServerURL, chainID, result) }()
+	defer func() { w.Observer.OnPoll(w.Config.ServerURL, chainID, result) }()
 
-	pub, err := w.Store.PinnedPub(ctx, t.ServerURL)
+	pub, err := w.Store.PinnedPub(ctx, w.Config.ServerURL)
 	if err != nil {
 		result = "missing_pin"
-		w.Log.Warn("witness: missing pin", "server", t.ServerURL, "err", err)
+		w.Log.Warn("witness: missing pin", "server", w.Config.ServerURL, "err", err)
 		return
 	}
-	sth, err := w.fetchSTH(ctx, t.ServerURL, chainID)
+	sth, err := w.fetchSTH(ctx, w.Config.ServerURL, chainID)
 	if err != nil {
 		result = "fetch_failed"
-		w.Log.Warn("witness: fetch sth failed", "server", t.ServerURL, "chain", chainID, "err", err)
+		w.Log.Warn("witness: fetch sth failed", "server", w.Config.ServerURL, "chain", chainID, "err", err)
 		return
 	}
 	if err := translog.VerifySTH(pub, sth); err != nil {
 		result = "bad_signature"
 		w.Log.Error("witness: BAD STH SIGNATURE — possible MITM or wrong pin",
-			"server", t.ServerURL, "chain", chainID, "err", err)
+			"server", w.Config.ServerURL, "chain", chainID, "err", err)
 		return
 	}
 	// Chain-ID binding: STH MUST embed the chain we asked about.
@@ -326,18 +301,18 @@ func (w *Witness) pollOne(ctx context.Context, t Target, chainID string) {
 	if sth.Head.ChainID != chainID {
 		result = "chain_mismatch"
 		w.Log.Error("witness: STH chain_id mismatch — server returned a different chain",
-			"server", t.ServerURL, "requested_chain", chainID, "sth_chain", sth.Head.ChainID)
+			"server", w.Config.ServerURL, "requested_chain", chainID, "sth_chain", sth.Head.ChainID)
 		return
 	}
 	// Compute the cosign once — the STH has already passed sig +
 	// chain_id binding checks, so attesting "I saw this STH from
 	// this server" is honest regardless of any prior-STH comparison
 	// outcomes below.
-	cosign, cerr := w.signCosign(t.ServerURL, sth)
+	cosign, cerr := w.signCosign(w.Config.ServerURL, sth)
 	if cerr != nil {
 		// Cosign is purely additive — log and proceed without it
 		// rather than dropping the archive entry.
-		w.Log.Warn("witness: cosign skipped", "server", t.ServerURL, "chain", chainID, "err", cerr)
+		w.Log.Warn("witness: cosign skipped", "server", w.Config.ServerURL, "chain", chainID, "err", cerr)
 		cosign = nil
 	}
 
@@ -351,28 +326,28 @@ func (w *Witness) pollOne(ctx context.Context, t Target, chainID string) {
 	// LatestSTH semantics.
 	var prior translog.STH
 	if w.CosignPriv != nil {
-		prior, err = w.Store.LatestVerifiedSTH(ctx, t.ServerURL, chainID)
+		prior, err = w.Store.LatestVerifiedSTH(ctx, w.Config.ServerURL, chainID)
 	} else {
-		prior, err = w.Store.LatestSTH(ctx, t.ServerURL, chainID)
+		prior, err = w.Store.LatestSTH(ctx, w.Config.ServerURL, chainID)
 	}
 	switch {
 	case errors.Is(err, ErrNoSTH):
 		// First contact for this (server, chain). Archive directly.
-		res, ierr := w.Store.Insert(ctx, t.ServerURL, sth, w.Now().Unix(), cosign)
+		res, ierr := w.Store.Insert(ctx, w.Config.ServerURL, sth, w.Now().Unix(), cosign)
 		if ierr != nil {
 			result = "archive_failed"
 			w.Log.Error("witness: archive failed", "err", ierr)
 			return
 		}
 		w.Log.Info("witness: first STH archived",
-			"server", t.ServerURL, "chain", chainID,
+			"server", w.Config.ServerURL, "chain", chainID,
 			"tree_size", sth.Head.TreeSize, "stored", res.Stored, "cosigned", cosign != nil)
-		w.Observer.OnTreeSize(t.ServerURL, chainID, sth.Head.TreeSize)
+		w.Observer.OnTreeSize(w.Config.ServerURL, chainID, sth.Head.TreeSize)
 		if cosign != nil {
-			w.Observer.OnCosign(t.ServerURL, chainID)
+			w.Observer.OnCosign(w.Config.ServerURL, chainID)
 		}
 		if res.EquivocationDetected {
-			w.Observer.OnEquivocation(t.ServerURL, chainID)
+			w.Observer.OnEquivocation(w.Config.ServerURL, chainID)
 		}
 		return
 	case err != nil:
@@ -381,7 +356,7 @@ func (w *Witness) pollOne(ctx context.Context, t Target, chainID string) {
 		return
 	}
 	// Compare against prior.
-	w.compareAndArchive(ctx, t, chainID, pub, prior, sth, cosign)
+	w.compareAndArchive(ctx, chainID, pub, prior, sth, cosign)
 }
 
 // signCosign produces a witness cosign over (sth, serverURL) using
@@ -400,7 +375,7 @@ func (w *Witness) signCosign(serverURL string, sth translog.STH) ([]byte, error)
 
 // compareAndArchive contains the prior-vs-new STH decision tree.
 // Pulled out so tests can drive it directly without HTTP. `cosign`
-// is the witness's signature over (sth, t.ServerURL); may be nil
+// is the witness's signature over (sth, w.Config.ServerURL); may be nil
 // if no cosign key is configured or signing failed.
 //
 // SECURITY: a cosign attests "I observed this STH AND its growth
@@ -409,22 +384,22 @@ func (w *Witness) signCosign(serverURL string, sth translog.STH) ([]byte, error)
 // evidence WITHOUT a cosign — otherwise the witness becomes a
 // signing oracle for inconsistent forks and a malicious server
 // can launder fork evidence into client-acceptable confirmation.
-func (w *Witness) compareAndArchive(ctx context.Context, t Target, chainID string, pub ed25519.PublicKey, prior, sth translog.STH, cosign []byte) {
+func (w *Witness) compareAndArchive(ctx context.Context, chainID string, pub ed25519.PublicKey, prior, sth translog.STH, cosign []byte) {
 	switch {
 	case sth.Head.TreeSize < prior.Head.TreeSize:
 		// Regression: server is publishing a smaller tree than we
 		// previously witnessed. Hard equivocation signal — DO NOT
 		// cosign (codex fix #1).
 		w.Log.Error("witness: TREE_SIZE REGRESSION (cosign withheld)",
-			"server", t.ServerURL, "chain", chainID,
+			"server", w.Config.ServerURL, "chain", chainID,
 			"prior_size", prior.Head.TreeSize, "new_size", sth.Head.TreeSize)
 		// SECURITY (codex audit 🔴 witness.go:255): evidence
 		// writes MUST surface their errors. Swallowing them lets
 		// disk-full / DB-lock / context-cancel drop equivocation
 		// evidence while logs imply it was archived.
-		if _, ierr := w.Store.Insert(ctx, t.ServerURL, sth, w.Now().Unix(), nil); ierr != nil {
+		if _, ierr := w.Store.Insert(ctx, w.Config.ServerURL, sth, w.Now().Unix(), nil); ierr != nil {
 			w.Log.Error("witness: FAILED to archive regression evidence",
-				"server", t.ServerURL, "chain", chainID, "err", ierr)
+				"server", w.Config.ServerURL, "chain", chainID, "err", ierr)
 		}
 
 	case sth.Head.TreeSize == prior.Head.TreeSize:
@@ -435,18 +410,18 @@ func (w *Witness) compareAndArchive(ctx context.Context, t Target, chainID strin
 		// branch is itself the proof artifact (publishing two
 		// validly-cosigned WitnessedSTHs at the same size with
 		// different roots is the smoking gun).
-		res, err := w.Store.Insert(ctx, t.ServerURL, sth, w.Now().Unix(), cosign)
+		res, err := w.Store.Insert(ctx, w.Config.ServerURL, sth, w.Now().Unix(), cosign)
 		if err != nil {
 			w.Log.Error("witness: archive failed", "err", err)
 			return
 		}
-		w.Observer.OnTreeSize(t.ServerURL, chainID, sth.Head.TreeSize)
+		w.Observer.OnTreeSize(w.Config.ServerURL, chainID, sth.Head.TreeSize)
 		if cosign != nil {
-			w.Observer.OnCosign(t.ServerURL, chainID)
+			w.Observer.OnCosign(w.Config.ServerURL, chainID)
 		}
 		if res.EquivocationDetected {
-			w.Observer.OnEquivocation(t.ServerURL, chainID)
-			w.emitEquivocationEvidence(ctx, t.ServerURL, chainID, sth.Head.TreeSize)
+			w.Observer.OnEquivocation(w.Config.ServerURL, chainID)
+			w.emitEquivocationEvidence(ctx, w.Config.ServerURL, chainID, sth.Head.TreeSize)
 		}
 
 	default: // sth.Head.TreeSize > prior.Head.TreeSize
@@ -457,55 +432,55 @@ func (w *Witness) compareAndArchive(ctx context.Context, t Target, chainID strin
 		// for that size and downstream clients can't be tricked
 		// into counting an inconsistent growth as confirmation.
 		now := w.Now().Unix()
-		proof, err := w.fetchConsistencyProof(ctx, t.ServerURL, chainID, prior.Head.TreeSize, sth.Head.TreeSize)
+		proof, err := w.fetchConsistencyProof(ctx, w.Config.ServerURL, chainID, prior.Head.TreeSize, sth.Head.TreeSize)
 		if err != nil {
 			w.Log.Error("witness: fetch consistency proof failed — archiving STH as unverified-growth evidence (cosign withheld)",
-				"server", t.ServerURL, "chain", chainID,
+				"server", w.Config.ServerURL, "chain", chainID,
 				"from", prior.Head.TreeSize, "to", sth.Head.TreeSize, "err", err)
-			if _, ierr := w.Store.Insert(ctx, t.ServerURL, sth, now, nil); ierr != nil {
+			if _, ierr := w.Store.Insert(ctx, w.Config.ServerURL, sth, now, nil); ierr != nil {
 				w.Log.Error("witness: FAILED to archive unverified-growth evidence",
-					"server", t.ServerURL, "chain", chainID, "err", ierr)
+					"server", w.Config.ServerURL, "chain", chainID, "err", ierr)
 			}
-			if rerr := w.Store.RecordConsistencyFailure(ctx, t.ServerURL, chainID,
+			if rerr := w.Store.RecordConsistencyFailure(ctx, w.Config.ServerURL, chainID,
 				prior.Head.TreeSize, prior.Head.RootHash,
 				sth.Head.TreeSize, sth.Head.RootHash,
 				"fetch_failed", now); rerr != nil {
 				w.Log.Error("witness: FAILED to record consistency-fetch failure",
-					"server", t.ServerURL, "chain", chainID, "err", rerr)
+					"server", w.Config.ServerURL, "chain", chainID, "err", rerr)
 			}
-			w.Observer.OnConsistencyFailure(t.ServerURL, chainID)
+			w.Observer.OnConsistencyFailure(w.Config.ServerURL, chainID)
 			return
 		}
 		if err := translog.VerifyConsistency(prior.Head.TreeSize, sth.Head.TreeSize, proof.Nodes, prior.Head.RootHash, sth.Head.RootHash); err != nil {
 			w.Log.Error("witness: CONSISTENCY PROOF FAILED — possible server rewrite or different-size fork (cosign withheld)",
-				"server", t.ServerURL, "chain", chainID,
+				"server", w.Config.ServerURL, "chain", chainID,
 				"from_size", prior.Head.TreeSize, "to_size", sth.Head.TreeSize, "err", err)
-			if _, ierr := w.Store.Insert(ctx, t.ServerURL, sth, now, nil); ierr != nil {
+			if _, ierr := w.Store.Insert(ctx, w.Config.ServerURL, sth, now, nil); ierr != nil {
 				w.Log.Error("witness: FAILED to archive consistency-fail evidence",
-					"server", t.ServerURL, "chain", chainID, "err", ierr)
+					"server", w.Config.ServerURL, "chain", chainID, "err", ierr)
 			}
-			if rerr := w.Store.RecordConsistencyFailure(ctx, t.ServerURL, chainID,
+			if rerr := w.Store.RecordConsistencyFailure(ctx, w.Config.ServerURL, chainID,
 				prior.Head.TreeSize, prior.Head.RootHash,
 				sth.Head.TreeSize, sth.Head.RootHash,
 				"verify_failed", now); rerr != nil {
 				w.Log.Error("witness: FAILED to record consistency-verify failure",
-					"server", t.ServerURL, "chain", chainID, "err", rerr)
+					"server", w.Config.ServerURL, "chain", chainID, "err", rerr)
 			}
-			w.Observer.OnConsistencyFailure(t.ServerURL, chainID)
+			w.Observer.OnConsistencyFailure(w.Config.ServerURL, chainID)
 			return
 		}
-		res, err := w.Store.Insert(ctx, t.ServerURL, sth, now, cosign)
+		res, err := w.Store.Insert(ctx, w.Config.ServerURL, sth, now, cosign)
 		if err != nil {
 			w.Log.Error("witness: archive failed", "err", err)
 			return
 		}
 		if res.Stored {
 			w.Log.Info("witness: STH advanced + verified",
-				"server", t.ServerURL, "chain", chainID,
+				"server", w.Config.ServerURL, "chain", chainID,
 				"prior_size", prior.Head.TreeSize, "new_size", sth.Head.TreeSize, "cosigned", cosign != nil)
-			w.Observer.OnTreeSize(t.ServerURL, chainID, sth.Head.TreeSize)
+			w.Observer.OnTreeSize(w.Config.ServerURL, chainID, sth.Head.TreeSize)
 			if cosign != nil {
-				w.Observer.OnCosign(t.ServerURL, chainID)
+				w.Observer.OnCosign(w.Config.ServerURL, chainID)
 			}
 		}
 	}

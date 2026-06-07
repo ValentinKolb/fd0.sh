@@ -102,12 +102,22 @@ func (o *promObserver) OnTreeSize(server, chain string, size uint64) {
 }
 
 type cli struct {
-	Config  string `name:"config" short:"c" help:"Witness config TOML." default:"/etc/fd0-witness.toml" env:"FD0_WITNESS_CONFIG"`
-	DB      string `name:"db" help:"Witness archive SQLite path." default:"/var/lib/fd0-witness/witness.db" env:"FD0_WITNESS_DB"`
-	Key     string `name:"key" help:"Witness cosign key path (ed25519 64-byte seed||pub). Empty = legacy passive-archiver mode (no cosign, no HTTP)." default:"" env:"FD0_WITNESS_KEY"`
+	// Storage / runtime
+	DB           string `name:"db" help:"Witness archive SQLite path." default:"/var/lib/fd0-witness/witness.db" env:"FD0_WITNESS_DB"`
+	Key          string `name:"key" help:"Witness cosign key path (ed25519 64-byte seed||pub). Empty = legacy passive-archiver mode (no cosign, no HTTP)." default:"" env:"FD0_WITNESS_KEY"`
 	Bind         string `name:"bind" help:"HTTP server bind address for client cross-check (empty = no HTTP server). Requires --key." default:"" env:"FD0_WITNESS_BIND"`
 	MetricsToken string `name:"metrics-token" help:"Bearer token guarding /metrics." default:"" env:"FD0_WITNESS_METRICS_TOKEN"`
 	Verbose      bool   `name:"verbose" short:"v" help:"Verbose logging."`
+
+	// Target — env-only single-target config. Multi-target = run
+	// multiple containers; each gets process / storage / metrics
+	// isolation and a smaller failure domain than one mega-witness.
+	ServerURL     string        `name:"server-url" help:"fd0-server to watch (https://api.fd0.sh)." env:"FD0_WITNESS_SERVER_URL"`
+	ServerPub     string        `name:"server-pub" help:"Server cosign pubkey (hex, 32 bytes). Empty + --pin-on-first-use = TOFU bootstrap." default:"" env:"FD0_WITNESS_SERVER_PUB"`
+	PollInterval  time.Duration `name:"poll-interval" help:"Time between poll rounds." default:"30s" env:"FD0_WITNESS_POLL_INTERVAL"`
+	AutoDiscover  bool          `name:"auto-discover" help:"Fetch chain list from GET /v1/chains every round." env:"FD0_WITNESS_AUTO_DISCOVER"`
+	PinOnFirstUse bool          `name:"pin-on-first-use" help:"Pin the server pubkey from /v1/server-info on first poll (TOFU)." env:"FD0_WITNESS_PIN_ON_FIRST_USE"`
+	Chains        []string      `name:"chain" help:"Explicit chain ID to poll (repeat or comma-list via env). May combine with --auto-discover." env:"FD0_WITNESS_CHAINS"`
 
 	Run    runCmd    `cmd:"" default:"1" help:"Start the polling daemon (default)."`
 	Status statusCmd `cmd:"" help:"Print archive summary (per-chain max tree_size, equivocation flags)."`
@@ -135,9 +145,16 @@ func main() {
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 
-	cfg, err := witness.LoadConfig(c.Config)
-	if err != nil {
-		log.Error("load config", "path", c.Config, "err", err)
+	cfg := witness.Config{
+		ServerURL:     c.ServerURL,
+		ServerPubHex:  c.ServerPub,
+		PollInterval:  c.PollInterval,
+		AutoDiscover:  c.AutoDiscover,
+		PinOnFirstUse: c.PinOnFirstUse,
+		Chains:        c.Chains,
+	}
+	if err := cfg.Validate(); err != nil {
+		log.Error("invalid witness config", "err", err)
 		os.Exit(2)
 	}
 	if err := os.MkdirAll(filepath.Dir(c.DB), 0o700); err != nil {
