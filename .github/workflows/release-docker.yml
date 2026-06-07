@@ -1,23 +1,30 @@
-# Docker-image release. Triggers on every git tag matching `v*` and
-# publishes three images to ghcr.io: fd0-website, fd0-server, fd0-witness.
+# Docker-image release. Triggers on scoped per-component tags and on
+# the coordinated `fd0-v*` tag that ships every component at once.
 #
-# Tagging scheme:
+# Tag conventions:
 #
-#   ghcr.io/<owner>/fd0-<service>:v1.2.3        amd64 (the version tag)
-#   ghcr.io/<owner>/fd0-<service>:latest        amd64 ("the" latest)
-#   ghcr.io/<owner>/fd0-<service>:v1.2.3-arm64  arm64 (opt-in suffix)
+#   server-v0.0.5    → builds fd0-server only
+#   witness-v0.0.5   → builds fd0-witness only
+#   website-v0.0.6   → builds fd0-website only
+#   fd0-v0.1.0       → builds all three (coordinated wire-protocol bump)
+#
+# Image tags published — the component prefix is stripped so consumer
+# compose files keep pulling `:0.0.5` and `:latest` exactly like before:
+#
+#   ghcr.io/<owner>/fd0-<service>:0.0.5         amd64
+#   ghcr.io/<owner>/fd0-<service>:latest        amd64
+#   ghcr.io/<owner>/fd0-<service>:0.0.5-arm64   arm64
 #   ghcr.io/<owner>/fd0-<service>:latest-arm64  arm64
-#
-# amd64 owns the bare version + :latest tags so a typical x86_64
-# `docker pull <image>:latest` just works. arm64 lives behind a
-# suffixed tag for Pi / Apple-Silicon admins who opt in explicitly.
 
 name: release-docker
 
 on:
   push:
     tags:
-      - "v*"
+      - "server-v*"
+      - "witness-v*"
+      - "website-v*"
+      - "fd0-v*"
 
 permissions:
   contents: read
@@ -26,6 +33,14 @@ permissions:
 jobs:
   build:
     name: ${{ matrix.service }} (${{ matrix.platform }})
+    # Skip the matrix entries that do not match this tag. A `fd0-v*`
+    # coordinated tag passes the filter for every service; per-component
+    # tags pass only for their own service.
+    if: |
+      startsWith(github.ref, 'refs/tags/fd0-v') ||
+      (matrix.service == 'fd0-server'  && startsWith(github.ref, 'refs/tags/server-v')) ||
+      (matrix.service == 'fd0-witness' && startsWith(github.ref, 'refs/tags/witness-v')) ||
+      (matrix.service == 'fd0-website' && startsWith(github.ref, 'refs/tags/website-v'))
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -49,10 +64,12 @@ jobs:
       - name: Resolve tags
         id: meta
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          # Strip the "<component>-v" prefix (also handles a bare "v"
+          # in case someone hand-pushes an old-style tag).
+          version="${GITHUB_REF_NAME##*-v}"
+          version="${version#v}"
           owner_lc=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
           echo "version=${version}" >> "$GITHUB_OUTPUT"
-          # amd64 gets the bare version + :latest. arm64 gets suffixed tags.
           if [ "${{ matrix.platform }}" = "amd64" ]; then
             echo "tags=ghcr.io/${owner_lc}/${{ matrix.service }}:${version},ghcr.io/${owner_lc}/${{ matrix.service }}:latest" >> "$GITHUB_OUTPUT"
           else

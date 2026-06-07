@@ -1,12 +1,25 @@
+# Client binary release. Triggers on scoped `client-v*` tags and on
+# the coordinated `fd0-v*` tag. Goreleaser produces:
+#   - per-platform tar.gz of fd0 + fd0-agent + fd0-server + fd0-witness
+#   - checksums.txt with sha256 per archive
+#   - checksums.txt.{sig,pem} for cosign verification (install.sh uses these)
+#   - a GitHub Release at the actual tag (e.g. client-v0.0.5)
+#
+# .goreleaser.yaml strips the component prefix from the embedded
+# `main.version` string so `fd0 version` prints just `0.0.5`.
+
 name: release
 
 on:
   push:
-    tags: ['v*']
+    tags:
+      - "client-v*"
+      - "fd0-v*"
 
 permissions:
   contents: write
   packages: write
+  id-token: write    # cosign keyless OIDC signing
 
 jobs:
   goreleaser:

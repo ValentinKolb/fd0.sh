@@ -128,8 +128,10 @@ if [ "$VERSION" = "latest" ]; then
               | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)
     [ -n "$VERSION" ] || die "could not resolve latest version from ${API_BASE}"
 fi
-# Strip leading v for comparisons; keep VERSION as the tag (with v) for URLs.
-VERSION_NUM="${VERSION#v}"
+# Strip the optional scoped-tag prefix (e.g. `client-v` or `fd0-v`) and
+# the leading `v` so VERSION_NUM is a plain semver like `0.0.5`. VERSION
+# (with prefix) stays as-is and is used verbatim in release-download URLs.
+VERSION_NUM=$(printf '%s' "$VERSION" | sed -E 's/^([a-z]+-)?v//')
 
 # ─── detect existing install at the target prefix ────────────────────────
 CURRENT=""

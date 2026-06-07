@@ -1,7 +1,47 @@
 # Changelog
 
-All notable changes to fd0. Format: terse one-liners grouped by
-release. Wire-format breaks are called out explicitly.
+Each component has its own version namespace from `client-v0.0.5`
+onwards:
+
+- `client-vX.Y.Z` — `fd0`, `fd0-agent` binaries (goreleaser tarball)
+- `server-vX.Y.Z` — `fd0-server` Docker image
+- `witness-vX.Y.Z` — `fd0-witness` Docker image
+- `website-vX.Y.Z` — `fd0-website` Docker image
+
+Coordinated wire-protocol bumps use `fd0-vX.Y.Z` which tags all four
+components at the same commit. Image tags published to ghcr.io drop the
+component prefix, so compose files keep pulling `:0.0.5` and `:latest`
+as before.
+
+Tags before `client-v0.0.5` used the unified `vX.Y.Z` scheme (one
+release shipped all artefacts together) and are retained as-is.
+
+## website-v0.0.6 — 2026-06-08
+
+- Architecture diagram: add replica box, headings left-aligned with
+  their box, caption centered
+- Self-host landing column rewritten around Docker compose
+- `/install` redirect added (short curl URL)
+
+## server-v0.0.5, client-v0.0.5 — 2026-06-08
+
+(Originally shipped as `v0.0.5`. Promoted into the scoped scheme.)
+
+- Per-server `PushFloor` and `LastSTH` in `ScopeVaultData.PerServer`.
+  Fixes the v0.0.4 bug where the second entry in `[sync].servers`
+  silently received zero events.
+
+## fd0-v0.0.4 — 2026-06-07
+
+(Originally shipped as `v0.0.4`. Coordinated wire-protocol bump.)
+
+- `FD0_LABEL` and `FD0_PEERS` on `fd0-server`
+- TOFU-pinned peer resolver in SQLite, runs every hour
+- `/v1/server-info` embeds signed `label` + `peers` (omitempty)
+- Client `[sync].servers = [...]` multi-server array
+- Defaults: `https://api.fd0.sh` + `https://api2.fd0.sh`
+- Client multi-pushes every event to every configured server
+- `docs/TRANSLOG.md` §11 (peer hints trust model)
 
 ## v1.0.0 — Initial release
 
