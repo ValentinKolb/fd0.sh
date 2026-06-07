@@ -491,17 +491,24 @@ ghp_xxxxxxxxxxxxxxxxxxxx`}
           witness hold ciphertext and signatures — never keys.
         </p>
         <div class="overflow-x-auto -mx-6 px-6 flex justify-center">
-          <pre
-            class="shell p-6 text-[12px] leading-[1.55] w-fit"
-            style={`background:${C.bgRaised};border:1px solid ${C.border};color:${C.fg};font-family:${FONT_MONO};`}
-          >{`your device           server                  replica                  observer
+          <div class="w-fit">
+            <pre
+              class="shell p-6 pb-2 text-[12px] leading-[1.55]"
+              style={`background:${C.bgRaised};border:1px solid ${C.border};border-bottom:none;color:${C.fg};font-family:${FONT_MONO};`}
+            >{`your device           server                  replica                  observer
 ┌─────────────────┐   ┌────────────────────┐  ┌────────────────────┐   ┌────────────────────┐
 │ fd0  (CLI)      │   │ fd0-server         │  │ fd0-server         │   │ fd0-witness        │
 │ fd0-agent       │ ─▶│ ciphertext +       │◀▶│ ciphertext +       │ ─▶│ cosigns honest STH │
 │   super_priv    │   │ signed events      │  │ signed events      │ ✓ │ archives forks     │
 │   vault.enc     │   │                    │  │                    │   │ independent host   │
-└─────────────────┘   └────────────────────┘  └────────────────────┘   └────────────────────┘
-                       client multi-pushes every event to both replicas · peers cross-pin`}</pre>
+└─────────────────┘   └────────────────────┘  └────────────────────┘   └────────────────────┘`}</pre>
+            <div
+              class="text-[12px] text-center px-6 pb-6 pt-1"
+              style={`background:${C.bgRaised};border:1px solid ${C.border};border-top:none;color:${C.dim};font-family:${FONT_MONO};`}
+            >
+              client multi-pushes every event to both replicas · peers cross-pin
+            </div>
+          </div>
         </div>
       </div>
     </section>
