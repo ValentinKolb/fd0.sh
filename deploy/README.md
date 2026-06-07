@@ -120,4 +120,4 @@ To pin a specific tag, edit the `image:` lines in `compose.yml` (e.g. `ghcr.io/v
 
 **Rate limiting.** The server's per-identity + per-IP rate limit is on by default. Tune via `FD0_RATELIMIT_WRITES_PER_MIN`, `FD0_RATELIMIT_BYTES_PER_MIN`, `FD0_RATELIMIT_REGISTER_PER_HOUR`. `fd0-server --help` has the full list — add them to the `fd0-server.environment` block in `compose.yml`.
 
-**Health.** Every service exposes `GET /health` returning `{"status":"ok",…}`. The compose file uses these for HEALTHCHECK probes; `docker compose ps` shows `unhealthy` if a probe fails three times in a row.
+**Health.** Every service exposes `GET /health` returning `{"status":"ok",…}` for external probes (Traefik, your monitoring). The compose file doesn't run container-level healthchecks — the scratch-based binaries don't ship a shell or `wget`, and the witness's poll loop already handles "server not ready" gracefully (logs `fetch failed`, retries on the next interval).

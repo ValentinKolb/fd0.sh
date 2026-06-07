@@ -55,12 +55,6 @@ services:
       # FD0_RATELIMIT_REGISTER_PER_HOUR: "5"      # POST /v1/users per IP/hour
     volumes:
       - fd0-server-data:/data
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4048/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
     labels:
       - traefik.enable=true
       - traefik.http.routers.fd0-server.rule=Host(`api.${DOMAIN:-fd0.sh}`)
@@ -75,7 +69,7 @@ services:
     restart: unless-stopped
     depends_on:
       fd0-server:
-        condition: service_healthy
+        condition: service_started
     environment:
       FD0_WITNESS_METRICS_TOKEN: ${METRICS_TOKEN:-CHANGE_ME_openssl_rand_hex_32}
       # The server this witness watches. One witness watches one server
@@ -94,12 +88,6 @@ services:
       # FD0_WITNESS_VERBOSE: "false"
     volumes:
       - fd0-witness-data:/data
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4049/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
     labels:
       - traefik.enable=true
       - traefik.http.routers.fd0-witness.rule=Host(`witness.${DOMAIN:-fd0.sh}`)
@@ -125,12 +113,6 @@ services:
       # PORT: "5173"                              # listen port; matches Dockerfile EXPOSE
       # NODE_ENV: "production"                    # set by the image already
       # FD0_WEBSITE_VERSION: "v1.0.0"             # shown on /version; baked at build time
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5173/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
     labels:
       - traefik.enable=true
       - traefik.http.routers.fd0-website.rule=Host(`${DOMAIN:-fd0.sh}`)
