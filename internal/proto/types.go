@@ -302,19 +302,83 @@ type PinnedServer struct {
 // Once the server returns Denied for a Leaving scope, the normal drop
 // path runs.
 type ScopeVaultData struct {
-	Label     string     `cbor:"label,omitempty"`
-	OEKs      []OEKEntry `cbor:"oeks"`
-	ChainTip  ChainTip   `cbor:"chain_tip"`
-	PushFloor uint64     `cbor:"push_floor,omitempty"`
-	Leaving   bool       `cbor:"leaving,omitempty"`
+	Label    string     `cbor:"label,omitempty"`
+	OEKs     []OEKEntry `cbor:"oeks"`
+	ChainTip ChainTip   `cbor:"chain_tip"`
+	Leaving  bool       `cbor:"leaving,omitempty"`
 
-	// LastSTH is the most recently verified STH for this scope's
-	// translog, stored as deterministic CBOR over translog.STH (raw
-	// bytes to avoid an import cycle proto ↔ translog). Persisted
-	// only AFTER the client verified the response's STH signature,
-	// inclusion proofs, and (when supplied) consistency proof from
-	// the prior LastSTH. omitempty for legacy decoding.
-	LastSTH []byte `cbor:"last_sth,omitempty"`
+	// Legacy single-server fields (≤ v0.0.4). New writes go to
+	// PerServer[<currentlySyncingServer>]; these survive as the
+	// initial-state fallback when PerServer is empty (first sync after
+	// upgrading from a vault that knew only one server). Once PerServer
+	// has any entry, lookups for an unknown server return defaults —
+	// the legacy field is no longer used as a fallback because doing
+	// so would feed a new replica stale server-A state.
+	PushFloor uint64 `cbor:"push_floor,omitempty"`
+	LastSTH   []byte `cbor:"last_sth,omitempty"`
+
+	// PerServer is the v0.0.5+ multi-server state. Key is the canonical
+	// server URL (canon.URL.String()); value carries the push floor and
+	// last verified STH for that server. Each entry advances
+	// independently — server A's STH can never poison a consistency
+	// proof against server B's tree.
+	PerServer map[string]ScopeServerState `cbor:"per_server,omitempty"`
+}
+
+// ScopeServerState is the per-(scope, server) cursor: how far we've
+// pushed to this server, and the last STH we verified from it.
+// Multi-server clients hold one entry per pinned server; single-server
+// clients still hold one entry (after first v0.0.5+ sync).
+type ScopeServerState struct {
+	PushFloor uint64 `cbor:"push_floor,omitempty"`
+	LastSTH   []byte `cbor:"last_sth,omitempty"`
+}
+
+// PushFloorFor returns the push floor for server. Precedence:
+// PerServer[server] → legacy singular PushFloor (only if PerServer is
+// empty, i.e. pre-v0.0.5 state) → 0 (fresh server in a multi-server
+// vault).
+func (sd ScopeVaultData) PushFloorFor(server string) uint64 {
+	if s, ok := sd.PerServer[server]; ok {
+		return s.PushFloor
+	}
+	if len(sd.PerServer) == 0 {
+		return sd.PushFloor
+	}
+	return 0
+}
+
+// LastSTHFor returns the last verified STH for server. Same precedence
+// as PushFloorFor.
+func (sd ScopeVaultData) LastSTHFor(server string) []byte {
+	if s, ok := sd.PerServer[server]; ok {
+		return s.LastSTH
+	}
+	if len(sd.PerServer) == 0 {
+		return sd.LastSTH
+	}
+	return nil
+}
+
+// SetPushFloorFor sets per-server push floor; lazily initialises
+// PerServer.
+func (sd *ScopeVaultData) SetPushFloorFor(server string, floor uint64) {
+	if sd.PerServer == nil {
+		sd.PerServer = map[string]ScopeServerState{}
+	}
+	s := sd.PerServer[server]
+	s.PushFloor = floor
+	sd.PerServer[server] = s
+}
+
+// SetLastSTHFor sets per-server LastSTH; lazily initialises PerServer.
+func (sd *ScopeVaultData) SetLastSTHFor(server string, sth []byte) {
+	if sd.PerServer == nil {
+		sd.PerServer = map[string]ScopeServerState{}
+	}
+	s := sd.PerServer[server]
+	s.LastSTH = sth
+	sd.PerServer[server] = s
 }
 
 // OEKEntry is one (version, key) pair.

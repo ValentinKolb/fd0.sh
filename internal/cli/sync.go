@@ -123,10 +123,15 @@ func RunSync(ctx context.Context, server string) error {
 		return fmt.Errorf("user registration: %w", err)
 	}
 
+	// Per-server state key for vault lookups. Each pinned server has
+	// its own PushFloor + LastSTH per scope; the canonical URL string
+	// is what addresses the entry.
+	serverKey := serverURL.String()
+
 	// Snapshot pre-sync LastSTH per scope. Both pull AND push
 	// consistency proofs in this round are relative to the request's
 	// last_sth_size, which we computed from the pre-sync state. After
-	// pull processing succeeds we update sd.LastSTH; without this
+	// pull processing succeeds we update LastSTH; without this
 	// snapshot the push verify would compare the server's "from K"
 	// proof against an "from N (post-pull)" anchor and falsely reject.
 	//
@@ -134,9 +139,14 @@ func RunSync(ctx context.Context, server string) error {
 	// they were placed there by a previous successful Verify call
 	// in an earlier sync round and the sealed vault rules out
 	// tampering, so the type-state holds by induction.
+	//
+	// v0.0.5: LastSTH is read per-server (sd.LastSTHFor(serverKey)) so
+	// server A's STH never anchors a consistency check against server
+	// B's tree. Legacy vaults (PerServer empty) fall through to the
+	// singular sd.LastSTH for backward compat on first sync.
 	preSyncLastSTH := map[string]*VerifiedSTH{}
 	for sid, sd := range s.Body.Scopes {
-		preSyncLastSTH[sid], _ = decodeVerifiedSTH(sd.LastSTH)
+		preSyncLastSTH[sid], _ = decodeVerifiedSTH(sd.LastSTHFor(serverKey))
 	}
 
 	// First round-trip: discovery + pull for known scopes + push.
@@ -145,13 +155,14 @@ func RunSync(ctx context.Context, server string) error {
 		pullScopes[sid] = pullCursor{
 			Seq:         sd.ChainTip.Seq,
 			Hash:        sd.ChainTip.Hash,
-			LastSTHSize: scopeLastSTHSize(sd),
+			LastSTHSize: scopeLastSTHSizeFor(sd, serverKey),
 		}
 	}
-	// Build push: only events whose seq is at or above the per-scope
-	// PushFloor (= "lowest seq we still need to push"). Foreign events
-	// (authored by another member, fetched via pull) are skipped because
-	// they're already on the server and would yield `bad_author`.
+	// Build push: only events whose seq is at or above the per-server
+	// PushFloor for this scope (= "lowest seq we still need to push to
+	// THIS server"). Foreign events (authored by another member,
+	// fetched via pull) are skipped because they're already on the
+	// server and would yield `bad_author`.
 	//
 	// Bandwidth invariant: PushFloor only advances after the server has
 	// accepted (or de-duped) the corresponding event AND the vault has
@@ -165,12 +176,13 @@ func RunSync(ctx context.Context, server string) error {
 		if err != nil {
 			return err
 		}
-		lastSize := scopeLastSTHSize(sd)
+		lastSize := scopeLastSTHSizeFor(sd, serverKey)
+		floor := sd.PushFloorFor(serverKey)
 		for _, ev := range evs {
 			if !bytes.Equal(ev.SignedPrefix.Author, s.UserSuperPub) {
 				continue
 			}
-			if ev.SignedPrefix.Seq < sd.PushFloor {
+			if ev.SignedPrefix.Seq < floor {
 				continue
 			}
 			scopeRef := sid
@@ -416,7 +428,7 @@ func RunSync(ctx context.Context, server string) error {
 			if err != nil {
 				return fmt.Errorf("encode LastSTH for scope %s: %w", sid, err)
 			}
-			sd.LastSTH = encoded
+			sd.SetLastSTHFor(serverKey, encoded)
 		}
 		s.Body.Scopes[sid] = sd
 		dirty = true
@@ -523,13 +535,13 @@ func RunSync(ctx context.Context, server string) error {
 		// highest STH (codex audit 🔴 sync.go:447). Only update
 		// when strictly greater.
 		if p.STH.Head.TreeSize >= maxSizePersisted[p.ScopeID] {
-			sd.LastSTH = encoded
+			sd.SetLastSTHFor(serverKey, encoded)
 			maxSizePersisted[p.ScopeID] = p.STH.Head.TreeSize
 		}
 		floorDirty = true
 		next := p.Seq + 1
-		if next > sd.PushFloor {
-			sd.PushFloor = next
+		if next > sd.PushFloorFor(serverKey) {
+			sd.SetPushFloorFor(serverKey, next)
 			floorDirty = true
 		}
 		s.Body.Scopes[p.ScopeID] = sd

@@ -96,8 +96,23 @@ func (s *Session) leafHashAtSeq(scopeID string, seq uint64) ([]byte, error) {
 // here — a corrupt LastSTH downgrades to "no anchor" rather than
 // failing the sync, since a verified next response will overwrite it
 // anyway. doctor surfaces decode failures as warnings.
+//
+// Legacy single-server callers (e.g. doctor) use this signature.
+// Multi-server callers should use scopeLastSTHSizeFor with the
+// canonical server URL.
 func scopeLastSTHSize(sd proto.ScopeVaultData) uint64 {
 	sth, _ := DecodeSTH(sd.LastSTH)
+	if sth == nil {
+		return 0
+	}
+	return sth.Head.TreeSize
+}
+
+// scopeLastSTHSizeFor returns the persisted LastSTH tree_size for one
+// (scope, server) pair. Per-server lookups (v0.0.5+) keep server A's
+// STH from anchoring a consistency check against server B's tree.
+func scopeLastSTHSizeFor(sd proto.ScopeVaultData, serverKey string) uint64 {
+	sth, _ := DecodeSTH(sd.LastSTHFor(serverKey))
 	if sth == nil {
 		return 0
 	}

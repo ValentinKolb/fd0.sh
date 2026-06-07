@@ -130,18 +130,20 @@ func (s *Session) discoverScope(ctx context.Context, wcc *WitnessCheckClient, se
 		_ = os.Remove(path)
 		return fmt.Errorf("encode initial LastSTH: %w", err)
 	}
-	s.Body.Scopes[scopeID] = proto.ScopeVaultData{
+	// v0.0.5: discovery sets PushFloor + LastSTH for the SPECIFIC
+	// server we discovered from. Other configured servers may not have
+	// this scope's data yet; their state stays at defaults so the next
+	// sync to those servers re-pushes the events (which the source
+	// server already has → no-op via id-based dedup; the target server
+	// has none → ingests them).
+	sd := proto.ScopeVaultData{
 		Label:    metaLabelFromIndex(st.SecretIndex),
 		OEKs:     []proto.OEKEntry{{Version: st.CurrentOEKVer, Key: append([]byte(nil), curOEK...)}},
 		ChainTip: proto.ChainTip{Seq: st.TipSeq, Hash: st.TipHash},
-		// We received the entire chain from the server; everything up to
-		// st.TipSeq is "already pushed" from our perspective. Without
-		// this, the next sync would walk the full chain trying to push
-		// foreign events (filtered out anyway by author check, but the
-		// I/O is wasted work).
-		PushFloor: st.TipSeq + 1,
-		LastSTH:   encodedSTH,
 	}
+	sd.SetPushFloorFor(server.String(), st.TipSeq+1)
+	sd.SetLastSTHFor(server.String(), encodedSTH)
+	s.Body.Scopes[scopeID] = sd
 	if err := s.ReSeal(); err != nil {
 		return err
 	}

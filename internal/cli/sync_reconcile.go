@@ -61,7 +61,7 @@ func (s *Session) reconcileAndRepush(ctx context.Context, wcc *WitnessCheckClien
 		if err := s.replaceLocalChain(scopeID, serverEvents); err != nil {
 			return err
 		}
-		if err := s.applyReplayedScope(scopeID); err != nil {
+		if err := s.applyReplayedScope(scopeID, server.String()); err != nil {
 			// Roll back chain file on replay failure.
 			if backup != nil {
 				_ = os.WriteFile(path, backup, 0o600)
@@ -77,7 +77,7 @@ func (s *Session) reconcileAndRepush(ctx context.Context, wcc *WitnessCheckClien
 			if eerr != nil {
 				return fmt.Errorf("encode reconcile LastSTH: %w", eerr)
 			}
-			sd.LastSTH = encoded
+			sd.SetLastSTHFor(server.String(), encoded)
 			s.Body.Scopes[scopeID] = sd
 			if rerr := s.ReSeal(); rerr != nil {
 				return fmt.Errorf("persist reconcile LastSTH: %w", rerr)
@@ -351,7 +351,7 @@ func (s *Session) replaceLocalChain(scopeID string, events []proto.ScopeEvent) e
 
 // applyReplayedScope replays the (possibly rewritten) chain and updates vault
 // (chain_tip, OEKs, label). Drops the scope on leave.
-func (s *Session) applyReplayedScope(scopeID string) error {
+func (s *Session) applyReplayedScope(scopeID, serverKey string) error {
 	path := s.Paths.ScopeChain(proto.MustParseScopeID(scopeID))
 	st, err := replayScopeViaAgent(path, s.UserSuperPub, s.UserX25519Pub, s.Agent)
 	if err != nil {
@@ -381,8 +381,8 @@ func (s *Session) applyReplayedScope(scopeID string) error {
 	// we'd push starts at st.TipSeq+1. Advance the floor so the immediately
 	// following rebuilt secret.sets aren't accompanied by a costly replay
 	// of the entire restored history on every subsequent sync.
-	if next := st.TipSeq + 1; next > sd.PushFloor {
-		sd.PushFloor = next
+	if next := st.TipSeq + 1; next > sd.PushFloorFor(serverKey) {
+		sd.SetPushFloorFor(serverKey, next)
 	}
 	s.Body.Scopes[scopeID] = sd
 	return s.ReSeal()
@@ -510,7 +510,7 @@ func (s *Session) pushRebuiltEvent(ctx context.Context, wcc *WitnessCheckClient,
 	// see the just-updated LastSTH and verify wrong (same root cause
 	// as the RunSync snapshot pattern).
 	sdPre := s.Body.Scopes[scopeID]
-	preSTH, _ := decodeVerifiedSTH(sdPre.LastSTH)
+	preSTH, _ := decodeVerifiedSTH(sdPre.LastSTHFor(server.String()))
 	preSize := uint64(0)
 	if preSTH != nil {
 		preSize = preSTH.TreeSize()
@@ -592,9 +592,9 @@ func (s *Session) pushRebuiltEvent(ctx context.Context, wcc *WitnessCheckClient,
 		if eerr != nil {
 			return false, fmt.Errorf("encode LastSTH: %w", eerr)
 		}
-		sdNow.LastSTH = encoded
-		if next := sdNow.ChainTip.Seq + 1; next > sdNow.PushFloor {
-			sdNow.PushFloor = next
+		sdNow.SetLastSTHFor(server.String(), encoded)
+		if next := sdNow.ChainTip.Seq + 1; next > sdNow.PushFloorFor(server.String()) {
+			sdNow.SetPushFloorFor(server.String(), next)
 		}
 		s.Body.Scopes[scopeID] = sdNow
 		if err := s.ReSeal(); err != nil {
