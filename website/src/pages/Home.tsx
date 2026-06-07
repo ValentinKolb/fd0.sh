@@ -490,16 +490,19 @@ ghp_xxxxxxxxxxxxxxxxxxxx`}
           into the agent and never written to disk. The server and
           witness hold ciphertext and signatures — never keys.
         </p>
-        <pre
-          class="shell p-6 text-[12.5px] leading-[1.55]"
-          style={`background:${C.bgRaised};border:1px solid ${C.border};color:${C.fg};font-family:${FONT_MONO};`}
-        >{`         your device                                server (yours or fd0.sh)             observer
-   ┌───────────────────────┐                  ┌────────────────────────┐         ┌──────────────────┐
-   │ fd0  (CLI)            │                  │ fd0-server             │         │ fd0-witness      │
-   │ fd0-agent  (mlocked)  │  ◀── ciphertext ─│ ciphertext + signed    │  ── ✓ ──│ cosigns honest   │
-   │  ↑ super_priv         │     + signed     │ events                 │   STH   │ archives forks   │
-   │  ↑ vault.enc          │     events       │ no plaintext, no keys  │         │ independent host │
-   └───────────────────────┘                  └────────────────────────┘         └──────────────────┘`}</pre>
+        <div class="overflow-x-auto -mx-6 px-6 flex justify-center">
+          <pre
+            class="shell p-6 text-[12px] leading-[1.55] w-fit"
+            style={`background:${C.bgRaised};border:1px solid ${C.border};color:${C.fg};font-family:${FONT_MONO};`}
+          >{`your device           server                  replica                  observer
+┌─────────────────┐   ┌────────────────────┐  ┌────────────────────┐   ┌────────────────────┐
+│ fd0  (CLI)      │   │ fd0-server         │  │ fd0-server         │   │ fd0-witness        │
+│ fd0-agent       │ ─▶│ ciphertext +       │◀▶│ ciphertext +       │ ─▶│ cosigns honest STH │
+│   super_priv    │   │ signed events      │  │ signed events      │ ✓ │ archives forks     │
+│   vault.enc     │   │                    │  │                    │   │ independent host   │
+└─────────────────┘   └────────────────────┘  └────────────────────┘   └────────────────────┘
+                       client multi-pushes every event to both replicas · peers cross-pin`}</pre>
+        </div>
       </div>
     </section>
 

@@ -1,128 +1,106 @@
 # How fd0.sh is hosted
 
-The public hosted instance of fd0 — `https://fd0.sh`, `https://api.fd0.sh`, `https://witness.fd0.sh` — is operated by Kolb Antik GmbH from a data center in Germany. This document records who runs it, where, and with what guarantees, in enough detail to reproduce the setup.
+Reference for the public hosted instance — `https://fd0.sh`, `https://api.fd0.sh`, `https://api2.fd0.sh`, `https://witness.fd0.sh`, `https://witness2.fd0.sh`.
 
 ## Operator
 
 - Legal entity: **Kolb Antik GmbH**, Germany ([kolb-antik.com](https://kolb-antik.com))
-- Operator-of-record for hosting and infrastructure decisions
-- Subject to German civil and commercial law, **DSGVO/GDPR-compliant** by jurisdiction
+- Jurisdiction: German civil and commercial law, DSGVO/GDPR
+- Source of truth: this repository; published Docker images at `ghcr.io/valentinkolb/`
 
-The same entity runs the open-source code from this repository and the published Docker images at `ghcr.io/valentinkolb/`.
+## Topology
 
-## Location
+Two independent replicas, each in its own data center:
 
-- Data center: **Stadtwerke Ulm (SWU)**, Ulm, Germany — colocation provider; SWU provides the building, power, and connectivity only
-- Server: a virtual machine on a high-availability Proxmox cluster **operated by Kolb Antik GmbH** inside that data center
-- The VM is dedicated to fd0; no other tenants share it
-
-## What the operator can and cannot see
-
-The zero-knowledge contract in PROTOCOL.md applies to the hosted instance with no exceptions:
-
-| | Visible to operator | Not visible to operator |
+| Hostname | Location | Self-label |
 |---|---|---|
-| Network layer | TLS-terminated request timing, source IP addresses, request sizes | Request bodies — encrypted in transit, ciphertext on disk |
-| Storage | SQLite DB containing ciphertext + signed event headers | Secret values, secret names, scope memberships, passphrases, derived keys |
-| Operational | Ability to stop the service, change DNS, sign new STHs | None of the above, even with full root on the box |
+| `api.fd0.sh`  | SWU Ulm — Kolb Antik Proxmox cluster | `swu-ulm` |
+| `api2.fd0.sh` | Hetzner Falkenstein — Hetzner Cloud VM | `hetzner-fsn1` |
 
-The transparency log catches operator misbehavior: any STH the operator signs is countersigned by an independent witness, and a server that tries to show different histories to different clients leaves a publishable proof.
+Each replica runs `fd0-server` against its own SQLite DB, signs its own STHs under its own ed25519 translog key, and runs a paired `fd0-witness` (`witness.fd0.sh`, `witness2.fd0.sh`) that cosigns its STHs. Replicas peer with each other via `FD0_PEERS`: on boot each one resolves its peer's `/v1/server-info`, TOFU-pins the pubkey, and republishes the resolved entry in its own signed response.
+
+The default `fd0` client targets both replicas (`[sync].servers = [api.fd0.sh, api2.fd0.sh]`) and multi-pushes every event to both. Reads fall over to whichever server answers. Server-to-server event gossip is not yet implemented — event propagation across replicas relies on multi-pushing clients until then. See TRANSLOG.md §11 for the wire format and the peer trust model.
 
 ## Stack
 
-The two replicas run **deliberately different stacks** so a CVE, regression, or upstream outage in one component never takes down both at once. Identical binaries, different everything else.
+The two replicas run different distros, container runtimes, and proxies so a CVE or regression in one component cannot affect both.
 
 | Layer | api.fd0.sh (SWU) | api2.fd0.sh (Hetzner) |
 |---|---|---|
 | OS | Rocky Linux 10 | Debian 13 (Trixie) |
 | Container runtime | Podman 5.x + Quadlet | Docker 29 + Compose v5 |
-| Reverse proxy + TLS | Caddy 2.x | Traefik 3.x |
-| Firewall | Proxmox layer (host has no firewalld) | UFW + fail2ban + Hetzner Cloud Firewall |
-| TLS provider | Let's Encrypt TLS-ALPN-01 (both) ||
-| Database | SQLite as bundled with the binary (both) ||
+| Reverse proxy | Caddy 2.x | Traefik 3.x |
+| Firewall | Proxmox hypervisor layer | UFW + fail2ban + Hetzner Cloud Firewall |
+| TLS | Let's Encrypt via TLS-ALPN-01 (both) ||
+| Database | SQLite (both, bundled with the binary) ||
 | Binaries | `fd0-server`, `fd0-witness`, `fd0-website` from this repo (both) ||
 
-The stack-diversity choice is operational, not religious. Podman is daemonless and SELinux-confined; Docker is daemon-rooted but better integrated with Traefik labels. Rocky tracks RHEL's slow-and-stable line; Debian tracks community-driven updates. If one combination has a bad day, the other usually does not.
-
-Build artefacts come from the [release-docker workflow](../.github/workflows/release-docker.yml) — multi-arch images signed by GitHub's OIDC and published to `ghcr.io/valentinkolb/`.
+Build artefacts come from the [release-docker workflow](../.github/workflows/release-docker.yml) — multi-arch images signed by GitHub's OIDC.
 
 ## Network
 
-- IPv4 + IPv6 dual-stack
-- TLS via Caddy on ports 443/tcp + 443/udp (HTTP/3) with HTTP→HTTPS redirect on 80/tcp
-- Firewall rules on the Proxmox layer (host has no `firewalld` enabled — the hypervisor handles it)
-- Caddy holds the Let's Encrypt account; certs auto-renew well before expiry
+- IPv4 + IPv6 dual-stack on every host
+- TLS on `443/tcp` + `443/udp` (HTTP/3); HTTP→HTTPS redirect on `80/tcp`
+- Certificate renewal handled by the proxy on each host
 
-## Replicas
+## What the operator can and cannot see
 
-The hosted deployment runs the API on two independent VMs in two different data centers:
+The zero-knowledge contract in PROTOCOL.md applies to the hosted instance without exception:
 
-| Hostname | Location | Operator | Label |
-|---|---|---|---|
-| `api.fd0.sh`  | SWU Ulm (Kolb Antik Proxmox cluster) | Kolb Antik GmbH | `swu-ulm` |
-| `api2.fd0.sh` | Hetzner (Falkenstein) | Kolb Antik GmbH | `hetzner-fsn1` |
+| | Visible to operator | Not visible to operator |
+|---|---|---|
+| Network | TLS-terminated request timing, source IPs, body sizes | Decrypted bodies — ciphertext on the wire and on disk |
+| Storage | Ciphertext + signed event headers | Secret values, secret names, scope memberships, passphrases, keys |
+| Operational | Stop a replica, change DNS, sign STHs under the server key | Anything in the columns above, even with root on the host |
 
-Both servers are full peers — each runs the same `fd0-server` binary against its own SQLite DB and signs its own STHs under its own ed25519 translog key. Both label themselves via `FD0_LABEL` and list each other via `FD0_PEERS`; each `/v1/server-info` response advertises the resolved peer (URL + signed pubkey + label) so clients can discover the topology.
-
-The default `fd0` client is configured (see `internal/fdhome/config.go`) to push every event to BOTH servers per sync round. Events are signed and content-addressed, so the second server's idempotent dedup absorbs the duplicate at near-zero cost. Reads fail over to whichever server answers — a primary outage is transparent to the user.
-
-Until the server-side gossip work lands (TRANSLOG.md §11 peer-replication roadmap), cross-author replication relies entirely on multi-pushing clients. A reader who talks to only one server will eventually see events authored against the other server as soon as ANY multi-pushing client syncs.
-
-The two replicas also **deliberately run different stacks** (see the Stack table above) — Rocky + Podman + Caddy on SWU, Debian + Docker + Traefik on Hetzner. A bug in one runtime or proxy can't take both replicas down simultaneously.
+A server that tries to show different histories to different clients leaves a publishable proof: every STH is signed under the server key and cosigned by the paired witness, and divergent STHs at the same `tree_size` are evidence of equivocation.
 
 ## Backups
 
-VM-level backups differ per replica because each provider's primitives are different:
+VM-level snapshots use each provider's primitives:
 
-- **api.fd0.sh (SWU)** — at least hourly snapshots on the Kolb Antik Proxmox cluster, with a daily copy replicated to **Hetzner S3 object storage** in a separate data center. The off-site copy survives a complete data-center incident at SWU.
-- **api2.fd0.sh (Hetzner)** — daily VM-level backups via Hetzner Cloud's built-in backup feature. No additional off-site replication; api2 is itself the off-site copy for api.fd0.sh's data via the multi-push model.
+- **api.fd0.sh (SWU)** — hourly Proxmox snapshots, daily off-site copy to Hetzner S3 object storage in a separate data center. The off-site copy survives a complete SWU incident.
+- **api2.fd0.sh (Hetzner)** — daily Hetzner Cloud backups. No additional off-site replication: api.fd0.sh's own copy of the data, populated by multi-pushing clients, is the implicit off-site for api2.
 
-On each replica these layers stack on top of the VM backups:
+App-level backups run on both replicas:
 
-1. **Daily SQLite snapshots** — `sqlite3 .backup` of `fd0.db` and `witness.db`, gzipped, 30-day rotation. Runs as a systemd timer, lives at `/var/backups/fd0/`.
-2. **Crypto-key off-host backup** — the server's transparency-log signing key and the witness's cosign key are exported once and stored in an off-host encrypted vault. These keys do not change for the server's lifetime, so a one-time export is sufficient; restoring them on a fresh host lets existing clients keep working without re-pinning.
+1. **Daily SQLite snapshots** — `sqlite3 .backup` of `fd0.db` and `witness.db`, gzipped, 30-day rotation. Driven by a systemd timer; output at `/var/backups/fd0/` or `/srv/fd0/backups/`.
+2. **Crypto keys off-host** — translog signing key and witness cosign key, exported once and stored in an off-host encrypted vault. These keys are stable for the life of the server; a fresh host restored with the original key needs no re-pinning.
 
-The metrics token (used for Prometheus scrapes) is rotateable in place; rotation does not require a backup.
+Metrics tokens are rotatable in place and do not need backups.
 
-## Updates and change management
+## Updates
 
-Image updates are **manual**, not automatic. The operator pulls a new tag from `ghcr.io`, restarts the service, observes the logs. No auto-update — a malicious or broken upstream release cannot reach production unobserved.
-
-Image tags follow semantic versioning. Production pins specific tags rather than `:latest` once a release line is stable.
-
-Schema migrations run on first boot under the new version; the SQLite DB is forward-compatible across patch and minor versions per PROTOCOL.md §8 (conformance).
+Image updates are manual. The operator pulls a new tag, restarts the service, observes the logs — no auto-update, so a broken or malicious upstream release cannot reach production unobserved. Production pins specific tags once a release line is stable. Schema migrations run on first boot under the new version; the on-disk format is forward-compatible across patch and minor versions per PROTOCOL.md §8.
 
 ## Security posture
 
-- Container runtime: Podman daemonless, rootful but with no long-running privileged daemon (versus Docker's daemon as root)
-- SELinux: enforcing on the host; container-selinux confines each service
-- TLS-only: HTTP requests permanent-redirect to HTTPS
-- Metrics endpoint: bearer-token guarded, returns 404 on missing/wrong token (no endpoint-existence leak)
-- SSH access: key-based authentication only, single operator key
-- Vulnerability monitoring: subscribed to Rocky 10 security advisories and Podman/Caddy upstream releases; `dnf upgrade` runs on a regular cadence
+- Container runtimes confined per OS: SELinux + container-selinux on Rocky; AppArmor + Docker's default seccomp on Debian
+- HTTP requests permanently redirected to HTTPS
+- `/metrics` bearer-token guarded; missing or wrong token returns `404` so the endpoint does not advertise its existence
+- SSH: key-based authentication only, single operator key per host
+- Vulnerability monitoring: subscribed to Rocky 10, Debian 13, Podman, Docker, Caddy, and Traefik security advisories; package updates run on a regular cadence
 
 ## Incident contact
 
-For security issues affecting the hosted instance (or the code), email **mail@valentin-kolb.com** with subject prefix `fd0-security:`. Include the affected version, the construction or code path you believe is wrong, and any reproducer. Non-security operational issues: GitHub Issues.
+Security issues affecting the hosted instance or the code: email **mail@valentin-kolb.com** with subject prefix `fd0-security:`. Include the affected version, the construction or code path you believe is wrong, and a reproducer. Non-security operational issues go to GitHub Issues.
 
-For privacy-law requests under DSGVO/GDPR (subject access, deletion), email the same address. Note that fd0's zero-knowledge design means the operator cannot decrypt user data — most data subject requests resolve to "we hold ciphertext you can already access from your own client; delete is a chain operation that originates on your device."
+DSGVO/GDPR data-subject requests use the same address. fd0's zero-knowledge design means the operator cannot decrypt user data — most requests resolve to "the ciphertext you can already access from your own client; deletion is a chain operation that originates on your device."
 
-## Self-hosting with replicas
+---
 
-The patterns above are reproducible on any operator setup. Here is the minimum-viable shape — strip what you do not need.
+## Self-hosting
 
-### Single server (no replica)
+The setup above is reproducible. Two shapes are supported.
 
-The simplest deployment. One VM, one `fd0-server` container, your reverse proxy of choice handling TLS.
+### Single server
 
 ```bash
 cd deploy/server
 METRICS_TOKEN=$(openssl rand -hex 32) docker compose up -d
-# fd0-server now listens on :4048 inside the container; expose it
-# behind your TLS terminator (Caddy, Traefik, nginx, Cloudflare, …).
 ```
 
-Client side:
+Client config:
 
 ```toml
 # ~/.fd0/config.toml
@@ -130,25 +108,24 @@ Client side:
 server = "https://your-domain.example"
 ```
 
-Done. Skip the rest of this section.
+Add your own TLS terminator in front of `:4048`. Done.
 
 ### Two replicas (mutual peers)
 
-The shape `fd0.sh` itself runs — one server in each of two data centers, each labelled, each peering with the other, clients multi-push to both.
+The shape `fd0.sh` itself runs.
 
-**Step 1 — DNS.** Pick two hostnames (`api.example.com` + `api2.example.com`). Point each at its own VM. TLS will use TLS-ALPN-01 on `:443` so port 80 only needs the HTTP→HTTPS redirect.
+**1. DNS.** Point `api.example.com` and `api2.example.com` at their respective VMs.
 
-**Step 2 — Server A.** Boot `fd0-server` with a self-label and the other replica as its peer.
+**2. Server A.**
 
 ```yaml
-# deploy/server/compose.yml — see the inline comments for every knob
 environment:
-  FD0_LABEL: site-a                              # [a-z0-9-]{0,32}
-  FD0_PEERS: https://api2.example.com            # the OTHER replica
+  FD0_LABEL: site-a
+  FD0_PEERS: https://api2.example.com
   FD0_METRICS_TOKEN: ${METRICS_TOKEN:?}
 ```
 
-**Step 3 — Server B.** Same shape, swapped peers.
+**3. Server B.**
 
 ```yaml
 environment:
@@ -157,15 +134,14 @@ environment:
   FD0_METRICS_TOKEN: ${METRICS_TOKEN:?}
 ```
 
-On boot each server resolves the other via `GET /v1/server-info`, TOFU-pins the peer's signing pubkey in its own `peers` SQLite table, and republishes the resolved entry in its own signed `/v1/server-info`. Verify with `curl`:
+On boot each server resolves the other's `/v1/server-info`, TOFU-pins the pubkey in its own `peers` SQLite table, and republishes the resolved entry. Verify both directions:
 
 ```bash
-curl -s https://api.example.com/v1/server-info  | python3 -c "import sys,cbor2;d=cbor2.loads(sys.stdin.buffer.read());print('label=',d['label']);print('peers=',d.get('peers'))"
+curl -s https://api.example.com/v1/server-info  | python3 -c "import sys,cbor2;d=cbor2.loads(sys.stdin.buffer.read());print(d.get('label'), d.get('peers'))"
 curl -s https://api2.example.com/v1/server-info | python3 -c "…"
-# Each should list the OTHER server's URL + pubkey + label.
 ```
 
-**Step 4 — Client config.** Tell clients about both servers.
+**4. Client config.**
 
 ```toml
 # ~/.fd0/config.toml
@@ -173,26 +149,24 @@ curl -s https://api2.example.com/v1/server-info | python3 -c "…"
 servers = ["https://api.example.com", "https://api2.example.com"]
 ```
 
-The client now pushes every event to BOTH servers per sync round. Reads fall over: if A is down, the client uses B. First-contact pinning runs separately per URL — the safety-number ceremony happens once per server.
+The client multi-pushes every event to both, falls over on reads, and runs the safety-number ceremony once per server.
 
-**Step 5 (optional) — One witness per replica.** Each server keeps its own RFC 6962 transparency log under its own ed25519 key. For full equivocation detection you want one witness polling each:
+**5. Witness per replica (optional).** Each server has its own translog under its own key, so each needs its own witness to cosign honest STHs.
 
 ```yaml
-# witness1 polls server A
+# witness-a — paired with server A
 FD0_WITNESS_SERVER_URL: https://api.example.com
 
-# witness2 polls server B
+# witness-b — paired with server B
 FD0_WITNESS_SERVER_URL: https://api2.example.com
 ```
 
-Witnesses TOFU-pin their server's pubkey on first poll. Cosigned STHs from each witness anchor each server's history independently.
-
 ### Operational notes
 
-- **What replicates today.** Each multi-pushing client puts its own events on every configured server. Events authored against ONLY one server stay there until a multi-pushing client moves them — server-to-server gossip is a future revision (see TRANSLOG.md §11).
-- **Adding a third replica later.** New server's `FD0_PEERS` lists the existing two; the existing two have their `FD0_PEERS` extended to include the new one and restarted. TOFU-pins establish in both directions on the next resolver tick (default 1h, or restart for immediate). Clients add the new URL to `[sync].servers`.
-- **Removing a replica.** Stop the container, remove the entry from the other servers' `FD0_PEERS`, remove from clients' `[sync].servers`. Surviving servers keep their pinned-peer row in SQLite until you `DELETE FROM peers WHERE url = ?` — harmless, just stale.
-- **Rotating a server's ed25519 key.** Same ceremony as a single-server rotation (TRANSLOG.md §4.3). Every client AND every peering server has to re-pin: peers refuse silent rotation precisely so an attacker can't substitute a key behind your back. Wipe the row on each peer (`DELETE FROM peers WHERE url = ?`) and they re-TOFU on next resolver tick.
-- **Per-server backups.** Each server has its own SQLite DB and its own ed25519 key. Both need their own backup pipeline — losing one replica's data does not corrupt the other, but it does cost the witness archive for STHs signed under the lost key.
+- **Event propagation.** Only multi-pushing clients propagate events between replicas. A single-server client writes to one replica only; events reach the other when any multi-pushing client syncs. Server-to-server gossip is on the roadmap (TRANSLOG.md §11).
+- **Adding a third replica.** Add the new URL to every existing server's `FD0_PEERS` and restart; the new server's `FD0_PEERS` lists the existing two. TOFU-pins establish in both directions on the next resolver tick (default 1h). Clients add the new URL to `[sync].servers`.
+- **Removing a replica.** Stop the container, remove the URL from the other servers' `FD0_PEERS` and from clients' `[sync].servers`. Stale rows in the surviving servers' `peers` table are harmless; `DELETE FROM peers WHERE url = ?` to clean up.
+- **Rotating a server's ed25519 key.** Same ceremony as a single-server rotation (TRANSLOG.md §4.3). Every client and every peering server must re-pin. Peers refuse silent rotation; the operator wipes the row (`DELETE FROM peers WHERE url = ?`) and the resolver re-TOFUs on the next tick.
+- **Per-replica backups.** Each server has its own SQLite DB and its own ed25519 key. Losing one replica's data does not corrupt the other, but it costs the witness archive for STHs signed under the lost key.
 
-[`deploy/`](../deploy/) ships minimal docker-compose building blocks (one per service) so any reverse-proxy / TLS combination plugs in. The full production recipe with TLS, ACME, multi-arch container images, and per-stack lifecycle is the one this document describes; if you want to reproduce `fd0.sh` end-to-end, follow the Stack section above with the matching combination of distro + runtime + proxy on each host.
+The blocks in [`deploy/`](../deploy/) work behind any reverse proxy that terminates TLS and forwards to the container's port. To reproduce `fd0.sh` end-to-end, follow the Stack section above with the matching distro / runtime / proxy on each host.

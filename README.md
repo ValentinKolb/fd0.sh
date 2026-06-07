@@ -22,7 +22,7 @@ Install the client (workstation, laptop, anything that holds keys):
 curl -fsSL https://fd0.sh/install | sh
 ```
 
-Supported platforms: Linux (amd64, arm64), macOS (Intel, Apple Silicon). Drops `fd0` and `fd0-agent` into `~/.local/bin`; pass `--system` for `/usr/local/bin`. Verifies the release manifest with cosign when present. Prints a PATH hint when `~/.local/bin` isn't on `$PATH`. Windows: tracked as a future release — the binaries cross-compile, but the AF_UNIX agent socket hasn't been validated yet.
+Supported platforms: Linux and macOS on amd64 and arm64. Drops `fd0` and `fd0-agent` into `~/.local/bin` (or `/usr/local/bin` with `--system`), verifies the release manifest with cosign when available, and prints a PATH hint when `~/.local/bin` is not on `$PATH`. Windows is not yet built — the binaries cross-compile but the agent's AF_UNIX socket is not validated.
 
 Point it at a server — either your own, or [fd0.sh](https://fd0.sh):
 
