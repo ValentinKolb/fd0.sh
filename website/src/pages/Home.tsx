@@ -366,7 +366,7 @@ ghp_xxxxxxxxxxxxxxxxxxxx`}</Shell>
 [sync]
 server = "https://fd0.sh"
 on_unlock = true`}
-              codeNote="Hourly VM snapshots, daily encrypted DB backups, crypto keys held off-host. Full deployment writeup: docs/HOSTING.md on GitHub."
+              codeNote="Hourly VM snapshots with daily off-site copies to Hetzner S3, daily encrypted DB backups, crypto keys held off-host. Full writeup: docs/HOSTING.md."
             />
           </div>
         </div>

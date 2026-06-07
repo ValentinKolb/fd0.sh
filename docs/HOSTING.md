@@ -52,7 +52,7 @@ Build artefacts come from the [release-docker workflow](../.github/workflows/rel
 
 Three independent layers, each with its own failure model:
 
-1. **VM-level snapshots** — at least hourly, retained on the Kolb Antik Proxmox cluster. Protects against host failure and full VM corruption.
+1. **VM-level snapshots** — at least hourly on the Kolb Antik Proxmox cluster, with a daily copy replicated to **Hetzner S3 object storage** in a separate data center. Protects against host failure, full VM corruption, and total loss of the primary cluster (the off-site copy survives a complete data-center incident at SWU).
 2. **Daily SQLite snapshots** — `sqlite3 .backup` of `fd0.db` and `witness.db`, gzipped, 30-day rotation. Runs as a systemd timer, lives at `/var/backups/fd0/`.
 3. **Crypto-key off-host backup** — the server's transparency-log signing key and the witness's cosign key are exported once and stored in an off-host encrypted vault. These keys do not change for the server's lifetime, so a one-time export is sufficient; restoring them on a fresh host lets existing clients keep working without re-pinning.
 
