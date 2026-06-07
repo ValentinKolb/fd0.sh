@@ -32,7 +32,12 @@ WORKDIR /app
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/node_modules ./node_modules
 
-ENV NODE_ENV=production \
+# Re-declare VERSION in this stage — multistage ARG scope is per-stage
+# (build stage's ENV doesn't carry over). Without this, /version on the
+# running container always reports "dev" regardless of the release tag.
+ARG VERSION=dev
+ENV FD0_WEBSITE_VERSION=${VERSION} \
+    NODE_ENV=production \
     PORT=5173
 
 EXPOSE 5173
