@@ -12,9 +12,9 @@ The same entity runs the open-source code from this repository and the published
 
 ## Location
 
-- Data center: **Stadtwerke Ulm (SWU)**, Ulm, Germany
-- Server: a virtual machine on a high-availability Proxmox cluster operated by SWU
-- The host is dedicated to fd0; no other tenants share the VM
+- Data center: **Stadtwerke Ulm (SWU)**, Ulm, Germany — colocation provider; SWU provides the building, power, and connectivity only
+- Server: a virtual machine on a high-availability Proxmox cluster **operated by Kolb Antik GmbH** inside that data center
+- The VM is dedicated to fd0; no other tenants share it
 
 ## What the operator can and cannot see
 
@@ -52,7 +52,7 @@ Build artefacts come from the [release-docker workflow](../.github/workflows/rel
 
 Three independent layers, each with its own failure model:
 
-1. **VM-level snapshots** — at least hourly, retained on the SWU Proxmox cluster. Protects against host failure and full VM corruption.
+1. **VM-level snapshots** — at least hourly, retained on the Kolb Antik Proxmox cluster. Protects against host failure and full VM corruption.
 2. **Daily SQLite snapshots** — `sqlite3 .backup` of `fd0.db` and `witness.db`, gzipped, 30-day rotation. Runs as a systemd timer, lives at `/var/backups/fd0/`.
 3. **Crypto-key off-host backup** — the server's transparency-log signing key and the witness's cosign key are exported once and stored in an off-host encrypted vault. These keys do not change for the server's lifetime, so a one-time export is sufficient; restoring them on a fresh host lets existing clients keep working without re-pinning.
 
