@@ -26,8 +26,12 @@ import {
   type ObservedChain,
 } from "../lib/witness-client";
 
-const WITNESS_URL = process.env.FD0_WITNESS_URL ?? "https://witness.fd0.sh";
-const SERVER_URL = process.env.FD0_SERVER_URL ?? "https://fd0.sh";
+// Defaults match the deploy/compose.yml service names so the website
+// pod resolves the witness via the docker network (no TLS round-trip
+// per render). SERVER_URL is what's rendered to users for `fd0 sync`,
+// so it must be the PUBLIC hostname — override per deployment.
+const WITNESS_URL = process.env.FD0_WITNESS_URL ?? "http://fd0-witness:4049";
+const SERVER_URL = process.env.FD0_SERVER_URL ?? "https://api.fd0.sh";
 
 const StatusPill = (p: { state: "healthy" | "stale" | "down" }) => {
   const map = {

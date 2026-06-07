@@ -42,11 +42,10 @@ services:
     image: ghcr.io/valentinkolb/fd0-server:latest
     restart: unless-stopped
     environment:
-      # ─── runtime ─────────────────────────────────────────────────────
-      FD0_BIND: ":4048"                    # HTTP listen address
-      FD0_DB: /data/fd0.db                 # SQLite path
       FD0_METRICS_TOKEN: ${METRICS_TOKEN:-CHANGE_ME_openssl_rand_hex_32}
-      # ─── optional (uncomment to override defaults) ───────────────────
+      # ─── optional (uncomment to override binary defaults) ────────────
+      # FD0_BIND: ":4048"                  # HTTP listen address
+      # FD0_DB: /data/fd0.db               # SQLite path
       # FD0_MAX_BODY: "8388608"            # max request body (8 MB)
       # FD0_VERBOSE: "false"               # debug-level logging
       # ─── rate limiting (single-instance, per identity + per IP) ──────
@@ -78,21 +77,20 @@ services:
       fd0-server:
         condition: service_healthy
     environment:
-      # ─── runtime ─────────────────────────────────────────────────────
-      FD0_WITNESS_DB: /data/witness.db     # SQLite archive
-      FD0_WITNESS_KEY: /data/cosign.key    # ed25519 cosign key (auto-generated on first run)
-      FD0_WITNESS_BIND: ":4049"            # HTTP listen — required for /v1/observed etc.
       FD0_WITNESS_METRICS_TOKEN: ${METRICS_TOKEN:-CHANGE_ME_openssl_rand_hex_32}
-      # ─── target ──────────────────────────────────────────────────────
-      # One witness watches one server (process isolation). To watch a
-      # second server, copy this whole service block.
-      FD0_WITNESS_SERVER_URL: https://api.${DOMAIN:-fd0.sh}
-      FD0_WITNESS_PIN_ON_FIRST_USE: "true" # TOFU pin from /v1/server-info on first poll
-      FD0_WITNESS_AUTO_DISCOVER: "true"    # poll /v1/chains every round
-      FD0_WITNESS_POLL_INTERVAL: "30s"
-      # ─── optional (uncomment to override defaults) ───────────────────
-      # FD0_WITNESS_SERVER_PUB: ""         # hex pubkey (32 bytes); skips TOFU
-      # FD0_WITNESS_CHAINS: ""             # comma-list "user:abc,scope:s_xyz"; skips auto-discover
+      # The server this witness watches. One witness watches one server
+      # (process isolation). To watch a second server, copy this whole
+      # service block. Use the internal docker DNS — no TLS overhead.
+      FD0_WITNESS_SERVER_URL: http://fd0-server:4048
+      # ─── optional (uncomment to override binary defaults) ────────────
+      # FD0_WITNESS_DB: /data/witness.db         # SQLite archive
+      # FD0_WITNESS_KEY: /data/cosign.key        # cosign key, auto-generated
+      # FD0_WITNESS_BIND: ":4049"                # HTTP listen
+      # FD0_WITNESS_PIN_ON_FIRST_USE: "true"     # TOFU pin from /v1/server-info
+      # FD0_WITNESS_AUTO_DISCOVER: "true"        # poll /v1/chains every round
+      # FD0_WITNESS_POLL_INTERVAL: "30s"
+      # FD0_WITNESS_SERVER_PUB: ""               # hex (32 bytes); skips TOFU
+      # FD0_WITNESS_CHAINS: ""                   # CSV "user:abc,scope:s_xyz"; skips auto-discover
       # FD0_WITNESS_VERBOSE: "false"
     volumes:
       - fd0-witness-data:/data
@@ -118,20 +116,15 @@ services:
       fd0-witness:
         condition: service_started
     environment:
-      # ─── routing the SSR fetches use ─────────────────────────────────
-      # FD0_SERVER_URL is the PUBLIC URL of the server — rendered in
-      # the UI so users see where to point `fd0 sync`.
+      # The PUBLIC URL of the server — rendered in the UI so users see
+      # where to point `fd0 sync`. Must match the public api.${DOMAIN}.
       FD0_SERVER_URL: https://api.${DOMAIN:-fd0.sh}
-      # FD0_WITNESS_URL is fetched server-side per /witness render.
-      # Internal docker network avoids the TLS round-trip; the page
-      # still displays witness.${DOMAIN} in the verify-yourself curls.
-      FD0_WITNESS_URL: http://fd0-witness:4049
-      # ─── /metrics auth ───────────────────────────────────────────────
       FD0_WEBSITE_METRICS_TOKEN: ${METRICS_TOKEN:-CHANGE_ME_openssl_rand_hex_32}
-      # ─── optional (uncomment to override) ────────────────────────────
-      # PORT: "5173"                       # listen port; matches Dockerfile EXPOSE
-      # NODE_ENV: "production"             # set by the image already
-      # FD0_WEBSITE_VERSION: "v1.0.0"      # shown on /version; baked at build time
+      # ─── optional (uncomment to override binary defaults) ────────────
+      # FD0_WITNESS_URL: http://fd0-witness:4049  # internal docker DNS; default already
+      # PORT: "5173"                              # listen port; matches Dockerfile EXPOSE
+      # NODE_ENV: "production"                    # set by the image already
+      # FD0_WEBSITE_VERSION: "v1.0.0"             # shown on /version; baked at build time
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5173/health"]
       interval: 30s

@@ -129,7 +129,7 @@ func (c *chainCountCollector) Collect(ch chan<- prometheus.Metric) {
 // Default port is 0xFD0 = 4048.
 type cli struct {
 	Bind    string `name:"bind" help:"Listen address." default:":4048" env:"FD0_BIND"`
-	DB      string `name:"db" help:"SQLite path." default:"fd0.db" env:"FD0_DB"`
+	DB      string `name:"db" help:"SQLite path." default:"/data/fd0.db" env:"FD0_DB"`
 	MaxBody int64  `name:"max-body" help:"Max request body bytes." default:"8388608" env:"FD0_MAX_BODY"`
 	Verbose bool   `name:"verbose" short:"v" help:"Verbose logging." env:"FD0_VERBOSE"`
 

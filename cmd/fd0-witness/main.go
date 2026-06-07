@@ -103,21 +103,21 @@ func (o *promObserver) OnTreeSize(server, chain string, size uint64) {
 
 type cli struct {
 	// Storage / runtime
-	DB           string `name:"db" help:"Witness archive SQLite path." default:"/var/lib/fd0-witness/witness.db" env:"FD0_WITNESS_DB"`
-	Key          string `name:"key" help:"Witness cosign key path (ed25519 64-byte seed||pub). Empty = legacy passive-archiver mode (no cosign, no HTTP)." default:"" env:"FD0_WITNESS_KEY"`
-	Bind         string `name:"bind" help:"HTTP server bind address for client cross-check (empty = no HTTP server). Requires --key." default:"" env:"FD0_WITNESS_BIND"`
+	DB           string `name:"db" help:"Witness archive SQLite path." default:"/data/witness.db" env:"FD0_WITNESS_DB"`
+	Key          string `name:"key" help:"Witness cosign key path (ed25519 64-byte seed||pub). Auto-generated on first run if missing. Set empty to opt into v1.0 OPTIONAL passive-archiver mode (no cosign, no HTTP)." default:"/data/cosign.key" env:"FD0_WITNESS_KEY"`
+	Bind         string `name:"bind" help:"HTTP server bind address. Set empty to disable the HTTP layer (passive-archiver mode)." default:":4049" env:"FD0_WITNESS_BIND"`
 	MetricsToken string `name:"metrics-token" help:"Bearer token guarding /metrics." default:"" env:"FD0_WITNESS_METRICS_TOKEN"`
 	Verbose      bool   `name:"verbose" short:"v" help:"Verbose logging." env:"FD0_WITNESS_VERBOSE"`
 
 	// Target — env-only single-target config. Multi-target = run
 	// multiple containers; each gets process / storage / metrics
 	// isolation and a smaller failure domain than one mega-witness.
-	ServerURL     string        `name:"server-url" help:"fd0-server to watch (https://api.fd0.sh)." env:"FD0_WITNESS_SERVER_URL"`
-	ServerPub     string        `name:"server-pub" help:"Server cosign pubkey (hex, 32 bytes). Empty + --pin-on-first-use = TOFU bootstrap." default:"" env:"FD0_WITNESS_SERVER_PUB"`
+	ServerURL     string        `name:"server-url" help:"fd0-server to watch (e.g. https://api.fd0.sh or http://fd0-server:4048)." env:"FD0_WITNESS_SERVER_URL"`
+	ServerPub     string        `name:"server-pub" help:"Server cosign pubkey (hex, 32 bytes). Set explicitly to opt out of TOFU." default:"" env:"FD0_WITNESS_SERVER_PUB"`
 	PollInterval  time.Duration `name:"poll-interval" help:"Time between poll rounds." default:"30s" env:"FD0_WITNESS_POLL_INTERVAL"`
-	AutoDiscover  bool          `name:"auto-discover" help:"Fetch chain list from GET /v1/chains every round." env:"FD0_WITNESS_AUTO_DISCOVER"`
-	PinOnFirstUse bool          `name:"pin-on-first-use" help:"Pin the server pubkey from /v1/server-info on first poll (TOFU)." env:"FD0_WITNESS_PIN_ON_FIRST_USE"`
-	Chains        []string      `name:"chain" help:"Explicit chain ID to poll (repeat or comma-list via env). May combine with --auto-discover." env:"FD0_WITNESS_CHAINS"`
+	AutoDiscover  bool          `name:"auto-discover" help:"Fetch chain list from GET /v1/chains every round." default:"true" env:"FD0_WITNESS_AUTO_DISCOVER"`
+	PinOnFirstUse bool          `name:"pin-on-first-use" help:"Pin the server pubkey from /v1/server-info on first poll (TOFU). Set --server-pub to disable." default:"true" env:"FD0_WITNESS_PIN_ON_FIRST_USE"`
+	Chains        []string      `name:"chain" help:"Explicit chain ID to poll. Combine with --auto-discover or use as an allow-list when auto-discover is off." env:"FD0_WITNESS_CHAINS"`
 
 	Run    runCmd    `cmd:"" default:"1" help:"Start the polling daemon (default)."`
 	Status statusCmd `cmd:"" help:"Print archive summary (per-chain max tree_size, equivocation flags)."`
