@@ -1,20 +1,31 @@
 #!/bin/sh
 # fd0 — client installer / updater (workstation, laptop).
 #
-#   curl -fsSL https://fd0.sh/install.sh | sh
-#   curl -fsSL https://fd0.sh/install.sh | sh -s -- --system
-#   FD0_VERSION=v1.0.0 curl -fsSL https://fd0.sh/install.sh | sh
+#   curl -fsSL https://fd0.sh/install | sh
+#   curl -fsSL https://fd0.sh/install | sh -s -- --system
+#   FD0_VERSION=v1.0.0 curl -fsSL https://fd0.sh/install | sh
+#
+# Supported platforms:
+#   - linux  / amd64, arm64
+#   - darwin / amd64, arm64   (macOS Intel + Apple Silicon)
+#
+# Windows: not yet built by the release pipeline. The fd0 client is
+# pure Go and would cross-compile, but the AF_UNIX agent socket and
+# %LOCALAPPDATA% path conventions have not been validated. Track at
+# https://github.com/ValentinKolb/fd0.sh/issues.
 #
 # Installs `fd0` and `fd0-agent` into ~/.local/bin (default) or
-# /usr/local/bin (--system), seeds ~/.fd0/config.toml if absent.
+# /usr/local/bin (--system), seeds ~/.fd0/config.toml if absent,
+# and prints a PATH hint when ~/.local/bin isn't on $PATH.
 #
 # Doubles as an upgrade script: detects an existing install, prints
 # `current → new`, and asks before touching anything. Verifies the
 # release checksum manifest against the published cosign signature
 # (skip with --no-verify or by not having cosign installed).
 #
-# For the server-side binaries (fd0-server, fd0-witness) use
-# install-server.sh instead.
+# For server-side deployments (fd0-server, fd0-witness) use the
+# Docker compose blocks in deploy/ — see docs/HOSTING.md for the
+# full production recipe.
 
 set -eu
 
@@ -214,11 +225,13 @@ if [ -z "$CURRENT" ]; then
 # fd0 client configuration. See https://github.com/${REPO}#configuration
 # for the full reference.
 #
-# Uncomment the [sync] block once you have an fd0-server URL. Without a
-# server, on_unlock=true would trigger failing background syncs.
+# By default the client targets the hosted fd0.sh instance (both
+# replicas, multi-pushed). Override by uncommenting [sync].servers
+# below; or use the singular [sync].server key when targeting one
+# self-hosted server.
 
 # [sync]
-# server    = "http://127.0.0.1:4048"
+# servers   = ["https://your-server.example", "https://your-replica.example"]
 # interval  = "1h"
 # on_unlock = true
 EOF

@@ -148,6 +148,22 @@ const app = new Hono()
       "\n</urlset>\n";
     return c.body(body, 200, { "Content-Type": "application/xml; charset=utf-8" });
   })
+  // Install-script aliases: redirect to the GitHub raw URL so the
+  // README + spoken-word command stay short. curl -fsSL follows
+  // 302 by default, so `curl -fsSL https://fd0.sh/install | sh`
+  // ends up fetching the latest scripts/install.sh from main.
+  .get("/install", (c) =>
+    c.redirect(
+      "https://raw.githubusercontent.com/ValentinKolb/fd0.sh/main/scripts/install.sh",
+      302,
+    ),
+  )
+  .get("/install.sh", (c) =>
+    c.redirect(
+      "https://raw.githubusercontent.com/ValentinKolb/fd0.sh/main/scripts/install.sh",
+      302,
+    ),
+  )
   // Pages
   .get("/", ...Home)
   .get("/docs", ...Docs)

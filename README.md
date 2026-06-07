@@ -19,10 +19,10 @@ v1.0. Wire protocol, on-disk formats, and HTTP API are frozen — future version
 Install the client (workstation, laptop, anything that holds keys):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ValentinKolb/fd0.sh/main/scripts/install.sh | sh
+curl -fsSL https://fd0.sh/install | sh
 ```
 
-Drops `fd0` and `fd0-agent` into `~/.local/bin`. Pass `--system` for `/usr/local/bin`. Verifies the release manifest with cosign when present.
+Supported platforms: Linux (amd64, arm64), macOS (Intel, Apple Silicon). Drops `fd0` and `fd0-agent` into `~/.local/bin`; pass `--system` for `/usr/local/bin`. Verifies the release manifest with cosign when present. Prints a PATH hint when `~/.local/bin` isn't on `$PATH`. Windows: tracked as a future release — the binaries cross-compile, but the AF_UNIX agent socket hasn't been validated yet.
 
 Point it at a server — either your own, or [fd0.sh](https://fd0.sh):
 
@@ -91,7 +91,7 @@ Full specs: [PROTOCOL.md](./docs/PROTOCOL.md), [API.md](./docs/API.md), [STORAGE
 
 ## Self-host
 
-Three images on `ghcr.io/valentinkolb`, multi-arch (amd64 + `:latest-arm64`):
+Three Docker images on `ghcr.io/valentinkolb`, multi-arch (amd64 + arm64):
 
 ```
 fd0-server    ~18 MB, scratch base, port 4048
@@ -99,22 +99,16 @@ fd0-witness   ~18 MB, scratch base, port 4049
 fd0-website   Bun runtime, port 5173
 ```
 
-Minimal per-service composes live in [`deploy/`](./deploy/) — one for the server, one for the witness, no proxy, no TLS, drop into whatever infra you already run:
+Minimal per-service composes live in [`deploy/`](./deploy/) — drop them into whatever infra you already run:
 
 ```bash
 cd deploy/server
 METRICS_TOKEN=$(openssl rand -hex 32) docker compose up -d
 ```
 
-For the full TLS-terminated production recipe (Caddy + Let's Encrypt + Podman quadlet on Rocky Linux), see [`docs/HOSTING.md`](./docs/HOSTING.md) — that's how `fd0.sh` itself runs.
+Put your own TLS terminator in front. The full production recipe — replicas, mutual peering, ACME, witnesses, backups, key rotation — is in [`docs/HOSTING.md`](./docs/HOSTING.md), which is also how `fd0.sh` itself runs.
 
-Bare-metal alternative — the install-server script — drops the same binaries into `/usr/local/bin` plus a hardened systemd unit at `/etc/systemd/system/fd0.service`:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/ValentinKolb/fd0.sh/main/scripts/install-server.sh | sudo sh
-```
-
-Either way the server exposes:
+Endpoints exposed by `fd0-server`:
 
 ```
 GET  /health      JSON liveness
@@ -122,7 +116,7 @@ GET  /version     JSON build info
 GET  /metrics     Prometheus (token-guarded via FD0_METRICS_TOKEN)
 POST /v1/users    register
 POST /v1/sync     push + pull events
-GET  /v1/server-info, /v1/sth/{chain}, /v1/proof/{kind}
+GET  /v1/server-info, /v1/chains, /v1/sth/{chain}, /v1/proof/{kind}
 ```
 
 ## Configuration

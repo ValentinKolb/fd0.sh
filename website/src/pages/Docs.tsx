@@ -243,7 +243,7 @@ Choose a passphrase: …
 ghp_xxxxxxxxxxxxxxxxxxxx`}
         />
         <Cmd
-          signature="fd0 copy <NAME> [--scope <s>] [--clear=30s]"
+          signature="fd0 copy <NAME> [--scope <s>] [--clear-after=30s]"
           body="Copy to clipboard with a configurable auto-clear timeout."
         />
         <Cmd
@@ -331,27 +331,30 @@ ghp_xxxxxxxxxxxxxxxxxxxx`}
       <SectionHead
         id="server"
         kicker="03 · Server"
-        title="Self-host or point your client at fd0.sh."
-        body={`The install script writes a hardened systemd unit at /etc/systemd/system/fd0.service and sources an env-var file at /etc/default/fd0-server. To use the hosted instance instead, skip this section and set server = "https://fd0.sh" in ~/.fd0/config.toml.`}
+        title="Self-host with Docker, or use the hosted fd0.sh."
+        body={`The recommended path is the docker-compose blocks in deploy/. To use the hosted instance instead, skip this section — the client defaults to api.fd0.sh + api2.fd0.sh, no extra config needed.`}
       />
 
       <div class="grid md:grid-cols-2 gap-4">
         <div>
           <div class="text-xs mb-2" style={`color:${C.dim};`}>
-            /etc/default/fd0-server
+            deploy/server/compose.yml — env
           </div>
           <div
             class="p-4 text-[13px] leading-[1.6]"
             style={`background:${C.bgRaised};border:1px solid ${C.border};font-family:${FONT_MONO};`}
           >
-            <Shell>{`FD0_BIND=:4048
-FD0_DB=/var/lib/fd0/fd0.db
-FD0_MAX_BODY=8388608
-# FD0_VERBOSE=1
+            <Shell>{`FD0_METRICS_TOKEN=<openssl rand -hex 32>
+
+# Multi-server (optional)
+# FD0_LABEL=primary
+# FD0_PEERS=https://your-replica.example
+
+# Defaults shown
+# FD0_BIND=:4048
+# FD0_DB=/data/fd0.db
 # FD0_RATELIMIT_WRITES_PER_MIN=60
-# FD0_RATELIMIT_BYTES_PER_MIN=33554432
-# FD0_RATELIMIT_REGISTER_PER_HOUR=5
-# FD0_RATELIMIT_OFF=1`}</Shell>
+# FD0_RATELIMIT_REGISTER_PER_HOUR=5`}</Shell>
           </div>
         </div>
         <div>
@@ -362,24 +365,24 @@ FD0_MAX_BODY=8388608
             class="p-4 text-[13px] leading-[1.6]"
             style={`background:${C.bgRaised};border:1px solid ${C.border};font-family:${FONT_MONO};`}
           >
-            <Shell>{`$ sudo systemctl enable --now fd0
-$ sudo systemctl status fd0
-$ sudo journalctl -u fd0 -f
+            <Shell>{`$ cd deploy/server
+$ METRICS_TOKEN=$(openssl rand -hex 32) docker compose up -d
+$ docker compose logs -f fd0-server
 
 # upgrade
-$ sudo systemctl stop fd0
-$ curl -fsSL https://fd0.sh/install-server.sh | sudo sh
-$ sudo systemctl start fd0`}</Shell>
+$ docker compose pull
+$ docker compose up -d`}</Shell>
           </div>
         </div>
       </div>
 
       <p class="text-sm mt-7 leading-relaxed max-w-3xl" style={`color:${C.dim};`}>
-        The unit ships with NoNewPrivileges, ProtectSystem=strict,
-        MemoryDenyWriteExecute, RestrictAddressFamilies, and a stripped
-        capability bounding set. State lives under{" "}
-        <span style={`color:${C.acc};font-family:${FONT_MONO};`}>/var/lib/fd0</span>{" "}
-        owned by the fd0 system user.
+        Put your own TLS terminator in front (Caddy, Traefik, nginx,
+        Cloudflare, …). The full production recipe with replicas,
+        mutual peering, ACME, witnesses, backups, and key rotation
+        lives in{" "}
+        <span style={`color:${C.acc};font-family:${FONT_MONO};`}>docs/HOSTING.md</span>{" "}
+        — that's how fd0.sh itself runs.
       </p>
     </section>
 

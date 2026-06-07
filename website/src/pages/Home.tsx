@@ -332,7 +332,7 @@ ghp_xxxxxxxxxxxxxxxxxxxx`}</Shell>
             class="p-4 text-[14px] select-all cursor-text max-w-2xl"
             style={`background:${C.bg};border:1px solid ${C.acc};font-family:${FONT_MONO};`}
           >
-            <Shell>curl -fsSL https://fd0.sh/install.sh | sh</Shell>
+            <Shell>curl -fsSL https://fd0.sh/install | sh</Shell>
           </div>
           <div class="text-xs mt-2" style={`color:${C.dim};`}>
             Installs <span style={`color:${C.acc};`}>fd0</span> and{" "}
@@ -354,19 +354,19 @@ ghp_xxxxxxxxxxxxxxxxxxxx`}</Shell>
             <BackendCol
               badge="Self-host"
               title="Run fd0-server yourself."
-              body="Two paths. Bare metal — one script installs fd0-server + fd0-witness and drops a hardened systemd unit. Docker — a reference compose stack brings up Traefik + all three services with TLS in one command."
-              code="curl -fsSL https://fd0.sh/install-server.sh | sudo sh"
-              codeNote="Or: docker compose -f deploy/compose.yml up -d — Traefik routes fd0.sh / api.fd0.sh / witness.fd0.sh, Let's Encrypt via TLS-ALPN-01, shared METRICS_TOKEN across all three. See deploy/ in the repo."
+              body="Docker compose blocks in deploy/ for fd0-server and fd0-witness — bring your own TLS terminator. The full production recipe (replicas, mutual peering, ACME, witnesses, backups, key rotation) is in docs/HOSTING.md and is what fd0.sh itself runs."
+              code="cd deploy/server && METRICS_TOKEN=$(openssl rand -hex 32) docker compose up -d"
+              codeNote="Multi-server replicas: set FD0_LABEL + FD0_PEERS on each server, declare both URLs in [sync].servers on the client, multi-push runs by default."
             />
             <BackendCol
               badge="Hosted at fd0.sh"
               title="Use the managed instance."
-              body="Same fd0-server binary, operated by Kolb Antik GmbH from a high-availability Proxmox cluster in the SWU (Stadtwerke Ulm) data center in Germany. GDPR jurisdiction. Same ciphertext-only contract — the operator cannot decrypt secrets."
-              code={`# ~/.fd0/config.toml
+              body="Two replicas in two German data centers, operated by Kolb Antik GmbH. api.fd0.sh at SWU Ulm (Rocky + Podman + Caddy), api2.fd0.sh at Hetzner Falkenstein (Debian + Docker + Traefik) — deliberate stack diversity. Same ciphertext-only contract — the operator cannot decrypt secrets."
+              code={`# ~/.fd0/config.toml — these are the default servers
 [sync]
-server = "https://fd0.sh"
+servers   = ["https://api.fd0.sh", "https://api2.fd0.sh"]
 on_unlock = true`}
-              codeNote="Hourly VM snapshots with daily off-site copies to Hetzner S3, daily encrypted DB backups, crypto keys held off-host. Full writeup: docs/HOSTING.md."
+              codeNote="Hourly Proxmox snapshots + daily off-site Hetzner S3 copy on SWU; daily Hetzner Cloud backups on the replica; daily encrypted SQLite snapshots on both. Full writeup: docs/HOSTING.md."
             />
           </div>
         </div>
