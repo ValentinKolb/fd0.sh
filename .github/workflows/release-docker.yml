@@ -31,70 +31,125 @@ permissions:
   packages: write
 
 jobs:
-  build:
-    name: ${{ matrix.service }} (${{ matrix.platform }})
-    # Skip the matrix entries that do not match this tag. A `fd0-v*`
-    # coordinated tag passes the filter for every service; per-component
-    # tags pass only for their own service.
-    if: |
-      startsWith(github.ref, 'refs/tags/fd0-v') ||
-      (matrix.service == 'fd0-server'  && startsWith(github.ref, 'refs/tags/server-v')) ||
-      (matrix.service == 'fd0-witness' && startsWith(github.ref, 'refs/tags/witness-v')) ||
-      (matrix.service == 'fd0-website' && startsWith(github.ref, 'refs/tags/website-v'))
+  # ─── fd0-server ──────────────────────────────────────────────────────
+  fd0-server:
+    if: startsWith(github.ref, 'refs/tags/server-v') || startsWith(github.ref, 'refs/tags/fd0-v')
+    name: fd0-server (${{ matrix.platform }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        service: [fd0-website, fd0-server, fd0-witness]
         platform: [amd64, arm64]
-        include:
-          - service: fd0-website
-            context: ./website
-            dockerfile: ./website/Dockerfile
-          - service: fd0-server
-            context: .
-            dockerfile: ./cmd/fd0-server/Dockerfile
-          - service: fd0-witness
-            context: .
-            dockerfile: ./cmd/fd0-witness/Dockerfile
-
     steps:
       - uses: actions/checkout@v4
-
-      - name: Resolve tags
-        id: meta
+      - id: meta
         run: |
-          # Strip the "<component>-v" prefix (also handles a bare "v"
-          # in case someone hand-pushes an old-style tag).
           version="${GITHUB_REF_NAME##*-v}"
           version="${version#v}"
           owner_lc=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           if [ "${{ matrix.platform }}" = "amd64" ]; then
-            echo "tags=ghcr.io/${owner_lc}/${{ matrix.service }}:${version},ghcr.io/${owner_lc}/${{ matrix.service }}:latest" >> "$GITHUB_OUTPUT"
+            echo "tags=ghcr.io/${owner_lc}/fd0-server:${version},ghcr.io/${owner_lc}/fd0-server:latest" >> "$GITHUB_OUTPUT"
           else
-            echo "tags=ghcr.io/${owner_lc}/${{ matrix.service }}:${version}-arm64,ghcr.io/${owner_lc}/${{ matrix.service }}:latest-arm64" >> "$GITHUB_OUTPUT"
+            echo "tags=ghcr.io/${owner_lc}/fd0-server:${version}-arm64,ghcr.io/${owner_lc}/fd0-server:latest-arm64" >> "$GITHUB_OUTPUT"
           fi
-
       - uses: docker/setup-qemu-action@v3
         if: matrix.platform == 'arm64'
-
       - uses: docker/setup-buildx-action@v3
-
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
       - uses: docker/build-push-action@v6
         with:
-          context: ${{ matrix.context }}
-          file: ${{ matrix.dockerfile }}
+          context: .
+          file: ./cmd/fd0-server/Dockerfile
           platforms: linux/${{ matrix.platform }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
-          build-args: |
-            VERSION=${{ steps.meta.outputs.version }}
-          cache-from: type=gha,scope=${{ matrix.service }}-${{ matrix.platform }}
-          cache-to: type=gha,scope=${{ matrix.service }}-${{ matrix.platform }},mode=max
+          build-args: VERSION=${{ steps.meta.outputs.version }}
+          cache-from: type=gha,scope=fd0-server-${{ matrix.platform }}
+          cache-to: type=gha,scope=fd0-server-${{ matrix.platform }},mode=max
+
+  # ─── fd0-witness ─────────────────────────────────────────────────────
+  fd0-witness:
+    if: startsWith(github.ref, 'refs/tags/witness-v') || startsWith(github.ref, 'refs/tags/fd0-v')
+    name: fd0-witness (${{ matrix.platform }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - id: meta
+        run: |
+          version="${GITHUB_REF_NAME##*-v}"
+          version="${version#v}"
+          owner_lc=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          if [ "${{ matrix.platform }}" = "amd64" ]; then
+            echo "tags=ghcr.io/${owner_lc}/fd0-witness:${version},ghcr.io/${owner_lc}/fd0-witness:latest" >> "$GITHUB_OUTPUT"
+          else
+            echo "tags=ghcr.io/${owner_lc}/fd0-witness:${version}-arm64,ghcr.io/${owner_lc}/fd0-witness:latest-arm64" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: docker/setup-qemu-action@v3
+        if: matrix.platform == 'arm64'
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./cmd/fd0-witness/Dockerfile
+          platforms: linux/${{ matrix.platform }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: VERSION=${{ steps.meta.outputs.version }}
+          cache-from: type=gha,scope=fd0-witness-${{ matrix.platform }}
+          cache-to: type=gha,scope=fd0-witness-${{ matrix.platform }},mode=max
+
+  # ─── fd0-website ─────────────────────────────────────────────────────
+  fd0-website:
+    if: startsWith(github.ref, 'refs/tags/website-v') || startsWith(github.ref, 'refs/tags/fd0-v')
+    name: fd0-website (${{ matrix.platform }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - id: meta
+        run: |
+          version="${GITHUB_REF_NAME##*-v}"
+          version="${version#v}"
+          owner_lc=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          if [ "${{ matrix.platform }}" = "amd64" ]; then
+            echo "tags=ghcr.io/${owner_lc}/fd0-website:${version},ghcr.io/${owner_lc}/fd0-website:latest" >> "$GITHUB_OUTPUT"
+          else
+            echo "tags=ghcr.io/${owner_lc}/fd0-website:${version}-arm64,ghcr.io/${owner_lc}/fd0-website:latest-arm64" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: docker/setup-qemu-action@v3
+        if: matrix.platform == 'arm64'
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: ./website
+          file: ./website/Dockerfile
+          platforms: linux/${{ matrix.platform }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: VERSION=${{ steps.meta.outputs.version }}
+          cache-from: type=gha,scope=fd0-website-${{ matrix.platform }}
+          cache-to: type=gha,scope=fd0-website-${{ matrix.platform }},mode=max
