@@ -30,14 +30,19 @@ The transparency log catches operator misbehavior: any STH the operator signs is
 
 ## Stack
 
-| Layer | Software | Version |
+The two replicas run **deliberately different stacks** so a CVE, regression, or upstream outage in one component never takes down both at once. Identical binaries, different everything else.
+
+| Layer | api.fd0.sh (SWU) | api2.fd0.sh (Hetzner) |
 |---|---|---|
-| OS | Rocky Linux | 10 |
-| Container runtime | Podman + Quadlet | 5.x |
-| Reverse proxy + TLS | Caddy | 2.x |
-| TLS provider | Let's Encrypt | TLS-ALPN-01 |
-| Database | SQLite | as bundled with the binaries |
-| Binaries | `fd0-server`, `fd0-witness`, `fd0-website` | tagged release from this repo |
+| OS | Rocky Linux 10 | Debian 13 (Trixie) |
+| Container runtime | Podman 5.x + Quadlet | Docker 29 + Compose v5 |
+| Reverse proxy + TLS | Caddy 2.x | Traefik 3.x |
+| Firewall | Proxmox layer (host has no firewalld) | UFW + fail2ban + Hetzner Cloud Firewall |
+| TLS provider | Let's Encrypt TLS-ALPN-01 (both) ||
+| Database | SQLite as bundled with the binary (both) ||
+| Binaries | `fd0-server`, `fd0-witness`, `fd0-website` from this repo (both) ||
+
+The stack-diversity choice is operational, not religious. Podman is daemonless and SELinux-confined; Docker is daemon-rooted but better integrated with Traefik labels. Rocky tracks RHEL's slow-and-stable line; Debian tracks community-driven updates. If one combination has a bad day, the other usually does not.
 
 Build artefacts come from the [release-docker workflow](../.github/workflows/release-docker.yml) — multi-arch images signed by GitHub's OIDC and published to `ghcr.io/valentinkolb/`.
 
@@ -96,8 +101,92 @@ For security issues affecting the hosted instance (or the code), email **mail@va
 
 For privacy-law requests under DSGVO/GDPR (subject access, deletion), email the same address. Note that fd0's zero-knowledge design means the operator cannot decrypt user data — most data subject requests resolve to "we hold ciphertext you can already access from your own client; delete is a chain operation that originates on your device."
 
-## Replicating the setup
+## Self-hosting with replicas
 
-[`deploy/`](../deploy/) ships minimal docker-compose building blocks (one per service) for anyone who wants to run their own fd0-server or fd0-witness. They're intentionally infrastructure-agnostic — no proxy, no TLS, no opinions — so they plug into whatever you already run.
+The patterns above are reproducible on any operator setup. Here is the minimum-viable shape — strip what you do not need.
 
-The full production recipe with TLS, ACME, multi-arch container images, and quadlet-managed lifecycle is the one this document describes; if you want to reproduce `fd0.sh` end-to-end, follow the Stack section above on any modern Linux host with podman and a public IP.
+### Single server (no replica)
+
+The simplest deployment. One VM, one `fd0-server` container, your reverse proxy of choice handling TLS.
+
+```bash
+cd deploy/server
+METRICS_TOKEN=$(openssl rand -hex 32) docker compose up -d
+# fd0-server now listens on :4048 inside the container; expose it
+# behind your TLS terminator (Caddy, Traefik, nginx, Cloudflare, …).
+```
+
+Client side:
+
+```toml
+# ~/.fd0/config.toml
+[sync]
+server = "https://your-domain.example"
+```
+
+Done. Skip the rest of this section.
+
+### Two replicas (mutual peers)
+
+The shape `fd0.sh` itself runs — one server in each of two data centers, each labelled, each peering with the other, clients multi-push to both.
+
+**Step 1 — DNS.** Pick two hostnames (`api.example.com` + `api2.example.com`). Point each at its own VM. TLS will use TLS-ALPN-01 on `:443` so port 80 only needs the HTTP→HTTPS redirect.
+
+**Step 2 — Server A.** Boot `fd0-server` with a self-label and the other replica as its peer.
+
+```yaml
+# deploy/server/compose.yml — see the inline comments for every knob
+environment:
+  FD0_LABEL: site-a                              # [a-z0-9-]{0,32}
+  FD0_PEERS: https://api2.example.com            # the OTHER replica
+  FD0_METRICS_TOKEN: ${METRICS_TOKEN:?}
+```
+
+**Step 3 — Server B.** Same shape, swapped peers.
+
+```yaml
+environment:
+  FD0_LABEL: site-b
+  FD0_PEERS: https://api.example.com
+  FD0_METRICS_TOKEN: ${METRICS_TOKEN:?}
+```
+
+On boot each server resolves the other via `GET /v1/server-info`, TOFU-pins the peer's signing pubkey in its own `peers` SQLite table, and republishes the resolved entry in its own signed `/v1/server-info`. Verify with `curl`:
+
+```bash
+curl -s https://api.example.com/v1/server-info  | python3 -c "import sys,cbor2;d=cbor2.loads(sys.stdin.buffer.read());print('label=',d['label']);print('peers=',d.get('peers'))"
+curl -s https://api2.example.com/v1/server-info | python3 -c "…"
+# Each should list the OTHER server's URL + pubkey + label.
+```
+
+**Step 4 — Client config.** Tell clients about both servers.
+
+```toml
+# ~/.fd0/config.toml
+[sync]
+servers = ["https://api.example.com", "https://api2.example.com"]
+```
+
+The client now pushes every event to BOTH servers per sync round. Reads fall over: if A is down, the client uses B. First-contact pinning runs separately per URL — the safety-number ceremony happens once per server.
+
+**Step 5 (optional) — One witness per replica.** Each server keeps its own RFC 6962 transparency log under its own ed25519 key. For full equivocation detection you want one witness polling each:
+
+```yaml
+# witness1 polls server A
+FD0_WITNESS_SERVER_URL: https://api.example.com
+
+# witness2 polls server B
+FD0_WITNESS_SERVER_URL: https://api2.example.com
+```
+
+Witnesses TOFU-pin their server's pubkey on first poll. Cosigned STHs from each witness anchor each server's history independently.
+
+### Operational notes
+
+- **What replicates today.** Each multi-pushing client puts its own events on every configured server. Events authored against ONLY one server stay there until a multi-pushing client moves them — server-to-server gossip is a future revision (see TRANSLOG.md §11).
+- **Adding a third replica later.** New server's `FD0_PEERS` lists the existing two; the existing two have their `FD0_PEERS` extended to include the new one and restarted. TOFU-pins establish in both directions on the next resolver tick (default 1h, or restart for immediate). Clients add the new URL to `[sync].servers`.
+- **Removing a replica.** Stop the container, remove the entry from the other servers' `FD0_PEERS`, remove from clients' `[sync].servers`. Surviving servers keep their pinned-peer row in SQLite until you `DELETE FROM peers WHERE url = ?` — harmless, just stale.
+- **Rotating a server's ed25519 key.** Same ceremony as a single-server rotation (TRANSLOG.md §4.3). Every client AND every peering server has to re-pin: peers refuse silent rotation precisely so an attacker can't substitute a key behind your back. Wipe the row on each peer (`DELETE FROM peers WHERE url = ?`) and they re-TOFU on next resolver tick.
+- **Per-server backups.** Each server has its own SQLite DB and its own ed25519 key. Both need their own backup pipeline — losing one replica's data does not corrupt the other, but it does cost the witness archive for STHs signed under the lost key.
+
+[`deploy/`](../deploy/) ships minimal docker-compose building blocks (one per service) so any reverse-proxy / TLS combination plugs in. The full production recipe with TLS, ACME, multi-arch container images, and per-stack lifecycle is the one this document describes; if you want to reproduce `fd0.sh` end-to-end, follow the Stack section above with the matching combination of distro + runtime + proxy on each host.

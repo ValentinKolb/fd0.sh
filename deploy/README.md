@@ -53,16 +53,16 @@ Both composes are env-driven. Required vars are declared with `:?` so `docker co
 
 ### Multi-server (v0.0.4+)
 
-Running two `fd0-server` instances in different data centers? Set `FD0_LABEL` on each one (something like `primary` / `replica-eu`) and `FD0_PEERS` to the other's URL. Each server resolves its peers on boot, TOFU-pins their pubkeys, and embeds the resolved list in its own signed `/v1/server-info`.
+Running two `fd0-server` instances in different data centers? The wire format and resolver are documented in `docs/TRANSLOG.md` §11; the step-by-step recipe (DNS, TLS, peer config, client config, rotation) is in [`docs/HOSTING.md`](../docs/HOSTING.md#self-hosting-with-replicas).
 
-The client side (`~/.fd0/config.toml`) declares the same URLs:
+Quick version:
 
-```toml
-[sync]
-servers = ["https://primary.example", "https://replica-eu.example"]
-```
+1. Each server gets `FD0_LABEL` ([a-z0-9-]{0,32}) and `FD0_PEERS` pointing at every OTHER replica.
+2. On boot each server fetches each peer's `/v1/server-info`, TOFU-pins the peer's signing pubkey, and republishes the resolved list (signed) in its own `/v1/server-info`.
+3. Clients declare `[sync].servers = [...]` in `~/.fd0/config.toml`; the client multi-pushes to every entry per sync round (idempotent, server-side dedup) and falls over on reads.
+4. Until server-side gossip lands, only multi-pushing clients propagate events across replicas — a single-server client populates one replica only.
 
-The client pushes every event to BOTH servers per sync round and falls over on reads when one is unreachable. See `docs/TRANSLOG.md` §11 for the trust model.
+Both replicas should run their own `fd0-witness` (poll URL = the local replica) so equivocation is detected independently per server.
 
 Full env-var reference per binary: `fd0-server --help`, `fd0-witness --help`.
 
