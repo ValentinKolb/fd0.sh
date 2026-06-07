@@ -16,6 +16,11 @@
 #   ghcr.io/<owner>/fd0-<service>:0.0.5-arm64   arm64
 #   ghcr.io/<owner>/fd0-<service>:latest-arm64  arm64
 
+# Arm64 jobs run on `ubuntu-24.04-arm` (native arm64 host) so no qemu
+# emulation is needed. Previous runs used `docker/setup-qemu-action`
+# which intermittently failed when Docker Hub stalled on the
+# `tonistiigi/binfmt` pull.
+
 name: release-docker
 
 on:
@@ -35,7 +40,7 @@ jobs:
   fd0-server:
     if: startsWith(github.ref, 'refs/tags/server-v') || startsWith(github.ref, 'refs/tags/fd0-v')
     name: fd0-server (${{ matrix.platform }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.platform == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -53,8 +58,6 @@ jobs:
           else
             echo "tags=ghcr.io/${owner_lc}/fd0-server:${version}-arm64,ghcr.io/${owner_lc}/fd0-server:latest-arm64" >> "$GITHUB_OUTPUT"
           fi
-      - uses: docker/setup-qemu-action@v3
-        if: matrix.platform == 'arm64'
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
@@ -76,7 +79,7 @@ jobs:
   fd0-witness:
     if: startsWith(github.ref, 'refs/tags/witness-v') || startsWith(github.ref, 'refs/tags/fd0-v')
     name: fd0-witness (${{ matrix.platform }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.platform == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -94,8 +97,6 @@ jobs:
           else
             echo "tags=ghcr.io/${owner_lc}/fd0-witness:${version}-arm64,ghcr.io/${owner_lc}/fd0-witness:latest-arm64" >> "$GITHUB_OUTPUT"
           fi
-      - uses: docker/setup-qemu-action@v3
-        if: matrix.platform == 'arm64'
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
@@ -117,7 +118,7 @@ jobs:
   fd0-website:
     if: startsWith(github.ref, 'refs/tags/website-v') || startsWith(github.ref, 'refs/tags/fd0-v')
     name: fd0-website (${{ matrix.platform }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.platform == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -135,8 +136,6 @@ jobs:
           else
             echo "tags=ghcr.io/${owner_lc}/fd0-website:${version}-arm64,ghcr.io/${owner_lc}/fd0-website:latest-arm64" >> "$GITHUB_OUTPUT"
           fi
-      - uses: docker/setup-qemu-action@v3
-        if: matrix.platform == 'arm64'
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
