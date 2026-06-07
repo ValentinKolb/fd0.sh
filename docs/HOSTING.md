@@ -68,13 +68,19 @@ The default `fd0` client is configured (see `internal/fdhome/config.go`) to push
 
 Until the server-side gossip work lands (TRANSLOG.md §11 peer-replication roadmap), cross-author replication relies entirely on multi-pushing clients. A reader who talks to only one server will eventually see events authored against the other server as soon as ANY multi-pushing client syncs.
 
+The two replicas also **deliberately run different stacks** (see the Stack table above) — Rocky + Podman + Caddy on SWU, Debian + Docker + Traefik on Hetzner. A bug in one runtime or proxy can't take both replicas down simultaneously.
+
 ## Backups
 
-Three independent layers, each with its own failure model:
+VM-level backups differ per replica because each provider's primitives are different:
 
-1. **VM-level snapshots** — at least hourly on the Kolb Antik Proxmox cluster, with a daily copy replicated to **Hetzner S3 object storage** in a separate data center. Protects against host failure, full VM corruption, and total loss of the primary cluster (the off-site copy survives a complete data-center incident at SWU).
-2. **Daily SQLite snapshots** — `sqlite3 .backup` of `fd0.db` and `witness.db`, gzipped, 30-day rotation. Runs as a systemd timer, lives at `/var/backups/fd0/`.
-3. **Crypto-key off-host backup** — the server's transparency-log signing key and the witness's cosign key are exported once and stored in an off-host encrypted vault. These keys do not change for the server's lifetime, so a one-time export is sufficient; restoring them on a fresh host lets existing clients keep working without re-pinning.
+- **api.fd0.sh (SWU)** — at least hourly snapshots on the Kolb Antik Proxmox cluster, with a daily copy replicated to **Hetzner S3 object storage** in a separate data center. The off-site copy survives a complete data-center incident at SWU.
+- **api2.fd0.sh (Hetzner)** — daily VM-level backups via Hetzner Cloud's built-in backup feature. No additional off-site replication; api2 is itself the off-site copy for api.fd0.sh's data via the multi-push model.
+
+On each replica these layers stack on top of the VM backups:
+
+1. **Daily SQLite snapshots** — `sqlite3 .backup` of `fd0.db` and `witness.db`, gzipped, 30-day rotation. Runs as a systemd timer, lives at `/var/backups/fd0/`.
+2. **Crypto-key off-host backup** — the server's transparency-log signing key and the witness's cosign key are exported once and stored in an off-host encrypted vault. These keys do not change for the server's lifetime, so a one-time export is sufficient; restoring them on a fresh host lets existing clients keep working without re-pinning.
 
 The metrics token (used for Prometheus scrapes) is rotateable in place; rotation does not require a backup.
 
