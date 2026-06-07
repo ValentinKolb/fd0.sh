@@ -131,7 +131,8 @@ Client — `~/.fd0/config.toml`:
 
 ```toml
 [sync]
-server    = "https://fd0.sh"             # or via FD0_SERVER env
+servers   = ["https://api.fd0.sh", "https://api2.fd0.sh"]   # v0.0.4+ multi-server
+# server  = "https://your-own.example"                       # legacy singular still honoured
 interval  = "1h"                          # periodic background sync; "" disables
 on_unlock = true                          # sync immediately after unlock
 
@@ -146,6 +147,8 @@ max_lifetime = "8h"                       # hard cap, lock after N regardless of
 clear_after_seconds = 30                  # default for `fd0 copy`; 0 disables auto-clear
 ```
 
+`servers` is the v0.0.4 multi-server array — the client pushes every event to every entry (idempotent, server-side dedup) and falls over on reads. When unset, falls back to `server` (singular), then `FD0_SERVER`, then the built-in defaults (`api.fd0.sh` + `api2.fd0.sh`, both hosted at fd0.sh). Self-hosters override by setting either field.
+
 `fd0 copy NAME --clear-after=30s` overrides per-call. Env overrides: `FD0_HOME`, `FD0_SERVER`, `FD0_LOCK_WAIT`, `FD0_AGENT_IDLE`, `FD0_AGENT_MAX_LIFETIME`.
 
 Server — flags or env:
@@ -154,7 +157,7 @@ Server — flags or env:
 fd0-server --bind=:4048 --db=./fd0.db
 ```
 
-`FD0_BIND`, `FD0_DB`, `FD0_MAX_BODY`, `FD0_METRICS_TOKEN`, `FD0_VERBOSE`, plus rate-limit knobs (`FD0_RATELIMIT_*`). `fd0-server --help` for the full list.
+`FD0_BIND`, `FD0_DB`, `FD0_MAX_BODY`, `FD0_METRICS_TOKEN`, `FD0_VERBOSE`, `FD0_LABEL`, `FD0_PEERS`, plus rate-limit knobs (`FD0_RATELIMIT_*`). `fd0-server --help` for the full list. Multi-server topology and the peer-hint wire format are documented in `docs/TRANSLOG.md` §11.
 
 ## Diagnostics
 

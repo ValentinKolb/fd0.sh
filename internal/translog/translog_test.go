@@ -645,7 +645,7 @@ func TestServerInfoSignVerify(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	info, err := SignServerInfo(priv, 1700000000)
+	info, err := SignServerInfo(priv, 1700000000, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -671,6 +671,28 @@ func TestServerInfoSignVerify(t *testing.T) {
 	bad.Signature[0] ^= 0x01
 	if err := VerifyServerInfo(bad); err == nil {
 		t.Fatal("ServerInfo with tampered signature must not verify")
+	}
+
+	// Label + Peers are part of the signed input — tampering them
+	// after the fact must fail verification.
+	infoP, err := SignServerInfo(priv, 1700000000, "primary",
+		[]PeerInfo{{URL: "https://api2", Pub: make([]byte, 32), Label: "replica-2"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyServerInfo(infoP); err != nil {
+		t.Fatalf("good ServerInfo with peers should verify: %v", err)
+	}
+	bad = infoP
+	bad.Label = "primary-tampered"
+	if err := VerifyServerInfo(bad); err == nil {
+		t.Fatal("ServerInfo with tampered label must not verify")
+	}
+	bad = infoP
+	bad.Peers = append([]PeerInfo(nil), infoP.Peers...)
+	bad.Peers[0].Label = "evil"
+	if err := VerifyServerInfo(bad); err == nil {
+		t.Fatal("ServerInfo with tampered peer label must not verify")
 	}
 }
 

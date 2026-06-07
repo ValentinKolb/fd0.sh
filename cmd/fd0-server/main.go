@@ -133,6 +133,20 @@ type cli struct {
 	MaxBody int64  `name:"max-body" help:"Max request body bytes." default:"8388608" env:"FD0_MAX_BODY"`
 	Verbose bool   `name:"verbose" short:"v" help:"Verbose logging." env:"FD0_VERBOSE"`
 
+	// Label is this server's self-declared identifier ([a-z0-9-]{0,32}).
+	// Other servers that list this one in their FD0_PEERS will publish
+	// this value in their /v1/server-info as the peer's Label. Optional;
+	// when unset, peers list this server without a label.
+	Label string `name:"label" help:"Self-declared label [a-z0-9-]{0,32}." default:"" env:"FD0_LABEL"`
+
+	// Peers is the comma-separated list of replica URLs this server
+	// resolves and republishes in its /v1/server-info. The resolver
+	// fetches each one's /v1/server-info on boot and on a periodic
+	// schedule; the peer's signing pubkey is TOFU-pinned in SQLite on
+	// first success and the peer's self-declared FD0_LABEL is copied
+	// verbatim. Empty when running solo.
+	Peers []string `name:"peers" help:"Comma-separated peer URLs to resolve + republish." env:"FD0_PEERS"`
+
 	// MetricsToken protects the /metrics endpoint. If empty, /metrics
 	// is served openly (suitable for a trusted internal network or
 	// behind a scrape-only reverse proxy). If set, scrapers must send
@@ -174,6 +188,9 @@ func main() {
 		MaxBytes: c.MaxBody,
 		Logger:   log,
 		Observer: obs,
+
+		Label: c.Label,
+		Peers: c.Peers,
 
 		RateLimitDisabled: c.NoRateLimit,
 		RateLimit: ratelimit.Config{

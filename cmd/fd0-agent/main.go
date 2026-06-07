@@ -81,10 +81,13 @@ func main() {
 		log.Error("bad max-lifetime", "err", err)
 		os.Exit(2)
 	}
-	server := cfg.Sync.Server
-	if server == "" {
-		server = os.Getenv("FD0_SERVER")
-	}
+	// v0.0.4: multi-server resolution. If FD0_SERVER is explicitly set
+	// in the agent's env (single-target override path), pass it through
+	// so the child `fd0 sync` sees it and collapses to one server.
+	// Otherwise leave FD0_SERVER unset on the child so it resolves
+	// [sync].servers from config and ultimately falls back to
+	// fdhome.DefaultServers.
+	serverOverride := os.Getenv("FD0_SERVER")
 	var sched *agent.Scheduler
 	onUnlock := cfg.Sync.OnUnlockEnabled()
 	if interval := cfg.SyncIntervalDuration(); interval > 0 || onUnlock {
@@ -92,11 +95,19 @@ func main() {
 			Interval: interval,
 			OnUnlock: onUnlock,
 			FD0Bin:   os.Getenv("FD0_BIN"),
-			Server:   server,
+			Server:   serverOverride,
 			Home:     paths.Home,
 		}, log)
+		// Log what the child will pick up. Empty override means
+		// config resolution wins — surface that, plus the resolved
+		// list, so the user sees what the agent will hit.
 		if interval > 0 {
-			log.Info("agent: auto-sync enabled", "interval", interval, "server", server)
+			if serverOverride != "" {
+				log.Info("agent: auto-sync enabled", "interval", interval, "server", serverOverride)
+			} else {
+				log.Info("agent: auto-sync enabled",
+					"interval", interval, "servers", cfg.Sync.ResolvedServers())
+			}
 		}
 		if onUnlock {
 			log.Info("agent: on-unlock sync enabled")

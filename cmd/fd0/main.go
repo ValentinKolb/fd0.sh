@@ -229,7 +229,7 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 		if c.Sync.WaitLock != "" {
 			os.Setenv("FD0_LOCK_WAIT", c.Sync.WaitLock)
 		}
-		return cli.RunSync(ctx, c.Sync.Server)
+		return cli.RunSyncAll(ctx, cli.ResolveServers(c.Sync.Server))
 	case "doctor":
 		return cli.RunDoctor(ctx)
 	case "auth list", "auth ls":

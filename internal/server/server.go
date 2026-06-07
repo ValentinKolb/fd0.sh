@@ -52,6 +52,26 @@ type Config struct {
 	// instrumentation. nil falls back to NoopObserver — safe in tests
 	// or when /metrics isn't wired.
 	Observer Observer
+
+	// Label is this server's self-declared identifier, embedded in
+	// /v1/server-info and signed alongside the pubkey. Must satisfy
+	// [a-z0-9-]{0,32}; New rejects invalid values rather than silently
+	// stripping them so a typo in FD0_LABEL doesn't ship a no-label
+	// server. Empty = no label.
+	Label string
+
+	// Peers lists the replica URLs this server should resolve and
+	// republish. The peer resolver fetches each one's /v1/server-info
+	// on boot and on PeerResolveInterval (default 1h); pubkeys are
+	// TOFU-pinned per-URL in SQLite. URLs are canonicalised via
+	// canon.ParseURL before storage. Empty = solo server.
+	Peers []string
+
+	// PeerResolveInterval controls how often the peer resolver
+	// refreshes its view of each peer. Zero = the documented default
+	// (1 hour). Set short (e.g. 5s) in tests to make state observable
+	// without flaky waits.
+	PeerResolveInterval time.Duration
 }
 
 // Observer hooks the server emits on every domain operation. Implementations
@@ -89,12 +109,7 @@ type Server struct {
 	rl        *ratelimit.Limiter // nil when disabled
 	rlStop    context.CancelFunc // cancels the limiter's GC goroutine on Close
 	pruneStop context.CancelFunc // cancels the noncePruner goroutine on Close
-
-	// serverInfo is the cached self-signed pubkey-publication record
-	// returned by GET /v1/server-info. Built once at boot — pubkey +
-	// IssuedAt are static for the server's lifetime, so caching saves
-	// a signature per first-contact request.
-	serverInfo []byte
+	peerStop  context.CancelFunc // cancels the peer resolver goroutine on Close
 }
 
 // Store exposes the underlying *store.Store for tests and tooling
@@ -115,6 +130,24 @@ func New(cfg Config) (*Server, error) {
 	if cfg.Observer == nil {
 		cfg.Observer = NoopObserver{}
 	}
+	// Validate FD0_LABEL up front. A typo in the env var should produce
+	// a loud boot failure, not silently ship a peer with no label.
+	if !store.ValidLabel(cfg.Label) {
+		return nil, fmt.Errorf("FD0_LABEL %q: must match [a-z0-9-]{0,32}", cfg.Label)
+	}
+	// Canonicalise FD0_PEERS once at boot. Anything that survives this
+	// pass goes into the resolver loop and into the peers table under
+	// its canonical form, so map-key equality with the peer's own
+	// /v1/server-info URL is byte-stable downstream.
+	canonPeers, err := canonicalisePeers(cfg.Peers)
+	if err != nil {
+		return nil, fmt.Errorf("FD0_PEERS: %w", err)
+	}
+	cfg.Peers = canonPeers
+	if cfg.PeerResolveInterval == 0 {
+		cfg.PeerResolveInterval = 1 * time.Hour
+	}
+
 	st, err := store.Open(cfg.DBPath)
 	if err != nil {
 		return nil, err
@@ -134,19 +167,17 @@ func New(cfg Config) (*Server, error) {
 		_ = st.Close()
 		return nil, err
 	}
-	// Pre-compute the cached /v1/server-info bytes so each first-contact
-	// request is one cheap CBOR write rather than a fresh Ed25519 sign.
-	info, err := st.SignServerInfo(uint64(time.Now().Unix()))
-	if err != nil {
+	// Sanity-sign once at boot so SignServerInfo wiring errors fail
+	// fast (translog key not installed, etc). We DO NOT cache the
+	// result — peers are dynamic, and a per-request sign of a 256-byte
+	// CBOR payload is cheap (~50µs Ed25519 + a tiny SQLite SELECT). The
+	// previous static cache became correctness-hostile once Peers became
+	// runtime-mutable.
+	if _, err := st.SignServerInfo(uint64(time.Now().Unix()), cfg.Label, nil); err != nil {
 		_ = st.Close()
 		return nil, err
 	}
-	infoBytes, err := proto.Marshal(info)
-	if err != nil {
-		_ = st.Close()
-		return nil, err
-	}
-	s := &Server{cfg: cfg, store: st, mux: http.NewServeMux(), log: cfg.Logger, serverInfo: infoBytes}
+	s := &Server{cfg: cfg, store: st, mux: http.NewServeMux(), log: cfg.Logger}
 	if !cfg.RateLimitDisabled {
 		var rlCtx context.Context
 		rlCtx, s.rlStop = context.WithCancel(context.Background())
@@ -160,11 +191,22 @@ func New(cfg Config) (*Server, error) {
 	pruneCtx, pruneCancel := context.WithCancel(context.Background())
 	s.pruneStop = pruneCancel
 	go s.noncePruner(pruneCtx)
+	// Peer resolver: TOFU-pins each configured peer's pubkey on first
+	// success, refreshes label + last_verified on schedule. No-op when
+	// FD0_PEERS is empty so solo deployments incur zero overhead.
+	if len(cfg.Peers) > 0 {
+		peerCtx, peerCancel := context.WithCancel(context.Background())
+		s.peerStop = peerCancel
+		go s.runPeerResolver(peerCtx)
+	}
 	return s, nil
 }
 
 // Close releases resources.
 func (s *Server) Close() error {
+	if s.peerStop != nil {
+		s.peerStop()
+	}
 	if s.pruneStop != nil {
 		s.pruneStop()
 	}
@@ -225,28 +267,42 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GET /v1/server-info — publish the cached self-signed pubkey record.
-// Unauthenticated by design; first-contact pinning binds the pubkey
-// to the operator the user trusts (TRANSLOG.md §6.1).
-// handleServerInfo serves the cached self-signed /v1/server-info
-// blob. Codex threat-model 2nd-round review caught that the
-// previous attempt to rate-limit this with the AcquireRegister
-// bucket (5/hour per-IP) blocks normal client behaviour:
-// `cli.EnsurePinnedServer` refetches server-info on every sync
-// for pin-mismatch detection, so any client syncing >5 times per
+// GET /v1/server-info — publish the self-signed pubkey + label + peers
+// record. Unauthenticated by design; first-contact pinning binds the
+// pubkey to the operator the user trusts (TRANSLOG.md §6.1). Codex
+// threat-model 2nd-round review caught that rate-limiting this with
+// the AcquireRegister bucket (5/hour per-IP) blocks normal client
+// behaviour: `cli.EnsurePinnedServer` refetches server-info on every
+// sync for pin-mismatch detection, so any client syncing >5 times per
 // hour from the same NAT/IP would 429-out. Rate-limit reverted;
 // the residual DoS exposure is documented in THREATS.md T48.
 //
-// The blob is already cached in memory and ~256 bytes; serving
-// unbounded requests of it is cheaper than fetching the SQLite
-// state, so the residual cost is acceptable.
+// As of v0.0.4 the response carries the current peer list from SQLite,
+// so the response is re-signed per request rather than cached. Cost
+// per call: one cheap SELECT on the small peers table + one Ed25519
+// sign (~50µs). Still well below the cost of any data-API response.
 //
 // THREAT: T48 (residual DoS at this unauthenticated endpoint —
 //                documented as accepted exposure for v1.0).
 func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
+	peers, err := s.store.ListPeers(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	info, err := s.store.SignServerInfo(uint64(time.Now().Unix()), s.cfg.Label, peers)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	body, err := proto.Marshal(info)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
 	w.Header().Set("Content-Type", "application/cbor")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(s.serverInfo)
+	_, _ = w.Write(body)
 }
 
 // GET /v1/chains — list every chain the server has at least one event for.

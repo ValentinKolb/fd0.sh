@@ -58,18 +58,33 @@ type pullCursor struct {
 //
 // v1 is intentionally minimal: push is a single best-effort attempt; pull
 // covers every locally-known scope from cursor=local_tip.
+//
+// As of v0.0.4 RunSync is the SINGLE-server inner loop. The multi-server
+// dispatcher (RunSyncAll) wraps this, iterating one call per configured
+// server. Callers that want defaults / config / env resolution should
+// go through RunSyncAll(ResolveServers(flag)); the bare-server entry
+// here is for explicit, single-target invocations (tests, scripts).
 func RunSync(ctx context.Context, server string) error {
 	if server == "" {
-		server = os.Getenv("FD0_SERVER")
+		// Backward-compat fallback — keep working when a caller still
+		// passes "" expecting env/config resolution. RunSyncAll is the
+		// preferred entry point now.
+		paths, _ := fdhome.Resolve()
+		cfg, _ := fdhome.LoadConfig(paths.Config)
+		servers := ResolveServers("")
+		if len(servers) > 1 {
+			return RunSyncAll(ctx, servers)
+		}
+		if len(servers) == 1 {
+			server = servers[0]
+		}
+		_ = cfg // retained for parity with the old shape; cfg is reloaded below
+	}
+	if server == "" {
+		return errors.New("no server configured (--server, FD0_SERVER, [sync].servers, or [sync].server)")
 	}
 	paths, _ := fdhome.Resolve()
 	cfg, _ := fdhome.LoadConfig(paths.Config)
-	if server == "" {
-		server = cfg.Sync.Server
-	}
-	if server == "" {
-		return errors.New("no server configured (--server, FD0_SERVER, or [sync].server)")
-	}
 	// Wave C-2: parse + canonicalise once at the entry boundary; the
 	// typed canon.URL is passed through every downstream helper so
 	// the "trailing-slash drift between sync and witness" class is

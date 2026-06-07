@@ -201,15 +201,20 @@ func (s *Store) appendLeafTx(ctx context.Context, tx *sql.Tx, chainID string, ev
 }
 
 // SignServerInfo issues a fresh ServerInfo record signed by the
-// translog key. The HTTP layer in C3 publishes this at /v1/server-info
+// translog key. The HTTP layer publishes this at /v1/server-info
 // and clients pin the embedded pubkey on first contact (TRANSLOG.md
 // §6.1). Keeps the priv key on the Store; HTTP layer only handles the
 // resulting bytes.
-func (s *Store) SignServerInfo(now uint64) (translog.ServerInfo, error) {
+//
+// label is the operator-declared self-label for this server (empty when
+// FD0_LABEL isn't set; caller is responsible for [a-z0-9-]{0,32}
+// validation). peers is the current resolved-peer snapshot — pass nil
+// for a solo server.
+func (s *Store) SignServerInfo(now uint64, label string, peers []translog.PeerInfo) (translog.ServerInfo, error) {
 	if s.translogPriv == nil {
 		return translog.ServerInfo{}, ErrTranslogKeyMissing
 	}
-	return translog.SignServerInfo(s.translogPriv, now)
+	return translog.SignServerInfo(s.translogPriv, now, label, peers)
 }
 
 // ProofsForChain assembles, in a single read transaction:

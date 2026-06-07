@@ -299,11 +299,33 @@ type ConsistencyProof struct {
 
 // ServerInfo is the self-signed pubkey-publication record returned by
 // GET /v1/server-info. Wire format follows TRANSLOG.md §4.2.
+//
+// Label and Peers were added in v0.0.4. Both are CBOR `omitempty` so a
+// server with neither configured produces byte-identical signed bytes
+// to the pre-v0.0.4 format (the witness binary, which reuses this
+// type for its own /v1/server-info, never sets either field — its
+// signatures remain stable). When Label or Peers IS non-empty, the
+// server's signature covers them — a downstream verifier built against
+// the old struct cannot verify a new server's signed response, so the
+// rollout requires server + witness + client to upgrade together.
 type ServerInfo struct {
-	ServerPub []byte `cbor:"server_pub"`
-	IssuedAt  uint64 `cbor:"issued_at"`
-	Domain    string `cbor:"domain"`
-	Signature []byte `cbor:"signature"`
+	ServerPub []byte     `cbor:"server_pub"`
+	IssuedAt  uint64     `cbor:"issued_at"`
+	Label     string     `cbor:"label,omitempty"`
+	Peers     []PeerInfo `cbor:"peers,omitempty"`
+	Domain    string     `cbor:"domain"`
+	Signature []byte     `cbor:"signature"`
+}
+
+// PeerInfo is one entry in ServerInfo.Peers — the server's view of a
+// configured replica. URL and Pub are pinned at resolve time (the
+// publishing server TOFU-pins each peer's pubkey from the peer's own
+// /v1/server-info). Label is the peer's self-declared label, copied
+// verbatim from the peer's ServerInfo.Label.
+type PeerInfo struct {
+	URL   string `cbor:"url"`
+	Pub   []byte `cbor:"pub"`
+	Label string `cbor:"label,omitempty"`
 }
 
 // serverInfoSigned is the subset of ServerInfo whose CBOR encoding is the
@@ -311,14 +333,20 @@ type ServerInfo struct {
 // Domain is the prefix appended by SignedInput; Signature is what we are
 // computing.
 type serverInfoSigned struct {
-	ServerPub []byte `cbor:"server_pub"`
-	IssuedAt  uint64 `cbor:"issued_at"`
+	ServerPub []byte     `cbor:"server_pub"`
+	IssuedAt  uint64     `cbor:"issued_at"`
+	Label     string     `cbor:"label,omitempty"`
+	Peers     []PeerInfo `cbor:"peers,omitempty"`
 }
 
 // SignServerInfo constructs and signs a ServerInfo record. The Domain
 // field is set to proto.DomainTranslogServerInfo; the signature covers
-// "fd0-translog-server-info-v1" || cbor({server_pub, issued_at}).
-func SignServerInfo(priv ed25519.PrivateKey, issuedAt uint64) (ServerInfo, error) {
+// "fd0-translog-server-info-v1" || cbor({server_pub, issued_at, label?, peers?}).
+//
+// label is the operator-declared self-label (validated to [a-z0-9-]{0,32}
+// by the caller). peers is the list of resolved replicas — empty when
+// the server runs solo.
+func SignServerInfo(priv ed25519.PrivateKey, issuedAt uint64, label string, peers []PeerInfo) (ServerInfo, error) {
 	if len(priv) != ed25519.PrivateKeySize {
 		return ServerInfo{}, errors.New("translog.SignServerInfo: priv must be 64 bytes")
 	}
@@ -326,6 +354,8 @@ func SignServerInfo(priv ed25519.PrivateKey, issuedAt uint64) (ServerInfo, error
 	body, err := proto.Marshal(serverInfoSigned{
 		ServerPub: pub,
 		IssuedAt:  issuedAt,
+		Label:     label,
+		Peers:     peers,
 	})
 	if err != nil {
 		return ServerInfo{}, err
@@ -334,6 +364,8 @@ func SignServerInfo(priv ed25519.PrivateKey, issuedAt uint64) (ServerInfo, error
 	return ServerInfo{
 		ServerPub: pub,
 		IssuedAt:  issuedAt,
+		Label:     label,
+		Peers:     peers,
 		Domain:    proto.DomainTranslogServerInfo,
 		Signature: ed25519.Sign(priv, si),
 	}, nil
@@ -362,6 +394,8 @@ func VerifyServerInfo(info ServerInfo) error {
 	body, err := proto.Marshal(serverInfoSigned{
 		ServerPub: info.ServerPub,
 		IssuedAt:  info.IssuedAt,
+		Label:     info.Label,
+		Peers:     info.Peers,
 	})
 	if err != nil {
 		return err

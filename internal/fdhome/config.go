@@ -68,14 +68,58 @@ type ClientConfig struct {
 
 // SyncConfig drives the agent-managed background sync.
 type SyncConfig struct {
-	// Server is the fd0-server URL the agent should sync against. Falls
-	// back to FD0_SERVER env if empty.
+	// Server is the LEGACY single-server URL. Kept for backward
+	// compatibility with pre-v0.0.4 configs; when both Server and
+	// Servers are set, Servers wins. Falls back to FD0_SERVER env
+	// downstream if both are empty.
 	Server string `toml:"server"`
+	// Servers is the v0.0.4+ multi-server list. The client pushes to
+	// every entry per sync round (events are signed + idempotent, so
+	// dedup handles the second-server overhead). Reads / failover try
+	// entries in order. Empty falls back to Server, then env, then
+	// DefaultServers.
+	Servers []string `toml:"servers"`
 	// Interval as Go duration string ("1h", "5m"). Empty/zero disables.
 	Interval string `toml:"interval"`
 	// OnUnlock controls the post-unlock auto-sync. Pointer so we can
 	// distinguish "absent" (apply default = true) from "explicitly false".
 	OnUnlock *bool `toml:"on_unlock"`
+}
+
+// DefaultServers is the hard-coded fallback when the user has neither
+// Sync.Servers, Sync.Server, nor FD0_SERVER set. Points at the hosted
+// fd0.sh deployment described in docs/HOSTING.md — a self-hoster who
+// runs `fd0 init` against their own server immediately overwrites this
+// by writing config.toml.
+//
+// Each entry is independent: the hosted deployment runs both URLs and
+// the client multi-pushes to both. If the primary is unreachable the
+// client transparently falls over to the secondary for reads.
+var DefaultServers = []string{
+	"https://api.fd0.sh",
+	"https://api2.fd0.sh",
+}
+
+// ResolvedServers returns the effective server list, applying the
+// precedence: explicit Servers > legacy singular Server > defaults.
+// Callers add the flag/env override one level up — this stays config-
+// only so it's pure and unit-testable.
+func (c SyncConfig) ResolvedServers() []string {
+	if len(c.Servers) > 0 {
+		out := make([]string, 0, len(c.Servers))
+		for _, s := range c.Servers {
+			if s != "" {
+				out = append(out, s)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	if c.Server != "" {
+		return []string{c.Server}
+	}
+	return append([]string(nil), DefaultServers...)
 }
 
 // OnUnlockEnabled returns the effective on-unlock flag. Default is true

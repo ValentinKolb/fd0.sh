@@ -48,8 +48,21 @@ Both composes are env-driven. Required vars are declared with `:?` so `docker co
 
 | Service | Required | Useful optionals |
 |---|---|---|
-| server | `METRICS_TOKEN` | `FD0_BIND`, `FD0_DB`, `FD0_RATELIMIT_*` |
+| server | `METRICS_TOKEN` | `FD0_LABEL`, `FD0_PEERS`, `FD0_BIND`, `FD0_DB`, `FD0_RATELIMIT_*` |
 | witness | `SERVER_URL`, `METRICS_TOKEN` | `FD0_WITNESS_SERVER_PUB`, `FD0_WITNESS_POLL_INTERVAL`, `FD0_WITNESS_CHAINS` |
+
+### Multi-server (v0.0.4+)
+
+Running two `fd0-server` instances in different data centers? Set `FD0_LABEL` on each one (something like `primary` / `replica-eu`) and `FD0_PEERS` to the other's URL. Each server resolves its peers on boot, TOFU-pins their pubkeys, and embeds the resolved list in its own signed `/v1/server-info`.
+
+The client side (`~/.fd0/config.toml`) declares the same URLs:
+
+```toml
+[sync]
+servers = ["https://primary.example", "https://replica-eu.example"]
+```
+
+The client pushes every event to BOTH servers per sync round and falls over on reads when one is unreachable. See `docs/TRANSLOG.md` §11 for the trust model.
 
 Full env-var reference per binary: `fd0-server --help`, `fd0-witness --help`.
 

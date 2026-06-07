@@ -79,3 +79,24 @@ CREATE TABLE IF NOT EXISTS translog_server_key (
     pub             BLOB    NOT NULL CHECK (length(pub) = 32),
     pub_pinned_at   INTEGER NOT NULL
 );
+
+-- peers caches each configured replica's resolved identity. The peer
+-- resolver runs `GET /v1/server-info` against each FD0_PEERS entry on
+-- boot and on a periodic schedule; on first success it TOFU-pins the
+-- peer's signing pubkey and stores the peer's self-declared label.
+-- Subsequent resolves refuse to overwrite a pinned pubkey — divergence
+-- means the peer either rotated its key (operator must wipe the row to
+-- re-pin) or is being impersonated.
+--
+-- url is the canonical peer URL (scheme://host[:port], no trailing
+-- slash) — same form the publishing server uses in its /v1/server-info
+-- response. label is the peer's self-declared FD0_LABEL, validated
+-- against [a-z0-9-]{0,32} at write time so it's safe to render in
+-- client UI.
+CREATE TABLE IF NOT EXISTS peers (
+    url             TEXT    PRIMARY KEY,
+    pub             BLOB    NOT NULL CHECK (length(pub) = 32),
+    label           TEXT    NOT NULL DEFAULT '',
+    first_seen      INTEGER NOT NULL,
+    last_verified   INTEGER NOT NULL
+);

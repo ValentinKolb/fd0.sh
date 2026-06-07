@@ -139,13 +139,26 @@ GET /v1/server-info
 ServerInfo = {
     server_pub : bstr .size 32,    ; Ed25519 pubkey (translog signing)
     issued_at  : uint,             ; unix seconds
+    ? label    : tstr,             ; self-declared, [a-z0-9-]{0,32}
+    ? peers    : [* PeerInfo],     ; resolved replicas (§11)
     domain     : "fd0-translog-server-info-v1",
     signature  : bstr,             ; Ed25519(server_priv,
-                                   ;         "fd0-translog-server-info-v1" || cbor({server_pub, issued_at}))
+                                   ;         "fd0-translog-server-info-v1" ||
+                                   ;         cbor({server_pub, issued_at, ?label, ?peers}))
+}
+
+PeerInfo = {
+    url    : tstr,                 ; canonical replica URL
+    pub    : bstr .size 32,        ; replica's translog signing pubkey
+    ? label : tstr                 ; replica's self-declared label
 }
 ```
 
 Self-signed — the only thing this proves is that the holder of `server_priv` issued the record. The first-contact pinning ceremony (§6.1) is what binds the key to the operator the user trusts.
+
+`label` and `peers` were added in v0.0.4. Both fields use CBOR `omitempty` — a solo server with `FD0_LABEL` unset produces signed bytes byte-identical to the pre-v0.0.4 format (the witness binary reuses the same record type, sets neither, and its signatures remain stable). When either field IS populated, the signature input changes — downstream verifiers MUST be built against the v0.0.4+ struct. Wire-additivity rule (§5) guarantees that older clients can still decode the response; they just can't verify it.
+
+`peers` is the OPERATOR'S claim about which replicas exist. Per the wire-additivity rule, clients MAY ignore it (and the v0.0.4 client does until peer-aware sync paths land). Trust is HINTS-not-TRUST per §11: a client that wants to use a peer must add it explicitly to its config and run the first-contact pinning ceremony against that peer's own `/v1/server-info`.
 
 ### 4.3 Key rotation (operational ceremony)
 
@@ -535,6 +548,37 @@ A fresh device performing a full pull (`cursor=0`) effectively gets `last_sth_si
 
 - **Server STH archive endpoint.** `translog_sths` is populated server-side; exposing `GET /v1/sth/{cid}?at_size={n}` would let witnesses backfill historical STHs. v1.0 serves only the current STH.
 - **Signature batching.** Each `/sync` round signs one STH per affected chain. With N pulled scopes the server signs N STHs. A combined STH over all N `(chain_id, root_hash)` pairs is a v2 optimisation.
+
+---
+
+## 11. Peer hints (v0.0.4+)
+
+A server with sibling replicas declares them in `/v1/server-info` via the optional `peers` field. The intent is **discovery, not trust**: the publishing server provides a SIGNED HINT that a peer exists with a particular pubkey; the client decides whether to use the hint.
+
+### 11.1 Server side
+
+```
+FD0_LABEL=swu-ulm                                # self-declared identifier
+FD0_PEERS=https://api2.fd0.sh                    # comma-separated peer URLs
+```
+
+The server runs a background resolver that hits each peer's `/v1/server-info` on boot and every `PeerResolveInterval` (default 1h). On first success it TOFU-pins the peer's signing pubkey in the local `peers` table; on subsequent successes it refreshes the peer's self-declared label and the `last_verified` timestamp. A pubkey mismatch on a later resolve is REFUSED — the operator must delete the row by hand (`DELETE FROM peers WHERE url = ?`) to allow a key rotation, so transient impersonation can't silently overwrite the pin.
+
+The `peers` array in `/v1/server-info` is built from this table, sorted by URL, and signed alongside the rest of the record. A peer that fails resolution is RETAINED with its last-known pubkey and label — a transient outage at one peer must not silently drop it from the published list.
+
+Peer `label` is filtered through the same `[a-z0-9-]{0,32}` charset the server applies to its own `FD0_LABEL`. A peer that publishes an invalid label is stored without a label; the pubkey + URL still pin. This keeps downstream UI safe from ANSI escapes / control characters smuggled through a hostile peer.
+
+### 11.2 Client side
+
+The v0.0.4 client treats `peers` as informational metadata. Multi-server sync is driven by `[sync].servers` in `~/.fd0/config.toml` — the operator declares which servers to push to. Auto-pinning a peer just because a server claims it exists would let one malicious operator silently inject Sybil replicas under their control.
+
+Future revisions MAY add `fd0 peer add <url>` to import a hint with confirmation, and `fd0 peer audit` to compare each pinned server's peer list against the others (intersection-trust). Both layer on top of the wire format defined here without protocol changes.
+
+### 11.3 Security properties
+
+- A server cannot fabricate a peer that doesn't exist with a real pubkey: the peer field is signed by the server, but the consuming client never trusts it without ALSO pinning the peer itself via the first-contact ceremony (§6.1). So the worst a malicious server can do is publish phantom peers — annoying for monitoring, useless as an attack vector.
+- A server CAN refuse to publish a real peer it dislikes. This is observable: a client configured for both servers can fetch each one's `/v1/server-info` and notice that A doesn't list B while B lists A.
+- Peer pubkey rotation is a manual operator step on every server that lists the rotating peer. This is intentional: silent re-TOFU would defeat the pin.
 
 ---
 

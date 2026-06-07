@@ -48,6 +48,21 @@ Build artefacts come from the [release-docker workflow](../.github/workflows/rel
 - Firewall rules on the Proxmox layer (host has no `firewalld` enabled — the hypervisor handles it)
 - Caddy holds the Let's Encrypt account; certs auto-renew well before expiry
 
+## Replicas
+
+The hosted deployment runs the API on two independent VMs in two different data centers:
+
+| Hostname | Location | Operator | Label |
+|---|---|---|---|
+| `api.fd0.sh`  | SWU Ulm (Kolb Antik Proxmox cluster) | Kolb Antik GmbH | `swu-ulm` |
+| `api2.fd0.sh` | Hetzner (Falkenstein) | Kolb Antik GmbH | `hetzner-fsn1` |
+
+Both servers are full peers — each runs the same `fd0-server` binary against its own SQLite DB and signs its own STHs under its own ed25519 translog key. Both label themselves via `FD0_LABEL` and list each other via `FD0_PEERS`; each `/v1/server-info` response advertises the resolved peer (URL + signed pubkey + label) so clients can discover the topology.
+
+The default `fd0` client is configured (see `internal/fdhome/config.go`) to push every event to BOTH servers per sync round. Events are signed and content-addressed, so the second server's idempotent dedup absorbs the duplicate at near-zero cost. Reads fail over to whichever server answers — a primary outage is transparent to the user.
+
+Until the server-side gossip work lands (TRANSLOG.md §11 peer-replication roadmap), cross-author replication relies entirely on multi-pushing clients. A reader who talks to only one server will eventually see events authored against the other server as soon as ANY multi-pushing client syncs.
+
 ## Backups
 
 Three independent layers, each with its own failure model:

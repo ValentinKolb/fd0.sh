@@ -446,7 +446,7 @@ func TestAppendWithTranslogAtomic(t *testing.T) {
 // record. Fails cleanly if no key is installed.
 func TestSignServerInfo(t *testing.T) {
 	s, pub := newTestStore(t)
-	info, err := s.SignServerInfo(1700000000)
+	info, err := s.SignServerInfo(1700000000, "", nil)
 	if err != nil {
 		t.Fatalf("SignServerInfo: %v", err)
 	}
@@ -457,6 +457,27 @@ func TestSignServerInfo(t *testing.T) {
 		t.Fatalf("VerifyServerInfo: %v", err)
 	}
 
+	// With label + peers, embedded fields round-trip and signature
+	// still verifies (signature input includes them).
+	peers := []translog.PeerInfo{{
+		URL:   "https://api2.example",
+		Pub:   make([]byte, 32),
+		Label: "replica-2",
+	}}
+	info2, err := s.SignServerInfo(1700000001, "primary", peers)
+	if err != nil {
+		t.Fatalf("SignServerInfo with peers: %v", err)
+	}
+	if info2.Label != "primary" {
+		t.Fatalf("label round-trip: got %q want primary", info2.Label)
+	}
+	if len(info2.Peers) != 1 || info2.Peers[0].URL != "https://api2.example" {
+		t.Fatalf("peers round-trip: got %#v", info2.Peers)
+	}
+	if err := translog.VerifyServerInfo(info2); err != nil {
+		t.Fatalf("VerifyServerInfo with peers: %v", err)
+	}
+
 	// Without a key, must error.
 	tmp := filepath.Join(t.TempDir(), "nokey.db")
 	s2, err := Open(tmp)
@@ -464,7 +485,7 @@ func TestSignServerInfo(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s2.Close()
-	if _, err := s2.SignServerInfo(1700000000); !errors.Is(err, ErrTranslogKeyMissing) {
+	if _, err := s2.SignServerInfo(1700000000, "", nil); !errors.Is(err, ErrTranslogKeyMissing) {
 		t.Fatalf("expected ErrTranslogKeyMissing, got %v", err)
 	}
 }
@@ -496,7 +517,7 @@ func TestSetTranslogKeyCopies(t *testing.T) {
 	// Sign something and verify with the originally-derived pub on the
 	// store (we can't get it back here easily, so use SignServerInfo
 	// → embedded pub → verify chain).
-	info, err := s.SignServerInfo(1)
+	info, err := s.SignServerInfo(1, "", nil)
 	if err != nil {
 		t.Fatalf("post-mutation sign failed (key wasn't copied): %v", err)
 	}

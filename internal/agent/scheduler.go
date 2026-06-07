@@ -100,10 +100,16 @@ func (s *Scheduler) runOnce(reason string) {
 	syncCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(syncCtx, bin, "sync", "--wait-lock=60s")
-	cmd.Env = append(os.Environ(),
-		"FD0_HOME="+s.cfg.Home,
-		"FD0_SERVER="+s.cfg.Server,
-	)
+	env := append(os.Environ(), "FD0_HOME="+s.cfg.Home)
+	// v0.0.4: only inject FD0_SERVER when the operator explicitly
+	// set one. Otherwise we leave it unset so `fd0 sync` resolves
+	// the multi-server list from config.toml — setting FD0_SERVER=""
+	// here would silently collapse the child to the default-list
+	// path which is fine, but the explicit shape is clearer.
+	if s.cfg.Server != "" {
+		env = append(env, "FD0_SERVER="+s.cfg.Server)
+	}
+	cmd.Env = env
 	cmd.Stdin = nil
 	cmd.Stdout = nil // captured into the agent log via stderr anyway
 	cmd.Stderr = nil

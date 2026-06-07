@@ -33,6 +33,12 @@ services:
       # FD0_DB: /data/fd0.db                          # SQLite path
       # FD0_MAX_BODY: "8388608"                       # max request body (8 MB)
       # FD0_VERBOSE: "false"                          # debug logging
+      #
+      # Multi-server (v0.0.4+). Both opt-in — leave unset for a solo
+      # server. See TRANSLOG.md §11 for the trust model.
+      # FD0_LABEL: "primary"                          # [a-z0-9-]{0,32}, embedded in /v1/server-info
+      # FD0_PEERS: "https://api2.example.com"         # comma-separated replica URLs
+      #
       # FD0_RATELIMIT_OFF: "false"                    # disable rate limits
       # FD0_RATELIMIT_WRITES_PER_MIN: "60"            # per identity
       # FD0_RATELIMIT_BYTES_PER_MIN: "33554432"       # per identity, 32 MB
