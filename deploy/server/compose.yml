@@ -1,0 +1,44 @@
+# fd0-server — minimal docker-compose deployment.
+#
+# Runs one fd0-server, listening on 4048/tcp, with state on a named
+# volume. No reverse proxy, no TLS — bring your own (Caddy, nginx,
+# Traefik, Cloudflare, your VPS provider's load balancer, whatever
+# you already run).
+#
+# Quick start:
+#
+#   METRICS_TOKEN=$(openssl rand -hex 32) docker compose up -d
+#
+# Health check:
+#
+#   curl http://localhost:4048/health
+#
+# Then put the server behind your TLS terminator and point your
+# fd0 client at it:
+#
+#   server = "https://your-domain.example"
+
+services:
+  fd0-server:
+    image: ghcr.io/valentinkolb/fd0-server:latest
+    restart: unless-stopped
+    ports:
+      - "4048:4048"
+    environment:
+      # Required — guards GET /metrics. Generate with `openssl rand -hex 32`.
+      FD0_METRICS_TOKEN: ${METRICS_TOKEN:?set METRICS_TOKEN}
+
+      # Optional — defaults shown.
+      # FD0_BIND: ":4048"                            # HTTP listen
+      # FD0_DB: /data/fd0.db                          # SQLite path
+      # FD0_MAX_BODY: "8388608"                       # max request body (8 MB)
+      # FD0_VERBOSE: "false"                          # debug logging
+      # FD0_RATELIMIT_OFF: "false"                    # disable rate limits
+      # FD0_RATELIMIT_WRITES_PER_MIN: "60"            # per identity
+      # FD0_RATELIMIT_BYTES_PER_MIN: "33554432"       # per identity, 32 MB
+      # FD0_RATELIMIT_REGISTER_PER_HOUR: "5"          # per IP
+    volumes:
+      - fd0-server-data:/data
+
+volumes:
+  fd0-server-data:

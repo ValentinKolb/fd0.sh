@@ -99,13 +99,14 @@ fd0-witness   ~18 MB, scratch base, port 4049
 fd0-website   Bun runtime, port 5173
 ```
 
-For a working stack — Traefik + TLS + all three services — drop [`deploy/compose.yml`](./deploy/compose.yml) into Portainer or run it directly:
+Minimal per-service composes live in [`deploy/`](./deploy/) — one for the server, one for the witness, no proxy, no TLS, drop into whatever infra you already run:
 
 ```bash
-docker compose -f deploy/compose.yml up -d
+cd deploy/server
+METRICS_TOKEN=$(openssl rand -hex 32) docker compose up -d
 ```
 
-Single file. No external `.env`, no `witness.toml` — defaults baked in, every knob overridable as a stack env var (`DOMAIN`, `ACME_EMAIL`, `GHCR_OWNER`, `FD0_VERSION`, `METRICS_TOKEN`). The file contains: Traefik v3.2 routing `Host(${DOMAIN})` to website, `api.${DOMAIN}` to server, `witness.${DOMAIN}` to witness; Let's Encrypt via TLS-ALPN-01; HTTP→HTTPS redirect; healthchecks; one shared `METRICS_TOKEN` so a single Prometheus job covers the whole stack; the witness config inlined via Compose `configs:` so chain IDs are edited in the same file. [`deploy/README.md`](./deploy/README.md) has the chain-discovery + upgrade flow.
+For the full TLS-terminated production recipe (Caddy + Let's Encrypt + Podman quadlet on Rocky Linux), see [`docs/HOSTING.md`](./docs/HOSTING.md) — that's how `fd0.sh` itself runs.
 
 Bare-metal alternative — the install-server script — drops the same binaries into `/usr/local/bin` plus a hardened systemd unit at `/etc/systemd/system/fd0.service`:
 

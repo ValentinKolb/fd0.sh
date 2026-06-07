@@ -361,12 +361,12 @@ ghp_xxxxxxxxxxxxxxxxxxxx`}</Shell>
             <BackendCol
               badge="Hosted at fd0.sh"
               title="Use the managed instance."
-              body="Same fd0-server binary, run on hardened infrastructure. Same ciphertext-only contract — fd0.sh operators cannot decrypt either. No registration; first sync auto-registers your super_pub."
+              body="Same fd0-server binary, operated by Kolb Antik GmbH from a high-availability Proxmox cluster in the SWU (Stadtwerke Ulm) data center in Germany. GDPR jurisdiction. Same ciphertext-only contract — the operator cannot decrypt secrets."
               code={`# ~/.fd0/config.toml
 [sync]
 server = "https://fd0.sh"
 on_unlock = true`}
-              codeNote="Default rate limits apply. Bring your own witness or point at the public one at witness.fd0.sh."
+              codeNote="Hourly VM snapshots, daily encrypted DB backups, crypto keys held off-host. Full deployment writeup: docs/HOSTING.md on GitHub."
             />
           </div>
         </div>

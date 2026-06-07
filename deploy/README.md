@@ -1,123 +1,69 @@
-# fd0 — demo deployment
+# Deploy
 
-Single-file reference stack: Traefik + fd0-server + fd0-witness + fd0-website behind TLS. Drop `compose.yml` into Portainer, Coolify, or `docker compose` directly. Three env knobs, images hardcoded to `ghcr.io/valentinkolb/fd0-*:latest`.
+Minimal docker-compose building blocks for the two fd0 services. No reverse proxy, no TLS, no opinions about your infrastructure — bring your own.
 
 ```
-fd0.sh          → fd0-website   (landing + /witness dashboard)
-api.fd0.sh      → fd0-server    (data API — what clients sync against)
-witness.fd0.sh  → fd0-witness   (public verifier — polls fd0-server)
+deploy/
+├── server/compose.yml       Just fd0-server
+└── witness/compose.yml      Just fd0-witness, points at any fd0-server
 ```
 
-This is a starting point. Resource limits, log drivers, backups, monitoring, multi-node — adapt for your environment.
+For the full TLS-terminated production recipe (Caddy + Let's Encrypt + Podman quadlet) see [`docs/HOSTING.md`](../docs/HOSTING.md) — that's how `fd0.sh` itself runs.
 
-## Prerequisites
+## fd0-server
 
-- Docker Engine ≥ 24 with the Compose plugin
-- A box reachable on TCP/80 and TCP/443
-- DNS — A records for `${DOMAIN}`, `api.${DOMAIN}`, `witness.${DOMAIN}` pointed at the box
-
-## Settings
-
-Three env vars control the stack. Set them as stack env vars in Portainer / Coolify, or edit the defaults in `compose.yml`:
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `DOMAIN` | `fd0.sh` | Apex; subdomains `api.` and `witness.` derive from it |
-| `ACME_EMAIL` | `admin@fd0.sh` | Let's Encrypt expiry notifications |
-| `METRICS_TOKEN` | placeholder | Shared bearer token for `/metrics` on all three services |
-
-Generate the token:
+Stores ciphertext and signed event headers. Serves the v1 API on port 4048.
 
 ```sh
-openssl rand -hex 32
+cd deploy/server
+METRICS_TOKEN=$(openssl rand -hex 32) docker compose up -d
+curl http://localhost:4048/health
 ```
 
-If you fork the project, edit the image references at the top of each service block.
+Put your TLS terminator in front, then point your fd0 client at it:
 
-## Deploy
+```toml
+# ~/.fd0/config.toml
+[sync]
+server = "https://your-domain.example"
+```
+
+## fd0-witness
+
+Polls one fd0-server's transparency log, countersigns honest STHs, archives divergent ones. Detects equivocation.
 
 ```sh
-docker compose -f compose.yml up -d
-docker compose logs -f
-```
-
-Traefik provisions a Let's Encrypt cert per host via TLS-ALPN-01 on first request. First request takes ~30 s while the cert issues.
-
-## Witness configuration
-
-Pure env. No config file, no inline compose blocks. The witness reads:
-
-| Env | Default in compose | Purpose |
-|---|---|---|
-| `FD0_WITNESS_SERVER_URL` | `https://api.${DOMAIN}` | The fd0-server this witness watches |
-| `FD0_WITNESS_PIN_ON_FIRST_USE` | `true` | TOFU pin — fetch pubkey from `/v1/server-info` on first poll |
-| `FD0_WITNESS_AUTO_DISCOVER` | `true` | Pull chain list from `/v1/chains` every round |
-| `FD0_WITNESS_POLL_INTERVAL` | `30s` | Time between rounds |
-| `FD0_WITNESS_SERVER_PUB` | (unset) | Explicit hex pubkey — alternative to TOFU |
-| `FD0_WITNESS_CHAINS` | (unset) | Comma-separated allow-list — alternative to auto-discover |
-
-### Multi-server
-
-One witness watches one server. To watch a second server, copy the `fd0-witness` service block, change the `FD0_WITNESS_SERVER_URL`, give it its own volume and Traefik Host(), and run both. Independent processes, independent DBs, independent metrics — smaller failure domain than a multi-target mega-witness.
-
-### Trust model
-
-Out of the box the witness self-bootstraps via TOFU: first poll fetches `/v1/server-info`, validates the server's self-signature, persists the pubkey. SSH-`known_hosts` semantics — later changes fail with `ErrPinMismatch`.
-
-**Caveat.** `/v1/server-info` is self-signed: the server signs the pubkey announcement with the key it presents. The signature proves the server has the corresponding private key, not that the pubkey is the "real" one. A MITM at first contact pins the attacker's key. For self-host (this stack), the bootstrap window is under your control. For an **independent** witness watching a server you don't control, set `FD0_WITNESS_SERVER_PUB` to the pubkey obtained out-of-band (operator's website, signed announcement, etc).
-
-Published cosigns are the audit artefact — anyone cross-checking witness output against the server's real pubkey catches a TOFU mispin.
-
-Inspect the pinned key after first run:
-
-```sh
-docker compose exec fd0-witness sh -c \
-  'sqlite3 /data/witness.db "SELECT hex(server_pub) FROM pinned_servers"'
-```
-
-## Metrics
-
-All three services read the same `METRICS_TOKEN`. One Prometheus job covers the stack:
-
-```yaml
-scrape_configs:
-  - job_name: fd0
-    scheme: https
-    bearer_token: <your METRICS_TOKEN>
-    static_configs:
-      - targets:
-          - api.fd0.sh        # fd0-server
-          - witness.fd0.sh    # fd0-witness
-          - fd0.sh            # fd0-website
-```
-
-Missing or wrong token → 404 (the endpoint denies its own existence). Per-service domain metrics:
-
-| | RED HTTP | Go runtime | Domain |
-|---|---|---|---|
-| fd0-server | yes | yes | registrations, events pushed/pulled, users, chains, db size |
-| fd0-witness | yes | yes | polls, cosigns, equivocations, consistency failures, tree_size |
-| fd0-website | yes | – | – |
-
-## Operational notes
-
-**Backups.** Volumes that hold state:
-
-- `fd0-server-data` — SQLite DB + translog signing key. Lose it and clients can't sync; the translog key in particular is unrecoverable.
-- `fd0-witness-data` — witness archive + cosign key. Lose it and prior cosigns are gone; clients pinned to a now-rotated key need a re-pin event.
-- `traefik-letsencrypt` — ACME state. Replaceable; Let's Encrypt re-issues on next request (subject to rate limits).
-
-Snapshot strategy is yours — `docker run --rm -v <vol>:/src ...` + tar is the lazy starting point.
-
-**Upgrades.** The image references are hardcoded to `:latest`. To pull a newer build:
-
-```sh
-docker compose pull
+cd deploy/witness
+SERVER_URL=https://api.fd0.sh \
+METRICS_TOKEN=$(openssl rand -hex 32) \
 docker compose up -d
+curl http://localhost:4049/health
 ```
 
-To pin a specific tag, edit the `image:` lines in `compose.yml` (e.g. `ghcr.io/valentinkolb/fd0-server:v1.0.1`). The server runs SQLite migrations on boot. Witness storage is forward-compatible across patch and minor versions.
+The witness auto-discovers chains from the server's `/v1/chains` endpoint and TOFU-pins the server's pubkey on first contact. To run an independent witness against a server you don't operate, set `FD0_WITNESS_SERVER_PUB` to the hex pubkey obtained out-of-band — see the comments in `witness/compose.yml`.
 
-**Rate limiting.** The server's per-identity + per-IP rate limit is on by default. Tune via `FD0_RATELIMIT_WRITES_PER_MIN`, `FD0_RATELIMIT_BYTES_PER_MIN`, `FD0_RATELIMIT_REGISTER_PER_HOUR`. `fd0-server --help` has the full list — add them to the `fd0-server.environment` block in `compose.yml`.
+## Configuration
 
-**Health.** Every service exposes `GET /health` returning `{"status":"ok",…}` for external probes (Traefik, your monitoring). The compose file doesn't run container-level healthchecks — the scratch-based binaries don't ship a shell or `wget`, and the witness's poll loop already handles "server not ready" gracefully (logs `fetch failed`, retries on the next interval).
+Both composes are env-driven. Required vars are declared with `:?` so `docker compose up` refuses to start without them. Optional vars are commented in the compose files showing their defaults — uncomment to override.
+
+| Service | Required | Useful optionals |
+|---|---|---|
+| server | `METRICS_TOKEN` | `FD0_BIND`, `FD0_DB`, `FD0_RATELIMIT_*` |
+| witness | `SERVER_URL`, `METRICS_TOKEN` | `FD0_WITNESS_SERVER_PUB`, `FD0_WITNESS_POLL_INTERVAL`, `FD0_WITNESS_CHAINS` |
+
+Full env-var reference per binary: `fd0-server --help`, `fd0-witness --help`.
+
+## Backups
+
+The two named volumes (`fd0-server-data`, `fd0-witness-data`) hold everything irreplaceable:
+
+- `fd0-server-data` — SQLite event store + ed25519 transparency-log signing key
+- `fd0-witness-data` — SQLite archive + ed25519 cosign key
+
+Lose either and clients will need to re-pin. Snapshot the volumes (or use `sqlite3 .backup` against the DB files inside) on whatever schedule fits your durability target. The `fd0.sh` production setup uses both hourly VM snapshots and a daily `sqlite3 .backup` cron — see [`docs/HOSTING.md`](../docs/HOSTING.md) for the recipe.
+
+## Multiple instances
+
+To watch a second server, drop a second copy of `witness/compose.yml` in its own directory, set a different `SERVER_URL`, give the volumes different names. Each witness runs as an independent process with its own DB and metrics endpoint.
+
+To run a second server (different domain, different operator), drop a second copy of `server/compose.yml` with its own volume. Two fd0-servers can coexist on one host as long as their `ports:` don't collide.

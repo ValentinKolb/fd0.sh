@@ -1,0 +1,48 @@
+# fd0-witness — minimal docker-compose deployment.
+#
+# Runs one fd0-witness watching one fd0-server. Listens on 4049/tcp.
+# State on a named volume. No reverse proxy, no TLS — bring your own.
+#
+# Quick start:
+#
+#   SERVER_URL=https://api.fd0.sh \
+#   METRICS_TOKEN=$(openssl rand -hex 32) \
+#   docker compose up -d
+#
+# Health check:
+#
+#   curl http://localhost:4049/health
+#
+# First run TOFU-pins the server pubkey from /v1/server-info. Verify
+# it matches the server's published pubkey out-of-band, otherwise a
+# MITM at first contact pins the wrong key. For an independent
+# witness watching a server you don't operate, set FD0_WITNESS_SERVER_PUB
+# explicitly instead.
+
+services:
+  fd0-witness:
+    image: ghcr.io/valentinkolb/fd0-witness:latest
+    restart: unless-stopped
+    ports:
+      - "4049:4049"
+    environment:
+      # Required — the fd0-server this witness watches.
+      FD0_WITNESS_SERVER_URL: ${SERVER_URL:?set SERVER_URL (e.g. https://api.fd0.sh)}
+
+      # Required — guards GET /metrics. Generate with `openssl rand -hex 32`.
+      FD0_WITNESS_METRICS_TOKEN: ${METRICS_TOKEN:?set METRICS_TOKEN}
+
+      # Optional — defaults shown.
+      # FD0_WITNESS_BIND: ":4049"                     # HTTP listen
+      # FD0_WITNESS_DB: /data/witness.db              # SQLite archive
+      # FD0_WITNESS_KEY: /data/cosign.key             # auto-generated
+      # FD0_WITNESS_POLL_INTERVAL: "30s"
+      # FD0_WITNESS_AUTO_DISCOVER: "true"             # poll /v1/chains every round
+      # FD0_WITNESS_PIN_ON_FIRST_USE: "true"          # TOFU pin from /v1/server-info
+      # FD0_WITNESS_SERVER_PUB: ""                    # hex (32 bytes); skips TOFU
+      # FD0_WITNESS_CHAINS: ""                        # CSV "user:abc,scope:s_xyz"; skips auto-discover
+    volumes:
+      - fd0-witness-data:/data
+
+volumes:
+  fd0-witness-data:
