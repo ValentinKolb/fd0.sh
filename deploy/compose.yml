@@ -42,9 +42,18 @@ services:
     image: ghcr.io/valentinkolb/fd0-server:latest
     restart: unless-stopped
     environment:
-      FD0_BIND: ":4048"
-      FD0_DB: /data/fd0.db
+      # ─── runtime ─────────────────────────────────────────────────────
+      FD0_BIND: ":4048"                    # HTTP listen address
+      FD0_DB: /data/fd0.db                 # SQLite path
       FD0_METRICS_TOKEN: ${METRICS_TOKEN:-CHANGE_ME_openssl_rand_hex_32}
+      # ─── optional (uncomment to override defaults) ───────────────────
+      # FD0_MAX_BODY: "8388608"            # max request body (8 MB)
+      # FD0_VERBOSE: "false"               # debug-level logging
+      # ─── rate limiting (single-instance, per identity + per IP) ──────
+      # FD0_RATELIMIT_OFF: "false"         # disable all rate limits
+      # FD0_RATELIMIT_WRITES_PER_MIN: "60"        # authenticated writes/min/identity
+      # FD0_RATELIMIT_BYTES_PER_MIN: "33554432"   # request body bytes/min/identity (32 MB)
+      # FD0_RATELIMIT_REGISTER_PER_HOUR: "5"      # POST /v1/users per IP/hour
     volumes:
       - fd0-server-data:/data
     healthcheck:
@@ -69,17 +78,22 @@ services:
       fd0-server:
         condition: service_healthy
     environment:
-      FD0_WITNESS_DB: /data/witness.db
-      FD0_WITNESS_KEY: /data/cosign.key
-      FD0_WITNESS_BIND: ":4049"
+      # ─── runtime ─────────────────────────────────────────────────────
+      FD0_WITNESS_DB: /data/witness.db     # SQLite archive
+      FD0_WITNESS_KEY: /data/cosign.key    # ed25519 cosign key (auto-generated on first run)
+      FD0_WITNESS_BIND: ":4049"            # HTTP listen — required for /v1/observed etc.
       FD0_WITNESS_METRICS_TOKEN: ${METRICS_TOKEN:-CHANGE_ME_openssl_rand_hex_32}
-      # Target — the server this witness watches. One witness per
-      # server (process isolation). To watch multiple servers, copy
-      # this whole service block.
+      # ─── target ──────────────────────────────────────────────────────
+      # One witness watches one server (process isolation). To watch a
+      # second server, copy this whole service block.
       FD0_WITNESS_SERVER_URL: https://api.${DOMAIN:-fd0.sh}
-      FD0_WITNESS_PIN_ON_FIRST_USE: "true"
-      FD0_WITNESS_AUTO_DISCOVER: "true"
+      FD0_WITNESS_PIN_ON_FIRST_USE: "true" # TOFU pin from /v1/server-info on first poll
+      FD0_WITNESS_AUTO_DISCOVER: "true"    # poll /v1/chains every round
       FD0_WITNESS_POLL_INTERVAL: "30s"
+      # ─── optional (uncomment to override defaults) ───────────────────
+      # FD0_WITNESS_SERVER_PUB: ""         # hex pubkey (32 bytes); skips TOFU
+      # FD0_WITNESS_CHAINS: ""             # comma-list "user:abc,scope:s_xyz"; skips auto-discover
+      # FD0_WITNESS_VERBOSE: "false"
     volumes:
       - fd0-witness-data:/data
     healthcheck:
@@ -104,14 +118,20 @@ services:
       fd0-witness:
         condition: service_started
     environment:
-      # Public URL of the server — shown to users so they can point
-      # `fd0 sync` at the right host.
+      # ─── routing the SSR fetches use ─────────────────────────────────
+      # FD0_SERVER_URL is the PUBLIC URL of the server — rendered in
+      # the UI so users see where to point `fd0 sync`.
       FD0_SERVER_URL: https://api.${DOMAIN:-fd0.sh}
-      # Witness fetched server-side via the docker network — faster
-      # than a TLS round-trip per page render. The "Verify yourself"
-      # curls on /witness still display witness.${DOMAIN}.
+      # FD0_WITNESS_URL is fetched server-side per /witness render.
+      # Internal docker network avoids the TLS round-trip; the page
+      # still displays witness.${DOMAIN} in the verify-yourself curls.
       FD0_WITNESS_URL: http://fd0-witness:4049
+      # ─── /metrics auth ───────────────────────────────────────────────
       FD0_WEBSITE_METRICS_TOKEN: ${METRICS_TOKEN:-CHANGE_ME_openssl_rand_hex_32}
+      # ─── optional (uncomment to override) ────────────────────────────
+      # PORT: "5173"                       # listen port; matches Dockerfile EXPOSE
+      # NODE_ENV: "production"             # set by the image already
+      # FD0_WEBSITE_VERSION: "v1.0.0"      # shown on /version; baked at build time
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5173/health"]
       interval: 30s

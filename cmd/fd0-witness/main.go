@@ -107,7 +107,7 @@ type cli struct {
 	Key          string `name:"key" help:"Witness cosign key path (ed25519 64-byte seed||pub). Empty = legacy passive-archiver mode (no cosign, no HTTP)." default:"" env:"FD0_WITNESS_KEY"`
 	Bind         string `name:"bind" help:"HTTP server bind address for client cross-check (empty = no HTTP server). Requires --key." default:"" env:"FD0_WITNESS_BIND"`
 	MetricsToken string `name:"metrics-token" help:"Bearer token guarding /metrics." default:"" env:"FD0_WITNESS_METRICS_TOKEN"`
-	Verbose      bool   `name:"verbose" short:"v" help:"Verbose logging."`
+	Verbose      bool   `name:"verbose" short:"v" help:"Verbose logging." env:"FD0_WITNESS_VERBOSE"`
 
 	// Target — env-only single-target config. Multi-target = run
 	// multiple containers; each gets process / storage / metrics
