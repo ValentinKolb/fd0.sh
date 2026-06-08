@@ -123,12 +123,12 @@ const BackendCol = (p: {
       </p>
     </div>
     <div
-      class="p-4 text-[13px] leading-[1.6] mt-auto"
+      class="p-4 text-[13px] leading-[1.6]"
       style={`background:${C.bgRaised};border:1px solid ${C.border};font-family:${FONT_MONO};`}
     >
       <Shell>{p.code}</Shell>
     </div>
-    <div class="text-xs leading-relaxed" style={`color:${C.dim};`}>
+    <div class="text-xs leading-relaxed mt-1" style={`color:${C.dim};`}>
       {p.codeNote}
     </div>
   </div>
@@ -184,26 +184,61 @@ const Home = () => (
             v1.0 · Apache-2.0 · zero-knowledge
           </div>
           <h1 class="text-[2.6rem] md:text-[3.4rem] leading-[1.05] tracking-tight font-medium">
-            <span id="fd0-rotword" class="fd0-rotword inline-block">Secrets</span>{" "}
+            <span class="fd0-rotword-wrap">
+              <span id="fd0-rotword" class="fd0-rotword">Secrets</span>
+              <span id="fd0-rotbar" class="fd0-rotbar" />
+            </span>{" "}
             you keep,
             <br />
             <span style={`color:${C.acc};`}>not secrets you trust.</span>
           </h1>
           <style innerHTML={`
+            .fd0-rotword-wrap {
+              display: inline-block;
+              position: relative;
+              padding-bottom: 6px;
+            }
             .fd0-rotword {
+              display: inline-block;
               transition: opacity 380ms ease, transform 380ms ease;
-              min-width: 6ch;
             }
             .fd0-rotword.fade-out { opacity: 0; transform: translateY(-6px); }
+            .fd0-rotbar {
+              position: absolute;
+              left: 0;
+              bottom: 0;
+              height: 3px;
+              width: 0;
+              background: ${C.acc};
+              border-radius: 2px;
+              animation: fd0-rotbar 4500ms linear infinite;
+            }
+            .fd0-rotbar.paused { animation-play-state: paused; }
+            @keyframes fd0-rotbar {
+              0%   { width: 0; opacity: 1; }
+              92%  { width: 100%; opacity: 1; }
+              100% { width: 100%; opacity: 0; }
+            }
+            @media (prefers-reduced-motion: reduce) {
+              .fd0-rotbar { animation: none; width: 100%; }
+            }
           `} />
           <script innerHTML={`(function(){
             var words = ['Secrets','SSH keys','SSH hosts','Git signing'];
-            var el = document.getElementById('fd0-rotword');
-            if (!el) return;
+            var el  = document.getElementById('fd0-rotword');
+            var bar = document.getElementById('fd0-rotbar');
+            if (!el || !bar) return;
             var idx = 0;
             var paused = false;
-            el.addEventListener('mouseenter', function(){ paused = true; });
-            el.addEventListener('mouseleave', function(){ paused = false; });
+            var wrap = el.parentElement;
+            wrap.addEventListener('mouseenter', function(){
+              paused = true;
+              bar.classList.add('paused');
+            });
+            wrap.addEventListener('mouseleave', function(){
+              paused = false;
+              bar.classList.remove('paused');
+            });
             setInterval(function(){
               if (paused) return;
               el.classList.add('fade-out');
@@ -211,8 +246,13 @@ const Home = () => (
                 idx = (idx + 1) % words.length;
                 el.textContent = words[idx];
                 el.classList.remove('fade-out');
+                // Restart bar animation in sync with the word change so
+                // they never drift after many cycles.
+                bar.style.animation = 'none';
+                void bar.offsetWidth;
+                bar.style.animation = '';
               }, 380);
-            }, 2400);
+            }, 4500);
           })();`} />
           <p
             class="mt-6 text-lg leading-relaxed max-w-xl"
@@ -533,7 +573,7 @@ ghp_xxxxxxxxxxxxxxxxxxxx`}
 │ kubectl …      │ ◀│   super_priv    │   │ signed events      │ ✓ │ archives forks     │
 │                │  │   vault.enc     │   │                    │   │ independent host   │
 └────────────────┘  └─────────────────┘   └────────────────────┘   └────────────────────┘
-   ssh-agent           multi-push to replicas (api.fd0.sh + api2.fd0.sh) · peers cross-pin
+   ssh-agent         multi-push to replicas (api.fd0.sh + api2.fd0.sh) · peers cross-pin
    protocol`}</pre>
             <div
               class="text-[12px] text-center px-6 pb-6 pt-1"
