@@ -1,0 +1,269 @@
+package cli
+
+// Typed-secret helpers. fd0's "everything is a secret" principle means
+// keys and SSH hosts are stored as regular vault secrets, distinguished
+// only by their SecretRecord.Type discriminator and a structured JSON
+// payload. The helpers here factor the typed-set / typed-get / list
+// logic out of cli/key.go and cli/ssh.go so the shape is consistent
+// across consumer subcommands.
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"sort"
+	"strings"
+
+	"github.com/oklog/ulid/v2"
+
+	"github.com/valentinkolb/fd0.sh/internal/chain"
+	"github.com/valentinkolb/fd0.sh/internal/proto"
+)
+
+// TypedRecord is one structured secret as observed by the typed
+// helpers. Payload is the raw `any` from the vault — callers parse it
+// via json.Unmarshal into the type-specific shape (sshkey.JSON,
+// sshhost.JSON, …).
+type TypedRecord struct {
+	ScopeID string
+	Name    string
+	Type    string
+	Payload any
+}
+
+// SetTypedSecret writes a structured secret in the given scope. The
+// payload must marshal to JSON (we serialise it to a JSON string and
+// store it as the Record.Payload; readers do the inverse).
+//
+// This intentionally re-implements the inner mechanics of RunSecretSet
+// because we need to set a custom Type and we want a single round-trip
+// per call. Most of the bookkeeping is shared verbatim.
+func (s *Session) SetTypedSecret(ctx context.Context, scopeID, name, secretType string, payload any) error {
+	scopeID, err := s.resolveScopeID(scopeID)
+	if err != nil {
+		return err
+	}
+	st, err := s.replayAndCheckScope(scopeID)
+	if err != nil {
+		return err
+	}
+	// Catch up vault on "ahead" chain (mirrors secret.go behaviour).
+	sd := s.Body.Scopes[scopeID]
+	if mm := chain.CompareScopeTip(scopeID, sd.ChainTip, st); mm != nil && mm.Direction == "ahead" {
+		sd.ChainTip = proto.ChainTip{Seq: st.TipSeq, Hash: st.TipHash}
+		if k, ok := st.OEKs[st.CurrentOEKVer]; ok {
+			sd.OEKs = upsertOEK(sd.OEKs, st.CurrentOEKVer, k)
+		}
+		s.Body.Scopes[scopeID] = sd
+		if err := s.ReSeal(); err != nil {
+			return err
+		}
+	}
+	if len(sd.OEKs) == 0 {
+		return fmt.Errorf("scope %s: no OEK in vault", scopeName(s, scopeID))
+	}
+	var curOEK proto.OEKEntry
+	for _, e := range sd.OEKs {
+		if e.Version == st.CurrentOEKVer {
+			curOEK = e
+			break
+		}
+	}
+	if curOEK.Version == 0 {
+		return fmt.Errorf("scope %s: no OEK v%d in vault", scopeName(s, scopeID), st.CurrentOEKVer)
+	}
+	// Find existing id by name; mint a new one otherwise.
+	var sid string
+	for id, cur := range st.SecretIndex {
+		if cur.Record != nil && cur.Record.Name == name {
+			sid = id
+			break
+		}
+	}
+	if sid == "" {
+		sid = "s_" + ulid.Make().String()
+	}
+	// JSON-encode the typed payload so it survives CBOR's `any`
+	// round-trip without surprising type coercion.
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("set typed: marshal payload: %w", err)
+	}
+	body := &proto.SecretBody{
+		ID: sid,
+		Record: &proto.SecretRecord{
+			Name:          name,
+			Type:          secretType,
+			SchemaVersion: 1,
+			Payload:       string(raw),
+			Tags:          map[string]string{},
+		},
+	}
+	ev, err := chain.BuildSecretSet(AgentSigner{Agent: s.Agent}, s.UserSuperPub,
+		proto.MustParseScopeID(scopeID), st.TipSeq, st.TipHash, curOEK.Key, curOEK.Version, body)
+	if err != nil {
+		return err
+	}
+	if err := chain.AppendScope(s.Paths.ScopeChain(proto.MustParseScopeID(scopeID)), ev); err != nil {
+		return err
+	}
+	prefix, _ := ev.PrevHashInput()
+	tipHash := proto.HashPrefix(prefix)
+	sd.ChainTip = proto.ChainTip{Seq: st.TipSeq + 1, Hash: tipHash[:]}
+	s.Body.Scopes[scopeID] = sd
+	if err := s.ReSeal(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ListTypedSecrets enumerates every secret of the given Type across
+// every subscribed scope. If scopeID is non-empty the search is
+// restricted to that one scope. Results are sorted by scope, then by
+// name, so CLI listings are deterministic.
+func (s *Session) ListTypedSecrets(scopeID, secretType string) ([]TypedRecord, error) {
+	scopes := []string{}
+	if scopeID != "" {
+		resolved, err := s.resolveScopeID(scopeID)
+		if err != nil {
+			return nil, err
+		}
+		scopes = append(scopes, resolved)
+	} else {
+		for sc := range s.Body.Scopes {
+			scopes = append(scopes, sc)
+		}
+		sort.Strings(scopes)
+	}
+	var out []TypedRecord
+	for _, sc := range scopes {
+		st, err := s.replayAndCheckScope(sc)
+		if err != nil {
+			return nil, err
+		}
+		for id, cur := range st.SecretIndex {
+			if cur.Record == nil || isMetaSecret(id, cur.Record.Name) {
+				continue
+			}
+			if secretType != "" && cur.Record.Type != secretType {
+				continue
+			}
+			out = append(out, TypedRecord{
+				ScopeID: sc,
+				Name:    cur.Record.Name,
+				Type:    cur.Record.Type,
+				Payload: cur.Record.Payload,
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].ScopeID != out[j].ScopeID {
+			return out[i].ScopeID < out[j].ScopeID
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out, nil
+}
+
+// GetTypedSecret finds one typed secret by name; matches across every
+// subscribed scope unless scopeID is set. Returns an error on multiple
+// matches (so the caller surfaces "ambiguous, pass --scope").
+func (s *Session) GetTypedSecret(scopeID, name string) (*TypedRecord, error) {
+	all, err := s.ListTypedSecrets(scopeID, "")
+	if err != nil {
+		return nil, err
+	}
+	var hits []TypedRecord
+	for _, r := range all {
+		if r.Name == name {
+			hits = append(hits, r)
+		}
+	}
+	switch len(hits) {
+	case 0:
+		return nil, fmt.Errorf("typed secret %q not found", name)
+	case 1:
+		return &hits[0], nil
+	default:
+		var scopes []string
+		for _, h := range hits {
+			scopes = append(scopes, scopeName(s, h.ScopeID))
+		}
+		return nil, fmt.Errorf("name %q exists in scopes [%s] — pass --scope", name, strings.Join(scopes, ", "))
+	}
+}
+
+// RemoveTypedSecret tombstones a typed secret by name in scopeID.
+// Inlined here rather than calling RunSecretRemove so we don't have
+// to reopen the session.
+func (s *Session) RemoveTypedSecret(ctx context.Context, scopeID, name string) error {
+	scopeID, err := s.resolveScopeID(scopeID)
+	if err != nil {
+		return err
+	}
+	st, err := s.replayAndCheckScope(scopeID)
+	if err != nil {
+		return err
+	}
+	var sid string
+	for id, cur := range st.SecretIndex {
+		if cur.Record == nil || isMetaSecret(id, cur.Record.Name) {
+			continue
+		}
+		if cur.Record.Name == name {
+			sid = id
+			break
+		}
+	}
+	if sid == "" {
+		return fmt.Errorf("typed secret %q not found in scope %s", name, scopeName(s, scopeID))
+	}
+	sd := s.Body.Scopes[scopeID]
+	var curOEK proto.OEKEntry
+	for _, e := range sd.OEKs {
+		if e.Version == st.CurrentOEKVer {
+			curOEK = e
+			break
+		}
+	}
+	body := &proto.SecretBody{ID: sid, Record: nil}
+	ev, err := chain.BuildSecretSet(AgentSigner{Agent: s.Agent}, s.UserSuperPub,
+		proto.MustParseScopeID(scopeID), st.TipSeq, st.TipHash, curOEK.Key, curOEK.Version, body)
+	if err != nil {
+		return err
+	}
+	if err := chain.AppendScope(s.Paths.ScopeChain(proto.MustParseScopeID(scopeID)), ev); err != nil {
+		return err
+	}
+	prefix, _ := ev.PrevHashInput()
+	tipHash := proto.HashPrefix(prefix)
+	sd.ChainTip = proto.ChainTip{Seq: st.TipSeq + 1, Hash: tipHash[:]}
+	s.Body.Scopes[scopeID] = sd
+	return s.ReSeal()
+}
+
+// PayloadJSON returns the payload as the JSON bytes that were stored.
+// The typed setters always store `string(json.Marshal(payload))`; this
+// helper undoes that opaquely so callers don't have to switch on the
+// concrete `any` type.
+func (r *TypedRecord) PayloadJSON() ([]byte, error) {
+	switch p := r.Payload.(type) {
+	case string:
+		return []byte(p), nil
+	case []byte:
+		return p, nil
+	default:
+		// Fallback for older entries stored without JSON wrapping.
+		buf, err := json.Marshal(p)
+		if err != nil {
+			return nil, err
+		}
+		return buf, nil
+	}
+}
+
+// stderrln is a tiny helper for consistent line-ended status output.
+func stderrln(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, format+"\n", args...)
+}
