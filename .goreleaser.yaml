@@ -104,3 +104,9 @@ release:
     name: fd0.sh
   draft: false
   prerelease: auto
+  # The CI workflow aliases the scoped tag (`client-v0.2.0`) into a
+  # local `v0.2.0` semver for goreleaser to parse. Use the original
+  # scoped tag for the visible Release name + tag pointer so the
+  # GitHub Releases UI matches the tag the user pushed.
+  name_template: "{{ .Env.ORIGINAL_TAG }}"
+  tag: "{{ .Env.ORIGINAL_TAG }}"

@@ -43,15 +43,38 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Goreleaser internally parses `.Tag` as semver for GitHub Release
+      # metadata, archive names, and changelog dedup. Our scoped tags
+      # (`client-v0.2.0`, `fd0-v0.1.0`) fail that parse because they
+      # carry a `<component>-v` prefix. We strip the prefix into a
+      # local `v<MAJOR.MINOR.PATCH>` alias tag on the same commit and
+      # point goreleaser at the alias for its parsing — but keep the
+      # GitHub Release named after the original scoped tag via
+      # release.name_template in .goreleaser.yaml.
+      - name: derive semver alias tag
+        id: semver
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          SEMVER="${TAG#*-v}"           # client-v0.2.0 -> 0.2.0
+          SEMVER="${SEMVER#v}"          # bare v0.2.0 still works
+          if ! [[ "$SEMVER" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "::error::could not derive semver from tag '$TAG'"
+            exit 1
+          fi
+          echo "semver=$SEMVER" >> "$GITHUB_OUTPUT"
+          git tag "v$SEMVER" "$GITHUB_SHA"
+          echo "aliased $TAG -> v$SEMVER (local only)"
+
       - uses: goreleaser/goreleaser-action@v6
         with:
           version: latest
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Pin goreleaser to the triggering tag. Without this it runs
-          # `git describe --tags` and can pick a different tag pointing
-          # at the same commit (e.g. `website-v0.0.8` instead of
-          # `client-v0.2.0`) and fail semver parsing on the scoped
-          # website prefix.
-          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
+          # Pin goreleaser to the v-prefixed alias so semver parsing
+          # works. The GitHub Release name still uses the original
+          # scoped tag via .goreleaser.yaml release.name_template.
+          GORELEASER_CURRENT_TAG: v${{ steps.semver.outputs.semver }}
+          # Surface the original scoped tag so the release-name template
+          # can use it verbatim.
+          ORIGINAL_TAG: ${{ github.ref_name }}
