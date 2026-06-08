@@ -35,7 +35,108 @@ type rootCLI struct {
 	Recovery recoveryCmd `cmd:"" help:"Offline backup of super_priv (for new devices or disaster recovery)."`
 	Auth     authCmd     `cmd:"" help:"Manage unlock methods (passphrases, future yubikeys)."`
 	Doctor   doctorCmd   `cmd:"" help:"Diagnose vault, chain, and tip-binding consistency."`
+	Key      keyCmd      `cmd:"" help:"Manage cryptographic keys (top-level; SSH and future consumers use them)."`
+	Ssh      sshCmd      `cmd:"" help:"Manage SSH hosts + connect. Without args opens a fuzzy picker."`
 	Version  versionCmd  `cmd:"" help:"Print version and exit."`
+}
+
+// ───── key ────────────────────────────────────────────────────────────
+type keyCmd struct {
+	Add  keyAddCmd  `cmd:"" help:"Generate a new key, or import an existing one with --import."`
+	List keyListCmd `cmd:"" aliases:"ls" help:"List all keys across scopes."`
+	Show keyShowCmd `cmd:"" help:"Print a key's details, or just the public key with --pub."`
+	Rm   keyRmCmd   `cmd:"" help:"Remove a key (tombstone)."`
+	Move keyMoveCmd `cmd:"" help:"Move a key between scopes."`
+}
+type keyAddCmd struct {
+	Name       string `arg:"" help:"Key name (no prefix)."`
+	Type       string `name:"type" help:"Algorithm: only ed25519 supported for new keys." default:"ed25519"`
+	Import     string `name:"import" help:"Path to an existing OpenSSH private-key file to import instead of generating."`
+	Passphrase string `name:"passphrase" help:"Passphrase for an encrypted imported key. Not recommended interactively." env:"FD0_KEY_IMPORT_PASSPHRASE"`
+	Comment    string `name:"comment" help:"Free-form comment; defaults to <name>@fd0."`
+	Scope      string `name:"scope" help:"Scope label or id."`
+}
+type keyListCmd struct {
+	Scope string `name:"scope" help:"Scope label or id."`
+}
+type keyShowCmd struct {
+	Name  string `arg:"" help:"Key name."`
+	Scope string `name:"scope" help:"Scope label or id."`
+	Pub   bool   `name:"pub" help:"Print only the public-key authorized_keys line."`
+}
+type keyRmCmd struct {
+	Name  string `arg:"" help:"Key name."`
+	Scope string `name:"scope" help:"Scope label or id."`
+}
+type keyMoveCmd struct {
+	Name    string `arg:"" help:"Key name."`
+	From    string `name:"scope" help:"Source scope label or id."`
+	ToScope string `name:"to-scope" required:"" help:"Destination scope label or id."`
+}
+
+// ───── ssh ────────────────────────────────────────────────────────────
+type sshCmd struct {
+	Enable  sshEnableCmd  `cmd:"" help:"One-time setup: writes Include line + creates fd0.conf."`
+	Disable sshDisableCmd `cmd:"" help:"Reverse the one-time setup."`
+	Sock    sshSockCmd    `cmd:"" help:"Print the agent socket path."`
+
+	Add  sshAddCmd  `cmd:"" help:"Add a host."`
+	List sshListCmd `cmd:"" aliases:"ls" help:"List hosts."`
+	Show sshShowCmd `cmd:"" help:"Show one host."`
+	Rm   sshRmCmd   `cmd:"" help:"Remove a host (tombstone)."`
+	Tag  sshTagCmd  `cmd:"" help:"Add or remove tags on a host."`
+	Move sshMoveCmd `cmd:"" help:"Move a host between scopes."`
+
+	Connect sshConnectCmd `cmd:"" default:"withargs" help:"Connect to a host, or open the picker."`
+}
+
+type sshEnableCmd struct{}
+type sshDisableCmd struct{}
+type sshSockCmd struct{}
+
+type sshAddCmd struct {
+	Alias       string            `arg:"" help:"Host alias (the name you ssh to)."`
+	Conn        string            `arg:"" optional:"" help:"Optional [user@]hostname[:port] shorthand."`
+	User        string            `name:"user" help:"SSH user (overrides conn-string)."`
+	Port        int               `name:"port" help:"SSH port (overrides conn-string)."`
+	Hostname    string            `name:"hostname" help:"Override conn-string hostname."`
+	Key         string            `name:"key" help:"Name of an existing fd0 key to bind."`
+	WithKey     bool              `name:"with-key" help:"Generate a new ed25519 key alongside the host."`
+	WithKeyName string            `name:"with-key-name" help:"Custom name for the auto-generated key (default: alias)."`
+	Jump        string            `name:"jump" help:"ProxyJump alias."`
+	Tag         []string          `name:"tag" help:"Add a tag (repeat for multiple)."`
+	Description string            `name:"description" help:"Free-form description."`
+	Opt         map[string]string `name:"opt" help:"Verbatim ssh_config option (e.g. --opt ForwardAgent=yes)."`
+	Scope       string            `name:"scope" help:"Scope label or id."`
+}
+type sshListCmd struct {
+	Scope string   `name:"scope" help:"Scope label or id."`
+	Tag   []string `name:"tag" help:"Filter by tag (AND across multiple)."`
+	NoTag []string `name:"no-tag" help:"Exclude hosts with this tag."`
+}
+type sshShowCmd struct {
+	Alias string `arg:"" help:"Host alias."`
+	Scope string `name:"scope" help:"Scope label or id."`
+}
+type sshRmCmd struct {
+	Alias string `arg:"" help:"Host alias."`
+	Scope string `name:"scope" help:"Scope label or id."`
+}
+type sshTagCmd struct {
+	Alias  string   `arg:"" help:"Host alias."`
+	Scope  string   `name:"scope" help:"Scope label or id."`
+	Add    []string `name:"add" help:"Add this tag."`
+	Remove []string `name:"remove" help:"Remove this tag."`
+}
+type sshMoveCmd struct {
+	Alias   string `arg:"" help:"Host alias."`
+	From    string `name:"scope" help:"Source scope label or id."`
+	ToScope string `name:"to-scope" required:"" help:"Destination scope label or id."`
+}
+type sshConnectCmd struct {
+	Alias string   `arg:"" optional:"" help:"Host alias. Empty opens picker."`
+	Tag   []string `name:"tag" help:"Pre-filter picker by tag."`
+	Cmd   []string `arg:"" optional:"" passthrough:"" help:"Command to execute on the host (passed to ssh)."`
 }
 
 type initCmd struct{}
@@ -244,6 +345,63 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 	case "version":
 		fmt.Printf("fd0 %s\n", version)
 		return nil
+
+	// ─── key ──────────────────────────────────────────────────────────
+	case "key add <name>":
+		return cli.RunKeyAdd(ctx, cli.KeyOpts{
+			Name:       c.Key.Add.Name,
+			Scope:      c.Key.Add.Scope,
+			Type:       c.Key.Add.Type,
+			Comment:    c.Key.Add.Comment,
+			ImportPath: c.Key.Add.Import,
+			Passphrase: c.Key.Add.Passphrase,
+		})
+	case "key list", "key ls":
+		return cli.RunKeyList(ctx, c.Key.List.Scope, nil, nil)
+	case "key show <name>":
+		return cli.RunKeyShow(ctx, c.Key.Show.Scope, c.Key.Show.Name, c.Key.Show.Pub)
+	case "key rm <name>":
+		return cli.RunKeyRemove(ctx, c.Key.Rm.Scope, c.Key.Rm.Name)
+	case "key move <name>":
+		return cli.RunKeyMove(ctx, c.Key.Move.Name, c.Key.Move.From, c.Key.Move.ToScope)
+
+	// ─── ssh ──────────────────────────────────────────────────────────
+	case "ssh enable":
+		return cli.RunSSHEnable(ctx)
+	case "ssh disable":
+		return cli.RunSSHDisable(ctx)
+	case "ssh sock":
+		return cli.RunSSHSock(ctx)
+
+	case "ssh add <alias>", "ssh add <alias> <conn>":
+		return cli.RunHostAdd(ctx, cli.HostAddOpts{
+			Alias:       c.Ssh.Add.Alias,
+			ConnString:  c.Ssh.Add.Conn,
+			User:        c.Ssh.Add.User,
+			Port:        c.Ssh.Add.Port,
+			Hostname:    c.Ssh.Add.Hostname,
+			KeyName:     c.Ssh.Add.Key,
+			WithKey:     c.Ssh.Add.WithKey,
+			WithKeyName: c.Ssh.Add.WithKeyName,
+			ProxyJump:   c.Ssh.Add.Jump,
+			Tags:        c.Ssh.Add.Tag,
+			Description: c.Ssh.Add.Description,
+			Options:     c.Ssh.Add.Opt,
+			Scope:       c.Ssh.Add.Scope,
+		})
+	case "ssh list", "ssh ls":
+		return cli.RunHostList(ctx, c.Ssh.List.Scope, c.Ssh.List.Tag, c.Ssh.List.NoTag)
+	case "ssh show <alias>":
+		return cli.RunHostShow(ctx, c.Ssh.Show.Scope, c.Ssh.Show.Alias)
+	case "ssh rm <alias>":
+		return cli.RunHostRemove(ctx, c.Ssh.Rm.Scope, c.Ssh.Rm.Alias)
+	case "ssh tag <alias>":
+		return cli.RunHostTag(ctx, c.Ssh.Tag.Scope, c.Ssh.Tag.Alias, c.Ssh.Tag.Add, c.Ssh.Tag.Remove)
+	case "ssh move <alias>":
+		return cli.RunHostMove(ctx, c.Ssh.Move.Alias, c.Ssh.Move.From, c.Ssh.Move.ToScope)
+
+	case "ssh", "ssh connect", "ssh connect <alias>", "ssh connect <alias> <cmd>":
+		return cli.RunSSHConnect(ctx, c.Ssh.Connect.Alias, c.Ssh.Connect.Cmd, c.Ssh.Connect.Tag)
 	}
 	return fmt.Errorf("unknown command %q", kctx.Command())
 }
