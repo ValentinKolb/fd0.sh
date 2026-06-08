@@ -184,21 +184,46 @@ const Home = () => (
             v1.0 · Apache-2.0 · zero-knowledge
           </div>
           <h1 class="text-[2.6rem] md:text-[3.4rem] leading-[1.05] tracking-tight font-medium">
-            Secrets you keep,
+            <span id="fd0-rotword" class="fd0-rotword inline-block">Secrets</span>{" "}
+            you keep,
             <br />
             <span style={`color:${C.acc};`}>not secrets you trust.</span>
           </h1>
+          <style innerHTML={`
+            .fd0-rotword {
+              transition: opacity 380ms ease, transform 380ms ease;
+              min-width: 6ch;
+            }
+            .fd0-rotword.fade-out { opacity: 0; transform: translateY(-6px); }
+          `} />
+          <script innerHTML={`(function(){
+            var words = ['Secrets','SSH keys','SSH hosts','Git signing'];
+            var el = document.getElementById('fd0-rotword');
+            if (!el) return;
+            var idx = 0;
+            var paused = false;
+            el.addEventListener('mouseenter', function(){ paused = true; });
+            el.addEventListener('mouseleave', function(){ paused = false; });
+            setInterval(function(){
+              if (paused) return;
+              el.classList.add('fade-out');
+              setTimeout(function(){
+                idx = (idx + 1) % words.length;
+                el.textContent = words[idx];
+                el.classList.remove('fade-out');
+              }, 380);
+            }, 2400);
+          })();`} />
           <p
             class="mt-6 text-lg leading-relaxed max-w-xl"
             style={`color:${C.dim};`}
           >
-            Zero-knowledge secrets manager. Run the server yourself, or
-            point your client at the hosted instance at{" "}
-            <span style={`color:${C.acc};`}>fd0.sh</span> — either way the
-            server stores ciphertext and signed events only. Membership
-            changes rotate the per-scope key atomically. Hardware-backed
-            identity via YubiKey. End-to-end transparency log with
-            independent witness verification.
+            One zero-knowledge vault for the credentials you'd otherwise
+            scatter across <span style={`color:${C.acc};`}>.ssh</span>,{" "}
+            <span style={`color:${C.acc};`}>.gnupg</span>, and someone's
+            Notion page. The server stores ciphertext and signed events
+            only. Sharing membership rotates per-scope keys atomically.
+            Independent witness cosigns every server tree-head.
           </p>
           <div class="mt-8 flex flex-wrap items-center gap-3">
             <Btn href="#install" primary>
@@ -454,6 +479,10 @@ ghp_xxxxxxxxxxxxxxxxxxxx`}
               v: "Same team-sharing model. fd0 keys live on devices you control; the server is yours or fd0.sh.",
             },
             {
+              k: "vs. 1Password SSH / Bitwarden SSH",
+              v: "Same per-sign agent protocol pattern. fd0 adds team-scoped keys — sharing an SSH key is the same op as sharing a password, cryptographic at scope membership.",
+            },
+            {
               k: "vs. pass (Git + GPG)",
               v: "fd0 has cryptographic membership built in: add/remove rotates the per-scope key atomically.",
             },
@@ -487,27 +516,142 @@ ghp_xxxxxxxxxxxxxxxxxxxx`}
         </h2>
         <p class="text-base mb-10 max-w-2xl" style={`color:${C.dim};`}>
           The client and the agent run locally; super_priv is mlocked
-          into the agent and never written to disk. The server and
-          witness hold ciphertext and signatures — never keys.
+          into the agent and never written to disk. Standard tools
+          (ssh, git, scp) attach via the ssh-agent socket — no
+          fd0-lock-in for the consumer. The server and witness hold
+          ciphertext and signatures, never keys.
         </p>
         <div class="overflow-x-auto -mx-6 px-6 flex justify-center">
           <div class="w-fit">
             <pre
               class="shell p-6 pb-2 text-[12px] leading-[1.55]"
               style={`background:${C.bgRaised};border:1px solid ${C.border};border-bottom:none;color:${C.fg};font-family:${FONT_MONO};`}
-            >{`your device           server                  replica                  observer
-┌─────────────────┐   ┌────────────────────┐  ┌────────────────────┐   ┌────────────────────┐
-│ fd0  (CLI)      │   │ fd0-server         │  │ fd0-server         │   │ fd0-witness        │
-│ fd0-agent       │ ─▶│ ciphertext +       │◀▶│ ciphertext +       │ ─▶│ cosigns honest STH │
-│   super_priv    │   │ signed events      │  │ signed events      │ ✓ │ archives forks     │
-│   vault.enc     │   │                    │  │                    │   │ independent host   │
-└─────────────────┘   └────────────────────┘  └────────────────────┘   └────────────────────┘`}</pre>
+            >{`consumers           your device           server                  observer
+┌────────────────┐  ┌─────────────────┐   ┌────────────────────┐   ┌────────────────────┐
+│ ssh, scp,      │  │ fd0  (CLI)      │   │ fd0-server         │   │ fd0-witness        │
+│ git, rsync,    │ ─│ fd0-agent       │ ─▶│ ciphertext +       │ ─▶│ cosigns honest STH │
+│ kubectl …      │ ◀│   super_priv    │   │ signed events      │ ✓ │ archives forks     │
+│                │  │   vault.enc     │   │                    │   │ independent host   │
+└────────────────┘  └─────────────────┘   └────────────────────┘   └────────────────────┘
+   ssh-agent           multi-push to replicas (api.fd0.sh + api2.fd0.sh) · peers cross-pin
+   protocol`}</pre>
             <div
               class="text-[12px] text-center px-6 pb-6 pt-1"
               style={`background:${C.bgRaised};border:1px solid ${C.border};border-top:none;color:${C.dim};font-family:${FONT_MONO};`}
             >
-              client multi-pushes every event to both replicas · peers cross-pin
+              standard protocols on both sides · zero-knowledge contract end-to-end
             </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    {/* ─── built on top: SSH ─────────────────────────────────────────── */}
+    <section
+      class="px-6 md:px-10 py-20 border-t"
+      style={`border-color:${C.border};background:${C.bgRaised}55;`}
+    >
+      <div class="max-w-6xl mx-auto">
+        <div
+          class="text-[11px] tracking-[0.18em] uppercase mb-3"
+          style={`color:${C.acc};`}
+        >
+          Built on top — fd0 ssh
+        </div>
+        <h2 class="text-3xl md:text-4xl font-medium tracking-tight mb-3 max-w-2xl">
+          SSH keys + host inventory, scope-shared, zero on disk.
+        </h2>
+        <p class="text-base mb-10 max-w-2xl" style={`color:${C.dim};`}>
+          Keys are generated inside fd0-agent and served via the standard
+          ssh-agent protocol. Hosts are structured entries that render to
+          a regular <span style={`color:${C.acc};`}>~/.ssh/fd0.conf</span> you
+          Include from your own config. Native SSH features (jump hosts,
+          agent forwarding, port forwarding) all work because we are just
+          an agent. Add a teammate to the scope and they get the same SSH
+          access on their next sync — cryptographic, not policy.
+        </p>
+
+        <div class="grid md:grid-cols-3 gap-5">
+          <div
+            class="p-5 text-[13px] leading-[1.6]"
+            style={`background:${C.bg};border:1px solid ${C.border};font-family:${FONT_MONO};`}
+          >
+            <div class="text-[11px] mb-3" style={`color:${C.dim};`}>
+              01 · Generate a key
+            </div>
+            <Shell>{`$ fd0 key add laptop
+✓ ed25519 (scope: personal)
+
+ssh-ed25519 AAAAC3NzaC1lZD…
+laptop@fd0`}</Shell>
+          </div>
+          <div
+            class="p-5 text-[13px] leading-[1.6]"
+            style={`background:${C.bg};border:1px solid ${C.border};font-family:${FONT_MONO};`}
+          >
+            <div class="text-[11px] mb-3" style={`color:${C.dim};`}>
+              02 · Add a host
+            </div>
+            <Shell>{`$ fd0 ssh add prod-db \\
+    app@db.internal \\
+    --jump bastion \\
+    --key laptop \\
+    --scope work
+
+✓ host added
+✓ ~/.ssh/fd0.conf rendered`}</Shell>
+          </div>
+          <div
+            class="p-5 text-[13px] leading-[1.6]"
+            style={`background:${C.bg};border:1px solid ${C.border};font-family:${FONT_MONO};`}
+          >
+            <div class="text-[11px] mb-3" style={`color:${C.dim};`}>
+              03 · Use native ssh
+            </div>
+            <Shell>{`$ ssh prod-db
+$ ssh prod-db "uname -a"
+$ scp dump.sql prod-db:/tmp/
+$ git push origin main`}</Shell>
+          </div>
+        </div>
+
+        <div class="grid md:grid-cols-2 gap-5 mt-5">
+          <div
+            class="p-5 text-sm"
+            style={`background:${C.bg};border:1px solid ${C.border};`}
+          >
+            <div
+              class="text-[11px] mb-2"
+              style={`color:${C.acc};`}
+            >
+              For your team
+            </div>
+            <div style={`color:${C.fg};`}>
+              <Shell>{`$ fd0 scope add-member bob --scope work
+$ fd0 sync`}</Shell>
+            </div>
+            <p class="mt-3 text-[13px]" style={`color:${C.dim};`}>
+              Bob's next sync gives him the key, the host, and the
+              tags. <span style={`color:${C.acc};`}>fd0 scope remove-member</span>{" "}
+              rotates the per-scope OEK — his next sync drops it.
+            </p>
+          </div>
+          <div
+            class="p-5 text-sm"
+            style={`background:${C.bg};border:1px solid ${C.border};`}
+          >
+            <div
+              class="text-[11px] mb-2"
+              style={`color:${C.acc};`}
+            >
+              Standard ssh-agent protocol
+            </div>
+            <p class="text-[13px]" style={`color:${C.dim};`}>
+              fd0-agent talks the same protocol as OpenSSH ssh-agent.
+              <span style={`color:${C.acc};`}> ssh, git, scp, rsync, VS Code Remote</span> —
+              anything that respects <code style={`color:${C.acc};font-family:${FONT_MONO};`}>SSH_AUTH_SOCK</code> just
+              works. fd0 never writes anything to the remote server.
+            </p>
           </div>
         </div>
       </div>
