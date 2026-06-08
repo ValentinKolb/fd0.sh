@@ -1,0 +1,6 @@
+node_modules
+dist
+public/styles.css
+public/fonts
+.git
+*.log

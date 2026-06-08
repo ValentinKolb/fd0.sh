@@ -45,3 +45,7 @@ website/dist/
 # Dev-mode Tailwind output (regenerated on every `bun run dev` boot).
 # The production build writes its own copy into website/dist/public/.
 website/public/styles.css
+# Self-hosted Geist + Geist Mono woff2 subsets: copied by
+# scripts/copy-fonts.ts from node_modules on every dev/prod build.
+# Source of truth is @fontsource-variable/{geist,geist-mono}.
+website/public/fonts/
