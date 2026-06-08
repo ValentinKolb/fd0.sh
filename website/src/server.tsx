@@ -5,10 +5,27 @@ import { timingSafeEqual } from "crypto";
 import { config, routes, SITE_URL } from "../config";
 import { ErrorPage, errorPresets } from "./lib/error";
 import { html as renderHTML } from "../config";
-import Docs from "./pages/Docs";
+import {
+  DocsOverview,
+  DocsConcepts,
+  DocsCli,
+  DocsSsh,
+  DocsSync,
+  DocsServer,
+  DocsYubikey,
+  DocsRecovery,
+} from "./pages/Docs";
 import Home from "./pages/Home";
 import Impressum from "./pages/Impressum";
-import Spec from "./pages/Spec";
+import {
+  SpecOverview,
+  SpecWire,
+  SpecCrypto,
+  SpecStorage,
+  SpecSync,
+  SpecTranslog,
+  SpecThreats,
+} from "./pages/Spec";
 import Witness from "./pages/Witness";
 
 const VERSION = process.env.FD0_WEBSITE_VERSION ?? "dev";
@@ -138,7 +155,26 @@ const app = new Hono()
     ),
   )
   .get("/sitemap.xml", (c) => {
-    const urls = ["/", "/docs", "/spec", "/witness", "/impressum"].map(
+    const urls = [
+      "/",
+      "/docs",
+      "/docs/concepts",
+      "/docs/cli",
+      "/docs/ssh",
+      "/docs/sync",
+      "/docs/server",
+      "/docs/yubikey",
+      "/docs/recovery",
+      "/spec",
+      "/spec/wire",
+      "/spec/crypto",
+      "/spec/storage",
+      "/spec/sync",
+      "/spec/translog",
+      "/spec/threats",
+      "/witness",
+      "/impressum",
+    ].map(
       (p) => `${SITE_URL}${p}`,
     );
     const body =
@@ -166,8 +202,21 @@ const app = new Hono()
   )
   // Pages
   .get("/", ...Home)
-  .get("/docs", ...Docs)
-  .get("/spec", ...Spec)
+  .get("/docs", ...DocsOverview)
+  .get("/docs/concepts", ...DocsConcepts)
+  .get("/docs/cli", ...DocsCli)
+  .get("/docs/ssh", ...DocsSsh)
+  .get("/docs/sync", ...DocsSync)
+  .get("/docs/server", ...DocsServer)
+  .get("/docs/yubikey", ...DocsYubikey)
+  .get("/docs/recovery", ...DocsRecovery)
+  .get("/spec", ...SpecOverview)
+  .get("/spec/wire", ...SpecWire)
+  .get("/spec/crypto", ...SpecCrypto)
+  .get("/spec/storage", ...SpecStorage)
+  .get("/spec/sync", ...SpecSync)
+  .get("/spec/translog", ...SpecTranslog)
+  .get("/spec/threats", ...SpecThreats)
   .get("/witness", ...Witness)
   .get("/impressum", ...Impressum)
   // Error handlers — designed pages instead of plaintext.

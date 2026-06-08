@@ -19,6 +19,82 @@
 
 @source "../src/**/*.{ts,tsx,html}";
 
+/* ─── view transitions ──────────────────────────────────────────────
+ * Smooth cross-document navigation on browsers that support the View
+ * Transitions API (Chrome 126+, recent Edge/Safari).
+ *
+ * - The full page fades + lifts on every navigation (`::view-transition`
+ *   pair on the root snapshot).
+ * - Specific elements declared with `view-transition-name: …` morph
+ *   between routes instead of being captured as part of the root
+ *   snapshot. We use this for the top nav (so it doesn't flash) and
+ *   the docs sidebar (so it stays put when jumping between subpages).
+ *
+ * Falls back to a normal full-page reload on unsupported browsers —
+ * the @supports guard means the named regions don't get isolated when
+ * they wouldn't animate anyway. */
+@supports (view-transition-name: a) {
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation-duration: 280ms;
+    animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  ::view-transition-old(root) {
+    animation-name: fd0-slide-out;
+  }
+  ::view-transition-new(root) {
+    animation-name: fd0-slide-in;
+  }
+  /* Pinned regions — don't fade with the page. */
+  nav.fd0-top-nav {
+    view-transition-name: fd0-top-nav;
+  }
+  aside.fd0-docs-sidebar {
+    view-transition-name: fd0-docs-sidebar;
+  }
+  footer.fd0-footer {
+    view-transition-name: fd0-footer;
+  }
+}
+
+@keyframes fd0-slide-out {
+  from { opacity: 1; transform: translateY(0); }
+  to   { opacity: 0; transform: translateY(-6px); }
+}
+@keyframes fd0-slide-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Respect prefers-reduced-motion — instant transition, no movement. */
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation-duration: 1ms !important;
+  }
+}
+
+/* Spec sidebar live-dot — a slow breathing pulse that says "this
+ * page is alive" without being noisy. Used by SpecLayout. */
+.fd0-pulse {
+  animation: fd0-pulse 2.4s ease-in-out infinite;
+}
+@keyframes fd0-pulse {
+  0%, 100% { opacity: 1;   transform: scale(1); }
+  50%      { opacity: 0.35; transform: scale(0.85); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fd0-pulse { animation: none; }
+}
+
+/* Single source of truth for nav height so the docs sidebar's
+ * sticky `top` can match it exactly. If these drift apart the
+ * sidebar visibly scrolls a few px before sticking — which is the
+ * bug this variable fixes. */
+:root {
+  --fd0-nav-h: 4rem;
+}
+
 @layer base {
   html,
   body {
