@@ -1,0 +1,252 @@
+// Package sshagent implements the ssh-agent protocol on a Unix domain
+// socket so that standard SSH clients (ssh, scp, sftp, git, rsync, …)
+// can transparently use keys held by fd0.
+//
+// Design choices, made deliberately to keep the implementation small
+// and the trust surface narrow:
+//
+//   - Sign + List only. Add, Remove, Lock, Unlock from the agent
+//     socket are explicitly unsupported. Key state is owned by the
+//     fd0 vault; ssh-add cannot mutate it. This matches the Bitwarden
+//     desktop ssh-agent posture and removes whole categories of misuse
+//     (cf. SSH agent protocol §2.5 — implementations MAY decline ops).
+//
+//   - Vault-unlock is the consent boundary. No per-sign approval
+//     prompt. The standard ssh-agent (OpenSSH, gpg-agent, gnome-
+//     keyring) behaviour. If the vault is locked the key listing is
+//     empty and sign returns failure; the user runs `fd0 unlock` and
+//     retries, the SSH client picks the key up automatically.
+//
+//   - The KeyProvider is injected. This file does not know about the
+//     vault or fdhome; it only knows how to translate
+//     fd0-domain key objects into the agent protocol. Wiring lives
+//     one layer up in cmd/fd0-agent and internal/agent.
+package sshagent
+
+import (
+	"crypto/rand"
+	"errors"
+	"fmt"
+	"net"
+	"os"
+	"path/filepath"
+	"strconv"
+
+	"github.com/valentinkolb/fd0.sh/internal/sshkey"
+	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
+)
+
+// KeyEntry is what the agent serves to ssh clients. The Key carries
+// the signing material; Comment is what ssh-add -l displays.
+type KeyEntry struct {
+	Key     *sshkey.Key
+	Comment string // free-form; falls back to key.Comment if empty
+}
+
+// KeyProvider abstracts where the agent gets its keys from. In
+// production this is wired to the vault layer; in tests it can be a
+// static slice. Implementations must be safe for concurrent calls —
+// the agent answers list/sign requests from multiple sockets in
+// parallel.
+type KeyProvider interface {
+	// Keys returns the currently-available keys. An empty slice (not
+	// an error) is the canonical "vault is locked / no keys here"
+	// response — the SSH client treats it as "no identities" and the
+	// user sees no surprise crash.
+	Keys() ([]KeyEntry, error)
+}
+
+// fd0Agent implements agent.Agent (golang.org/x/crypto/ssh/agent).
+// We intentionally only implement List and Sign; the other methods
+// return an error so adversarial clients (and confused tooling) fail
+// loudly rather than silently mutating state.
+type fd0Agent struct {
+	src KeyProvider
+}
+
+// New wraps a KeyProvider in an agent.Agent suitable for
+// agent.ServeAgent.
+func New(src KeyProvider) agent.Agent {
+	return &fd0Agent{src: src}
+}
+
+// List returns the public keys currently available. It NEVER returns
+// an error to the wire even if the provider errored — agent clients
+// often interpret errors as a protocol-level abort and stop the whole
+// session. An empty list is the safer degradation.
+func (a *fd0Agent) List() ([]*agent.Key, error) {
+	entries, err := a.src.Keys()
+	if err != nil {
+		return nil, nil
+	}
+	out := make([]*agent.Key, 0, len(entries))
+	for _, e := range entries {
+		pub, err := e.Key.PublicKey()
+		if err != nil {
+			continue
+		}
+		comment := e.Comment
+		if comment == "" {
+			comment = e.Key.Comment
+		}
+		out = append(out, &agent.Key{
+			Format:  pub.Type(),
+			Blob:    pub.Marshal(),
+			Comment: comment,
+		})
+	}
+	return out, nil
+}
+
+// Sign produces a signature over `data` with the private key matching
+// `key`. The agent rummages through the available identities for a
+// pub-key match; if none match, returns an error.
+//
+// We do NOT honour SignWithFlags' fingerprint-specific algorithms
+// because we only generate ed25519 (which uses one fixed algorithm);
+// imported RSA keys deliberately decline RFC 8332 newer SHA modes —
+// callers should rotate to ed25519 instead.
+func (a *fd0Agent) Sign(key ssh.PublicKey, data []byte) (*ssh.Signature, error) {
+	entries, err := a.src.Keys()
+	if err != nil {
+		return nil, fmt.Errorf("sshagent: get keys: %w", err)
+	}
+	target := key.Marshal()
+	for _, e := range entries {
+		pub, err := e.Key.PublicKey()
+		if err != nil {
+			continue
+		}
+		if !equalBytes(pub.Marshal(), target) {
+			continue
+		}
+		signer, err := e.Key.Signer()
+		if err != nil {
+			return nil, fmt.Errorf("sshagent: signer for %q: %w", e.Comment, err)
+		}
+		return signer.Sign(rand.Reader, data)
+	}
+	return nil, errors.New("sshagent: no matching identity")
+}
+
+// SignWithFlags falls back to Sign — see comment above for rationale.
+func (a *fd0Agent) SignWithFlags(key ssh.PublicKey, data []byte, _ agent.SignatureFlags) (*ssh.Signature, error) {
+	return a.Sign(key, data)
+}
+
+// Add is explicitly unsupported. Adding keys goes via `fd0 key add` →
+// vault → agent sees it on next List.
+func (a *fd0Agent) Add(_ agent.AddedKey) error {
+	return errors.New("sshagent: Add not supported (use `fd0 key add`)")
+}
+
+// Remove is explicitly unsupported. Use `fd0 key rm`.
+func (a *fd0Agent) Remove(_ ssh.PublicKey) error {
+	return errors.New("sshagent: Remove not supported (use `fd0 key rm`)")
+}
+
+// RemoveAll is explicitly unsupported.
+func (a *fd0Agent) RemoveAll() error {
+	return errors.New("sshagent: RemoveAll not supported")
+}
+
+// Lock is unsupported — vault lock/unlock state IS the agent's lock
+// state; locking is via `fd0 lock`.
+func (a *fd0Agent) Lock(_ []byte) error {
+	return errors.New("sshagent: Lock not supported (use `fd0 lock`)")
+}
+
+// Unlock is unsupported — see Lock.
+func (a *fd0Agent) Unlock(_ []byte) error {
+	return errors.New("sshagent: Unlock not supported (use `fd0 unlock`)")
+}
+
+// Signers returns concrete ssh.Signer for every available identity.
+// Some go-ssh clients call this directly instead of via the
+// List+Sign roundtrip; we serve it so they don't error out.
+func (a *fd0Agent) Signers() ([]ssh.Signer, error) {
+	entries, err := a.src.Keys()
+	if err != nil {
+		return nil, nil
+	}
+	out := make([]ssh.Signer, 0, len(entries))
+	for _, e := range entries {
+		s, err := e.Key.Signer()
+		if err == nil {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
+// equalBytes compares two byte slices in constant time. Public keys
+// aren't strictly a secret-equality case (they're public!) but
+// constant-time compare is a cheap habit.
+func equalBytes(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	var v byte
+	for i := range a {
+		v |= a[i] ^ b[i]
+	}
+	return v == 0
+}
+
+// DefaultSocketPath returns the conventional fd0 SSH-agent socket
+// path. Honours XDG_RUNTIME_DIR per the freedesktop.org spec; falls
+// back to /tmp on macOS where XDG isn't standardised. The filename
+// includes the UID so two users sharing a host get separate sockets.
+func DefaultSocketPath() string {
+	dir := os.Getenv("XDG_RUNTIME_DIR")
+	if dir == "" {
+		dir = filepath.Join("/tmp", "fd0")
+	} else {
+		dir = filepath.Join(dir, "fd0")
+	}
+	uid := os.Getuid()
+	return filepath.Join(dir, "ssh-"+strconv.Itoa(uid)+".sock")
+}
+
+// EnsureSocketDir creates the parent directory for the socket with
+// 0700 permissions (owner-only) and removes any stale socket file at
+// the target path. Returns the absolute path to use for Listen.
+func EnsureSocketDir(socketPath string) error {
+	dir := filepath.Dir(socketPath)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("sshagent: mkdir %s: %w", dir, err)
+	}
+	// Stale socket left by previous agent? Remove. Honour the
+	// pre-condition with EnsureSocketDir-then-Listen by guaranteeing
+	// the path is free.
+	if _, err := os.Stat(socketPath); err == nil {
+		if err := os.Remove(socketPath); err != nil {
+			return fmt.Errorf("sshagent: remove stale %s: %w", socketPath, err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("sshagent: stat %s: %w", socketPath, err)
+	}
+	return nil
+}
+
+// Listen opens the Unix socket at path with the conventional 0600
+// permissions (only the owning UID can talk to it). Callers loop
+// accepting connections and hand each to agent.ServeAgent(agent, conn).
+func Listen(path string) (net.Listener, error) {
+	if err := EnsureSocketDir(path); err != nil {
+		return nil, err
+	}
+	l, err := net.Listen("unix", path)
+	if err != nil {
+		return nil, fmt.Errorf("sshagent: listen %s: %w", path, err)
+	}
+	// net.Listen on Unix sockets creates the file with the process's
+	// umask applied — usually 0755 minus 0022 = 0755. Tighten to 0600
+	// explicitly so a hostile local user can't connect.
+	if err := os.Chmod(path, 0o600); err != nil {
+		_ = l.Close()
+		return nil, fmt.Errorf("sshagent: chmod 0600 %s: %w", path, err)
+	}
+	return l, nil
+}
