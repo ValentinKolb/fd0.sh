@@ -175,6 +175,16 @@ fd0 unlock
 fd0 sync                                  # auto-discovers every scope you're a member of
 ```
 
+## AI agents
+
+`skills/fd0/` is an agent skill covering the CLI: when to use which command, the card-exchange + scope-membership flow, the security rules (no `--stdin` flag, never echo passphrases, refuse to blindly re-pin on key mismatch), and a high-level protocol reference so the agent can reason about what the server can and cannot see.
+
+```bash
+bunx skills add ValentinKolb/fd0.sh
+```
+
+After install the agent recognises requests like "save my deploy key" or "share the prod password with bob" as fd0 territory and walks through the correct command sequence.
+
 ## Build from source
 
 ```bash
@@ -215,6 +225,7 @@ deploy/     Reference Traefik + compose stack.
 tests/      Integration shell suite.
 tools/      Lint / threat-coverage helpers (e.g. semgrep rules).
 website/    fd0.sh source — Bun + Hono + Solid SSR (`@valentinkolb/ssr`).
+skills/     Agent skill — install via `bunx skills add ValentinKolb/fd0.sh`.
 ```
 
 One module. `go install ./cmd/...` from the root builds everything. Cross-cutting changes (a protocol revision that updates spec, implementation, and homepage example) land as one PR with one CHANGELOG entry.

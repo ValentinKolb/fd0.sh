@@ -1,0 +1,29 @@
+{
+  "skill_name": "fd0",
+  "evals": [
+    {
+      "id": "first-setup",
+      "prompt": "Ich will meinen GitHub deploy key so speichern dass ich ihn von mehreren Rechnern nutzen kann ohne ihn irgendwo committen zu müssen. Hab gehört man kann das mit fd0 machen — wie geh ich vor?",
+      "expected_output": "Step-by-step guidance covering: fd0 init (passphrase set), fd0 unlock, scope create, fd0 set DEPLOY_KEY ... with --scope, fd0 sync. Mentions default servers (api.fd0.sh + api2.fd0.sh) or how to configure own server. Warns about passphrase handling. Mentions or implies the TOFU pin ceremony on first sync.",
+      "files": []
+    },
+    {
+      "id": "sharing",
+      "prompt": "Mein Kollege Bob soll auf die Produktions-DB-Credentials zugreifen können. Wir nutzen beide fd0. Wie geben wir uns gegenseitig Zugriff?",
+      "expected_output": "Walks through the full card exchange flow: both run fd0 card export, exchange URLs via some authentic channel, verify safety numbers out of band, fd0 card import with --label, then fd0 scope add-member bob --scope work, then fd0 sync. Mentions that bob can read everything in the scope (including new secrets) until removed.",
+      "files": []
+    },
+    {
+      "id": "pin-mismatch",
+      "prompt": "Mein `fd0 sync` schmeißt 'pinned-key-mismatch'. Was ist das, wie kann ich's beheben? Soll ich einfach die Config löschen und neu pinnen?",
+      "expected_output": "Recognizes pinned-key-mismatch as a security event, NOT a transient. Refuses 'just delete and re-pin' without verifying the new fingerprint out of band. Explains it could be legitimate operator key rotation OR a MITM attack. Tells user to contact the server operator or verify the new fingerprint via a trusted channel.",
+      "files": []
+    },
+    {
+      "id": "ci-fetch",
+      "prompt": "Schreib mir ein Deploy-Skript das `STAGING_API_KEY` aus fd0 holt und damit `fly deploy` ausführt. Im CI.",
+      "expected_output": "Produces a bash script. Uses `fd0 get --raw STAGING_API_KEY` (the --raw flag is important to avoid trailing newlines). Handles the unlock requirement (mentions that the agent must be running in CI, or uses FD0_HOME). Does not echo or log the secret. Does not pipe through unsafe shell interpolation. May mention that running fd0 in CI requires the vault + agent to be set up there.",
+      "files": []
+    }
+  ]
+}
