@@ -11,12 +11,13 @@ builds:
     env: [CGO_ENABLED=0]
     flags: [-tags=netgo]
     # .Version is `.Tag` with leading "v" stripped. With scoped tags
-    # (`client-v0.0.5`, `fd0-v0.1.0`) the leading char is not "v" so
-    # nothing is stripped — we use sprig's regexReplaceAll to drop the
-    # optional `<component>-v` prefix and the bare-v form. Result:
-    # `fd0 version` always prints `0.0.5` regardless of tag scheme.
+    # .Version comes from goreleaser parsing the v-prefixed alias tag
+    # (see .github/workflows/release.yml — local v$SEMVER created from
+    # the scoped trigger tag). Result: `fd0 version` always prints just
+    # `0.2.0` regardless of whether the user pushed client-v0.2.0 or
+    # fd0-v0.2.0.
     ldflags:
-      - '-s -w -X main.version={{ regexReplaceAll "^([a-z]+-)?v" .Tag "" }}'
+      - '-s -w -X main.version={{ .Version }}'
     goos: [linux, darwin]
     goarch: [amd64, arm64]
 
@@ -26,12 +27,13 @@ builds:
     env: [CGO_ENABLED=0]
     flags: [-tags=netgo]
     # .Version is `.Tag` with leading "v" stripped. With scoped tags
-    # (`client-v0.0.5`, `fd0-v0.1.0`) the leading char is not "v" so
-    # nothing is stripped — we use sprig's regexReplaceAll to drop the
-    # optional `<component>-v` prefix and the bare-v form. Result:
-    # `fd0 version` always prints `0.0.5` regardless of tag scheme.
+    # .Version comes from goreleaser parsing the v-prefixed alias tag
+    # (see .github/workflows/release.yml — local v$SEMVER created from
+    # the scoped trigger tag). Result: `fd0 version` always prints just
+    # `0.2.0` regardless of whether the user pushed client-v0.2.0 or
+    # fd0-v0.2.0.
     ldflags:
-      - '-s -w -X main.version={{ regexReplaceAll "^([a-z]+-)?v" .Tag "" }}'
+      - '-s -w -X main.version={{ .Version }}'
     goos: [linux, darwin]
     goarch: [amd64, arm64]
 
@@ -41,12 +43,13 @@ builds:
     env: [CGO_ENABLED=0]
     flags: [-tags=netgo]
     # .Version is `.Tag` with leading "v" stripped. With scoped tags
-    # (`client-v0.0.5`, `fd0-v0.1.0`) the leading char is not "v" so
-    # nothing is stripped — we use sprig's regexReplaceAll to drop the
-    # optional `<component>-v` prefix and the bare-v form. Result:
-    # `fd0 version` always prints `0.0.5` regardless of tag scheme.
+    # .Version comes from goreleaser parsing the v-prefixed alias tag
+    # (see .github/workflows/release.yml — local v$SEMVER created from
+    # the scoped trigger tag). Result: `fd0 version` always prints just
+    # `0.2.0` regardless of whether the user pushed client-v0.2.0 or
+    # fd0-v0.2.0.
     ldflags:
-      - '-s -w -X main.version={{ regexReplaceAll "^([a-z]+-)?v" .Tag "" }}'
+      - '-s -w -X main.version={{ .Version }}'
     goos: [linux, darwin]
     goarch: [amd64, arm64]
 
@@ -56,12 +59,13 @@ builds:
     env: [CGO_ENABLED=0]
     flags: [-tags=netgo]
     # .Version is `.Tag` with leading "v" stripped. With scoped tags
-    # (`client-v0.0.5`, `fd0-v0.1.0`) the leading char is not "v" so
-    # nothing is stripped — we use sprig's regexReplaceAll to drop the
-    # optional `<component>-v` prefix and the bare-v form. Result:
-    # `fd0 version` always prints `0.0.5` regardless of tag scheme.
+    # .Version comes from goreleaser parsing the v-prefixed alias tag
+    # (see .github/workflows/release.yml — local v$SEMVER created from
+    # the scoped trigger tag). Result: `fd0 version` always prints just
+    # `0.2.0` regardless of whether the user pushed client-v0.2.0 or
+    # fd0-v0.2.0.
     ldflags:
-      - '-s -w -X main.version={{ regexReplaceAll "^([a-z]+-)?v" .Tag "" }}'
+      - '-s -w -X main.version={{ .Version }}'
     goos: [linux, darwin]
     goarch: [amd64, arm64]
 
