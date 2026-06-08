@@ -205,12 +205,41 @@
 /* The Shell component wraps its output in <pre class="shell …">; this
  * rule kills programming ligatures (so `--`, `==`, `<-` render as the
  * chars they actually are) and makes long lines scroll horizontally
- * instead of breaking the box layout. Independent of .term. */
+ * instead of breaking the box layout. Independent of .term.
+ *
+ * max-width: 100% + min-width: 0 keep the pre from contributing its
+ * intrinsic line width to the parent's min-content size, which is
+ * what previously made code cards push the viewport wider than the
+ * screen on mobile. */
 .shell {
   font-variant-ligatures: none;
   font-feature-settings: "liga" 0, "calt" 0;
   white-space: pre;
   overflow-x: auto;
+  max-width: 100%;
+  min-width: 0;
+}
+
+/* ─── mobile horizontal-overflow safety net ────────────────────────
+ *
+ * Code blocks scroll inside their own containers but their grid/flex
+ * parents inherit `min-width: auto`, which on mobile lets the
+ * intrinsic line width of a long shell command push the column —
+ * and the whole page — wider than the viewport. Two-layer fix:
+ *
+ *   1. html/body never scroll horizontally. Internal scroll
+ *      containers (.shell, the architecture pre wrapper) keep
+ *      working because they are their own scroll contexts.
+ *   2. Any direct parent of a .shell shrinks to its column width
+ *      instead of growing to the shell's intrinsic width — the
+ *      shell's own overflow-x: auto then handles horizontal scroll.
+ */
+html, body {
+  overflow-x: clip;
+}
+:where(:has(> .shell)) {
+  min-width: 0;
+  max-width: 100%;
 }
 
 /* Blinking block cursor next to the `$ man fd0` line. */

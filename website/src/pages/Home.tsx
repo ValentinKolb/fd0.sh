@@ -613,7 +613,7 @@ ghp_xxxxxxxxxxxxxxxxxxxx`}
 
         <div class="grid md:grid-cols-3 gap-5">
           <div
-            class="p-5 text-[13px] leading-[1.6]"
+            class="p-5 text-[13px] leading-[1.6] min-w-0 overflow-hidden"
             style={`background:${C.bg};border:1px solid ${C.border};font-family:${FONT_MONO};`}
           >
             <div class="text-[11px] mb-3" style={`color:${C.dim};`}>
@@ -626,7 +626,7 @@ ssh-ed25519 AAAAC3NzaC1lZD…
 laptop@fd0`}</Shell>
           </div>
           <div
-            class="p-5 text-[13px] leading-[1.6]"
+            class="p-5 text-[13px] leading-[1.6] min-w-0 overflow-hidden"
             style={`background:${C.bg};border:1px solid ${C.border};font-family:${FONT_MONO};`}
           >
             <div class="text-[11px] mb-3" style={`color:${C.dim};`}>
@@ -642,7 +642,7 @@ laptop@fd0`}</Shell>
 ✓ ~/.ssh/fd0.conf rendered`}</Shell>
           </div>
           <div
-            class="p-5 text-[13px] leading-[1.6]"
+            class="p-5 text-[13px] leading-[1.6] min-w-0 overflow-hidden"
             style={`background:${C.bg};border:1px solid ${C.border};font-family:${FONT_MONO};`}
           >
             <div class="text-[11px] mb-3" style={`color:${C.dim};`}>
