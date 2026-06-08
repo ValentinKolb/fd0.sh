@@ -7,12 +7,13 @@
  * should look the way it types, not the way the typeface composes it.
  */
 
-/* Additional families are loaded for the alternative homepage drafts
- * under /v1–/v5. The main / homepage and /impressum continue to use
- * Geist Mono exclusively; the other faces are referenced via Tailwind
- * arbitrary `font-[…]` utilities on the per-page root elements only.
+/*
+ * Self-hosted font @font-face declarations live in the HTML head
+ * (see config.ts FONT_FACE_CSS) so bun's CSS bundler doesn't try to
+ * resolve the woff2 URLs at build time. The files themselves are
+ * copied to <out>/fonts/ by scripts/copy-fonts.ts (called from both
+ * preload.ts in dev and build.ts in prod).
  */
-@import url("https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300..700&family=Geist:wght@100..900&family=Inter:wght@300..900&family=Source+Serif+4:opsz,wght@8..60,400..700&display=swap");
 
 @import "tailwindcss";
 

@@ -19,6 +19,7 @@ process.env.NODE_ENV = "production";
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from "fs";
 import tailwindPlugin from "bun-plugin-tailwind";
 import { plugin as ssrPlugin } from "../config";
+import { copyFonts } from "./copy-fonts";
 
 const DIST = "dist";
 const DIST_PUBLIC = `${DIST}/public`;
@@ -86,6 +87,18 @@ if (existsSync("public")) {
   if (copied > 0) {
     console.log(`✓ assets: ${copied} file(s), ${bytes} bytes → ${DIST_PUBLIC}/`);
   }
+}
+
+// ─── fonts ─────────────────────────────────────────────────────────
+//
+// We ship Geist + Geist Mono as woff2 subsets from @fontsource-variable
+// rather than hot-linking Google Fonts — zero external HTTP, no privacy
+// leak, hash-stable bytes. Copy must happen AFTER the public/ assets
+// copy above to avoid getting overwritten by a stray font-named file
+// from public/ (unlikely but explicit).
+{
+  const { count, bytes } = await copyFonts(DIST_PUBLIC);
+  console.log(`✓ fonts:  ${count} file(s), ${(bytes / 1024).toFixed(1)} KB → ${DIST_PUBLIC}/fonts/`);
 }
 
 // ─── done ──────────────────────────────────────────────────────────

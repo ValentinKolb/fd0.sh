@@ -16,10 +16,18 @@
 import { mkdirSync } from "fs";
 import tailwindPlugin from "bun-plugin-tailwind";
 import { plugin as ssrPlugin } from "../config";
+import { copyFonts } from "./copy-fonts";
 
 Bun.plugin(ssrPlugin());
 
 mkdirSync("public", { recursive: true });
+
+// Copy the variable Geist + Geist Mono woff2 subsets we use so
+// dev-mode serves them locally — no Google Fonts, no external HTTP.
+{
+  const { count, bytes } = await copyFonts("public");
+  console.log(`[fd0-site] fonts copied (dev): ${count} file(s), ${(bytes / 1024).toFixed(1)} KB → public/fonts/`);
+}
 const stylesEntry = new URL("../src/styles.css", import.meta.url).pathname;
 const build = await Bun.build({
   entrypoints: [stylesEntry],
