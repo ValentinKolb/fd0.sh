@@ -16,6 +16,30 @@ as before.
 Tags before `client-v0.0.5` used the unified `vX.Y.Z` scheme (one
 release shipped all artefacts together) and are retained as-is.
 
+## fd0-v0.1.0 — 2026-06-08
+
+Coordinated bump of all four components to 0.1.0. Consolidates every
+piece of the multi-server work and gives the project a clean
+"replicas-are-real" milestone version.
+
+Component versions rolled into this release:
+
+- `fd0-server`  — was `0.0.5`, now `0.1.0`
+- `fd0-witness` — was `0.0.5`, now `0.1.0`
+- `fd0-website` — was `0.0.6`, now `0.1.0`
+- `fd0` / `fd0-agent` — was `0.0.5`, now `0.1.0`
+
+CI / release pipeline:
+
+- arm64 Docker builds now use native `ubuntu-24.04-arm` runners
+  instead of qemu emulation. Removes the docker-hub timeout failure
+  class observed in earlier releases; arm64 build time roughly halved.
+
+No wire-protocol changes vs `v0.0.5`. The transparency-log signature
+inputs, vault on-disk format, and HTTP API are unchanged. Existing
+clients on `client-v0.0.5` keep working against servers on
+`server-v0.1.0` and vice versa.
+
 ## website-v0.0.6 — 2026-06-08
 
 - Architecture diagram: add replica box, headings left-aligned with
