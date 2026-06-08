@@ -49,3 +49,9 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pin goreleaser to the triggering tag. Without this it runs
+          # `git describe --tags` and can pick a different tag pointing
+          # at the same commit (e.g. `website-v0.0.8` instead of
+          # `client-v0.2.0`) and fail semver parsing on the scoped
+          # website prefix.
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
