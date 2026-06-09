@@ -20,6 +20,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"strings"
@@ -113,29 +114,58 @@ func ImportOpenSSH(pemBytes, passphrase []byte, name string) (*Key, error) {
 	switch algo {
 	case "ssh-ed25519":
 		// Reparse to extract the raw ed25519 priv (signer wraps it).
-		raw, err := ssh.ParseRawPrivateKey(pemBytes)
+		// Pass the passphrase through — the earlier ssh.ParsePrivate
+		// KeyWithPassphrase decrypted into a signer, but ParseRaw
+		// keeps the raw bytes encrypted and needs the same key to
+		// unwrap. Without this, encrypted ed25519 imports always hit
+		// the "unable to extract raw key" fallback.
+		var raw any
+		var err error
+		if len(passphrase) > 0 {
+			raw, err = ssh.ParseRawPrivateKeyWithPassphrase(pemBytes, passphrase)
+		} else {
+			raw, err = ssh.ParseRawPrivateKey(pemBytes)
+		}
 		if err == nil {
-			if priv, ok := raw.(*ed25519.PrivateKey); ok {
+			// ssh.ParseRawPrivateKey returns *ed25519.PrivateKey for
+			// OpenSSH-format keys and ed25519.PrivateKey (value type)
+			// for PKCS#8-format keys (the path crypto/x509 takes).
+			// Handle both — the previous code missed the value case
+			// and returned "unable to extract raw key" for any
+			// `openssl genpkey -algorithm ed25519` output.
+			var priv ed25519.PrivateKey
+			switch r := raw.(type) {
+			case *ed25519.PrivateKey:
+				priv = *r
+			case ed25519.PrivateKey:
+				priv = r
+			}
+			if priv != nil {
 				return &Key{
 					Type:    TypeEd25519,
-					Private: append([]byte(nil), *priv...),
+					Private: append([]byte(nil), priv...),
 					Public:  authorizedKeyLine(pub),
 					Comment: name + "@fd0",
 				}, nil
 			}
 		}
-		// Fallback: store the wire-format private blob (signer.Sign will
-		// be reconstituted via Marshal/Unmarshal). For ed25519 the raw
-		// extraction above should always work.
-		return nil, errors.New("sshkey: import ed25519: unable to extract raw key")
+		return nil, fmt.Errorf("sshkey: import ed25519: unable to extract raw key (err=%v)", err)
 	case "ssh-rsa":
 		// Refuse weak moduli. ssh.PublicKey's BitLen isn't directly
 		// exposed; we read it off ssh.PublicKey via type assertion.
 		if bits := rsaBitLen(pub); bits > 0 && bits < MinRSABits {
 			return nil, fmt.Errorf("sshkey: rsa key has %d bits, minimum is %d", bits, MinRSABits)
 		}
-		// Store the original PEM as private material; sign operations
-		// will re-parse via ssh.ParsePrivateKey when needed.
+		// Refuse encrypted RSA imports. We previously stored the
+		// encrypted PEM as-is, then Signer() re-parsed it without
+		// passphrase — every later sign op would fail. Decrypting
+		// here and writing an unencrypted PEM would change the
+		// at-rest contract (vault then holds plaintext key material
+		// instead of the operator's encrypted blob), so we surface
+		// the limitation explicitly.
+		if len(passphrase) > 0 || isEncryptedPEM(pemBytes) {
+			return nil, errors.New("sshkey: encrypted RSA imports are not supported; decrypt first (ssh-keygen -p -N \"\" -f <file>) or rotate to ed25519")
+		}
 		return &Key{
 			Type:    TypeRSA,
 			Private: append([]byte(nil), pemBytes...),
@@ -143,6 +173,9 @@ func ImportOpenSSH(pemBytes, passphrase []byte, name string) (*Key, error) {
 			Comment: name + "@fd0",
 		}, nil
 	case "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521":
+		if len(passphrase) > 0 || isEncryptedPEM(pemBytes) {
+			return nil, errors.New("sshkey: encrypted ECDSA imports are not supported; decrypt first or rotate to ed25519")
+		}
 		return &Key{
 			Type:    TypeECDSA,
 			Private: append([]byte(nil), pemBytes...),
@@ -244,6 +277,31 @@ func authorizedKeyLine(pub ssh.PublicKey) []byte {
 	// MarshalAuthorizedKey adds a trailing \n; strip it.
 	line = []byte(strings.TrimRight(string(line), "\n"))
 	return line
+}
+
+// isEncryptedPEM detects whether the supplied PEM block carries
+// encryption. Used as a belt-and-braces check on RSA / ECDSA imports
+// — if the caller forgot to pass --passphrase we'd otherwise store
+// an encrypted blob that Signer() can't decrypt later.
+//
+// Detection is via the canonical PEM header (Proc-Type: 4,ENCRYPTED
+// for legacy PKCS#1) — substring matching the raw bytes would false-
+// positive on user comments and false-negative on OpenSSH-format
+// encrypted keys. For OpenSSH-format we rely on the fact that the
+// ssh.ParsePrivateKey call earlier in the import path returns a
+// `*ssh.PassphraseMissingError` when encryption is present — that's
+// the with-passphrase signal the caller already passed through.
+func isEncryptedPEM(pemBytes []byte) bool {
+	block, _ := pem.Decode(pemBytes)
+	if block == nil {
+		return false
+	}
+	if pt := block.Headers["Proc-Type"]; pt != "" && strings.Contains(pt, "ENCRYPTED") {
+		return true
+	}
+	// "BEGIN ENCRYPTED PRIVATE KEY" (PKCS#8 encrypted) — pem.Decode
+	// surfaces this as the block Type.
+	return strings.Contains(block.Type, "ENCRYPTED")
 }
 
 // rsaBitLen extracts the modulus bit length from a ssh.PublicKey known

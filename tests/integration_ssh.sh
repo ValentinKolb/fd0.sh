@@ -212,4 +212,46 @@ phase "ssh disable / cleanup"
 # ─────────────────────────────────────────────────────────────
 phase "Summary"
 echo "    PASS=$PASS  FAIL=$FAIL"
+# Added by review-fix-pass 2: regression tests for the bugs the
+# second-round adversarial reviewers flagged. None should ever fire
+# in green — they exercise the fix paths explicitly.
+
+phase "Regression: --force overwrites, no --force refuses, both moves preflight"
+
+# Setup: add a key + host in 'work'.
+"$FD0" key add r-key --scope work > /dev/null 2>&1
+"$FD0" ssh add r-host 1.2.3.4 --key r-key --scope work > /dev/null 2>&1
+
+# Re-add same key without --force → must fail
+"$FD0" key add r-key --scope work > "$BASE/r-key-dup.log" 2>&1
+[[ $? -ne 0 ]] && ok "key add refuses duplicate" || no "key add silently overwrote!"
+grep -q "already in use" "$BASE/r-key-dup.log" && ok "duplicate error mentions name" \
+  || no "duplicate error vague"
+
+# --force allows
+"$FD0" key add r-key --force --scope work > /dev/null 2>&1 \
+  && ok "key add --force overwrites" || no "force ignored"
+
+# Move into a scope that already has it
+"$FD0" scope create --label tmpscope > /dev/null 2>&1
+"$FD0" key add r-key --scope tmpscope > /dev/null 2>&1
+"$FD0" key move r-key --scope tmpscope --to-scope work > "$BASE/r-key-mv.log" 2>&1
+[[ $? -ne 0 ]] && ok "key move refuses destination duplicate" \
+  || no "key move silently overwrote destination!"
+
+"$FD0" key move r-key --scope tmpscope --to-scope work --force > /dev/null 2>&1 \
+  && ok "key move --force overwrites destination" || no "move force ignored"
+
+# Same for hosts
+"$FD0" ssh add r-host 5.6.7.8 --key r-key --scope work > "$BASE/r-host-dup.log" 2>&1
+[[ $? -ne 0 ]] && ok "ssh add refuses duplicate" || no "ssh add silently overwrote!"
+
+phase "Regression: load-time Validate (injection-from-vault path)"
+
+# Render must not contain injection markers from the donor fixture
+! grep -q "ProxyCommand" "$FD0_SSH_CONFIG_PATH" 2>/dev/null \
+  && ok "no spurious ProxyCommand in rendered config" || no "INJECTION IN OUTPUT"
+
+phase "Summary 2"
+echo "    PASS=$PASS  FAIL=$FAIL"
 [[ $FAIL -gt 0 ]] && exit 1 || exit 0

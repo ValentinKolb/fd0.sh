@@ -51,6 +51,13 @@ func TestValidate(t *testing.T) {
 		{Alias: "host", Hostname: ""},                               // empty hostname
 		{Alias: "host", Hostname: "h", Port: 99999},                 // bad port
 		{Alias: "host", Hostname: "h", Options: map[string]string{"K V": "x"}}, // option key whitespace
+		// S1: injection guards on render-verbatim fields.
+		{Alias: "host", Hostname: "x\n    ProxyCommand sh -c id"}, // newline in hostname
+		{Alias: "host", Hostname: "x\r\nProxyCommand x"},          // CRLF in hostname
+		{Alias: "host", Hostname: "x", User: "root\nProxyCommand x"},      // newline in user
+		{Alias: "host", Hostname: "x", ProxyJump: "bastion\nProxyCommand x"}, // newline in proxy-jump
+		{Alias: "host", Hostname: "host\x00wat"},                  // NUL in hostname
+		{Alias: "host", Hostname: "host\twat"},                    // tab in hostname
 	}
 	for _, h := range bad {
 		if err := h.Validate(); err == nil {

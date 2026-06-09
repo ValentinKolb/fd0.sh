@@ -115,15 +115,67 @@ func (h *Host) Validate() error {
 	if h.Hostname == "" {
 		return fmt.Errorf("sshhost: alias %q has empty hostname", h.Alias)
 	}
+	// Reject newlines + whitespace + control chars in fields that
+	// render verbatim into ssh_config directives. Without this a
+	// shared payload like hostname="x\n    ProxyCommand sh -c …"
+	// would inject executable directives downstream — high impact
+	// because the host record is scope-shared, so any teammate who
+	// renders the config would execute the injected command on
+	// connection.
+	if err := rejectControl("hostname", h.Hostname); err != nil {
+		return fmt.Errorf("sshhost: alias %q %w", h.Alias, err)
+	}
+	if h.User != "" {
+		if err := rejectControl("user", h.User); err != nil {
+			return fmt.Errorf("sshhost: alias %q %w", h.Alias, err)
+		}
+	}
+	if h.ProxyJump != "" {
+		if err := rejectControl("proxy-jump", h.ProxyJump); err != nil {
+			return fmt.Errorf("sshhost: alias %q %w", h.Alias, err)
+		}
+	}
 	if h.Port < 0 || h.Port > 65535 {
 		return fmt.Errorf("sshhost: alias %q port %d out of range", h.Alias, h.Port)
 	}
+	if h.Description != "" {
+		if err := rejectControl("description", h.Description); err != nil {
+			return fmt.Errorf("sshhost: alias %q %w", h.Alias, err)
+		}
+	}
+	// Tags land verbatim in the `#@fd0:tags=<csv>` metadata comment.
+	// A newline in a tag closes the comment and lets the rest land as
+	// a real ssh_config directive — same class as the hostname/proxy-
+	// jump injection. Commas would also corrupt the csv parse.
+	for _, t := range h.Tags {
+		if strings.ContainsRune(t, ',') {
+			return fmt.Errorf("sshhost: alias %q tag %q contains comma", h.Alias, t)
+		}
+		if err := rejectControl("tag", t); err != nil {
+			return fmt.Errorf("sshhost: alias %q %w", h.Alias, err)
+		}
+	}
 	for k, v := range h.Options {
-		if strings.ContainsAny(k, " \t\n") {
+		if strings.ContainsAny(k, " \t") {
 			return fmt.Errorf("sshhost: option key %q contains whitespace", k)
 		}
-		if strings.ContainsAny(v, "\n\r") {
-			return fmt.Errorf("sshhost: option %q value contains newline", k)
+		if err := rejectControl("option-key", k); err != nil {
+			return fmt.Errorf("sshhost: alias %q %w", h.Alias, err)
+		}
+		if err := rejectControl("option-value", v); err != nil {
+			return fmt.Errorf("sshhost: alias %q %w", h.Alias, err)
+		}
+	}
+	return nil
+}
+
+// rejectControl returns an error if v contains a control character
+// (\x00..\x1f, \x7f) — including newlines and tabs. Used by Validate
+// to keep render-verbatim fields safe.
+func rejectControl(field, v string) error {
+	for i, r := range v {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("%s contains control char at offset %d (0x%02x)", field, i, r)
 		}
 	}
 	return nil

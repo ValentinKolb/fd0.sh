@@ -217,15 +217,23 @@ func EnsureSocketDir(socketPath string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("sshagent: mkdir %s: %w", dir, err)
 	}
-	// Stale socket left by previous agent? Remove. Honour the
-	// pre-condition with EnsureSocketDir-then-Listen by guaranteeing
-	// the path is free.
-	if _, err := os.Stat(socketPath); err == nil {
+	// Stale socket left by previous agent? Remove — but only if the
+	// path is actually a Unix socket. os.Stat would follow symlinks
+	// and os.Remove would then delete whatever the path pointed at,
+	// so a misconfigured FD0_SSH_SOCK=/path/to/important would
+	// silently lose that file at agent boot. os.Lstat doesn't follow
+	// the link; we additionally insist the mode is socket so regular
+	// files, dirs, and symlinks are all refused.
+	fi, err := os.Lstat(socketPath)
+	if err == nil {
+		if fi.Mode()&os.ModeSocket == 0 {
+			return fmt.Errorf("sshagent: %s exists and is not a Unix socket (mode %s) — refusing to remove", socketPath, fi.Mode())
+		}
 		if err := os.Remove(socketPath); err != nil {
 			return fmt.Errorf("sshagent: remove stale %s: %w", socketPath, err)
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("sshagent: stat %s: %w", socketPath, err)
+		return fmt.Errorf("sshagent: lstat %s: %w", socketPath, err)
 	}
 	return nil
 }

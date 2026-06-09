@@ -34,6 +34,7 @@ type KeyOpts struct {
 	Comment     string
 	ImportPath  string // when non-empty, import from this path
 	Passphrase  string // for encrypted import; rarely used non-interactively
+	Force       bool   // overwrite an existing key with the same name
 }
 
 // RunKeyAdd generates a new ed25519 key or imports an existing
@@ -56,9 +57,11 @@ func RunKeyAdd(ctx context.Context, o KeyOpts) error {
 
 	// Refuse duplicate names within the scope — same convention as
 	// regular secrets but checked up-front so users see the error
-	// before the keygen happens.
-	if existing, err := s.GetTypedSecret(scope, keyNamePrefix+o.Name); err == nil && existing != nil {
-		return fmt.Errorf("key %q already exists in scope %s", o.Name, scopeName(s, scope))
+	// before the keygen happens. Uses the typed-sentinel preflight
+	// so a transient vault error doesn't silently turn into "no
+	// duplicate, proceed".
+	if err := ensureNoDuplicate(s, scope, keyNamePrefix, o.Name, o.Force); err != nil {
+		return err
 	}
 
 	var k *sshkey.Key
@@ -191,7 +194,7 @@ func RunKeyRemove(ctx context.Context, scopeID, name string) error {
 // RunKeyMove relocates a key between scopes by removing it from the
 // source and re-adding it to the destination. The fingerprint stays
 // the same; downstream consumers re-discover via their next sync.
-func RunKeyMove(ctx context.Context, name, fromScope, toScope string) error {
+func RunKeyMove(ctx context.Context, name, fromScope, toScope string, force bool) error {
 	s, err := Open(ctx)
 	if err != nil {
 		return err
@@ -209,11 +212,18 @@ func RunKeyMove(ctx context.Context, name, fromScope, toScope string) error {
 	if err != nil {
 		return err
 	}
+	if r.ScopeID == dest {
+		return fmt.Errorf("source and destination scopes are the same: %s", scopeName(s, dest))
+	}
+	if err := ensureNoDuplicate(s, dest, keyNamePrefix, name, force); err != nil {
+		return err
+	}
 	if err := s.SetTypedSecret(ctx, dest, r.Name, string(k.Type), k.Marshal()); err != nil {
 		return err
 	}
 	if err := s.RemoveTypedSecret(ctx, r.ScopeID, r.Name); err != nil {
-		return err
+		return fmt.Errorf("moved key %q to %s but failed to remove from %s: %w (clean up with: fd0 key rm %s --scope %s)",
+			name, scopeName(s, dest), scopeName(s, r.ScopeID), err, name, scopeName(s, r.ScopeID))
 	}
 	stderrln("✓ moved key %q: %s → %s", name, scopeName(s, r.ScopeID), scopeName(s, dest))
 	return nil

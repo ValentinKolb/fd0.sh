@@ -37,6 +37,8 @@ type rootCLI struct {
 	Doctor   doctorCmd   `cmd:"" help:"Diagnose vault, chain, and tip-binding consistency."`
 	Key      keyCmd      `cmd:"" help:"Manage cryptographic keys (top-level; SSH and future consumers use them)."`
 	Ssh      sshCmd      `cmd:"" help:"Manage SSH hosts + connect. Without args opens a fuzzy picker."`
+	Talos    talosCmd    `cmd:"" help:"Manage Talos Linux contexts + secrets.yaml DR bundles."`
+	Kube     kubeCmd     `cmd:"" help:"Manage Kubernetes kubeconfig clusters (Talos, EKS, GKE, AKS, …)."`
 	Version  versionCmd  `cmd:"" help:"Print version and exit."`
 }
 
@@ -55,6 +57,7 @@ type keyAddCmd struct {
 	Passphrase string `name:"passphrase" help:"Passphrase for an encrypted imported key. Not recommended interactively." env:"FD0_KEY_IMPORT_PASSPHRASE"`
 	Comment    string `name:"comment" help:"Free-form comment; defaults to <name>@fd0."`
 	Scope      string `name:"scope" help:"Scope label or id."`
+	Force      bool   `name:"force" help:"Overwrite an existing key with the same name."`
 }
 type keyListCmd struct {
 	Scope string `name:"scope" help:"Scope label or id."`
@@ -72,6 +75,7 @@ type keyMoveCmd struct {
 	Name    string `arg:"" help:"Key name."`
 	From    string `name:"scope" help:"Source scope label or id."`
 	ToScope string `name:"to-scope" required:"" help:"Destination scope label or id."`
+	Force   bool   `name:"force" help:"Overwrite an existing key in the destination scope."`
 }
 
 // ───── ssh ────────────────────────────────────────────────────────────
@@ -108,6 +112,7 @@ type sshAddCmd struct {
 	Description string            `name:"description" help:"Free-form description."`
 	Opt         map[string]string `name:"opt" help:"Verbatim ssh_config option (e.g. --opt ForwardAgent=yes)."`
 	Scope       string            `name:"scope" help:"Scope label or id."`
+	Force       bool              `name:"force" help:"Overwrite an existing host with the same alias (and auto-generated key)."`
 }
 type sshListCmd struct {
 	Scope string   `name:"scope" help:"Scope label or id."`
@@ -132,11 +137,164 @@ type sshMoveCmd struct {
 	Alias   string `arg:"" help:"Host alias."`
 	From    string `name:"scope" help:"Source scope label or id."`
 	ToScope string `name:"to-scope" required:"" help:"Destination scope label or id."`
+	Force   bool   `name:"force" help:"Overwrite an existing host with the same alias in the destination."`
 }
 type sshConnectCmd struct {
 	Alias string   `arg:"" optional:"" help:"Host alias. Empty opens picker."`
 	Tag   []string `name:"tag" help:"Pre-filter picker by tag."`
 	Cmd   []string `arg:"" optional:"" passthrough:"" help:"Command to execute on the host (passed to ssh)."`
+}
+
+// ───── talos ──────────────────────────────────────────────────────────
+type talosCmd struct {
+	Add  talosAddCmd  `cmd:"" help:"Import an existing talosconfig context (or one from --from-config)."`
+	New  talosNewCmd  `cmd:"" help:"Day-0: generate cluster PKI + talosconfig from scratch (calls talosctl)."`
+	List talosListCmd `cmd:"" aliases:"ls" help:"List talos contexts."`
+	Show talosShowCmd `cmd:"" help:"Show one talos context."`
+	Rm   talosRmCmd   `cmd:"" help:"Remove a talos context (tombstone)."`
+	Move talosMoveCmd `cmd:"" help:"Move a talos context between scopes."`
+
+	Sync         talosSyncCmd         `cmd:"" help:"Re-render ~/.talos/config.fd0 (and merge with --merge)."`
+	RoleAdd      talosRoleAddCmd      `cmd:"" name:"role-add" help:"Mint a role-scoped client cert via talosctl + store it."`
+	Kubeconfig   talosKubeconfigCmd   `cmd:"" help:"Fetch a fresh admin kubeconfig from a Talos cluster + store it."`
+
+	Secrets talosSecretsCmd `cmd:"" help:"DR-grade secrets.yaml bundles."`
+}
+
+type talosAddCmd struct {
+	Name          string   `arg:"" optional:"" help:"Context name. Required unless --from-config."`
+	Endpoint      []string `name:"endpoint" help:"Talos machine API endpoint (repeat or comma-separate)."`
+	Node          []string `name:"node" help:"Default node target (repeat or comma-separate)."`
+	CA            string   `name:"ca" help:"base64-encoded CA cert (or use --ca-file)."`
+	CAFile        string   `name:"ca-file" help:"PEM file to read into ca."`
+	Crt           string   `name:"crt" help:"base64-encoded client cert (or use --crt-file)."`
+	CrtFile       string   `name:"crt-file" help:"PEM file to read into crt."`
+	Key           string   `name:"key" help:"base64-encoded client key (or use --key-file)."`
+	KeyFile       string   `name:"key-file" help:"PEM file to read into key."`
+	FromConfig    string   `name:"from-config" help:"Path to an existing talosconfig YAML to import."`
+	ImportContext string   `name:"import-context" help:"With --from-config, import only this named context."`
+	Role          string   `name:"role" help:"Cert role (os:admin / os:operator / os:reader / …)."`
+	Description   string   `name:"description" help:"Free-form description."`
+	Tag           []string `name:"tag" help:"Add a tag (repeat for multiple)."`
+	Scope         string   `name:"scope" help:"Scope label or id."`
+	Force         bool     `name:"force" help:"Overwrite an existing context with the same name."`
+}
+
+type talosNewCmd struct {
+	Name        string   `arg:"" help:"Cluster name (becomes the talosconfig context name)."`
+	Endpoint    string   `name:"endpoint" required:"" help:"Kubernetes API URL, e.g. https://10.0.1.10:6443."`
+	OutputDir   string   `name:"out" help:"Where to write controlplane.yaml + worker.yaml (default: current dir)."`
+	Scope       string   `name:"scope" help:"Scope for the talosconfig context."`
+	VaultScope  string   `name:"vault-scope" help:"Separate scope for the secrets.yaml DR bundle (default: same as --scope)."`
+	Description string   `name:"description" help:"Free-form description."`
+	Tag         []string `name:"tag" help:"Add a tag."`
+	Force       bool     `name:"force" help:"Overwrite an existing stored cluster with the same name (destructive — see talos secrets export first)."`
+}
+
+type talosListCmd struct {
+	Scope string   `name:"scope" help:"Scope label or id."`
+	Tag   []string `name:"tag" help:"Filter by tag (AND)."`
+	NoTag []string `name:"no-tag" help:"Exclude tag."`
+}
+type talosShowCmd struct {
+	Name  string `arg:"" help:"Context name."`
+	Scope string `name:"scope" help:"Scope label or id."`
+}
+type talosRmCmd struct {
+	Name  string `arg:"" help:"Context name."`
+	Scope string `name:"scope" help:"Scope label or id."`
+}
+type talosMoveCmd struct {
+	Name    string `arg:"" help:"Context name."`
+	From    string `name:"scope" help:"Source scope."`
+	ToScope string `name:"to-scope" required:"" help:"Destination scope."`
+	Force   bool   `name:"force" help:"Overwrite an existing context with the same name in destination."`
+}
+type talosSyncCmd struct {
+	Merge bool `name:"merge" help:"After rendering, call talosctl config merge to fold into ~/.talos/config."`
+}
+type talosRoleAddCmd struct {
+	From        string   `name:"from" required:"" help:"Existing fd0-managed talos context with admin privileges (issuer)."`
+	NewName     string   `name:"name" required:"" help:"Name for the new context."`
+	Role        string   `name:"role" required:"" help:"Role to embed in the new cert (os:operator, os:reader, …)."`
+	TTL         string   `name:"ttl" help:"Cert validity (talosctl --crt-ttl). Empty = default (1y)."`
+	Scope       string   `name:"scope" help:"Scope for the new context."`
+	Description string   `name:"description" help:"Free-form description."`
+	Tag         []string `name:"tag" help:"Tag."`
+}
+type talosKubeconfigCmd struct {
+	Name  string `arg:"" help:"Talos context name to pull kubeconfig from."`
+	Scope string `name:"scope" help:"Scope for the resulting kubeconfig record."`
+}
+type talosSecretsCmd struct {
+	Export talosSecretsExportCmd `cmd:"" help:"Write a stored secrets.yaml bundle to a file (DR-grade)."`
+	Import talosSecretsImportCmd `cmd:"" help:"Read a secrets.yaml from disk into the vault."`
+	List   talosSecretsListCmd   `cmd:"" aliases:"ls" help:"List stored bundles."`
+}
+type talosSecretsExportCmd struct {
+	Name  string `arg:"" help:"Bundle name (matches the cluster name passed to 'fd0 talos new')."`
+	Out   string `name:"out" required:"" help:"Output path."`
+	Scope string `name:"scope" help:"Scope label or id."`
+	Force bool   `name:"force" help:"Overwrite an existing file at --out."`
+}
+type talosSecretsImportCmd struct {
+	Name  string `arg:"" help:"Bundle name."`
+	In    string `name:"in" required:"" help:"Path to the secrets.yaml file."`
+	Scope string `name:"scope" help:"Scope."`
+}
+type talosSecretsListCmd struct {
+	Scope string `name:"scope" help:"Scope."`
+}
+
+// ───── kube ───────────────────────────────────────────────────────────
+type kubeCmd struct {
+	Add  kubeAddCmd  `cmd:"" help:"Add a kubeconfig cluster."`
+	List kubeListCmd `cmd:"" aliases:"ls" help:"List kubeconfig clusters."`
+	Show kubeShowCmd `cmd:"" help:"Show one kubeconfig."`
+	Rm   kubeRmCmd   `cmd:"" help:"Remove a kubeconfig (tombstone)."`
+	Move kubeMoveCmd `cmd:"" help:"Move a kubeconfig between scopes."`
+	Sync kubeSyncCmd `cmd:"" help:"Re-render ~/.kube/config.fd0 (and merge with --merge)."`
+}
+type kubeAddCmd struct {
+	Name                  string   `arg:"" optional:"" help:"Cluster name. Required unless --from-config."`
+	Server                string   `name:"server" help:"https://host:6443"`
+	CA                    string   `name:"ca" help:"base64-encoded CA cert."`
+	CAFile                string   `name:"ca-file" help:"PEM file to read into CA."`
+	ClientCert            string   `name:"client-cert" help:"base64-encoded client cert."`
+	ClientCertFile        string   `name:"client-cert-file" help:"PEM file."`
+	ClientKey             string   `name:"client-key" help:"base64-encoded client key."`
+	ClientKeyFile         string   `name:"client-key-file" help:"PEM file."`
+	Token                 string   `name:"token" help:"Bearer token (alternative to client cert)."`
+	Namespace             string   `name:"namespace" help:"Default namespace."`
+	InsecureSkipTLSVerify bool     `name:"insecure-skip-tls-verify" help:"Disable cluster TLS verification."`
+	FromConfig            string   `name:"from-config" help:"Path to existing kubeconfig YAML to import."`
+	ImportContext         string   `name:"import-context" help:"With --from-config, import only this named context."`
+	Description           string   `name:"description" help:"Free-form description."`
+	Tag                   []string `name:"tag" help:"Tag."`
+	Scope                 string   `name:"scope" help:"Scope."`
+	Force                 bool     `name:"force" help:"Overwrite an existing kubeconfig with the same name."`
+}
+type kubeListCmd struct {
+	Scope string   `name:"scope" help:"Scope."`
+	Tag   []string `name:"tag" help:"Filter by tag (AND)."`
+	NoTag []string `name:"no-tag" help:"Exclude tag."`
+}
+type kubeShowCmd struct {
+	Name  string `arg:"" help:"Cluster name."`
+	Scope string `name:"scope" help:"Scope."`
+}
+type kubeRmCmd struct {
+	Name  string `arg:"" help:"Cluster name."`
+	Scope string `name:"scope" help:"Scope."`
+}
+type kubeMoveCmd struct {
+	Name    string `arg:"" help:"Cluster name."`
+	From    string `name:"scope" help:"Source scope."`
+	ToScope string `name:"to-scope" required:"" help:"Destination scope."`
+	Force   bool   `name:"force" help:"Overwrite an existing kubeconfig with the same name in destination."`
+}
+type kubeSyncCmd struct {
+	Merge bool `name:"merge" help:"After rendering, call kubectl config view --merge to fold into ~/.kube/config."`
 }
 
 type initCmd struct{}
@@ -355,6 +513,7 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 			Comment:    c.Key.Add.Comment,
 			ImportPath: c.Key.Add.Import,
 			Passphrase: c.Key.Add.Passphrase,
+			Force:      c.Key.Add.Force,
 		})
 	case "key list", "key ls":
 		return cli.RunKeyList(ctx, c.Key.List.Scope, nil, nil)
@@ -363,7 +522,7 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 	case "key rm <name>":
 		return cli.RunKeyRemove(ctx, c.Key.Rm.Scope, c.Key.Rm.Name)
 	case "key move <name>":
-		return cli.RunKeyMove(ctx, c.Key.Move.Name, c.Key.Move.From, c.Key.Move.ToScope)
+		return cli.RunKeyMove(ctx, c.Key.Move.Name, c.Key.Move.From, c.Key.Move.ToScope, c.Key.Move.Force)
 
 	// ─── ssh ──────────────────────────────────────────────────────────
 	case "ssh enable":
@@ -388,6 +547,7 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 			Description: c.Ssh.Add.Description,
 			Options:     c.Ssh.Add.Opt,
 			Scope:       c.Ssh.Add.Scope,
+			Force:       c.Ssh.Add.Force,
 		})
 	case "ssh list", "ssh ls":
 		return cli.RunHostList(ctx, c.Ssh.List.Scope, c.Ssh.List.Tag, c.Ssh.List.NoTag)
@@ -398,10 +558,109 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 	case "ssh tag <alias>":
 		return cli.RunHostTag(ctx, c.Ssh.Tag.Scope, c.Ssh.Tag.Alias, c.Ssh.Tag.Add, c.Ssh.Tag.Remove)
 	case "ssh move <alias>":
-		return cli.RunHostMove(ctx, c.Ssh.Move.Alias, c.Ssh.Move.From, c.Ssh.Move.ToScope)
+		return cli.RunHostMove(ctx, c.Ssh.Move.Alias, c.Ssh.Move.From, c.Ssh.Move.ToScope, c.Ssh.Move.Force)
 
 	case "ssh", "ssh connect", "ssh connect <alias>", "ssh connect <alias> <cmd>":
 		return cli.RunSSHConnect(ctx, c.Ssh.Connect.Alias, c.Ssh.Connect.Cmd, c.Ssh.Connect.Tag)
+
+	// ── talos ─────────────────────────────────────────────────
+	case "talos add", "talos add <name>":
+		return cli.RunTalosAdd(ctx, cli.TalosAddOpts{
+			Name:          c.Talos.Add.Name,
+			Endpoints:     c.Talos.Add.Endpoint,
+			Nodes:         c.Talos.Add.Node,
+			CA:            c.Talos.Add.CA,
+			CAFile:        c.Talos.Add.CAFile,
+			Crt:           c.Talos.Add.Crt,
+			CrtFile:       c.Talos.Add.CrtFile,
+			Key:           c.Talos.Add.Key,
+			KeyFile:       c.Talos.Add.KeyFile,
+			FromConfig:    c.Talos.Add.FromConfig,
+			ImportContext: c.Talos.Add.ImportContext,
+			Role:          c.Talos.Add.Role,
+			Description:   c.Talos.Add.Description,
+			Tags:          c.Talos.Add.Tag,
+			Scope:         c.Talos.Add.Scope,
+			Force:         c.Talos.Add.Force,
+		})
+	case "talos new <name>":
+		return cli.RunTalosNew(ctx, cli.TalosNewOpts{
+			Name:        c.Talos.New.Name,
+			Endpoint:    c.Talos.New.Endpoint,
+			OutputDir:   c.Talos.New.OutputDir,
+			Scope:       c.Talos.New.Scope,
+			VaultScope:  c.Talos.New.VaultScope,
+			Description: c.Talos.New.Description,
+			Tags:        c.Talos.New.Tag,
+			Force:       c.Talos.New.Force,
+		})
+	case "talos list", "talos ls":
+		return cli.RunTalosList(ctx, c.Talos.List.Scope, c.Talos.List.Tag, c.Talos.List.NoTag)
+	case "talos show <name>":
+		return cli.RunTalosShow(ctx, c.Talos.Show.Scope, c.Talos.Show.Name)
+	case "talos rm <name>":
+		return cli.RunTalosRemove(ctx, c.Talos.Rm.Scope, c.Talos.Rm.Name)
+	case "talos move <name>":
+		return cli.RunTalosMove(ctx, c.Talos.Move.Name, c.Talos.Move.From, c.Talos.Move.ToScope, c.Talos.Move.Force)
+	case "talos sync":
+		return cli.RunTalosSync(ctx, c.Talos.Sync.Merge)
+	case "talos role-add":
+		return cli.RunTalosRoleAdd(ctx, cli.TalosRoleAddOpts{
+			SourceContext: c.Talos.RoleAdd.From,
+			NewName:       c.Talos.RoleAdd.NewName,
+			Role:          c.Talos.RoleAdd.Role,
+			TTL:           c.Talos.RoleAdd.TTL,
+			Scope:         c.Talos.RoleAdd.Scope,
+			Description:   c.Talos.RoleAdd.Description,
+			Tags:          c.Talos.RoleAdd.Tag,
+		})
+	case "talos kubeconfig <name>":
+		return cli.RunTalosKubeconfig(ctx, c.Talos.Kubeconfig.Name, c.Talos.Kubeconfig.Scope)
+	case "talos secrets export <name>":
+		return cli.RunTalosSecretsExport(ctx,
+			c.Talos.Secrets.Export.Scope,
+			c.Talos.Secrets.Export.Name,
+			c.Talos.Secrets.Export.Out,
+			c.Talos.Secrets.Export.Force)
+	case "talos secrets import <name>":
+		return cli.RunTalosSecretsImport(ctx,
+			c.Talos.Secrets.Import.Scope,
+			c.Talos.Secrets.Import.Name,
+			c.Talos.Secrets.Import.In)
+	case "talos secrets list", "talos secrets ls":
+		return cli.RunTalosSecretsList(ctx, c.Talos.Secrets.List.Scope)
+
+	// ── kube ──────────────────────────────────────────────────
+	case "kube add", "kube add <name>":
+		return cli.RunKubeAdd(ctx, cli.KubeAddOpts{
+			Name:                  c.Kube.Add.Name,
+			Server:                c.Kube.Add.Server,
+			CA:                    c.Kube.Add.CA,
+			CAFile:                c.Kube.Add.CAFile,
+			ClientCert:            c.Kube.Add.ClientCert,
+			ClientCertFile:        c.Kube.Add.ClientCertFile,
+			ClientKey:             c.Kube.Add.ClientKey,
+			ClientKeyFile:         c.Kube.Add.ClientKeyFile,
+			Token:                 c.Kube.Add.Token,
+			Namespace:             c.Kube.Add.Namespace,
+			InsecureSkipTLSVerify: c.Kube.Add.InsecureSkipTLSVerify,
+			FromConfig:            c.Kube.Add.FromConfig,
+			ImportContext:         c.Kube.Add.ImportContext,
+			Description:           c.Kube.Add.Description,
+			Tags:                  c.Kube.Add.Tag,
+			Scope:                 c.Kube.Add.Scope,
+			Force:                 c.Kube.Add.Force,
+		})
+	case "kube list", "kube ls":
+		return cli.RunKubeList(ctx, c.Kube.List.Scope, c.Kube.List.Tag, c.Kube.List.NoTag)
+	case "kube show <name>":
+		return cli.RunKubeShow(ctx, c.Kube.Show.Scope, c.Kube.Show.Name)
+	case "kube rm <name>":
+		return cli.RunKubeRemove(ctx, c.Kube.Rm.Scope, c.Kube.Rm.Name)
+	case "kube move <name>":
+		return cli.RunKubeMove(ctx, c.Kube.Move.Name, c.Kube.Move.From, c.Kube.Move.ToScope, c.Kube.Move.Force)
+	case "kube sync":
+		return cli.RunKubeSync(ctx, c.Kube.Sync.Merge)
 	}
 	return fmt.Errorf("unknown command %q", kctx.Command())
 }

@@ -10,6 +10,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -20,6 +21,13 @@ import (
 	"github.com/valentinkolb/fd0.sh/internal/chain"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
 )
+
+// ErrTypedSecretNotFound is returned (wrapped) by GetTypedSecret when
+// the requested name doesn't exist. Callers should use errors.Is to
+// detect it rather than string-matching the message, which would be
+// brittle and led to a real silent-overwrite footgun in the typed-
+// inventory helper.
+var ErrTypedSecretNotFound = errors.New("typed secret not found")
 
 // TypedRecord is one structured secret as observed by the typed
 // helpers. Payload is the raw `any` from the vault — callers parse it
@@ -182,7 +190,7 @@ func (s *Session) GetTypedSecret(scopeID, name string) (*TypedRecord, error) {
 	}
 	switch len(hits) {
 	case 0:
-		return nil, fmt.Errorf("typed secret %q not found", name)
+		return nil, fmt.Errorf("typed secret %q: %w", name, ErrTypedSecretNotFound)
 	case 1:
 		return &hits[0], nil
 	default:

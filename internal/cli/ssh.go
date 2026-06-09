@@ -41,6 +41,7 @@ type HostAddOpts struct {
 	Description string
 	Options     map[string]string
 	Scope       string
+	Force       bool // overwrite an existing host (and auto-generated key) with the same name
 }
 
 // RunHostAdd creates a new host in the given scope. If WithKey is set,
@@ -80,10 +81,10 @@ func RunHostAdd(ctx context.Context, o HostAddOpts) error {
 		return err
 	}
 
-	// Per-scope uniqueness check — same alias in another scope is
-	// allowed (warns at render); same alias in this scope is hard fail.
-	if existing, err := s.GetTypedSecret(scope, hostNamePrefix+o.Alias); err == nil && existing != nil {
-		return fmt.Errorf("host %q already exists in scope %s", o.Alias, scopeName(s, scope))
+	// Per-scope uniqueness check via the typed-sentinel preflight so
+	// a transient vault error can't silently turn into "no duplicate".
+	if err := ensureNoDuplicate(s, scope, hostNamePrefix, o.Alias, o.Force); err != nil {
+		return err
 	}
 
 	// `--with-key` generates a key and links by name. Name defaults
@@ -96,9 +97,8 @@ func RunHostAdd(ctx context.Context, o HostAddOpts) error {
 		if o.KeyName != "" && o.KeyName != keyName {
 			return errors.New("ssh add: cannot use --key and --with-key together")
 		}
-		if existing, err := s.GetTypedSecret(scope, keyNamePrefix+keyName); err == nil && existing != nil {
-			return fmt.Errorf("key %q already exists in scope %s — use --with-key=NAME for a different name",
-				keyName, scopeName(s, scope))
+		if err := ensureNoDuplicate(s, scope, keyNamePrefix, keyName, o.Force); err != nil {
+			return err
 		}
 		k, err := sshkey.NewEd25519(keyName, "")
 		if err != nil {
@@ -115,8 +115,14 @@ func RunHostAdd(ctx context.Context, o HostAddOpts) error {
 	}
 
 	if o.KeyName != "" {
-		if _, err := s.GetTypedSecret(scope, keyNamePrefix+o.KeyName); err != nil {
-			return fmt.Errorf("ssh add: --key %q not found in scope %s", o.KeyName, scopeName(s, scope))
+		_, err := s.GetTypedSecret(scope, keyNamePrefix+o.KeyName)
+		if err != nil {
+			// Surface "really not found" cleanly; pass other lookup
+			// errors verbatim so the user sees the underlying cause.
+			if errors.Is(err, ErrTypedSecretNotFound) {
+				return fmt.Errorf("ssh add: --key %q not found in scope %s", o.KeyName, scopeName(s, scope))
+			}
+			return err
 		}
 	}
 
@@ -314,7 +320,7 @@ func RunHostTag(ctx context.Context, scopeID, alias string, add, remove []string
 }
 
 // RunHostMove relocates a host between scopes. Same idea as RunKeyMove.
-func RunHostMove(ctx context.Context, alias, fromScope, toScope string) error {
+func RunHostMove(ctx context.Context, alias, fromScope, toScope string, force bool) error {
 	s, err := Open(ctx)
 	if err != nil {
 		return err
@@ -332,11 +338,18 @@ func RunHostMove(ctx context.Context, alias, fromScope, toScope string) error {
 	if err != nil {
 		return err
 	}
+	if r.ScopeID == dest {
+		return fmt.Errorf("source and destination scopes are the same: %s", scopeName(s, dest))
+	}
+	if err := ensureNoDuplicate(s, dest, hostNamePrefix, alias, force); err != nil {
+		return err
+	}
 	if err := s.SetTypedSecret(ctx, dest, r.Name, sshhost.TypeHost, h.Marshal()); err != nil {
 		return err
 	}
 	if err := s.RemoveTypedSecret(ctx, r.ScopeID, r.Name); err != nil {
-		return err
+		return fmt.Errorf("moved host %q to %s but failed to remove from %s: %w (clean up with: fd0 ssh rm %s --scope %s)",
+			alias, scopeName(s, dest), scopeName(s, r.ScopeID), err, alias, scopeName(s, r.ScopeID))
 	}
 	stderrln("✓ moved host %q: %s → %s", alias, scopeName(s, r.ScopeID), scopeName(s, dest))
 	if err := renderAndWarn(s); err != nil {
@@ -395,6 +408,13 @@ nextHost:
 // decodeHost is the dual of host.Marshal — reads the JSON-encoded
 // payload back into the typed Host shape. Scope is filled from the
 // surrounding TypedRecord since it's not part of the JSON value.
+//
+// Validate() runs again here, even though every Add path already
+// validates at write time. A malicious or buggy sync peer could push
+// a TypedRecord with a poisoned Hostname/User/ProxyJump/Tag that
+// bypasses the write-time guard; without the load-time check, the
+// renderer would emit the injection verbatim into ssh_config. Read-
+// time Validate makes the threat model symmetric.
 func decodeHost(r TypedRecord) (*sshhost.Host, error) {
 	raw, err := r.PayloadJSON()
 	if err != nil {
@@ -409,6 +429,9 @@ func decodeHost(r TypedRecord) (*sshhost.Host, error) {
 		return nil, err
 	}
 	h.Scope = r.ScopeID
+	if err := h.Validate(); err != nil {
+		return nil, fmt.Errorf("decode host %q: untrusted payload: %w", r.Name, err)
+	}
 	return h, nil
 }
 
@@ -436,17 +459,9 @@ func renderAndWarn(s *Session) error {
 		Now:        nowFunc(),
 	})
 	target := SSHConfPath()
-	// Resolve aliases scoped via prefix.
-	for i := range hosts {
-		hosts[i].Alias = strings.TrimPrefix(hosts[i].Alias, "")
-	}
-	if err := os.MkdirAll(parentDir(target), 0o700); err != nil {
+	if err := writeManagedFile(target, bytes, "hosts", len(hosts)); err != nil {
 		return err
 	}
-	if err := writeFileAtomic(target, bytes, 0o600); err != nil {
-		return err
-	}
-	stderrln("✓ rendered %s (%d hosts)", target, len(hosts))
 	checkInclude(target)
 	return nil
 }
