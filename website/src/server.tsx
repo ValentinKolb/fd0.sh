@@ -8,6 +8,7 @@ import { html as renderHTML } from "../config";
 import {
   DocsOverview,
   DocsConcepts,
+  DocsInstall,
   DocsCli,
   DocsSsh,
   DocsTalos,
@@ -160,6 +161,7 @@ const app = new Hono()
       "/",
       "/docs",
       "/docs/concepts",
+      "/docs/install",
       "/docs/cli",
       "/docs/ssh",
       "/docs/talos",
@@ -206,6 +208,7 @@ const app = new Hono()
   .get("/", ...Home)
   .get("/docs", ...DocsOverview)
   .get("/docs/concepts", ...DocsConcepts)
+  .get("/docs/install", ...DocsInstall)
   .get("/docs/cli", ...DocsCli)
   .get("/docs/ssh", ...DocsSsh)
   .get("/docs/talos", ...DocsTalos)

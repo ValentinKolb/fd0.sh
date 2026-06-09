@@ -101,6 +101,7 @@ const OverviewBody = () => (
     <div class="grid sm:grid-cols-2 gap-4 mt-8">
       {[
         { href: "/docs/concepts", t: "Concepts", d: "Eight terms used everywhere below." },
+        { href: "/docs/install", t: "Install", d: "The client script + the agent skill." },
         { href: "/docs/cli", t: "CLI reference", d: "fd0 init, set, get, ls, sync, …" },
         { href: "/docs/ssh", t: "SSH", d: "Keys + hosts as scope-shared secrets." },
         { href: "/docs/talos", t: "Talos & Kube", d: "Talos contexts, secrets.yaml DR, kubeconfigs." },
@@ -168,6 +169,85 @@ const ConceptsBody = () => (
         </div>
       </div>
     ))}
+  </>
+);
+
+/* ─── install ──────────────────────────────────────────────────── */
+
+const InstallBody = () => (
+  <>
+    <P>
+      Two separate installs: the <strong>fd0 client</strong> (the
+      binaries on your machine) and — if you drive fd0 through an AI
+      agent — the <strong>fd0 skill</strong> (so the agent uses the CLI
+      correctly). Neither needs the other; install whichever you need.
+    </P>
+
+    <H2>The client</H2>
+    <P>
+      One script. It downloads the right build for your platform,
+      cosign-verifies the release manifest when <Code>cosign</Code> is
+      available, and drops <Code>fd0</Code> + <Code>fd0-agent</Code>{" "}
+      into <Code>~/.local/bin</Code>.
+    </P>
+    <Box>{`$ curl -fsSL https://fd0.sh/install | sh
+✓ fd0 0.3.0 → ~/.local/bin/fd0
+✓ fd0-agent 0.3.0 → ~/.local/bin/fd0-agent
+✓ cosign-verified
+
+$ fd0 version`}</Box>
+    <P>
+      Supported platforms: Linux and macOS on amd64 and arm64. Pass{" "}
+      <Code>--system</Code> to install into <Code>/usr/local/bin</Code>{" "}
+      instead. If <Code>~/.local/bin</Code> isn't on your{" "}
+      <Code>$PATH</Code>, the script prints the exact one-line fix for
+      your shell.
+    </P>
+    <Note>
+      <strong>Windows isn't built yet.</strong> The binaries
+      cross-compile, but the agent's AF_UNIX socket is unvalidated on
+      Windows. Track progress on GitHub.
+    </Note>
+
+    <H2>The agent skill</H2>
+    <P>
+      If you let an AI agent (Claude Code, etc.) run fd0 for you, the
+      skill teaches it the command surface, the security rules, and
+      the sharing flows — so "save my deploy key" or "share the prod
+      password with bob" resolves to the right <Code>fd0</Code>{" "}
+      commands instead of guesswork.
+    </P>
+    <H3>Recommended — bunx skills</H3>
+    <Box>{`$ bunx skills add ValentinKolb/fd0.sh`}</Box>
+    <P>
+      Clones the repo, finds <Code>skills/fd0/</Code>, and copies it to
+      your local skill directory (typically{" "}
+      <Code>~/.claude/skills/fd0/</Code>). The agent picks it up on the
+      next session.
+    </P>
+    <H3>Manual</H3>
+    <Box>{`$ git clone https://github.com/ValentinKolb/fd0.sh.git /tmp/fd0.sh
+$ mkdir -p ~/.claude/skills
+$ cp -r /tmp/fd0.sh/skills/fd0 ~/.claude/skills/
+$ ls ~/.claude/skills/fd0/SKILL.md`}</Box>
+
+    <H2>Updating</H2>
+    <P>
+      Re-run the install script to update the client; re-run{" "}
+      <Code>bunx skills add</Code> to update the skill. The client and
+      skill version independently — the CLI under{" "}
+      <Code>client-vX.Y.Z</Code> tags, the skill alongside the repo.
+    </P>
+    <Box>{`$ curl -fsSL https://fd0.sh/install | sh   # client
+$ bunx skills add ValentinKolb/fd0.sh      # skill`}</Box>
+
+    <Note>
+      Next:{" "}
+      <a href="/docs/cli" style={`color:${C.acc};`}>CLI reference</a> for
+      the full command set, or jump straight to{" "}
+      <a href="/docs/sync" style={`color:${C.acc};`}>Sync</a> to point
+      the client at a backend.
+    </Note>
   </>
 );
 
@@ -644,10 +724,19 @@ export const DocsConcepts = ssr(async (c) => {
   );
 });
 
+export const DocsInstall = ssr(async (c) => {
+  c.get("page").title = "fd0 — Install";
+  return () => (
+    <DocsLayout current="install" title="Install." kicker="02 · Get the client">
+      <InstallBody />
+    </DocsLayout>
+  );
+});
+
 export const DocsCli = ssr(async (c) => {
   c.get("page").title = "fd0 — CLI reference";
   return () => (
-    <DocsLayout current="cli" title="CLI reference." kicker="02 · Daily use">
+    <DocsLayout current="cli" title="CLI reference." kicker="03 · Daily use">
       <CliBody />
     </DocsLayout>
   );
@@ -656,7 +745,7 @@ export const DocsCli = ssr(async (c) => {
 export const DocsSsh = ssr(async (c) => {
   c.get("page").title = "fd0 — SSH";
   return () => (
-    <DocsLayout current="ssh" title="SSH — keys + hosts." kicker="03 · Built on top">
+    <DocsLayout current="ssh" title="SSH — keys + hosts." kicker="04 · Built on top">
       <SshBody />
     </DocsLayout>
   );
@@ -665,7 +754,7 @@ export const DocsSsh = ssr(async (c) => {
 export const DocsTalos = ssr(async (c) => {
   c.get("page").title = "fd0 — Talos & Kube";
   return () => (
-    <DocsLayout current="talos" title="Talos &amp; Kube." kicker="04 · Built on top">
+    <DocsLayout current="talos" title="Talos &amp; Kube." kicker="05 · Built on top">
       <TalosKubeBody />
     </DocsLayout>
   );
@@ -674,7 +763,7 @@ export const DocsTalos = ssr(async (c) => {
 export const DocsSync = ssr(async (c) => {
   c.get("page").title = "fd0 — Sync";
   return () => (
-    <DocsLayout current="sync" title="Sync." kicker="04 · Multi-device, multi-server">
+    <DocsLayout current="sync" title="Sync." kicker="06 · Multi-device, multi-server">
       <SyncBody />
     </DocsLayout>
   );
@@ -683,7 +772,7 @@ export const DocsSync = ssr(async (c) => {
 export const DocsServer = ssr(async (c) => {
   c.get("page").title = "fd0 — Self-host";
   return () => (
-    <DocsLayout current="server" title="Self-host the server." kicker="05 · Deploy">
+    <DocsLayout current="server" title="Self-host the server." kicker="07 · Deploy">
       <ServerBody />
     </DocsLayout>
   );
@@ -692,7 +781,7 @@ export const DocsServer = ssr(async (c) => {
 export const DocsYubikey = ssr(async (c) => {
   c.get("page").title = "fd0 — YubiKey unlock";
   return () => (
-    <DocsLayout current="yubikey" title="YubiKey unlock." kicker="06 · Hardware-backed identity">
+    <DocsLayout current="yubikey" title="YubiKey unlock." kicker="08 · Hardware-backed identity">
       <YubikeyBody />
     </DocsLayout>
   );
@@ -701,7 +790,7 @@ export const DocsYubikey = ssr(async (c) => {
 export const DocsRecovery = ssr(async (c) => {
   c.get("page").title = "fd0 — Recovery";
   return () => (
-    <DocsLayout current="recovery" title="Recovery." kicker="07 · Restore on a fresh device">
+    <DocsLayout current="recovery" title="Recovery." kicker="09 · Restore on a fresh device">
       <RecoveryBody />
     </DocsLayout>
   );

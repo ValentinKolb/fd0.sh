@@ -85,6 +85,7 @@ export const Nav = (p: { current?: NavKey }) => {
 export type DocsKey =
   | "overview"
   | "concepts"
+  | "install"
   | "cli"
   | "ssh"
   | "talos"
@@ -96,6 +97,7 @@ export type DocsKey =
 export const DOCS_NAV: { key: DocsKey; href: string; label: string; group: string }[] = [
   { key: "overview", href: "/docs", label: "Overview", group: "Start" },
   { key: "concepts", href: "/docs/concepts", label: "Concepts", group: "Start" },
+  { key: "install", href: "/docs/install", label: "Install", group: "Use" },
   { key: "cli", href: "/docs/cli", label: "CLI reference", group: "Use" },
   { key: "ssh", href: "/docs/ssh", label: "SSH", group: "Use" },
   { key: "talos", href: "/docs/talos", label: "Talos & Kube", group: "Use" },
