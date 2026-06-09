@@ -64,6 +64,44 @@ fd0 scope remove-member bob --scope work
 fd0 sync
 ```
 
+### SSH keys + hosts
+
+Keys are generated inside the agent and served over the standard
+ssh-agent protocol; hosts render to `~/.ssh/fd0.conf`. Both are
+scope-shared, so onboarding a teammate is the same `scope add-member`
+flow as sharing a password.
+
+```bash
+fd0 key add laptop                       # ed25519, never on disk in plaintext
+fd0 ssh add prod-db app@db.internal \
+    --jump bastion --key laptop --scope work
+fd0 ssh enable                           # one-time: Include line + shell rc hint
+export SSH_AUTH_SOCK="$(fd0 ssh sock)"
+ssh prod-db                              # or: fd0 ssh   (fuzzy picker)
+```
+
+### Talos Linux + Kubernetes
+
+`fd0 talos` manages Talos client contexts and the DR-grade
+`secrets.yaml`; `fd0 kube` manages kubeconfigs for any cluster. Both
+shell out to `talosctl` / `kubectl` for cluster ops — fd0 only stores
+the credentials and renders the config files.
+
+```bash
+fd0 talos add --from-config ~/.talos/config --scope work
+fd0 talos sync --merge                   # fold into ~/.talos/config
+
+fd0 talos new prod --endpoint https://10.0.1.10:6443 \
+    --scope work --vault-scope work-dr   # day-0: generates cluster PKI
+fd0 talos kubeconfig prod                # fetch + store the admin kubeconfig
+
+fd0 kube add --from-config ~/.kube/config --scope work
+fd0 kube sync --merge                    # fold into ~/.kube/config
+```
+
+`add` / `new` / `move` across `key`, `ssh`, `talos`, `kube` refuse to
+overwrite an existing name — pass `--force` to overwrite knowingly.
+
 ## How it works
 
 Four components, one repo:

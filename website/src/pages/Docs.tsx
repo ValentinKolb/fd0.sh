@@ -92,7 +92,7 @@ const OverviewBody = () => (
   <>
     <P>
       Operator reference. Commands, config, sync, hardware unlock,
-      recovery, SSH. Identical whether you self-host{" "}
+      recovery, SSH, Talos &amp; Kube. Identical whether you self-host{" "}
       <Code>fd0-server</Code> or point the client at <Code>fd0.sh</Code>.
       The <a href="/spec" style={`color:${C.acc};`}>specification</a>{" "}
       covers the protocol underneath.
@@ -103,6 +103,7 @@ const OverviewBody = () => (
         { href: "/docs/concepts", t: "Concepts", d: "Eight terms used everywhere below." },
         { href: "/docs/cli", t: "CLI reference", d: "fd0 init, set, get, ls, sync, …" },
         { href: "/docs/ssh", t: "SSH", d: "Keys + hosts as scope-shared secrets." },
+        { href: "/docs/talos", t: "Talos & Kube", d: "Talos contexts, secrets.yaml DR, kubeconfigs." },
         { href: "/docs/sync", t: "Sync", d: "Multi-device, multi-server, replica failover." },
         { href: "/docs/server", t: "Self-host server", d: "docker-compose, replicas, witness." },
         { href: "/docs/yubikey", t: "YubiKey unlock", d: "On-card X25519, PIV slot 9d." },
@@ -211,12 +212,23 @@ Choose a passphrase: …
     <Cmd signature="fd0 doctor" body="Audit local state — vault integrity, chain tips, OEK consistency, no orphan files. Exits non-zero on any issue." />
     <Cmd signature="fd0 recovery export <file>" body={<>Encrypted backup of super_priv under a separate recovery passphrase. See <a href="/docs/recovery" style={`color:${C.acc};`}>Recovery</a>.</>} />
 
-    <H3>SSH</H3>
+    <H3>SSH, Talos &amp; Kube</H3>
     <P>
-      Top-level <Code>fd0 key</Code> and <Code>fd0 ssh</Code> commands —
-      see the <a href="/docs/ssh" style={`color:${C.acc};`}>SSH page</a> for
-      the full reference.
+      Top-level <Code>fd0 key</Code> + <Code>fd0 ssh</Code> manage SSH
+      keys and hosts — see the{" "}
+      <a href="/docs/ssh" style={`color:${C.acc};`}>SSH page</a>.{" "}
+      <Code>fd0 talos</Code> + <Code>fd0 kube</Code> manage Talos Linux
+      contexts and kubeconfigs — see the{" "}
+      <a href="/docs/talos" style={`color:${C.acc};`}>Talos &amp; Kube page</a>.
     </P>
+    <Note>
+      <strong>--force on every add / new / move.</strong> Across all
+      four families (<Code>key</Code>, <Code>ssh</Code>,{" "}
+      <Code>talos</Code>, <Code>kube</Code>) an <Code>add</Code>,{" "}
+      <Code>new</Code>, or <Code>move</Code> refuses to overwrite an
+      existing name by default. Pass <Code>--force</Code> to overwrite
+      knowingly.
+    </Note>
   </>
 );
 
@@ -276,7 +288,7 @@ ssh-ed25519 AAAAC3NzaC1lZD… laptop@fd0`} />
     <Cmd signature="fd0 key ls [--scope <s>]" body="List keys across all scopes (or one). Names + types only; private bytes stay in the vault." />
     <Cmd signature="fd0 key show <name> [--pub]" body={<>Print metadata for a key. <Code>--pub</Code> prints the bare <Code>authorized_keys</Code> line — pipe it into a server, copy it into a UI, or just inspect.</>} />
     <Cmd signature="fd0 key rm <name>" body="Tombstone the key. Hosts that referenced it will warn on next render but stay valid." />
-    <Cmd signature="fd0 key move <name> --to <scope>" body="Move a key between scopes you own. Hosts referencing it follow." />
+    <Cmd signature="fd0 key move <name> --to-scope <s>" body={<>Move a key between scopes you own. Hosts referencing it follow. Refuses to overwrite a same-named key in the destination unless you pass <Code>--force</Code>.</>} />
 
     <H2>Hosts</H2>
     <P>
@@ -302,7 +314,7 @@ $ fd0 ssh add staging-web app@stage.internal --with-key \\
     <Cmd signature="fd0 ssh show <alias>" body="Pretty-print the host record plus the rendered ssh_config block." />
     <Cmd signature="fd0 ssh rm <alias>" body="Tombstone the host and re-render fd0.conf." />
     <Cmd signature="fd0 ssh tag <alias> --add <t> | --remove <t>" body="Repeatable add/remove. Tags are shared with the scope; never per-user." />
-    <Cmd signature="fd0 ssh move <alias> --to <scope>" body="Move a host between scopes you own. Its key reference resolves in the new scope; warns if it can't." />
+    <Cmd signature="fd0 ssh move <alias> --to-scope <s>" body={<>Move a host between scopes you own. Refuses to overwrite an existing host in the destination — pass <Code>--force</Code> to overwrite.</>} />
 
     <H2>Connect — the picker</H2>
     <P>
@@ -514,6 +526,104 @@ $ fd0 unlock && fd0 sync   # auto-discovers scope memberships`}</Box>
   </>
 );
 
+/* ─── talos & kube ─────────────────────────────────────────────── */
+
+const TalosKubeBody = () => (
+  <>
+    <P>
+      Two consumers built on the same "everything is a typed secret"
+      foundation as <a href="/docs/ssh" style={`color:${C.acc};`}>SSH</a>.{" "}
+      <Code>fd0 talos</Code> manages Talos Linux client contexts and the
+      DR-grade <Code>secrets.yaml</Code> bundle;{" "}
+      <Code>fd0 kube</Code> manages kubeconfigs for any cluster (Talos,
+      EKS, GKE, AKS, k3s). Both render to a deterministic file you
+      merge with the native tool, and both are scope-shared — onboarding
+      a teammate is the same <Code>scope add-member</Code> flow as
+      sharing a password.
+    </P>
+    <Note>
+      <strong>talosctl / kubectl are shelled out, never replaced.</strong>{" "}
+      fd0 stores credentials and renders config files; it calls{" "}
+      <Code>talosctl</Code> / <Code>kubectl</Code> for cluster
+      operations. The day-0 (<Code>talos new</Code>), onboarding
+      (<Code>talos role-add</Code>) and kubeconfig-fetch
+      (<Code>talos kubeconfig</Code>) paths require <Code>talosctl</Code>{" "}
+      on your PATH.
+    </Note>
+
+    <H2>fd0 talos — contexts</H2>
+    <P>
+      A Talos context is the per-cluster entry under{" "}
+      <Code>contexts:</Code> in <Code>~/.talos/config</Code>: endpoints,
+      nodes, and the operator's mTLS material (CA + client cert + key)
+      issued by the cluster's Talos OS CA. fd0 renders them to{" "}
+      <Code>~/.talos/config.fd0</Code>, which you fold into your primary
+      config with <Code>talosctl config merge</Code>.
+    </P>
+    <Cmd signature="fd0 talos add <name> [--from-config <path>] [...flags]" body={<>Import contexts from an existing talosconfig (<Code>--from-config</Code>, optionally <Code>--import-context NAME</Code>), or build one from <Code>--endpoint</Code> + <Code>--ca-file</Code> / <Code>--crt-file</Code> / <Code>--key-file</Code>. <Code>--role</Code>, <Code>--tag</Code>, <Code>--scope</Code> apply. Refuses an existing name unless <Code>--force</Code>.</>} example={`$ fd0 talos add --from-config ~/.talos/config \\
+    --scope work --role os:admin
+✓ imported "prod-1" (scope: work)
+✓ imported "staging" (scope: work)
+✓ rendered ~/.talos/config.fd0 (2 contexts)`} />
+    <Cmd signature="fd0 talos ls [--tag <t>...] [--no-tag <t>...]" body="List contexts; surfaces endpoints + role + tags. Filter by tag, limit by --scope." />
+    <Cmd signature="fd0 talos show <name>" body="Print the context — endpoints, nodes, role, tags; CA/cert sizes (the private key stays hidden)." />
+    <Cmd signature="fd0 talos rm <name>" body="Tombstone the context and re-render the config file." />
+    <Cmd signature="fd0 talos move <name> --to-scope <s>" body={<>Move a context between scopes you own. Refuses to overwrite a same-named context in the destination unless <Code>--force</Code>.</>} />
+    <Cmd signature="fd0 talos sync [--merge]" body={<>Re-render <Code>~/.talos/config.fd0</Code>. With <Code>--merge</Code>, also runs <Code>talosctl config merge</Code> to fold it into your primary config — the subprocess runs without holding the vault lock.</>} />
+
+    <H2>fd0 talos — day-0 + day-N</H2>
+    <P>
+      <Code>talos new</Code> bootstraps a cluster's full credential set
+      from scratch; <Code>role-add</Code> mints a role-scoped operator
+      cert for a teammate; <Code>kubeconfig</Code> pulls a fresh admin
+      kubeconfig off the cluster and stores it for{" "}
+      <Code>fd0 kube</Code>.
+    </P>
+    <Cmd signature="fd0 talos new <name> --endpoint https://IP:6443" body={<>Generates root PKI + controlplane.yaml + worker.yaml + talosconfig via <Code>talosctl gen secrets|config</Code>. Stores the admin context + the DR <Code>secrets.yaml</Code> bundle (under <Code>--vault-scope</Code> if you want it in a separate least-privilege scope). All generated files are written 0600. Refuses an existing cluster name unless <Code>--force</Code> (overwrite = destruction — export the secrets first).</>} example={`$ fd0 talos new prod --endpoint https://10.0.1.10:6443 \\
+    --scope work --vault-scope work-dr
+→ talosctl gen secrets …
+→ talosctl gen config "prod" …
+✓ stored talos context "prod" (role: os:admin)
+✓ stored secrets.yaml (DR bundle) in scope work-dr
+→ controlplane.yaml + worker.yaml written to ./
+  shred -u secrets.yaml once you've handed off the install configs`} />
+    <Cmd signature="fd0 talos role-add --from <ctx> --name <new> --role os:operator" body={<>Mints a fresh role-scoped client cert via <Code>talosctl config new</Code> against an admin issuer, and stores it under the new name. The issuer must be an <Code>os:admin</Code> context — fd0 rejects known non-admin roles up front. <Code>--ttl</Code> passes through to the cert validity.</>} />
+    <Cmd signature="fd0 talos kubeconfig <ctx>" body={<>Runs <Code>talosctl kubeconfig</Code> against the cluster and stores the resulting kubeconfig under the same name. A cert refresh — preserves your namespace / tags / description, overwrites only the rotated server / CA / cert / key.</>} />
+
+    <H2>fd0 talos — DR secrets.yaml</H2>
+    <P>
+      The <Code>secrets.yaml</Code> bundle is the cluster's root PKI —
+      the four CAs, service-account key, and at-rest encryption keys.
+      Lose it and the cluster cannot be regenerated or re-issued
+      operator certs offline. fd0 stores it under a separate typed
+      secret so the day-to-day <Code>talos sync</Code> path never
+      touches it.
+    </P>
+    <Cmd signature="fd0 talos secrets import <name> --in <file>" body="Stash an existing secrets.yaml into the vault (for a cluster you had before fd0)." />
+    <Cmd signature="fd0 talos secrets export <name> --out <file> [--force]" body="Write a stored bundle back to disk. Refuses to overwrite an existing file unless --force — losing a fresh export on top of an old one would be the worst foot-gun." />
+    <Cmd signature="fd0 talos secrets ls" body="List stored bundles by name + size. Never prints contents." />
+
+    <H2>fd0 kube — kubeconfigs</H2>
+    <P>
+      A kubeconfig entry is one logical "I can talk to this cluster":
+      server URL + CA, a client credential (cert+key or bearer token),
+      optional default namespace. fd0 renders them to{" "}
+      <Code>~/.kube/config.fd0</Code>, folded into your primary config
+      with <Code>kubectl config view --merge</Code>.
+    </P>
+    <Cmd signature="fd0 kube add <name> [--from-config <path>] [...flags]" body={<>Import every supported context from a kubeconfig (<Code>--from-config</Code>; exec / auth-provider entries are skipped with a note), or build one from <Code>--server</Code> + <Code>--ca-file</Code> + (<Code>--client-cert-file</Code>/<Code>--client-key-file</Code> or <Code>--token</Code>). <Code>--namespace</Code>, <Code>--insecure-skip-tls-verify</Code>, <Code>--tag</Code>, <Code>--scope</Code> apply. Refuses an existing name unless <Code>--force</Code>.</>} example={`$ fd0 kube add prod --server https://10.0.1.10:6443 \\
+    --ca-file ca.crt --client-cert-file me.crt \\
+    --client-key-file me.key --namespace default --scope work
+✓ added kubeconfig "prod" (scope: work)
+✓ rendered ~/.kube/config.fd0 (1 clusters)`} />
+    <Cmd signature="fd0 kube ls [--tag <t>...] [--no-tag <t>...]" body="List clusters; surfaces server + auth type + namespace + tags." />
+    <Cmd signature="fd0 kube show <name>" body="Print the cluster — server, auth method, namespace, CA size. Token/key stay hidden." />
+    <Cmd signature="fd0 kube rm <name>" body="Tombstone the cluster and re-render the config file." />
+    <Cmd signature="fd0 kube move <name> --to-scope <s>" body={<>Move a kubeconfig between scopes you own. Refuses to overwrite a same-named entry in the destination unless <Code>--force</Code>.</>} />
+    <Cmd signature="fd0 kube sync [--merge]" body={<>Re-render <Code>~/.kube/config.fd0</Code>. With <Code>--merge</Code>, runs <Code>kubectl config view --merge --flatten</Code> to fold it into <Code>~/.kube/config</Code> — without holding the vault lock during the subprocess.</>} />
+  </>
+);
+
 /* ─── route exports ────────────────────────────────────────────── */
 
 export const DocsOverview = ssr(async (c) => {
@@ -548,6 +658,15 @@ export const DocsSsh = ssr(async (c) => {
   return () => (
     <DocsLayout current="ssh" title="SSH — keys + hosts." kicker="03 · Built on top">
       <SshBody />
+    </DocsLayout>
+  );
+});
+
+export const DocsTalos = ssr(async (c) => {
+  c.get("page").title = "fd0 — Talos & Kube";
+  return () => (
+    <DocsLayout current="talos" title="Talos &amp; Kube." kicker="04 · Built on top">
+      <TalosKubeBody />
     </DocsLayout>
   );
 });

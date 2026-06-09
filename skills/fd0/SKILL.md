@@ -1,6 +1,6 @@
 ---
 name: fd0
-description: Use this skill whenever the user — or an agent acting on the user's behalf — needs to store, fetch, share, or organize secrets with the fd0 CLI (`fd0 init`, `fd0 set`, `fd0 get`, `fd0 sync`, `fd0 scope ...`, `fd0 card ...`). Trigger on any of these phrasings even when the user does not name fd0 explicitly:  "store a deploy key", "save this API token", "fetch my DB password", "share a credential with bob", "add bob to the work scope", "rotate access", "set up my passphrase", "vault locked", "lock failed", "sync errored". Also trigger when an agent in the middle of another task needs to inject a credential into a script or deploy step — `fd0 get NAME` is the canonical retrieval path. Do NOT trigger for hosting or operating the fd0-server; that is a separate concern documented in this project's docs/HOSTING.md.
+description: Use this skill whenever the user — or an agent acting on the user's behalf — needs to store, fetch, share, or organize secrets with the fd0 CLI (`fd0 init`, `fd0 set`, `fd0 get`, `fd0 sync`, `fd0 scope ...`, `fd0 card ...`), manage SSH keys and hosts (`fd0 key ...`, `fd0 ssh ...`), or manage Talos Linux / Kubernetes credentials (`fd0 talos ...`, `fd0 kube ...`). Trigger on any of these phrasings even when the user does not name fd0 explicitly:  "store a deploy key", "save this API token", "fetch my DB password", "share a credential with bob", "add bob to the work scope", "rotate access", "set up my passphrase", "vault locked", "lock failed", "sync errored", "generate an ssh key", "share ssh access with the team", "connect to the prod box", "store the talosconfig", "share the kubeconfig", "bootstrap a talos cluster". Also trigger when an agent in the middle of another task needs to inject a credential into a script or deploy step — `fd0 get NAME` is the canonical retrieval path. Do NOT trigger for hosting or operating the fd0-server; that is a separate concern documented in this project's docs/HOSTING.md.
 ---
 
 # fd0 — Zero-knowledge secrets CLI
@@ -27,8 +27,24 @@ Map the user's intent to the right command before typing anything:
 | Pull / push to server | `fd0 sync` |
 | Confirm vault state | `fd0 doctor` (read-only check) |
 | End the session | `fd0 lock` |
+| Generate an SSH key (ed25519, in-vault) | `fd0 key add NAME [--scope LABEL]` — prints the authorized_keys line |
+| Import an existing SSH key | `fd0 key add NAME --import PATH` (encrypted RSA/ECDSA are refused — decrypt first) |
+| Show a public key for authorized_keys | `fd0 key show NAME --pub` |
+| Add an SSH host | `fd0 ssh add ALIAS [user@]host[:port] [--key NAME \| --with-key] [--jump ALIAS] [--tag T]` |
+| Connect to a host | `fd0 ssh ALIAS` (or bare `fd0 ssh` for the fuzzy picker) |
+| One-time SSH setup | `fd0 ssh enable` + `export SSH_AUTH_SOCK="$(fd0 ssh sock)"` in your shell rc |
+| Store a Talos context | `fd0 talos add NAME --from-config ~/.talos/config` (or per-field `--ca-file/--crt-file/--key-file`) |
+| Bootstrap a new Talos cluster (day-0) | `fd0 talos new NAME --endpoint https://IP:6443 [--vault-scope LABEL]` (needs `talosctl`) |
+| Render + merge talosconfig | `fd0 talos sync --merge` |
+| Onboard a teammate to a Talos cluster | `fd0 talos role-add --from CTX --name NAME --role os:operator` (needs `talosctl`) |
+| Store / export the DR secrets.yaml | `fd0 talos secrets import\|export NAME --in\|--out FILE` |
+| Store a kubeconfig | `fd0 kube add NAME --from-config ~/.kube/config` (or per-field `--server/--ca-file/...`) |
+| Fetch a fresh kubeconfig from Talos | `fd0 talos kubeconfig CTX` (needs `talosctl`) |
+| Render + merge kubeconfig | `fd0 kube sync --merge` |
 
-Every command except `fd0 sync` is local. `sync` is the only one that touches the network.
+Every command except `fd0 sync` is local. `sync` is the only one that touches the network. The `key`/`ssh`/`talos`/`kube` families all store their material as ordinary scope-shared secrets, so sharing an SSH key or a talosconfig with a teammate is the same `scope add-member` flow as sharing a password.
+
+`add`, `new`, and `move` across all four families refuse to overwrite an existing name by default — pass `--force` to overwrite knowingly.
 
 ## Mental model
 

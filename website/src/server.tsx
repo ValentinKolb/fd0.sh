@@ -10,6 +10,7 @@ import {
   DocsConcepts,
   DocsCli,
   DocsSsh,
+  DocsTalos,
   DocsSync,
   DocsServer,
   DocsYubikey,
@@ -161,6 +162,7 @@ const app = new Hono()
       "/docs/concepts",
       "/docs/cli",
       "/docs/ssh",
+      "/docs/talos",
       "/docs/sync",
       "/docs/server",
       "/docs/yubikey",
@@ -206,6 +208,7 @@ const app = new Hono()
   .get("/docs/concepts", ...DocsConcepts)
   .get("/docs/cli", ...DocsCli)
   .get("/docs/ssh", ...DocsSsh)
+  .get("/docs/talos", ...DocsTalos)
   .get("/docs/sync", ...DocsSync)
   .get("/docs/server", ...DocsServer)
   .get("/docs/yubikey", ...DocsYubikey)

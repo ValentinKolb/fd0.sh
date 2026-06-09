@@ -87,6 +87,7 @@ export type DocsKey =
   | "concepts"
   | "cli"
   | "ssh"
+  | "talos"
   | "server"
   | "yubikey"
   | "sync"
@@ -97,6 +98,7 @@ export const DOCS_NAV: { key: DocsKey; href: string; label: string; group: strin
   { key: "concepts", href: "/docs/concepts", label: "Concepts", group: "Start" },
   { key: "cli", href: "/docs/cli", label: "CLI reference", group: "Use" },
   { key: "ssh", href: "/docs/ssh", label: "SSH", group: "Use" },
+  { key: "talos", href: "/docs/talos", label: "Talos & Kube", group: "Use" },
   { key: "sync", href: "/docs/sync", label: "Sync", group: "Use" },
   { key: "server", href: "/docs/server", label: "Self-host server", group: "Deploy" },
   { key: "yubikey", href: "/docs/yubikey", label: "YubiKey unlock", group: "Hardware" },
