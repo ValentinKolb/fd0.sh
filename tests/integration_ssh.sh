@@ -122,6 +122,18 @@ grep -q "ProxyJump bastion" "$FD0_SSH_CONFIG_PATH" \
 grep -q "IdentityAgent $FD0_SSH_SOCK" "$FD0_SSH_CONFIG_PATH" \
   && ok "fd0.conf has IdentityAgent" || no "IdentityAgent missing"
 
+# Public-key selector file rendered + referenced (the .pub dir is
+# derived from the conf path: $BASE/fd0.conf -> $BASE/fd0.d/).
+PUBDIR=$BASE/fd0.d
+[[ -f "$PUBDIR/prod-db.pub" ]] \
+  && ok "prod-db.pub selector rendered" || no "prod-db.pub missing"
+grep -q "^ssh-ed25519 " "$PUBDIR/prod-db.pub" 2>/dev/null \
+  && ok "prod-db.pub holds the public key" || no "prod-db.pub empty/wrong"
+grep -q "IdentityFile $PUBDIR/prod-db.pub" "$FD0_SSH_CONFIG_PATH" \
+  && ok "fd0.conf references the selector via IdentityFile" || no "IdentityFile missing"
+grep -q "IdentitiesOnly yes" "$FD0_SSH_CONFIG_PATH" \
+  && ok "fd0.conf has IdentitiesOnly (keyed host)" || no "IdentitiesOnly missing"
+
 # Include warning should have fired (we never enabled).
 grep -q "doesn't include" "$BASE/ssh-add.log" \
   && ok "include warning emitted" || no "include warning not visible"
@@ -179,6 +191,13 @@ phase "Host rm"
 
 grep -q "Host staging-web" "$FD0_SSH_CONFIG_PATH" \
   && ok "fd0.conf still has staging-web" || no "staging-web vanished"
+
+# The selector file for the removed host must be pruned; the surviving
+# host's selector must remain.
+[[ ! -f "$BASE/fd0.d/prod-db.pub" ]] \
+  && ok "prod-db.pub pruned on rm" || no "stale prod-db.pub left behind"
+[[ -f "$BASE/fd0.d/staging-web.pub" ]] \
+  && ok "staging-web.pub still present" || no "staging-web.pub vanished"
 
 # ─────────────────────────────────────────────────────────────
 phase "SSH-agent socket"

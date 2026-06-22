@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -443,19 +444,33 @@ func renderAndWarn(s *Session) error {
 	if err != nil {
 		return err
 	}
-	// Resolve current keys for the missing-reference warning.
+	// Load keys once: presence (for the missing-reference warning)
+	// plus the public-key line (for the per-host selector files).
 	known := map[string]bool{}
+	keyPub := map[string][]byte{}
 	if rows, err := s.ListTypedSecrets("", ""); err == nil {
 		for _, r := range rows {
-			if strings.HasPrefix(r.Type, "ssh-") {
-				known[strings.TrimPrefix(r.Name, keyNamePrefix)] = true
+			if !strings.HasPrefix(r.Type, "ssh-") {
+				continue
+			}
+			name := strings.TrimPrefix(r.Name, keyNamePrefix)
+			known[name] = true
+			if k, err := decodeKey(r); err == nil {
+				keyPub[name] = k.Public
 			}
 		}
 	}
+
+	pubDir := SSHPubKeyDir()
+	if err := syncPubKeyFiles(pubDir, hosts, keyPub); err != nil {
+		return err
+	}
+
 	bytes := sshhost.Render(sshhost.RenderInput{
 		Hosts:      hosts,
 		SocketPath: SSHSocketPathForRender(),
 		KnownKeys:  known,
+		PubKeyDir:  pubDir,
 		Now:        nowFunc(),
 	})
 	target := SSHConfPath()
@@ -463,6 +478,56 @@ func renderAndWarn(s *Session) error {
 		return err
 	}
 	checkInclude(target)
+	return nil
+}
+
+// syncPubKeyFiles writes one public-key selector file (<alias>.pub)
+// per host that has a resolvable fd0 key, and prunes any stale *.pub
+// left behind by removed hosts or rotated-away keys. These are local
+// render artifacts — fully regenerable from vault state — so the whole
+// directory is fd0-managed. Public keys only; no private material ever
+// touches disk.
+func syncPubKeyFiles(dir string, hosts []*sshhost.Host, keyPub map[string][]byte) error {
+	wanted := map[string]bool{}
+	for _, h := range hosts {
+		if h.KeyName == "" {
+			continue
+		}
+		pub := keyPub[h.KeyName]
+		if len(pub) == 0 {
+			continue
+		}
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
+		// authorized_keys lines are stored without a trailing newline;
+		// ssh tolerates either, but a newline keeps the file tidy.
+		if pub[len(pub)-1] != '\n' {
+			pub = append(append([]byte(nil), pub...), '\n')
+		}
+		name := h.Alias + ".pub"
+		if err := writeFileAtomic(filepath.Join(dir, name), pub, 0o644); err != nil {
+			return err
+		}
+		wanted[name] = true
+	}
+
+	// Prune stale selector files. ReadDir on a missing dir is fine —
+	// nothing was written, nothing to prune.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, e := range entries {
+		n := e.Name()
+		if e.IsDir() || !strings.HasSuffix(n, ".pub") || wanted[n] {
+			continue
+		}
+		_ = os.Remove(filepath.Join(dir, n))
+	}
 	return nil
 }
 

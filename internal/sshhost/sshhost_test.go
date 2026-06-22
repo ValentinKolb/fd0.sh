@@ -113,6 +113,7 @@ func TestRenderBasic(t *testing.T) {
 		Hosts:      hosts,
 		SocketPath: "/tmp/fd0/ssh.sock",
 		KnownKeys:  map[string]bool{"deploy": true},
+		PubKeyDir:  "/tmp/fd0/pub",
 		Now:        time.Date(2026, 6, 8, 12, 0, 0, 0, time.UTC),
 	})
 	s := string(out)
@@ -128,6 +129,8 @@ func TestRenderBasic(t *testing.T) {
 		"User app",
 		"ProxyJump bastion",
 		"IdentityAgent /tmp/fd0/ssh.sock",
+		// prod-db has a resolvable key → selector file + IdentitiesOnly.
+		"IdentityFile /tmp/fd0/pub/prod-db.pub",
 		"IdentitiesOnly yes",
 		"#@fd0:scope=work",
 		"#@fd0:tags=prod,db",
@@ -158,6 +161,48 @@ func TestRenderDeterministic(t *testing.T) {
 		if a != b {
 			t.Fatalf("non-deterministic render:\n--- a ---\n%s\n--- b ---\n%s", a, b)
 		}
+	}
+}
+
+func TestRenderKeyedHostEmitsIdentityFile(t *testing.T) {
+	hosts := []*Host{
+		{Alias: "prod-db", Hostname: "db", KeyName: "deploy", Scope: "work"},
+	}
+	out := string(Render(RenderInput{
+		Hosts:      hosts,
+		SocketPath: "/run/fd0.sock",
+		KnownKeys:  map[string]bool{"deploy": true},
+		PubKeyDir:  "/home/me/.ssh/fd0.d",
+		Now:        time.Now(),
+	}))
+	if !strings.Contains(out, "IdentityFile /home/me/.ssh/fd0.d/prod-db.pub") {
+		t.Errorf("keyed host should emit IdentityFile:\n%s", out)
+	}
+	if !strings.Contains(out, "IdentitiesOnly yes") {
+		t.Errorf("keyed host should emit IdentitiesOnly:\n%s", out)
+	}
+}
+
+func TestRenderKeylessHostNoIdentitiesOnly(t *testing.T) {
+	// A host without an fd0 key must NOT get IdentitiesOnly — that
+	// would suppress the user's own ~/.ssh identities too.
+	hosts := []*Host{
+		{Alias: "byok", Hostname: "h", Scope: "s"},
+	}
+	out := string(Render(RenderInput{
+		Hosts:      hosts,
+		SocketPath: "/run/fd0.sock",
+		PubKeyDir:  "/home/me/.ssh/fd0.d",
+		Now:        time.Now(),
+	}))
+	if !strings.Contains(out, "IdentityAgent /run/fd0.sock") {
+		t.Errorf("keyless host should still get IdentityAgent:\n%s", out)
+	}
+	if strings.Contains(out, "IdentitiesOnly") {
+		t.Errorf("keyless host must NOT get IdentitiesOnly:\n%s", out)
+	}
+	if strings.Contains(out, "IdentityFile") {
+		t.Errorf("keyless host must NOT get IdentityFile:\n%s", out)
 	}
 }
 

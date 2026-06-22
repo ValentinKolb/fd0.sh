@@ -2,6 +2,7 @@ package sshhost
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -17,6 +18,13 @@ type RenderInput struct {
 	Hosts      []*Host
 	SocketPath string
 	KnownKeys  map[string]bool
+	// PubKeyDir, when non-empty, is the directory holding the
+	// per-host public-key selector files (<alias>.pub). For each host
+	// with a resolvable fd0 key the renderer emits
+	// `IdentityFile <PubKeyDir>/<alias>.pub` so OpenSSH can pick the
+	// matching agent identity under `IdentitiesOnly yes`. The CLI
+	// writes those files; the renderer only references them.
+	PubKeyDir string
 	// Now is injected for deterministic tests. Caller passes
 	// time.Now() in production; tests pass a fixed value.
 	Now time.Time
@@ -42,7 +50,8 @@ type RenderInput struct {
 //	    Port <port>
 //	    ProxyJump <jump>
 //	    IdentityAgent <socket-path>
-//	    IdentitiesOnly yes
+//	    IdentityFile <pub-key-dir>/<alias>.pub   (only if key resolves)
+//	    IdentitiesOnly yes                        (only with IdentityFile)
 //	    <Option> <Value>
 //
 // Cross-scope alias collisions emit a `# WARN` comment block at the
@@ -121,7 +130,20 @@ func Render(in RenderInput) []byte {
 		}
 		if in.SocketPath != "" {
 			fmt.Fprintf(&b, "    IdentityAgent %s\n", in.SocketPath)
-			fmt.Fprintf(&b, "    IdentitiesOnly yes\n")
+
+			// IdentitiesOnly is only safe to set when we also pin an
+			// IdentityFile: it tells OpenSSH to offer ONLY identities
+			// matching a configured file. With a per-host public-key
+			// selector, ssh picks the right agent key deterministically.
+			// Without one (host has no fd0 key), emitting IdentitiesOnly
+			// would suppress the user's own ~/.ssh keys too — so for
+			// keyless hosts we emit IdentityAgent alone.
+			hasKey := h.KeyName != "" && in.KnownKeys != nil && in.KnownKeys[h.KeyName]
+			if hasKey && in.PubKeyDir != "" {
+				pub := filepath.Join(in.PubKeyDir, h.Alias+".pub")
+				fmt.Fprintf(&b, "    IdentityFile %s\n", pub)
+				fmt.Fprintf(&b, "    IdentitiesOnly yes\n")
+			}
 		}
 		// Verbatim user-supplied options, sorted for determinism.
 		if len(h.Options) > 0 {

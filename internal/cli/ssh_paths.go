@@ -6,6 +6,8 @@ package cli
 
 import (
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/valentinkolb/fd0.sh/internal/sshagent"
@@ -24,6 +26,18 @@ func SSHConfPath() string {
 		return p
 	}
 	return sshhost.DefaultFD0ConfPath()
+}
+
+// SSHPubKeyDir returns the directory holding the per-host public-key
+// selector files (<alias>.pub). Derived from SSHConfPath so that
+// FD0_SSH_CONFIG_PATH automatically isolates the .pub files alongside
+// the rendered config — the whole tree is one fd0-managed location.
+// Default: ~/.ssh/fd0.d/ (sibling of ~/.ssh/fd0.conf).
+func SSHPubKeyDir() string {
+	conf := SSHConfPath()
+	base := filepath.Base(conf)
+	name := strings.TrimSuffix(base, filepath.Ext(base)) // fd0.conf -> fd0
+	return filepath.Join(filepath.Dir(conf), name+".d")
 }
 
 // SSHSocketPathForRender returns the SSH-agent socket path that gets
