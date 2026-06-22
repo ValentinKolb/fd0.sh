@@ -83,9 +83,12 @@ ssh prod-db                              # or: fd0 ssh   (fuzzy picker)
 ### Talos Linux + Kubernetes
 
 `fd0 talos` manages Talos client contexts and the DR-grade
-`secrets.yaml`; `fd0 kube` manages kubeconfigs for any cluster. Both
-shell out to `talosctl` / `kubectl` for cluster ops — fd0 only stores
-the credentials and renders the config files.
+`secrets.yaml`; `fd0 kube` manages kubeconfigs for any cluster. The
+everyday paths — store, list, render, and `sync --merge` into
+`~/.talos/config` / `~/.kube/config` — are pure Go and need no extra
+tools (`kubectl` is never required). Only the Talos cluster-admin paths
+that need PKI crypto or a live API connection (`talos new`,
+`talos role-add`, `talos kubeconfig`) shell out to `talosctl`.
 
 ```bash
 fd0 talos add --from-config ~/.talos/config --scope work

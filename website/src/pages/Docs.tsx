@@ -636,13 +636,16 @@ const TalosKubeBody = () => (
       sharing a password.
     </P>
     <Note>
-      <strong>talosctl / kubectl are shelled out, never replaced.</strong>{" "}
-      fd0 stores credentials and renders config files; it calls{" "}
-      <Code>talosctl</Code> / <Code>kubectl</Code> for cluster
-      operations. The day-0 (<Code>talos new</Code>), onboarding
-      (<Code>talos role-add</Code>) and kubeconfig-fetch
-      (<Code>talos kubeconfig</Code>) paths require <Code>talosctl</Code>{" "}
-      on your PATH.
+      <strong>No extra tools for the everyday path.</strong> Storing,
+      listing, rendering, and merging configs — including{" "}
+      <Code>talos sync --merge</Code> and <Code>kube sync --merge</Code>{" "}
+      — is pure Go: <Code>kubectl</Code> is never needed, and{" "}
+      <Code>talosctl</Code> isn't either. Only the three cluster-admin
+      paths that need Talos PKI crypto or a live API connection —{" "}
+      <Code>talos new</Code> (day-0), <Code>talos role-add</Code>{" "}
+      (onboarding), and <Code>talos kubeconfig</Code> (fetch) — shell
+      out to <Code>talosctl</Code>. Anyone bootstrapping a Talos cluster
+      already has it.
     </Note>
 
     <H2>fd0 talos — contexts</H2>
@@ -651,8 +654,8 @@ const TalosKubeBody = () => (
       <Code>contexts:</Code> in <Code>~/.talos/config</Code>: endpoints,
       nodes, and the operator's mTLS material (CA + client cert + key)
       issued by the cluster's Talos OS CA. fd0 renders them to{" "}
-      <Code>~/.talos/config.fd0</Code>, which you fold into your primary
-      config with <Code>talosctl config merge</Code>.
+      <Code>~/.talos/config.fd0</Code> and folds them into your primary
+      config with <Code>talos sync --merge</Code>.
     </P>
     <Cmd signature="fd0 talos add <name> [--from-config <path>] [...flags]" body={<>Import contexts from an existing talosconfig (<Code>--from-config</Code>, optionally <Code>--import-context NAME</Code>), or build one from <Code>--endpoint</Code> + <Code>--ca-file</Code> / <Code>--crt-file</Code> / <Code>--key-file</Code>. <Code>--role</Code>, <Code>--tag</Code>, <Code>--scope</Code> apply. Refuses an existing name unless <Code>--force</Code>.</>} example={`$ fd0 talos add --from-config ~/.talos/config \\
     --scope work --role os:admin
@@ -663,7 +666,7 @@ const TalosKubeBody = () => (
     <Cmd signature="fd0 talos show <name>" body="Print the context — endpoints, nodes, role, tags; CA/cert sizes (the private key stays hidden)." />
     <Cmd signature="fd0 talos rm <name>" body="Tombstone the context and re-render the config file." />
     <Cmd signature="fd0 talos move <name> --to-scope <s>" body={<>Move a context between scopes you own. Refuses to overwrite a same-named context in the destination unless <Code>--force</Code>.</>} />
-    <Cmd signature="fd0 talos sync [--merge]" body={<>Re-render <Code>~/.talos/config.fd0</Code>. With <Code>--merge</Code>, also runs <Code>talosctl config merge</Code> to fold it into your primary config — the subprocess runs without holding the vault lock.</>} />
+    <Cmd signature="fd0 talos sync [--merge]" body={<>Re-render <Code>~/.talos/config.fd0</Code>. With <Code>--merge</Code>, folds it into <Code>~/.talos/config</Code> via a pure-Go structural merge (no <Code>talosctl</Code> needed) — fd0's contexts overwrite same-named ones; your other contexts and active-context pointer are preserved.</>} />
 
     <H2>fd0 talos — day-0 + day-N</H2>
     <P>
@@ -702,8 +705,9 @@ const TalosKubeBody = () => (
       A kubeconfig entry is one logical "I can talk to this cluster":
       server URL + CA, a client credential (cert+key or bearer token),
       optional default namespace. fd0 renders them to{" "}
-      <Code>~/.kube/config.fd0</Code>, folded into your primary config
-      with <Code>kubectl config view --merge</Code>.
+      <Code>~/.kube/config.fd0</Code> and folds them into your primary
+      config with <Code>kube sync --merge</Code> (pure Go, no{" "}
+      <Code>kubectl</Code>).
     </P>
     <Cmd signature="fd0 kube add <name> [--from-config <path>] [...flags]" body={<>Import every supported context from a kubeconfig (<Code>--from-config</Code>; exec / auth-provider entries are skipped with a note), or build one from <Code>--server</Code> + <Code>--ca-file</Code> + (<Code>--client-cert-file</Code>/<Code>--client-key-file</Code> or <Code>--token</Code>). <Code>--namespace</Code>, <Code>--insecure-skip-tls-verify</Code>, <Code>--tag</Code>, <Code>--scope</Code> apply. Refuses an existing name unless <Code>--force</Code>.</>} example={`$ fd0 kube add prod --server https://10.0.1.10:6443 \\
     --ca-file ca.crt --client-cert-file me.crt \\
@@ -714,7 +718,7 @@ const TalosKubeBody = () => (
     <Cmd signature="fd0 kube show <name>" body="Print the cluster — server, auth method, namespace, CA size. Token/key stay hidden." />
     <Cmd signature="fd0 kube rm <name>" body="Tombstone the cluster and re-render the config file." />
     <Cmd signature="fd0 kube move <name> --to-scope <s>" body={<>Move a kubeconfig between scopes you own. Refuses to overwrite a same-named entry in the destination unless <Code>--force</Code>.</>} />
-    <Cmd signature="fd0 kube sync [--merge]" body={<>Re-render <Code>~/.kube/config.fd0</Code>. With <Code>--merge</Code>, runs <Code>kubectl config view --merge --flatten</Code> to fold it into <Code>~/.kube/config</Code> — without holding the vault lock during the subprocess.</>} />
+    <Cmd signature="fd0 kube sync [--merge]" body={<>Re-render <Code>~/.kube/config.fd0</Code>. With <Code>--merge</Code>, folds it into <Code>~/.kube/config</Code> via a pure-Go structural merge (no <Code>kubectl</Code> needed) — fd0's clusters replace same-named entries while your other clusters, including exec / auth-provider (EKS / GKE) ones, and your current-context are preserved.</>} />
   </>
 );
 

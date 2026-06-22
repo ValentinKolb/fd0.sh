@@ -363,7 +363,7 @@ func RunTalosSync(ctx context.Context, merge bool) error {
 		s.Close()
 	}
 	if merge {
-		if err := talosctlMerge(talosconfPath(), userTalosconfigPath()); err != nil {
+		if err := mergeTalosconfigFile(talosconfPath(), userTalosconfigPath()); err != nil {
 			return err
 		}
 		stderrln("✓ merged into %s", userTalosconfigPath())

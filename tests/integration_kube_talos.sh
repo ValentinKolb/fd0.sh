@@ -213,16 +213,68 @@ grep -q "name: edge" "$FD0_KUBE_CONFIG_PATH" && ok "edge in render" || no "edge 
 grep -q "token: bearer-xxx" "$FD0_KUBE_CONFIG_PATH" && ok "token in render" || no "token missing"
 
 # ─────────────────────────────────────────────────────────────
-phase "Kube: kubectl-merge (only when kubectl on PATH)"
-if command -v kubectl >/dev/null; then
-  "$FD0" kube sync --merge > "$BASE/kube-sync.log" 2>&1 \
-    && ok "kube sync --merge" || { no "merge failed"; tail "$BASE/kube-sync.log"; }
-  [[ -f "$FD0_KUBE_USER_CONFIG" ]] && ok "user kubeconfig written" || no "no user file"
-  grep -q "name: prod" "$FD0_KUBE_USER_CONFIG" 2>/dev/null \
-    && ok "merged kubeconfig has prod" || no "no prod in merged"
-else
-  printf "  \033[33m▸\033[0m kubectl not on PATH; skipping merge tests\n"
-fi
+phase "Kube: in-house merge (no kubectl needed)"
+
+# Seed the user kubeconfig with a foreign exec-auth cluster fd0 does
+# NOT manage — the merge must preserve it (EKS/GKE data-loss guard).
+cat > "$FD0_KUBE_USER_CONFIG" <<'YAML'
+apiVersion: v1
+kind: Config
+current-context: eks-prod
+clusters:
+- name: eks-prod
+  cluster:
+    server: https://eks.example.com
+users:
+- name: eks-prod
+  user:
+    exec:
+      apiVersion: client.authentication.k8s.io/v1beta1
+      command: aws
+contexts:
+- name: eks-prod
+  context: {cluster: eks-prod, user: eks-prod}
+YAML
+
+# Force kubectl OFF to prove the merge is pure-Go.
+FD0_KUBECTL=/nonexistent-kubectl-binary "$FD0" kube sync --merge \
+    > "$BASE/kube-sync.log" 2>&1 \
+  && ok "kube sync --merge (no kubectl)" || { no "merge failed"; tail "$BASE/kube-sync.log"; }
+
+[[ -f "$FD0_KUBE_USER_CONFIG" ]] && ok "user kubeconfig written" || no "no user file"
+grep -q "name: prod" "$FD0_KUBE_USER_CONFIG" 2>/dev/null \
+  && ok "merged kubeconfig has fd0 prod cluster" || no "no prod in merged"
+grep -q "eks.example.com" "$FD0_KUBE_USER_CONFIG" 2>/dev/null \
+  && ok "foreign EKS cluster preserved" || no "EKS cluster DROPPED"
+grep -q "command: aws" "$FD0_KUBE_USER_CONFIG" 2>/dev/null \
+  && ok "foreign exec-auth preserved" || no "exec-auth DROPPED"
+grep -q "current-context: eks-prod" "$FD0_KUBE_USER_CONFIG" 2>/dev/null \
+  && ok "user current-context untouched" || no "current-context changed"
+
+# ─────────────────────────────────────────────────────────────
+phase "Talos: in-house merge (no talosctl needed)"
+
+# Foreign hand-rolled context the merge must preserve.
+cat > "$FD0_TALOS_USER_CONFIG" <<'YAML'
+context: hand-rolled
+contexts:
+  hand-rolled:
+    endpoints: ["10.9.9.9"]
+    ca: SAND
+    crt: SANE
+    key: SANF
+YAML
+
+FD0_TALOSCTL=/nonexistent-talosctl-binary "$FD0" talos sync --merge \
+    > "$BASE/talos-sync.log" 2>&1 \
+  && ok "talos sync --merge (no talosctl)" || { no "merge failed"; tail "$BASE/talos-sync.log"; }
+
+grep -q "hand-rolled:" "$FD0_TALOS_USER_CONFIG" 2>/dev/null \
+  && ok "foreign talos context preserved" || no "foreign context DROPPED"
+grep -q "staging:" "$FD0_TALOS_USER_CONFIG" 2>/dev/null \
+  && ok "fd0 staging context merged in" || no "staging not merged"
+grep -q "context: hand-rolled" "$FD0_TALOS_USER_CONFIG" 2>/dev/null \
+  && ok "user active context untouched" || no "active context changed"
 
 # ─────────────────────────────────────────────────────────────
 phase "Lock + Unlock survives talos + kube state"

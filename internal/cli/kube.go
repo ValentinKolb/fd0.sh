@@ -408,7 +408,7 @@ func RunKubeSync(ctx context.Context, merge bool) error {
 		s.Close()
 	}
 	if merge {
-		if err := kubectlMerge(kubeconfPath(), userKubeconfigPath()); err != nil {
+		if err := mergeKubeconfigFile(kubeconfPath(), userKubeconfigPath()); err != nil {
 			return err
 		}
 		stderrln("✓ merged into %s", userKubeconfigPath())

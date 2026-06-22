@@ -23,23 +23,11 @@ func talosctlBin() string {
 	return "talosctl"
 }
 
-// talosctlMerge calls `talosctl --talosconfig <user> config merge <fd0>`
-// so the merged contexts end up in the user's primary talosconfig.
-// Idempotent — talosctl tolerates re-merging the same file.
-func talosctlMerge(fd0Path, userPath string) error {
-	if _, err := os.Stat(fd0Path); err != nil {
-		return fmt.Errorf("talos merge: %s: %w", fd0Path, err)
-	}
-	if err := os.MkdirAll(filepath.Dir(userPath), 0o700); err != nil {
-		return err
-	}
-	cmd := exec.Command(talosctlBin(), "--talosconfig", userPath, "config", "merge", fd0Path)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("talosctl config merge: %w\n%s", err, out)
-	}
-	return nil
-}
+// NOTE: `talos sync --merge` no longer shells out to talosctl — it
+// uses the pure-Go structural merge in configmerge.go
+// (mergeTalosconfigFile). talosctl is still required for the day-0 /
+// cluster-admin paths below (gen secrets/config, config new,
+// kubeconfig) which need Talos PKI crypto or a live API connection.
 
 // TalosNewOpts drives `fd0 talos new` — day-0 cluster creation.
 // We shell out to `talosctl gen secrets` and `talosctl gen config`,

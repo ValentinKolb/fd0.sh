@@ -6,11 +6,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 )
 
 // typed_inventory.go holds cross-domain helpers used by every typed-
-// secret feature (keys, hosts, talos, kube). Four primitives today:
+// secret feature (keys, hosts, talos, kube):
 //
 //   - ensureNoDuplicate  — duplicate-name preflight using a typed
 //                          sentinel (errors.Is on
@@ -22,9 +21,6 @@ import (
 //                          size cap.
 //   - writeManagedFile   — the shared "ensure dir 0700 + atomic write
 //                          + log" path for fd0-rendered config files.
-//   - stripANSI          — strips terminal escape sequences from
-//                          captured subprocess stderr before we embed
-//                          it in an error message.
 
 // errDuplicateSecret is the sentinel the duplicate-preflight returns
 // when a name is already in use. Surfaced via errors.Is for callers
@@ -157,28 +153,6 @@ func writeManagedFile(target string, data []byte, label string, count int) error
 	return nil
 }
 
-// ansiCSI matches Control Sequence Introducer escapes used by colour
-// libraries (kubectl plugins, etc.). Used by stripANSI when we embed
-// captured stderr into an error message that ends up on the user's
-// terminal — leaking raw escapes would leave the shell stuck in a
-// red/inverse state and confuse log scrapers.
-var ansiCSI = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
-
-// stripANSI removes ANSI escape sequences. Cheap regex pass; we only
-// call it on short error-message payloads (capped via maxBytes).
-func stripANSI(s string) string {
-	return ansiCSI.ReplaceAllString(s, "")
-}
-
-// capBytes truncates s to maxBytes characters and appends a marker
-// when truncation happened. Used together with stripANSI so a chatty
-// subprocess can't flood the user's terminal via our error wrap.
-func capBytes(s string, maxBytes int) string {
-	if len(s) <= maxBytes {
-		return s
-	}
-	return s[:maxBytes] + "… (truncated)"
-}
 
 // parentDir is defined in ssh.go; re-asserting here so importers can
 // follow the call graph. Kept as a local for now — promoting to a
