@@ -492,3 +492,71 @@ func signRequest(t *testing.T, srv *Server, r *http.Request, body, pub, priv []b
 			", ts="+strconv.FormatUint(ts, 10)+
 			", sig="+base64.StdEncoding.EncodeToString(sig))
 }
+
+// TestSyncPushCardinality locks the wire invariant the reconcile-loss
+// bug exposed: for every /v1/sync request, len(response.push) MUST
+// equal len(request.push) — one PushResult per submitted item, even on
+// a push-only request (empty pull) and regardless of accept/reject.
+// The client's reconcile push relies on exactly-one-result-per-item;
+// a zero-result response there used to be misread as a terminal error.
+func TestSyncPushCardinality(t *testing.T) {
+	srv, ts := newTestServer(t)
+	pub, priv, err := crypto.GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Store().RegisterUser(context.Background(), pub.Bytes(), "card_short"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Build N well-formed scope genesis events (distinct scopes).
+	mkPush := func(n int) []any {
+		items := make([]any, 0, n)
+		for i := 0; i < n; i++ {
+			ev, _, sid, err := chain.BuildScopeGenesis(chain.LocalSigner{Priv: priv}, pub.Bytes())
+			if err != nil {
+				t.Fatal(err)
+			}
+			items = append(items, map[string]any{"scope": sid.String(), "event": ev})
+		}
+		return items
+	}
+
+	postPush := func(push []any) int {
+		body, _ := proto.Marshal(map[string]any{
+			"pull": map[string]any{
+				"scopes":          map[string]any{},
+				"limit_per_scope": uint64(0),
+			},
+			"push": push,
+		})
+		req, _ := http.NewRequest("POST", ts.URL+"/v1/sync", bytes.NewReader(body))
+		signRequest(t, srv, req, body, pub.Bytes(), priv.Bytes())
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			b, _ := io.ReadAll(resp.Body)
+			t.Fatalf("sync: %d %s", resp.StatusCode, b)
+		}
+		rb, _ := io.ReadAll(resp.Body)
+		var sr struct {
+			Push []struct {
+				Accepted bool   `cbor:"accepted"`
+				Reason   string `cbor:"reason,omitempty"`
+			} `cbor:"push"`
+		}
+		if err := proto.Unmarshal(rb, &sr); err != nil {
+			t.Fatal(err)
+		}
+		return len(sr.Push)
+	}
+
+	for _, n := range []int{1, 2, 5} {
+		if got := postPush(mkPush(n)); got != n {
+			t.Errorf("push-only request with %d items returned %d push results (invariant: must equal)", n, got)
+		}
+	}
+}

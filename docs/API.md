@@ -163,6 +163,8 @@ PushResult =
 
 `pull` returns events contiguous from `cursor.seq + 1`. Clients verify the chain link to their stored `cursor.hash` before advancing the cursor.
 
+**Push cardinality invariant.** For every `/v1/sync` request, `len(response.push)` MUST equal `len(request.push)` — exactly one `PushResult` per submitted push item, in order, on a `200` response (including push-only requests with an empty `pull`). If the server cannot process a push item it MUST return a `PushResult` with `accepted: false` and a `reason`, never omit it. Clients rely on this 1:1 mapping to disposition each pushed event; a count mismatch on a `200` is a protocol violation and clients reject it. Non-`2xx` responses (e.g. `429` rate-limit) carry no `push` array at all — clients MUST check the HTTP status before decoding rather than treating a missing array as zero results.
+
 Push reasons (always with `accepted: false`):
 
 | reason                    | meaning                                                          |

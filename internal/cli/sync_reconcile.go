@@ -17,6 +17,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 
 	"github.com/valentinkolb/fd0.sh/internal/canon"
@@ -43,7 +44,44 @@ import (
 // Each retry restarts from a fresh server pull, so a rebuilt event that
 // races a third party (yet another concurrent push) gets another
 // chance.
-func (s *Session) reconcileAndRepush(ctx context.Context, wcc *WitnessCheckClient, server canon.URL, scopeID string, maxRetries int) error {
+func (s *Session) reconcileAndRepush(ctx context.Context, wcc *WitnessCheckClient, server canon.URL, scopeID string, maxRetries int) (err error) {
+	// DATA SAFETY (prime directive: never lose a local-authored event).
+	//
+	// Reconcile rewrites the local chain to the server's authoritative
+	// copy and holds the user's local-only writes only in an in-memory
+	// `pending` slice while it re-pushes them one at a time. If anything
+	// fails before they are ALL durably re-appended and accepted —
+	// a terminal push error, retry exhaustion, a replay error — those
+	// writes would vanish from disk (the chain file now holds the
+	// server copy; the only other copy was the in-memory slice).
+	//
+	// So the whole reconcile is transactional: snapshot the original
+	// chain file + this scope's vault state ONCE up front, and on ANY
+	// error restore both. A failed reconcile is then a no-op on local
+	// disk — every local event stays exactly as the user authored it,
+	// ready for the next sync (the server dedups anything that did land
+	// by content-derived event_id). The chain file is restored FIRST
+	// because it is the source of truth for events; the vault chain_tip
+	// is re-derived from it on the next replay even if the vault restore
+	// or its ReSeal hiccups.
+	path := s.Paths.ScopeChain(proto.MustParseScopeID(scopeID))
+	origChain, origChainErr := os.ReadFile(path)
+	origScope, hadScope := s.Body.Scopes[scopeID]
+	defer func() {
+		if err == nil {
+			return // success: keep the converged state
+		}
+		if origChainErr == nil {
+			_ = os.WriteFile(path, origChain, 0o600)
+		}
+		if hadScope {
+			s.Body.Scopes[scopeID] = origScope
+		} else {
+			delete(s.Body.Scopes, scopeID)
+		}
+		_ = s.ReSeal()
+	}()
+
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		serverEvents, finalSTH, err := s.fullPullScope(ctx, wcc, server, scopeID)
 		if err != nil {
@@ -54,18 +92,11 @@ func (s *Session) reconcileAndRepush(ctx context.Context, wcc *WitnessCheckClien
 		if err != nil {
 			return err
 		}
-		// Backup the existing chain so we can roll back if replay fails on
-		// the rewritten file.
-		path := s.Paths.ScopeChain(proto.MustParseScopeID(scopeID))
-		backup, _ := os.ReadFile(path)
 		if err := s.replaceLocalChain(scopeID, serverEvents); err != nil {
 			return err
 		}
 		if err := s.applyReplayedScope(scopeID, server.String()); err != nil {
-			// Roll back chain file on replay failure.
-			if backup != nil {
-				_ = os.WriteFile(path, backup, 0o600)
-			}
+			// The outer transaction restores the original chain + vault.
 			return fmt.Errorf("reconcile replay failed: %w", err)
 		}
 		// Persist the verified-on-pull final STH as the new anchor.
@@ -138,16 +169,12 @@ func (s *Session) reconcileAndRepush(ctx context.Context, wcc *WitnessCheckClien
 		}
 		// Diverged — outer loop will refresh server state and retry.
 	}
-	// SECURITY (codex audit 🔴 sync.go:744): on retry exhaustion,
-	// the caller has rewritten the local chain to the server's
-	// authoritative copy multiple times AND captured the user's
-	// local-only writes into `pending` each round. Returning an
-	// error WITHOUT persisting `pending` somewhere durable means
-	// those writes are silently lost (the next sync re-reads the
-	// chain file, sees the server's authoritative copy with no
-	// pending events, and the user's data is gone). Surface this
-	// loudly so the operator can see the data and re-attempt.
-	return fmt.Errorf("scope %s: still diverging after %d retries — local-only events for this scope have been lost (re-issue them by hand). Increase --reconcile-retries or stop concurrent writers and retry",
+	// Retry exhausted. The outer transaction's defer restores the
+	// original chain file + vault scope state, so the user's local-only
+	// events are preserved on disk exactly as authored — nothing lost,
+	// nothing to re-issue by hand. The next sync will retry from a fresh
+	// server pull (anything that did land is deduped by the server).
+	return fmt.Errorf("scope %s: still diverging after %d retries — local state left untouched (your events are safe on disk). Re-run `fd0 sync` later, or pause concurrent writers to the scope and retry",
 		shortScopeID(scopeID), maxRetries)
 }
 
@@ -537,6 +564,21 @@ func (s *Session) pushRebuiltEvent(ctx context.Context, wcc *WitnessCheckClient,
 	if err != nil {
 		return false, err
 	}
+	// Check the HTTP status BEFORE decoding. A non-200 response (429
+	// rate-limit, 4xx, 5xx) carries an error body with no `push`
+	// field, so blindly decoding it yields an empty push list and the
+	// misleading "server returned no push result" — masking the real
+	// cause. This was the ONE push path missing the status check that
+	// every other push/pull path already has. signedPOST already
+	// retries transient 429s with Retry-After backoff; reaching here
+	// with a 429 means the limit persisted past those retries, which
+	// we surface verbatim so the operator sees the true reason.
+	if resp.StatusCode != http.StatusOK {
+		if ra := resp.Header.Get("Retry-After"); ra != "" {
+			return false, fmt.Errorf("rebuilt-push %s: %s (retry-after %ss)", shortScopeID(scopeID), resp.Status, ra)
+		}
+		return false, fmt.Errorf("rebuilt-push %s: %s", shortScopeID(scopeID), resp.Status)
+	}
 	var sr struct {
 		Push []struct {
 			Accepted         bool                       `cbor:"accepted"`
@@ -550,8 +592,13 @@ func (s *Session) pushRebuiltEvent(ctx context.Context, wcc *WitnessCheckClient,
 	if err := proto.Unmarshal(rb, &sr); err != nil {
 		return false, err
 	}
-	if len(sr.Push) == 0 {
-		return false, errors.New("server returned no push result")
+	// Cardinality invariant: one push item submitted ⇒ exactly one
+	// push result. Zero (or any other count) on a 200 response is a
+	// server protocol violation — refuse rather than guess. (Wire
+	// contract: PROTOCOL.md — len(response.push) MUST equal
+	// len(request.push).)
+	if len(sr.Push) != 1 {
+		return false, fmt.Errorf("rebuilt-push %s: protocol violation: submitted 1 push item, server returned %d push results", shortScopeID(scopeID), len(sr.Push))
 	}
 	r := sr.Push[0]
 	if r.Accepted || r.Reason == "dup" {

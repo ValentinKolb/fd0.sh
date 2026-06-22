@@ -27,6 +27,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/valentinkolb/fd0.sh/internal/agent"
@@ -649,34 +650,76 @@ func (s *Session) signedPOST(ctx context.Context, endpoint string, body []byte) 
 	if err != nil {
 		return nil, fmt.Errorf("signedPOST: %w", err)
 	}
-	nonce := make([]byte, 16)
-	if _, err := rand.Read(nonce); err != nil {
-		return nil, err
-	}
-	ts := uint64(time.Now().Unix())
 	qmap := map[string]string{}
 	for k, vs := range u.Query() {
 		qmap[k] = vs[0]
 	}
-	si, err := proto.HTTPSignedInput("POST", u.Path, qmap, ts, nonce, body, []byte(serverPub))
-	if err != nil {
-		return nil, err
+
+	// Bounded retry on 429. The reconcile path pushes events one-by-one,
+	// which can trip a hosted replica's per-identity rate limit; without
+	// honouring Retry-After the sync never converges. Each attempt
+	// re-signs (fresh nonce + ts) because the server rejects nonce reuse
+	// as replay. Bounded by attempts AND a per-wait cap so a hostile or
+	// misconfigured Retry-After can't hang the client.
+	const maxAttempts = 4
+	const maxWait = 30 * time.Second
+	for attempt := 0; ; attempt++ {
+		nonce := make([]byte, 16)
+		if _, err := rand.Read(nonce); err != nil {
+			return nil, err
+		}
+		ts := uint64(time.Now().Unix())
+		si, err := proto.HTTPSignedInput("POST", u.Path, qmap, ts, nonce, body, []byte(serverPub))
+		if err != nil {
+			return nil, err
+		}
+		sig, err := s.Agent.Sign(si)
+		if err != nil {
+			return nil, err
+		}
+		r, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		r.Header.Set("Content-Type", "application/cbor")
+		r.Header.Set("Authorization",
+			"fd0-sig v1 pk="+base64.StdEncoding.EncodeToString(s.UserSuperPub)+
+				", nonce="+base64.StdEncoding.EncodeToString(nonce)+
+				", ts="+strconv.FormatUint(ts, 10)+
+				", sig="+base64.StdEncoding.EncodeToString(sig))
+		resp, err := http.DefaultClient.Do(r)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode != http.StatusTooManyRequests || attempt >= maxAttempts-1 {
+			return resp, nil
+		}
+		// Rate-limited and attempts remain: drain+close the body, wait
+		// out Retry-After (server sends integer seconds; default 1s,
+		// capped), then re-sign and retry.
+		wait := retryAfterDelay(resp.Header.Get("Retry-After"), maxWait)
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
-	sig, err := s.Agent.Sign(si)
-	if err != nil {
-		return nil, err
+}
+
+// retryAfterDelay parses a Retry-After header value (integer seconds,
+// per RFC 7231 / our server) into a bounded wait. Empty / unparseable
+// → 1s; negative → 1s; clamped to max.
+func retryAfterDelay(header string, max time.Duration) time.Duration {
+	d := time.Second
+	if secs, err := strconv.Atoi(strings.TrimSpace(header)); err == nil && secs > 0 {
+		d = time.Duration(secs) * time.Second
 	}
-	r, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
+	if d > max {
+		d = max
 	}
-	r.Header.Set("Content-Type", "application/cbor")
-	r.Header.Set("Authorization",
-		"fd0-sig v1 pk="+base64.StdEncoding.EncodeToString(s.UserSuperPub)+
-			", nonce="+base64.StdEncoding.EncodeToString(nonce)+
-			", ts="+strconv.FormatUint(ts, 10)+
-			", sig="+base64.StdEncoding.EncodeToString(sig))
-	return http.DefaultClient.Do(r)
+	return d
 }
 
 // _ silences unused-import lint when the only HTTP client use is Default.
