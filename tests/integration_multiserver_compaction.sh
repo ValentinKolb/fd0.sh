@@ -120,38 +120,38 @@ overwrite() { # overwrite <who> <count> <prefix>
   done
 }
 
-# ─────────────────────────────────────────────────────────────
-phase "1) Both replicas up: overwrite ×60 then sync → converged compaction"
-overwrite alice 60 a
-as alice sync > "$BASE/alice-sync-conv.log" 2>&1
-RC=$?
-[[ $RC -eq 0 ]] && ok "alice sync exit 0 (both replicas)" || { no "alice sync failed"; cat "$BASE/alice-sync-conv.log"; }
-grep -qi "compacted scope" "$BASE/alice-sync-conv.log" \
-  && ok "compaction fired once all replicas converged" \
-  || no "expected compaction after all-converged sync"
-grep -qi "no local event at seq\|failed reconcile" "$BASE/alice-sync-conv.log" \
-  && no "unexpected reconcile failure in converged sync" \
-  || ok "no reconcile failure in converged sync"
-[[ "$(getval alice)" == "a-60-"* ]] && ok "alice final value correct" || no "alice value wrong"
-as bob sync > /dev/null 2>&1
-[[ "$(getval bob)" == "a-60-"* ]] && ok "bob (replica 2) converged to final value" || no "bob did not converge"
+# Run scenario A from a CLEAN converged state (no compaction has run
+# yet, local chain is fully contiguous). This is what makes the bite
+# deterministic: at the moment of the degraded sync, server1 is up and —
+# under the OLD per-server-compaction behavior — WILL compact the shared
+# chain even though server2 is behind, gapping it and breaking the later
+# replica catch-up. The fix suppresses that compaction.
 
 # ─────────────────────────────────────────────────────────────
-phase "2) Replica 2 DOWN: overwrite ×60 then sync → compaction SUPPRESSED"
+phase "1) Replica 2 DOWN from a clean state: overwrite ×60 → compaction must be SUPPRESSED"
 kill "$S2_PID" 2>/dev/null; wait "$S2_PID" 2>/dev/null
 sleep 0.3
 curl -sf $URL2/health >/dev/null 2>&1 && no "server2 still up (should be down)" || ok "server2 down"
 
 overwrite alice 60 b
+# Also write SEVERAL DISTINCT live secrets, each overwritten, so the
+# recovery reconcile has to rebuild multiple secret.set events (the
+# user's failing path was a secret.set rebuild, not a member.change).
+for k in K2 K3 K4; do
+  as alice set "$k" "$k-old"   --scope shared >/dev/null 2>&1
+  as alice set "$k" "$k-final" --scope shared >/dev/null 2>&1
+done
 as alice sync > "$BASE/alice-sync-lag.log" 2>&1
 # One replica failed → aggregate is still ok (>=1 success) but degraded.
+# OLD behavior would print "compacted scope" here (server1 up); the gate
+# must keep it absent while server2 is behind.
 grep -qi "compacted scope" "$BASE/alice-sync-lag.log" \
   && no "compaction fired while replica 2 was behind (DATA-SAFETY REGRESSION)" \
   || ok "compaction suppressed while a replica is behind"
 [[ "$(getval alice)" == "b-60-"* ]] && ok "alice newest value intact after degraded sync" || no "alice value lost"
 
 # ─────────────────────────────────────────────────────────────
-phase "3) Replica 2 BACK: sync converges cleanly (the regression)"
+phase "2) Replica 2 BACK: sync converges cleanly (the regression)"
 start_server2
 curl -sf $URL2/health >/dev/null && ok "server2 back up" || no "server2 restart failed"
 as alice sync > "$BASE/alice-sync-recover.log" 2>&1
@@ -161,7 +161,27 @@ grep -qi "no local event at seq\|failed reconcile\|rebuilt-push verify" "$BASE/a
   || ok "no unrecoverable divergence on replica catch-up"
 [[ $RC -eq 0 ]] && ok "recovery sync exit 0" || { no "recovery sync failed"; cat "$BASE/alice-sync-recover.log"; }
 as bob sync > /dev/null 2>&1
-[[ "$(getval bob)" == "b-60-"* ]] && ok "bob (replica 2) caught up to newest value" || no "replica 2 did not catch up"
+[[ "$(getval bob)" == "b-60-"* ]] && ok "bob (replica 2) caught up to newest K" || no "replica 2 did not catch up on K"
+for k in K2 K3 K4; do
+  [[ "$(as bob get "$k" --scope shared 2>/dev/null)" == "$k-final" ]] \
+    && ok "bob converged: $k=$k-final" || no "replica 2 missing rebuilt secret $k"
+done
+
+# ─────────────────────────────────────────────────────────────
+phase "3) Both replicas up: overwrite ×60 then sync → converged compaction fires"
+overwrite alice 60 c
+as alice sync > "$BASE/alice-sync-conv.log" 2>&1
+RC=$?
+[[ $RC -eq 0 ]] && ok "alice sync exit 0 (both replicas)" || { no "alice sync failed"; cat "$BASE/alice-sync-conv.log"; }
+grep -qi "compacted scope" "$BASE/alice-sync-conv.log" \
+  && ok "compaction fires once all replicas converged" \
+  || no "expected compaction after all-converged sync"
+grep -qi "no local event at seq\|failed reconcile" "$BASE/alice-sync-conv.log" \
+  && no "unexpected reconcile failure in converged sync" \
+  || ok "no reconcile failure in converged sync"
+[[ "$(getval alice)" == "c-60-"* ]] && ok "alice final value correct" || no "alice value wrong"
+as bob sync > /dev/null 2>&1
+[[ "$(getval bob)" == "c-60-"* ]] && ok "bob (replica 2) converged to final value" || no "bob did not converge"
 
 # Final convergence + doctor
 as alice doctor > "$BASE/alice-doctor.log" 2>&1 && ok "alice doctor clean" || no "alice doctor"
