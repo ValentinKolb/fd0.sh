@@ -376,9 +376,23 @@ ssh-ed25519 AAAAC3NzaC1lZD… laptop@fd0`} />
       key to use, optional jump host, tags, description, and any
       verbatim ssh_config options. It renders into{" "}
       <Code>~/.ssh/fd0.conf</Code> with{" "}
-      <Code>IdentityAgent {`{fd0-sock}`}</Code> +{" "}
-      <Code>IdentitiesOnly yes</Code> baked in.
+      <Code>IdentityAgent {`{fd0-sock}`}</Code> baked in.
     </P>
+    <Note>
+      <strong>Public-key selector files.</strong> For each host with an
+      fd0 key, fd0 also renders a public-key file to{" "}
+      <Code>~/.ssh/fd0.d/&lt;alias&gt;.pub</Code> and points{" "}
+      <Code>IdentityFile</Code> at it, alongside{" "}
+      <Code>IdentitiesOnly yes</Code>. That's what makes OpenSSH pick
+      the right agent identity deterministically — without a selector,
+      <Code>IdentitiesOnly</Code> would fall back to your default{" "}
+      <Code>~/.ssh/id_*</Code> keys and the connection fails with{" "}
+      <Code>Permission denied (publickey)</Code>. These are public keys
+      only (no private material ever on disk), fully fd0-managed, and
+      regenerated on every change — including pruning when a host is
+      removed. Hosts <em>without</em> an fd0 key get{" "}
+      <Code>IdentityAgent</Code> alone, so your own keys still work.
+    </Note>
 
     <Cmd signature="fd0 ssh add <alias> [user@]host[:port] [...flags]" body={<><Code>--key &lt;name&gt;</Code> picks the key (must exist). <Code>--with-key</Code> generates a fresh key named after the alias in the same call. <Code>--jump &lt;alias&gt;</Code> sets ProxyJump. <Code>--tag</Code> repeatable. <Code>--description</Code> single-line note. <Code>--opt KEY=VALUE</Code> repeatable verbatim option.</>} example={`$ fd0 ssh add prod-db app@db.internal \\
     --jump bastion --key deploy --tag prod --tag db \\
