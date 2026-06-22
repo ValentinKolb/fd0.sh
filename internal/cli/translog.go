@@ -247,7 +247,7 @@ func (s *Session) EnsureUserRegistered(ctx context.Context, serverURL canon.URL)
 		return err
 	}
 	req.Header.Set("Content-Type", "application/cbor")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := syncHTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("registration: POST /users: %w", err)
 	}
@@ -286,7 +286,7 @@ func fetchServerInfo(ctx context.Context, canonicalURL string) (translog.ServerI
 	if err != nil {
 		return translog.ServerInfo{}, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := syncHTTPClient.Do(req)
 	if err != nil {
 		return translog.ServerInfo{}, fmt.Errorf("fetch /v1/server-info: %w", err)
 	}

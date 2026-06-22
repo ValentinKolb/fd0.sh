@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -591,10 +592,30 @@ func RunSync(ctx context.Context, server string) error {
 		}
 		return fmt.Errorf("sync: %d push(es) refused (pushed=%d dup=%d)", failed, pushed, dups)
 	}
-	// Best-effort compaction. Bounded by 2× the live keep_set per
-	// STORAGE.md §5; we only rewrite when it actually shrinks.
-	s.compactAfterSync()
+	// Compaction is intentionally NOT run here. It rewrites the shared
+	// local chain into a non-contiguous form (STORAGE.md §5.4), which is
+	// only safe once EVERY configured replica has converged to THIS tip:
+	// a server that is still behind the compaction point can no longer
+	// fast-forward the now-gapped local chain and is forced into an
+	// unrecoverable divergence. RunSyncAll owns the all-replicas-success
+	// gate and calls CompactScopes once, at the end, only when every
+	// server in the round succeeded.
 	fmt.Fprintf(os.Stderr, "✓ sync ok (pushed=%d dup=%d)\n", pushed, dups)
+	return nil
+}
+
+// CompactScopes opens a session and runs best-effort compaction across
+// every scope chain. Split out of RunSync (where it used to run after
+// every per-server round) so the multi-server dispatcher can gate it on
+// ALL replicas having converged — see RunSyncAll and the comment at the
+// old call site above.
+func CompactScopes(ctx context.Context) error {
+	s, err := Open(ctx)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	s.compactAfterSync()
 	return nil
 }
 
@@ -624,6 +645,23 @@ func (s *Session) compactAfterSync() {
 				shortScopeID(sid), len(dropped))
 		}
 	}
+}
+
+// syncHTTPClient is the shared client for every fd0-server round-trip
+// (sync POST + translog pulls). It bounds the failure modes that made a
+// stalled server hang `fd0 sync` indefinitely: a dead connection
+// (DialContext), a stuck TLS handshake, and — the common one — a server
+// that accepts the connection but never sends response headers
+// (ResponseHeaderTimeout). The overall Timeout is a generous backstop so
+// a legitimately large pull that keeps making progress is not killed.
+var syncHTTPClient = &http.Client{
+	Transport: &http.Transport{
+		DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
+	},
+	Timeout: 5 * time.Minute,
 }
 
 // signedPOST performs an authenticated POST against the fd0-server.
@@ -687,7 +725,7 @@ func (s *Session) signedPOST(ctx context.Context, endpoint string, body []byte) 
 				", nonce="+base64.StdEncoding.EncodeToString(nonce)+
 				", ts="+strconv.FormatUint(ts, 10)+
 				", sig="+base64.StdEncoding.EncodeToString(sig))
-		resp, err := http.DefaultClient.Do(r)
+		resp, err := syncHTTPClient.Do(r)
 		if err != nil {
 			return nil, err
 		}

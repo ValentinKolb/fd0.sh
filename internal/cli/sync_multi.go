@@ -76,7 +76,13 @@ func RunSyncAll(ctx context.Context, servers []string) error {
 	if len(servers) == 1 {
 		// Single-server path: skip the per-server header so the output
 		// is unchanged from the v0.0.3 single-target shape.
-		return RunSync(ctx, servers[0])
+		err := RunSync(ctx, servers[0])
+		if err == nil {
+			// One server == one authority: it now holds this tip, so
+			// compacting the local chain is safe (see CompactScopes).
+			_ = CompactScopes(ctx)
+		}
+		return err
 	}
 	type result struct {
 		server string
@@ -107,6 +113,17 @@ func RunSyncAll(ctx context.Context, servers []string) error {
 	if successes < len(servers) {
 		fmt.Fprintf(os.Stderr, "✓ sync ok on %d/%d servers (replicas may be out of date until next sync)\n",
 			successes, len(servers))
+		// At least one replica is behind this tip. Do NOT compact: a
+		// compacted (non-contiguous) local chain can no longer
+		// fast-forward a lagging replica and would force it into an
+		// unrecoverable divergence on the next push. Compaction waits
+		// until a round where EVERY server converges.
+		return nil
 	}
+	// Every configured replica accepted this round, so all of them hold
+	// the current tip. Only now is it safe to drop superseded events from
+	// the shared local chain — every server can still fast-forward the
+	// resulting gapped chain from its full retained history.
+	_ = CompactScopes(ctx)
 	return nil
 }
