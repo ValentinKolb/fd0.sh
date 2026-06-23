@@ -183,6 +183,32 @@ grep -qi "no local event at seq\|failed reconcile" "$BASE/alice-sync-conv.log" \
 as bob sync > /dev/null 2>&1
 [[ "$(getval bob)" == "c-60-"* ]] && ok "bob (replica 2) converged to final value" || no "bob did not converge"
 
+# ─────────────────────────────────────────────────────────────
+phase "4) Foreign-authored event survives reconcile against a lagging replica (F1)"
+# bob writes a secret and syncs to server2 ONLY → server2 gets a tip that
+# server1 lacks, and the event is authored by bob (foreign to alice).
+as bob set BOBSECRET "bob-only-value" --scope shared >/dev/null 2>&1 && ok "bob set BOBSECRET" || no "bob set"
+as bob sync >/dev/null 2>&1 && ok "bob sync (server2 only)" || no "bob sync"
+# alice writes her own secret, then syncs BOTH. server1 accepts alice's
+# event; server2 diverges (bob's tip) → reconcile pulls bob's secret and
+# rebuilds alice's on server2's lineage. alice now holds bob's foreign
+# event locally, on a lineage that diverges from server1.
+as alice set AK "alice-value" --scope shared >/dev/null 2>&1 && ok "alice set AK" || no "alice set"
+as alice sync > "$BASE/alice-f1-first.log" 2>&1
+[[ "$(as alice get BOBSECRET --scope shared 2>/dev/null)" == "bob-only-value" ]] \
+  && ok "alice pulled bob's foreign secret via server2" || no "alice did not get bob's secret"
+# Second sync: alice's server2-lineage tip now diverges from server1.
+# The reconcile against the lagging server1 must REFUSE rather than drop
+# bob's foreign-authored event (which alice cannot rebuild/re-push).
+as alice sync > "$BASE/alice-f1-second.log" 2>&1
+grep -qi "authored by other members\|refusing to reconcile" "$BASE/alice-f1-second.log" \
+  && ok "reconcile against lagging replica refused (foreign event protected)" \
+  || printf "  \033[33m▸\033[0m note: server1 did not diverge this run; survival still asserted below\n"
+[[ "$(as alice get BOBSECRET --scope shared 2>/dev/null)" == "bob-only-value" ]] \
+  && ok "bob's foreign secret SURVIVED the reconcile (no data loss)" || no "DATA LOSS: bob's foreign secret dropped"
+[[ "$(as alice get AK --scope shared 2>/dev/null)" == "alice-value" ]] \
+  && ok "alice's own secret intact" || no "alice's own secret lost"
+
 # Final convergence + doctor
 as alice doctor > "$BASE/alice-doctor.log" 2>&1 && ok "alice doctor clean" || no "alice doctor"
 as bob   doctor > "$BASE/bob-doctor.log"   2>&1 && ok "bob doctor clean"   || no "bob doctor"

@@ -66,7 +66,12 @@ func (s *Session) reconcileAndRepush(ctx context.Context, wcc *WitnessCheckClien
 	// or its ReSeal hiccups.
 	path := s.Paths.ScopeChain(proto.MustParseScopeID(scopeID))
 	origChain, origChainErr := os.ReadFile(path)
-	origScope, hadScope := s.Body.Scopes[scopeID]
+	// Deep-clone the scope snapshot: reconcile mutates OEKs / PerServer /
+	// byte slices in place, so a shallow `x := s.Body.Scopes[scopeID]`
+	// would alias them and the rollback would restore already-mutated
+	// nested state. Clone() gives an independent snapshot to restore.
+	origScopeRaw, hadScope := s.Body.Scopes[scopeID]
+	origScope := origScopeRaw.Clone()
 	defer func() {
 		if err == nil {
 			return // success: keep the converged state
@@ -311,8 +316,22 @@ type pendingEvent struct {
 //     whether the rebased event is still meaningful.
 //
 // The set-diff itself is delegated to chain.LocalOnlyEvents (pure, unit
-// tested in chain). Foreign events (authored by another member yet
-// somehow local-only — should never happen in practice) are skipped.
+// tested in chain).
+//
+// DATA SAFETY (multi-server): an event authored by ANOTHER member cannot
+// be rebuilt/re-pushed by us — we can't forge their signature. Against a
+// single authoritative server this set is always empty: any foreign
+// event we hold came FROM that server, so it is never local-only. With
+// multiple replicas, though, a foreign-authored event we legitimately
+// pulled from an up-to-date replica B can be local-only relative to a
+// replica A that is still behind. Reconcile would then overwrite the
+// local chain with A's stale copy (replaceLocalChain) and silently DROP
+// that event — the cursor advances past its seq, so the next pull won't
+// re-fetch it. We refuse the reconcile instead: the transactional caller
+// restores the chain untouched, the event survives on replica B, and A
+// converges once the authoring member re-pushes there (or peer
+// replication lands). Returning an error here is strictly safer than the
+// old behaviour, which dropped the foreign event.
 func (s *Session) savePendingLocalEvents(scopeID string, serverEvents []proto.ScopeEvent) ([]pendingEvent, error) {
 	localPtrs, err := chain.ReadScopeEvents(s.Paths.ScopeChain(proto.MustParseScopeID(scopeID)))
 	if err != nil {
@@ -327,8 +346,12 @@ func (s *Session) savePendingLocalEvents(scopeID string, serverEvents []proto.Sc
 	}
 	sd := s.Body.Scopes[scopeID]
 	var pending []pendingEvent
+	foreignLocalOnly := 0
 	for _, ev := range chain.LocalOnlyEvents(localEvents, serverEvents) {
 		if !bytes.Equal(ev.SignedPrefix.Author, s.UserSuperPub) {
+			// See the function doc: this server lacks a foreign-authored
+			// event we hold. Don't drop it — count and refuse below.
+			foreignLocalOnly++
 			continue
 		}
 		switch ev.SignedPrefix.Kind {
@@ -357,6 +380,9 @@ func (s *Session) savePendingLocalEvents(scopeID string, serverEvents []proto.Sc
 		default:
 			return nil, fmt.Errorf("unexpected local-only event kind %q on scope %s", ev.SignedPrefix.Kind, shortScopeID(scopeID))
 		}
+	}
+	if foreignLocalOnly > 0 {
+		return nil, fmt.Errorf("reconcile %s: this server is behind on %d event(s) authored by other members; refusing to reconcile to avoid dropping them locally — they remain on the up-to-date replica and converge once those members sync here (or peer replication lands)", shortScopeID(scopeID), foreignLocalOnly)
 	}
 	return pending, nil
 }

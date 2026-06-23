@@ -381,6 +381,40 @@ func (sd *ScopeVaultData) SetLastSTHFor(server string, sth []byte) {
 	sd.PerServer[server] = s
 }
 
+// Clone returns a deep copy of sd: every slice, map, and byte slice is
+// independently allocated, so later in-place mutation of the copy (or of
+// the original) leaves the other untouched.
+//
+// Used by the reconcile rollback snapshot (cli.reconcileAndRepush): the
+// transactional restore stores this snapshot back into the vault on any
+// error. A shallow struct copy is NOT enough — ScopeVaultData carries an
+// OEKs backing array (upsertOEK mutates elements in place), a PerServer
+// map (SetPushFloorFor / SetLastSTHFor mutate it in place), and byte
+// slices, all of which a plain `x := sd` would alias. Without this the
+// "failed reconcile leaves local state untouched" guarantee leaks
+// advanced push floors / STHs / OEK contents into the restored snapshot.
+func (sd ScopeVaultData) Clone() ScopeVaultData {
+	out := sd // scalars: Label, Leaving, PushFloor, ChainTip.Seq
+	if sd.OEKs != nil {
+		out.OEKs = make([]OEKEntry, len(sd.OEKs))
+		for i, e := range sd.OEKs {
+			out.OEKs[i] = OEKEntry{Version: e.Version, Key: append([]byte(nil), e.Key...)}
+		}
+	}
+	out.ChainTip.Hash = append([]byte(nil), sd.ChainTip.Hash...)
+	out.LastSTH = append([]byte(nil), sd.LastSTH...)
+	if sd.PerServer != nil {
+		out.PerServer = make(map[string]ScopeServerState, len(sd.PerServer))
+		for k, v := range sd.PerServer {
+			out.PerServer[k] = ScopeServerState{
+				PushFloor: v.PushFloor,
+				LastSTH:   append([]byte(nil), v.LastSTH...),
+			}
+		}
+	}
+	return out
+}
+
 // OEKEntry is one (version, key) pair.
 type OEKEntry struct {
 	Version uint64 `cbor:"version"`
