@@ -123,6 +123,79 @@ contexts:
 	}
 }
 
+// A user kubeconfig whose "clusters" is a map (wrong shape) but still
+// parseable YAML must NOT be silently coerced to empty and overwritten —
+// the merge fails closed so the user's data is never destroyed.
+func TestMergeKubeconfigRefusesMalformedField(t *testing.T) {
+	dir := t.TempDir()
+	userPath := filepath.Join(dir, "config")
+	fd0Path := filepath.Join(dir, "config.fd0")
+
+	userYAML := `apiVersion: v1
+kind: Config
+clusters:
+  oops: this-is-a-map-not-a-list
+`
+	fd0YAML := `apiVersion: v1
+kind: Config
+clusters:
+- name: prod
+  cluster: {server: "https://x:6443"}
+`
+	if err := os.WriteFile(userPath, []byte(userYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fd0Path, []byte(fd0YAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(userPath)
+	err := mergeKubeconfigFile(fd0Path, userPath)
+	if err == nil {
+		t.Fatal("expected merge to fail closed on malformed clusters, got nil")
+	}
+	if !strings.Contains(err.Error(), "clusters") {
+		t.Errorf("error should name the offending field: %v", err)
+	}
+	after, _ := os.ReadFile(userPath)
+	if string(before) != string(after) {
+		t.Errorf("user file was rewritten despite the error:\n%s", after)
+	}
+}
+
+// Same guard for talosconfig: a wrong-shaped "contexts" (a list instead
+// of a map) fails closed rather than coercing to {} and overwriting.
+func TestMergeTalosconfigRefusesMalformedField(t *testing.T) {
+	dir := t.TempDir()
+	userPath := filepath.Join(dir, "config")
+	fd0Path := filepath.Join(dir, "config.fd0")
+
+	userYAML := `context: hand-rolled
+contexts:
+- this-should-be-a-map
+`
+	fd0YAML := `contexts:
+  prod: {endpoints: ["10.0.0.99"]}
+`
+	if err := os.WriteFile(userPath, []byte(userYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fd0Path, []byte(fd0YAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(userPath)
+	err := mergeTalosconfigFile(fd0Path, userPath)
+	if err == nil {
+		t.Fatal("expected merge to fail closed on malformed contexts, got nil")
+	}
+	if !strings.Contains(err.Error(), "contexts") {
+		t.Errorf("error should name the offending field: %v", err)
+	}
+	after, _ := os.ReadFile(userPath)
+	if string(before) != string(after) {
+		t.Errorf("user file was rewritten despite the error:\n%s", after)
+	}
+}
+
 func TestMergeKubeconfigCreatesWhenMissing(t *testing.T) {
 	dir := t.TempDir()
 	userPath := filepath.Join(dir, "config") // does not exist

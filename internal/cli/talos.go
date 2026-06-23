@@ -344,12 +344,13 @@ func RunTalosMove(ctx context.Context, name, fromScope, toScope string, force bo
 }
 
 // RunTalosSync re-renders ~/.talos/config.fd0 from the current vault
-// state. When `merge` is true, also calls `talosctl config merge` to
-// fold the rendered file into ~/.talos/config.
+// state. When `merge` is true, folds the rendered file into
+// ~/.talos/config via the pure-Go structural merge
+// (mergeTalosconfigFile) — no talosctl required.
 //
-// The render happens under the session flock; the talosctl subprocess
-// runs after the session is closed so a slow / hung / read-only
-// merge can't block every other fd0 command competing for the lock.
+// The render happens under the session flock; the merge runs after the
+// session is closed so a slow / read-only filesystem can't block every
+// other fd0 command competing for the lock.
 func RunTalosSync(ctx context.Context, merge bool) error {
 	{
 		s, err := Open(ctx)
@@ -372,8 +373,9 @@ func RunTalosSync(ctx context.Context, merge bool) error {
 }
 
 // renderAndWarnTalos renders the talosconfig from the current vault
-// state to ~/.talos/config.fd0. It does NOT call talosctl by itself
-// — that's reserved for RunTalosSync(merge=true).
+// state to ~/.talos/config.fd0. It never touches the user's primary
+// config — the optional fold-in is RunTalosSync(merge=true)'s pure-Go
+// mergeTalosconfigFile.
 func renderAndWarnTalos(s *Session) error {
 	contexts, err := loadTalosContexts(s, "")
 	if err != nil {

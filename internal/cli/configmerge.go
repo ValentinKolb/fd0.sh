@@ -51,7 +51,10 @@ func writeYAMLMap(path string, m map[string]any) error {
 	return writeFileAtomic(path, out, 0o600)
 }
 
-// asSlice / asStringMap coerce a generic YAML value, nil-safe.
+// asSlice / asStringMap coerce a generic YAML value, nil-safe. Used on
+// the fd0-rendered side, where the shape is produced by our own renderer
+// — a wrong shape there is a render bug and coercing to empty just means
+// "nothing to merge" (non-destructive).
 func asSlice(v any) []any {
 	s, _ := v.([]any)
 	return s
@@ -63,6 +66,33 @@ func asStringMap(v any) map[string]any {
 		m = map[string]any{}
 	}
 	return m
+}
+
+// asSliceStrict / asStringMapStrict are the user-side guards: a field
+// that is absent (nil) is fine, but a field that is PRESENT with the
+// wrong type is a hard error. The lenient coercers above would turn such
+// a field into empty and the merge would then overwrite the user's real
+// (if unexpectedly shaped) data — silent data loss. Fail closed instead.
+func asSliceStrict(v any, field, path string) ([]any, error) {
+	if v == nil {
+		return nil, nil
+	}
+	s, ok := v.([]any)
+	if !ok {
+		return nil, fmt.Errorf("%s: existing %q is %T, expected a list — refusing to overwrite; fix or remove it", path, field, v)
+	}
+	return s, nil
+}
+
+func asStringMapStrict(v any, field, path string) (map[string]any, error) {
+	if v == nil {
+		return map[string]any{}, nil
+	}
+	m, ok := v.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("%s: existing %q is %T, expected a map — refusing to overwrite; fix or remove it", path, field, v)
+	}
+	return m, nil
 }
 
 // mergeNamedList merges overlay entries into base by their "name"
@@ -124,7 +154,11 @@ func mergeKubeconfigFile(fd0Path, userPath string) error {
 		userDoc["kind"] = "Config"
 	}
 	for _, key := range []string{"clusters", "users", "contexts"} {
-		userDoc[key] = mergeNamedList(asSlice(userDoc[key]), asSlice(fd0Doc[key]))
+		cur, err := asSliceStrict(userDoc[key], key, userPath)
+		if err != nil {
+			return fmt.Errorf("kube merge: %w", err)
+		}
+		userDoc[key] = mergeNamedList(cur, asSlice(fd0Doc[key]))
 	}
 	return writeYAMLMap(userPath, userDoc)
 }
@@ -146,7 +180,10 @@ func mergeTalosconfigFile(fd0Path, userPath string) error {
 		}
 		userDoc = map[string]any{}
 	}
-	uctx := asStringMap(userDoc["contexts"])
+	uctx, err := asStringMapStrict(userDoc["contexts"], "contexts", userPath)
+	if err != nil {
+		return fmt.Errorf("talos merge: %w", err)
+	}
 	for name, v := range asStringMap(fd0Doc["contexts"]) {
 		uctx[name] = v
 	}
