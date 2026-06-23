@@ -242,14 +242,34 @@ func (s *Session) EnsureUserRegistered(ctx context.Context, serverURL canon.URL)
 	if err != nil {
 		return fmt.Errorf("registration: marshal: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, canonical+"/v1/users", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/cbor")
-	resp, err := syncHTTPClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("registration: POST /users: %w", err)
+	// Bounded 429 retry. The register endpoint is rate-limited per-IP, so
+	// a first sync behind a busy NAT can hit 429 before reaching the
+	// signed sync path's own backoff. Honour Retry-After here too; the
+	// body is fixed (no nonce) so each attempt re-sends it verbatim.
+	const maxRegAttempts = 4
+	const maxRegWait = 30 * time.Second
+	var resp *http.Response
+	for attempt := 0; ; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, canonical+"/v1/users", bytes.NewReader(body))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/cbor")
+		resp, err = syncHTTPClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("registration: POST /users: %w", err)
+		}
+		if resp.StatusCode != http.StatusTooManyRequests || attempt >= maxRegAttempts-1 {
+			break
+		}
+		wait := retryAfterDelay(resp.Header.Get("Retry-After"), maxRegWait)
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	defer resp.Body.Close()
 	switch resp.StatusCode {
