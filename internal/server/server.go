@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/valentinkolb/fd0.sh/internal/canon"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
 	"github.com/valentinkolb/fd0.sh/internal/server/ratelimit"
 	"github.com/valentinkolb/fd0.sh/internal/server/store"
@@ -72,6 +73,17 @@ type Config struct {
 	// (1 hour). Set short (e.g. 5s) in tests to make state observable
 	// without flaky waits.
 	PeerResolveInterval time.Duration
+
+	// ReplicateFrom, when non-empty, makes this server a disaster-recovery
+	// standby that mirrors the primary at this URL into its local backup
+	// archive (REPLICATION.md Phase 0). The primary must list THIS server
+	// in its FD0_PEERS so it pins this server's pubkey and authorises the
+	// peer pull. Empty = not a replica.
+	ReplicateFrom string
+
+	// ReplicateInterval controls how often the standby pulls from the
+	// primary. Zero = default (30s). Set short in tests.
+	ReplicateInterval time.Duration
 }
 
 // Observer hooks the server emits on every domain operation. Implementations
@@ -96,20 +108,21 @@ type Observer interface {
 // NoopObserver does nothing. Default when Config.Observer is nil.
 type NoopObserver struct{}
 
-func (NoopObserver) OnRegister(string)              {}
-func (NoopObserver) OnEventPushed(string, string)   {}
-func (NoopObserver) OnEventsPulled(string, int)     {}
+func (NoopObserver) OnRegister(string)            {}
+func (NoopObserver) OnEventPushed(string, string) {}
+func (NoopObserver) OnEventsPulled(string, int)   {}
 
 // Server is the HTTP service. New constructs it; ServeHTTP routes requests.
 type Server struct {
-	cfg    Config
-	store  *store.Store
-	mux    *http.ServeMux
-	log    *slog.Logger
+	cfg       Config
+	store     *store.Store
+	mux       *http.ServeMux
+	log       *slog.Logger
 	rl        *ratelimit.Limiter // nil when disabled
 	rlStop    context.CancelFunc // cancels the limiter's GC goroutine on Close
 	pruneStop context.CancelFunc // cancels the noncePruner goroutine on Close
 	peerStop  context.CancelFunc // cancels the peer resolver goroutine on Close
+	replStop  context.CancelFunc // cancels the replication loop on Close
 }
 
 // Store exposes the underlying *store.Store for tests and tooling
@@ -191,6 +204,13 @@ func New(cfg Config) (*Server, error) {
 	pruneCtx, pruneCancel := context.WithCancel(context.Background())
 	s.pruneStop = pruneCancel
 	go s.noncePruner(pruneCtx)
+	// Revoke replication authorization for peers no longer configured.
+	// Peer-pull auth (verifyPeerSig → IsPeerPub) is granted by a row in
+	// the peers table, and a TOFU pin persists across restarts — so
+	// removing a peer from FD0_PEERS would NOT stop it pulling unless the
+	// stale row is dropped. Authorization must track the CURRENT
+	// configured set, so prune any pinned peer not in cfg.Peers on boot.
+	s.prunePeers(context.Background())
 	// Peer resolver: TOFU-pins each configured peer's pubkey on first
 	// success, refreshes label + last_verified on schedule. No-op when
 	// FD0_PEERS is empty so solo deployments incur zero overhead.
@@ -199,11 +219,27 @@ func New(cfg Config) (*Server, error) {
 		s.peerStop = peerCancel
 		go s.runPeerResolver(peerCtx)
 	}
+	// Replication standby (REPLICATION.md Phase 0): when configured to
+	// replicate from a primary, mirror its chains into the local backup
+	// archive. Off unless ReplicateFrom is set, so solo / primary servers
+	// incur zero overhead.
+	if cfg.ReplicateFrom != "" {
+		primary, err := canon.ParseURL(cfg.ReplicateFrom)
+		if err != nil {
+			return nil, fmt.Errorf("replicate-from URL: %w", err)
+		}
+		replCtx, replCancel := context.WithCancel(context.Background())
+		s.replStop = replCancel
+		s.startReplication(replCtx, primary, cfg.ReplicateInterval)
+	}
 	return s, nil
 }
 
 // Close releases resources.
 func (s *Server) Close() error {
+	if s.replStop != nil {
+		s.replStop()
+	}
 	if s.peerStop != nil {
 		s.peerStop()
 	}
@@ -245,6 +281,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/sth/{chainId}", s.handleSTH)
 	s.mux.HandleFunc("GET /v1/proof/inclusion", s.handleInclusionProof)
 	s.mux.HandleFunc("GET /v1/proof/consistency", s.handleConsistencyProof)
+
+	// Server-to-server replication (REPLICATION.md Phase 0). PEER-authed
+	// (verifyPeerSig): serves verbatim encrypted chain bytes only to
+	// TOFU-pinned peers, for disaster-recovery backup.
+	s.mux.HandleFunc("GET /v1/peer/chain", s.handlePeerChain)
 }
 
 // ---- handlers ----
@@ -283,7 +324,8 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 // sign (~50µs). Still well below the cost of any data-API response.
 //
 // THREAT: T48 (residual DoS at this unauthenticated endpoint —
-//                documented as accepted exposure for v1.0).
+//
+//	documented as accepted exposure for v1.0).
 func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 	peers, err := s.store.ListPeers(r.Context())
 	if err != nil {
@@ -461,7 +503,8 @@ func (s *Server) handleConsistencyProof(w http.ResponseWriter, r *http.Request) 
 // POST /users — accept genesis auth.set, assign shortId.
 //
 // THREAT: T45 (user-registration replay — UNIQUE on (pubkey, short_id)),
-//         T48 (DoS — per-IP rate limit on register).
+//
+//	T48 (DoS — per-IP rate limit on register).
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// Observer hook fires once per attempt regardless of exit branch.
 	// Branches set result on early-return; the trailing `return` after
@@ -613,9 +656,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 // super_priv must use a separate API (none exist in v1).
 //
 // THREAT: T50 (shortId enumeration via API — A2 cannot enumerate
-//                because this endpoint requires authentication +
-//                signer-must-equal-chain-owner. Only A1 with raw
-//                DB access can read encrypted user chains).
+//
+//	because this endpoint requires authentication +
+//	signer-must-equal-chain-owner. Only A1 with raw
+//	DB access can read encrypted user chains).
 func (s *Server) handleFetchUser(w http.ResponseWriter, r *http.Request) {
 	auth, code, err := s.verifyHTTPSig(r.Context(), r)
 	if err != nil {
@@ -926,18 +970,18 @@ type pullScope struct {
 	// ConsistencyProof is present iff the request supplied
 	// LastSTHSize > 0 AND that size is strictly less than the
 	// current STH size.
-	STH              *translog.STH               `cbor:"sth,omitempty"`
-	InclusionProofs  []translog.InclusionProof   `cbor:"inclusion_proofs,omitempty"`
-	ConsistencyProof *translog.ConsistencyProof  `cbor:"consistency_proof,omitempty"`
+	STH              *translog.STH              `cbor:"sth,omitempty"`
+	InclusionProofs  []translog.InclusionProof  `cbor:"inclusion_proofs,omitempty"`
+	ConsistencyProof *translog.ConsistencyProof `cbor:"consistency_proof,omitempty"`
 }
 type tipPos struct {
 	Seq  uint64 `cbor:"seq"`
 	Hash []byte `cbor:"hash"`
 }
 type membership struct {
-	ScopeID     string `cbor:"scope_id"`
-	AdmitEvent  string `cbor:"admit_event"`
-	OEKVersion  uint64 `cbor:"oek_version"`
+	ScopeID    string `cbor:"scope_id"`
+	AdmitEvent string `cbor:"admit_event"`
+	OEKVersion uint64 `cbor:"oek_version"`
 }
 type pushResult struct {
 	Accepted             bool   `cbor:"accepted"`
@@ -1575,4 +1619,3 @@ func validScopeID(s string) bool {
 	}
 	return true
 }
-

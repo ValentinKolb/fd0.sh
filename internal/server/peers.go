@@ -53,6 +53,36 @@ func canonicalisePeers(raw []string) ([]string, error) {
 	return out, nil
 }
 
+// prunePeers drops peers-table rows whose URL is not in the currently
+// configured FD0_PEERS set. This is the revocation path for replication
+// authorization: verifyPeerSig grants a pull to any pinned peer
+// (store.IsPeerPub), and a TOFU pin survives restarts, so without this an
+// operator could never withdraw a replica's access by editing config.
+// Run once on boot — config changes already require a restart.
+func (s *Server) prunePeers(ctx context.Context) {
+	configured := map[string]bool{}
+	if canon, err := canonicalisePeers(s.cfg.Peers); err == nil {
+		for _, u := range canon {
+			configured[u] = true
+		}
+	}
+	peers, err := s.store.ListPeers(ctx)
+	if err != nil {
+		s.log.Warn("prune peers: list failed", "err", err)
+		return
+	}
+	for _, p := range peers {
+		if configured[p.URL] {
+			continue
+		}
+		if err := s.store.DeletePeer(ctx, p.URL); err != nil {
+			s.log.Warn("prune peers: delete failed", "url", p.URL, "err", err)
+			continue
+		}
+		s.log.Info("revoked replication authorization for unconfigured peer", "url", p.URL)
+	}
+}
+
 // runPeerResolver loops every PeerResolveInterval, fetching each peer's
 // /v1/server-info and upserting the result. Errors are logged at info
 // level and do not abort the loop — a transient peer outage must not

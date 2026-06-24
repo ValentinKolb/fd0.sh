@@ -147,6 +147,21 @@ type cli struct {
 	// verbatim. Empty when running solo.
 	Peers []string `name:"peers" help:"Comma-separated peer URLs to resolve + republish." env:"FD0_PEERS"`
 
+	// PeerResolveInterval overrides the 1h default cadence for resolving
+	// + TOFU-pinning FD0_PEERS. A short value lets a freshly-started peer
+	// be pinned quickly (e.g. when bringing up a primary + backup pair).
+	PeerResolveInterval time.Duration `name:"peer-resolve-interval" help:"Cadence for resolving/pinning peers." env:"FD0_PEER_RESOLVE_INTERVAL"`
+
+	// ReplicateFrom makes this server a disaster-recovery standby that
+	// mirrors the primary at this URL into a local backup archive
+	// (REPLICATION.md Phase 0). The primary must list this server in its
+	// FD0_PEERS so it authorises the peer pull. Empty = not a replica.
+	ReplicateFrom string `name:"replicate-from" help:"Primary URL to mirror for DR backup." env:"FD0_REPLICATE_FROM"`
+
+	// ReplicateInterval overrides the default 30s mirror cadence (Go
+	// duration). Useful for tests and aggressive backup.
+	ReplicateInterval time.Duration `name:"replicate-interval" help:"DR mirror cadence (e.g. 2s)." env:"FD0_REPLICATE_INTERVAL"`
+
 	// MetricsToken protects the /metrics endpoint. If empty, /metrics
 	// is served openly (suitable for a trusted internal network or
 	// behind a scrape-only reverse proxy). If set, scrapers must send
@@ -189,8 +204,11 @@ func main() {
 		Logger:   log,
 		Observer: obs,
 
-		Label: c.Label,
-		Peers: c.Peers,
+		Label:               c.Label,
+		Peers:               c.Peers,
+		ReplicateFrom:       c.ReplicateFrom,
+		ReplicateInterval:   c.ReplicateInterval,
+		PeerResolveInterval: c.PeerResolveInterval,
 
 		RateLimitDisabled: c.NoRateLimit,
 		RateLimit: ratelimit.Config{

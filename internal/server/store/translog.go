@@ -55,6 +55,18 @@ func (s *Store) TranslogPub() ed25519.PublicKey {
 	return out
 }
 
+// TranslogSign signs msg with the installed translog private key, or
+// returns nil if no key is installed. Used for server-to-server
+// replication request auth (peer_replicate.go): a server authenticates
+// to a peer with the same identity it signs STHs under. It is NOT used to
+// mint STHs — that goes through translog.SignSTH with domain separation.
+func (s *Store) TranslogSign(msg []byte) []byte {
+	if s.translogPriv == nil {
+		return nil
+	}
+	return ed25519.Sign(s.translogPriv, msg)
+}
+
 // AppendLeaf adds a new leaf for chainID in its OWN transaction. The
 // production path is AppendWithTranslog (event + leaf in one tx);
 // AppendLeaf exists for tests and for chains where the storage layer
@@ -584,4 +596,3 @@ func largestPowerOfTwoLessThan(n uint64) uint64 {
 	}
 	return k
 }
-

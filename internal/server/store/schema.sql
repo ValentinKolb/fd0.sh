@@ -100,3 +100,40 @@ CREATE TABLE IF NOT EXISTS peers (
     first_seen      INTEGER NOT NULL,
     last_verified   INTEGER NOT NULL
 );
+
+-- Replication backup (REPLICATION.md Phase 0 — DR cold standby).
+--
+-- A replica pulls a full, verbatim copy of another server's (the
+-- "source", identified by its translog pubkey) chains and stores them
+-- here UNCHANGED. These tables are a write-once archive: the live
+-- serving / signing path (events, chains, translog_*) never reads or
+-- writes them, and the server never re-signs a backup chain. This is the
+-- structural guard that a mirrored, foreign-anchored chain can never be
+-- mistaken for one this server itself anchors (the one-anchor invariant,
+-- REPLICATION.md §2). Promotion to primary is a separate, operator-driven
+-- restore that copies a backup chain into the live tables under a fenced
+-- identity (REPLICATION.md §5 Phase 3) — not done automatically here.
+--
+-- source_pub namespaces every row by the anchoring server's pubkey, so
+-- one replica can back up several sources without collision.
+CREATE TABLE IF NOT EXISTS backup_events (
+    source_pub  BLOB    NOT NULL CHECK (length(source_pub) = 32),
+    chain_id    TEXT    NOT NULL,
+    seq         INTEGER NOT NULL,
+    event_id    TEXT    NOT NULL,
+    prev_hash   BLOB,
+    kind        TEXT    NOT NULL,
+    cbor        BLOB    NOT NULL,
+    stored_at   INTEGER NOT NULL,
+    PRIMARY KEY (source_pub, chain_id, seq)
+);
+
+CREATE TABLE IF NOT EXISTS backup_sths (
+    source_pub  BLOB    NOT NULL CHECK (length(source_pub) = 32),
+    chain_id    TEXT    NOT NULL,
+    tree_size   INTEGER NOT NULL,
+    root_hash   BLOB    NOT NULL,
+    timestamp   INTEGER NOT NULL,
+    signature   BLOB    NOT NULL,
+    PRIMARY KEY (source_pub, chain_id, tree_size)
+);
