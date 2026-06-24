@@ -84,7 +84,20 @@ type SyncConfig struct {
 	// OnUnlock controls the post-unlock auto-sync. Pointer so we can
 	// distinguish "absent" (apply default = true) from "explicitly false".
 	OnUnlock *bool `toml:"on_unlock"`
+	// Mode selects the multi-server sync strategy:
+	//   "" / "multi"   — push every scope to every server (the v0.0.4
+	//                    default; convergence is best-effort).
+	//   "primary"      — primary-per-scope routing (REPLICATION.md): each
+	//                    scope is written/read/reconciled against exactly
+	//                    one deterministic primary server, so members
+	//                    never diverge. Requires the servers to replicate
+	//                    among themselves (FD0_REPLICATE_FROM) for backup.
+	// Opt-in: existing deployments keep multi-push until they set this.
+	Mode string `toml:"mode"`
 }
+
+// PrimaryMode reports whether primary-per-scope routing is enabled.
+func (c SyncConfig) PrimaryMode() bool { return c.Mode == "primary" }
 
 // DefaultServers is the hard-coded fallback when the user has neither
 // Sync.Servers, Sync.Server, nor FD0_SERVER set. Points at the hosted

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/base64"
 	"fmt"
 
 	"github.com/valentinkolb/fd0.sh/internal/chain"
@@ -22,6 +23,13 @@ const (
 	MetaSecretName = "_meta"
 	MetaSecretType = "scope.meta"
 	MetaKeyLabel   = "label"
+	// MetaKeyAnchor is the base64 primary-server translog pubkey for
+	// primary-per-scope routing (REPLICATION.md). Committed to _meta by
+	// the scope creator so EVERY member reads the SAME anchor — the fix
+	// for members who configure different local server sets (review RED
+	// #1). Absent on scopes created before primary mode (those stay
+	// multi-push).
+	MetaKeyAnchor = "anchor"
 )
 
 // writeScopeMeta updates the _meta secret of scopeID. Performs a replay,
@@ -47,13 +55,22 @@ func (s *Session) writeScopeMeta(scopeID string, fields map[string]string) error
 	if curOEK.Version == 0 {
 		return fmt.Errorf("scope %s: no OEK v%d in vault", scopeName(s, scopeID), st.CurrentOEKVer)
 	}
+	// Merge with the existing _meta payload so writing one field (e.g.
+	// the anchor) never clobbers another (e.g. the label).
+	merged := metaFieldsFromIndex(st.SecretIndex)
+	if merged == nil {
+		merged = map[string]string{}
+	}
+	for k, v := range fields {
+		merged[k] = v
+	}
 	body := &proto.SecretBody{
 		ID: MetaSecretID,
 		Record: &proto.SecretRecord{
 			Name:          MetaSecretName,
 			Type:          MetaSecretType,
 			SchemaVersion: 1,
-			Payload:       fields,
+			Payload:       merged,
 		},
 	}
 	ev, err := chain.BuildSecretSet(AgentSigner{Agent: s.Agent}, s.UserSuperPub, proto.MustParseScopeID(scopeID),
@@ -85,6 +102,55 @@ func metaLabelFromIndex(idx map[string]chain.ScopeSecret) string {
 		return ""
 	}
 	return labelFromPayload(cur.Record.Payload)
+}
+
+// metaFieldsFromIndex returns all string fields of the _meta payload, or
+// nil if absent. CBOR decodes string-keyed maps loosely, so normalise.
+func metaFieldsFromIndex(idx map[string]chain.ScopeSecret) map[string]string {
+	cur, ok := idx[MetaSecretID]
+	if !ok || cur.Record == nil || cur.Record.Name != MetaSecretName {
+		return nil
+	}
+	out := map[string]string{}
+	switch m := cur.Record.Payload.(type) {
+	case map[string]string:
+		for k, v := range m {
+			out[k] = v
+		}
+	case map[string]interface{}:
+		for k, v := range m {
+			if sv, ok := v.(string); ok {
+				out[k] = sv
+			}
+		}
+	case map[interface{}]interface{}:
+		for k, v := range m {
+			ks, ok1 := k.(string)
+			vs, ok2 := v.(string)
+			if ok1 && ok2 {
+				out[ks] = vs
+			}
+		}
+	}
+	return out
+}
+
+// metaAnchorFromIndex returns the committed primary-server pubkey (decoded
+// from the base64 _meta "anchor" field), or nil if not committed.
+func metaAnchorFromIndex(idx map[string]chain.ScopeSecret) []byte {
+	f := metaFieldsFromIndex(idx)
+	if f == nil {
+		return nil
+	}
+	enc, ok := f[MetaKeyAnchor]
+	if !ok || enc == "" {
+		return nil
+	}
+	pub, err := base64.StdEncoding.DecodeString(enc)
+	if err != nil || len(pub) != 32 {
+		return nil
+	}
+	return pub
 }
 
 // labelFromPayload navigates the loose `any`-typed Payload to find a label.

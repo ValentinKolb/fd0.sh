@@ -151,9 +151,40 @@ func RunSync(ctx context.Context, server string) error {
 		preSyncLastSTH[sid], _ = decodeVerifiedSTH(sd.LastSTHFor(serverKey))
 	}
 
+	// Primary-per-scope routing ([sync].mode = "primary"). When enabled,
+	// this server handles ONLY the scopes whose committed primary (the
+	// _meta anchor, member-agreed) is this server — so each scope has a
+	// single ordering authority and members never diverge (REPLICATION.md).
+	// Scopes with no committed anchor fall back to multi-push; a scope
+	// anchored at a server absent from this client's config is a loud
+	// misconfiguration (routeErrs), not a silent skip.
+	primaryMode := cfg.Sync.PrimaryMode()
+	syncScope := map[string]bool{} // include this scope on THIS server?
+	var routeErrs []string
+	if primaryMode {
+		servers := ResolveServers("")
+		for sid := range s.Body.Scopes {
+			d, err := s.scopeRoute(ctx, sid, servers, pinnedPub)
+			if err != nil {
+				// Anchored at a server not in this client's config: a hard
+				// misconfiguration. Surface loudly; don't silently skip.
+				routeErrs = append(routeErrs, err.Error())
+				fmt.Fprintf(os.Stderr, "  ✗ %v\n", err)
+				continue
+			}
+			// routeHere (we're the primary) and routeMultiAll (no anchor
+			// committed yet) both sync this scope here; routeElse /
+			// routeDeferred skip it on this server.
+			syncScope[sid] = d == routeHere || d == routeMultiAll
+		}
+	}
+
 	// First round-trip: discovery + pull for known scopes + push.
 	pullScopes := map[string]pullCursor{}
 	for sid, sd := range s.Body.Scopes {
+		if primaryMode && !syncScope[sid] {
+			continue // another server is this scope's authority
+		}
 		pullScopes[sid] = pullCursor{
 			Seq:         sd.ChainTip.Seq,
 			Hash:        sd.ChainTip.Hash,
@@ -174,6 +205,9 @@ func RunSync(ctx context.Context, server string) error {
 	// data loss is impossible by construction.
 	pushItems := []any{}
 	for sid, sd := range s.Body.Scopes {
+		if primaryMode && !syncScope[sid] {
+			continue // routed to its own primary in that server's round
+		}
 		evs, err := chain.ReadScopeEvents(s.Paths.ScopeChain(proto.MustParseScopeID(sid)))
 		if err != nil {
 			return err
@@ -600,6 +634,12 @@ func RunSync(ctx context.Context, server string) error {
 	// unrecoverable divergence. RunSyncAll owns the all-replicas-success
 	// gate and calls CompactScopes once, at the end, only when every
 	// server in the round succeeded.
+	if len(routeErrs) > 0 {
+		// Some scope is anchored at a server not in this client's config:
+		// the round did real work for the OTHER scopes, but report failure
+		// so the misconfiguration is not masked by a green "sync ok".
+		return fmt.Errorf("primary-mode: %d scope(s) unroutable: %s", len(routeErrs), strings.Join(routeErrs, "; "))
+	}
 	fmt.Fprintf(os.Stderr, "✓ sync ok (pushed=%d dup=%d)\n", pushed, dups)
 	return nil
 }
