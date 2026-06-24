@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/base64"
 	"fmt"
 
 	"github.com/valentinkolb/fd0.sh/internal/chain"
@@ -23,13 +22,6 @@ const (
 	MetaSecretName = "_meta"
 	MetaSecretType = "scope.meta"
 	MetaKeyLabel   = "label"
-	// MetaKeyAnchor is the base64 primary-server translog pubkey for
-	// primary-per-scope routing (REPLICATION.md). Committed to _meta by
-	// the scope creator so EVERY member reads the SAME anchor — the fix
-	// for members who configure different local server sets (review RED
-	// #1). Absent on scopes created before primary mode (those stay
-	// multi-push).
-	MetaKeyAnchor = "anchor"
 )
 
 // writeScopeMeta updates the _meta secret of scopeID. Performs a replay,
@@ -133,24 +125,6 @@ func metaFieldsFromIndex(idx map[string]chain.ScopeSecret) map[string]string {
 		}
 	}
 	return out
-}
-
-// metaAnchorFromIndex returns the committed primary-server pubkey (decoded
-// from the base64 _meta "anchor" field), or nil if not committed.
-func metaAnchorFromIndex(idx map[string]chain.ScopeSecret) []byte {
-	f := metaFieldsFromIndex(idx)
-	if f == nil {
-		return nil
-	}
-	enc, ok := f[MetaKeyAnchor]
-	if !ok || enc == "" {
-		return nil
-	}
-	pub, err := base64.StdEncoding.DecodeString(enc)
-	if err != nil || len(pub) != 32 {
-		return nil
-	}
-	return pub
 }
 
 // labelFromPayload navigates the loose `any`-typed Payload to find a label.

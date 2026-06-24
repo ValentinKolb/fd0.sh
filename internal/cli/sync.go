@@ -20,13 +20,13 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -68,22 +68,14 @@ type pullCursor struct {
 // here is for explicit, single-target invocations (tests, scripts).
 func RunSync(ctx context.Context, server string) error {
 	if server == "" {
-		// Backward-compat fallback — keep working when a caller still
-		// passes "" expecting env/config resolution. RunSyncAll is the
-		// preferred entry point now.
-		paths, _ := fdhome.Resolve()
-		cfg, _ := fdhome.LoadConfig(paths.Config)
+		// Resolve from env/config. RunSyncAll is the preferred entry
+		// point; defer to it for the single-primary invariant (0 or >1
+		// configured servers is an error with operator guidance).
 		servers := ResolveServers("")
-		if len(servers) > 1 {
+		if len(servers) != 1 {
 			return RunSyncAll(ctx, servers)
 		}
-		if len(servers) == 1 {
-			server = servers[0]
-		}
-		_ = cfg // retained for parity with the old shape; cfg is reloaded below
-	}
-	if server == "" {
-		return errors.New("no server configured (--server, FD0_SERVER, [sync].servers, or [sync].server)")
+		server = servers[0]
 	}
 	paths, _ := fdhome.Resolve()
 	cfg, _ := fdhome.LoadConfig(paths.Config)
@@ -151,40 +143,11 @@ func RunSync(ctx context.Context, server string) error {
 		preSyncLastSTH[sid], _ = decodeVerifiedSTH(sd.LastSTHFor(serverKey))
 	}
 
-	// Primary-per-scope routing ([sync].mode = "primary"). When enabled,
-	// this server handles ONLY the scopes whose committed primary (the
-	// _meta anchor, member-agreed) is this server — so each scope has a
-	// single ordering authority and members never diverge (REPLICATION.md).
-	// Scopes with no committed anchor fall back to multi-push; a scope
-	// anchored at a server absent from this client's config is a loud
-	// misconfiguration (routeErrs), not a silent skip.
-	primaryMode := cfg.Sync.PrimaryMode()
-	syncScope := map[string]bool{} // include this scope on THIS server?
-	var routeErrs []string
-	if primaryMode {
-		servers := ResolveServers("")
-		for sid := range s.Body.Scopes {
-			d, err := s.scopeRoute(ctx, sid, servers, pinnedPub)
-			if err != nil {
-				// Anchored at a server not in this client's config: a hard
-				// misconfiguration. Surface loudly; don't silently skip.
-				routeErrs = append(routeErrs, err.Error())
-				fmt.Fprintf(os.Stderr, "  ✗ %v\n", err)
-				continue
-			}
-			// routeHere (we're the primary) and routeMultiAll (no anchor
-			// committed yet) both sync this scope here; routeElse /
-			// routeDeferred skip it on this server.
-			syncScope[sid] = d == routeHere || d == routeMultiAll
-		}
-	}
-
-	// First round-trip: discovery + pull for known scopes + push.
+	// First round-trip: discovery + pull for known scopes + push. With a
+	// single primary every scope is synced here — there is no per-scope
+	// routing and (by construction) no possibility of replica divergence.
 	pullScopes := map[string]pullCursor{}
 	for sid, sd := range s.Body.Scopes {
-		if primaryMode && !syncScope[sid] {
-			continue // another server is this scope's authority
-		}
 		pullScopes[sid] = pullCursor{
 			Seq:         sd.ChainTip.Seq,
 			Hash:        sd.ChainTip.Hash,
@@ -205,9 +168,6 @@ func RunSync(ctx context.Context, server string) error {
 	// data loss is impossible by construction.
 	pushItems := []any{}
 	for sid, sd := range s.Body.Scopes {
-		if primaryMode && !syncScope[sid] {
-			continue // routed to its own primary in that server's round
-		}
 		evs, err := chain.ReadScopeEvents(s.Paths.ScopeChain(proto.MustParseScopeID(sid)))
 		if err != nil {
 			return err
@@ -505,6 +465,7 @@ func RunSync(ctx context.Context, server string) error {
 	// against PRE-SYNC priorSTH passes for both, but the persisted
 	// anchor must always be the highest tree_size seen).
 	pushed, dups, failed := 0, 0, 0
+	refusedReasons := map[string]int{} // reason → count, summarized once (no per-push spam)
 	floorDirty := false
 	maxSizePersisted := map[string]uint64{} // scope_id → max sth.head.tree_size
 	for _, p := range sr.Push {
@@ -515,7 +476,7 @@ func RunSync(ctx context.Context, server string) error {
 			dups++
 		default:
 			failed++
-			fmt.Fprintf(os.Stderr, "  push refused: %s\n", p.Reason)
+			refusedReasons[p.Reason]++ // summarized after the loop, not per-push
 			continue
 		}
 		if p.ScopeID == "" {
@@ -596,6 +557,9 @@ func RunSync(ctx context.Context, server string) error {
 	// Auto-retry: collect scopes whose pushes hit divergence/stale_oek and
 	// run a reconcile-and-replay loop. PROTOCOL.md §7.1: up to 3 retries.
 	if failed > 0 {
+		// One summary line, not one per refused event: a diverged scope
+		// can refuse hundreds of pushes and must never spam the terminal.
+		fmt.Fprintf(os.Stderr, "  %d push(es) refused (%s); reconciling…\n", failed, summarizeReasons(refusedReasons))
 		conflictScopes := map[string]struct{}{}
 		for _, p := range sr.Push {
 			if p.Accepted {
@@ -626,22 +590,28 @@ func RunSync(ctx context.Context, server string) error {
 		}
 		return fmt.Errorf("sync: %d push(es) refused (pushed=%d dup=%d)", failed, pushed, dups)
 	}
-	// Compaction is intentionally NOT run here. It rewrites the shared
-	// local chain into a non-contiguous form (STORAGE.md §5.4), which is
-	// only safe once EVERY configured replica has converged to THIS tip:
-	// a server that is still behind the compaction point can no longer
-	// fast-forward the now-gapped local chain and is forced into an
-	// unrecoverable divergence. RunSyncAll owns the all-replicas-success
-	// gate and calls CompactScopes once, at the end, only when every
-	// server in the round succeeded.
-	if len(routeErrs) > 0 {
-		// Some scope is anchored at a server not in this client's config:
-		// the round did real work for the OTHER scopes, but report failure
-		// so the misconfiguration is not masked by a green "sync ok".
-		return fmt.Errorf("primary-mode: %d scope(s) unroutable: %s", len(routeErrs), strings.Join(routeErrs, "; "))
-	}
+	// Compaction is intentionally NOT run here. It rewrites the local
+	// chain into a non-contiguous form (STORAGE.md §5.4), which is only
+	// safe once the primary has converged to THIS tip. RunSyncAll runs
+	// CompactScopes once, after a successful round.
 	fmt.Fprintf(os.Stderr, "✓ sync ok (pushed=%d dup=%d)\n", pushed, dups)
 	return nil
+}
+
+// summarizeReasons renders a push-refusal histogram as a single compact
+// string like "divergence×42, stale_oek_version×3" (reasons sorted), so a
+// diverged scope produces one summary line instead of hundreds.
+func summarizeReasons(m map[string]int) string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s×%d", k, m[k]))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // CompactScopes opens a session and runs best-effort compaction across

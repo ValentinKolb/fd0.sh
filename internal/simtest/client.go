@@ -27,14 +27,15 @@ type Client struct {
 	servers []string // this client's [sync].servers (defaults to all harness servers)
 }
 
-// AddClient creates a client configured with every harness server.
+// AddClient creates a client configured with the single primary server
+// (model A1 — one ordering authority per client).
 func (h *Harness) AddClient(name string) *Client {
-	return h.AddClientWithServers(name, h.ServerURLs())
+	return h.AddClientWithServers(name, []string{h.Servers[0].URL})
 }
 
 // AddClientWithServers creates a client with a specific [sync].servers
-// list — used to exercise heterogeneous member configs (different order
-// or subset), which primary-per-scope routing must agree across (RED #1).
+// list — used to exercise the multi-server-config rejection (more than
+// one server is a hard error under single-primary).
 func (h *Harness) AddClientWithServers(name string, servers []string) *Client {
 	h.t.Helper()
 	// Keep these paths SHORT: home holds the agent's unix socket, which
@@ -72,9 +73,6 @@ func (c *Client) writeConfig() {
 		fmt.Fprintf(&b, "%q", u)
 	}
 	b.WriteString("]\non_unlock = false\n")
-	if c.h.PrimaryMode {
-		b.WriteString("mode = \"primary\"\n")
-	}
 	mustWrite(c.h.t, filepath.Join(c.home, "config.toml"), b.String())
 }
 

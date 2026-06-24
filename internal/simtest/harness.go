@@ -122,11 +122,6 @@ type Harness struct {
 	Servers  []*Server
 	Clients  []*Client
 	mu       sync.Mutex // serialises client ops (the schedule is sequential)
-
-	// PrimaryMode, when set before AddClient, writes [sync].mode =
-	// "primary" into each client's config so the simulation exercises
-	// primary-per-scope routing (REPLICATION.md) instead of multi-push.
-	PrimaryMode bool
 }
 
 // New builds the fd0 + fd0-agent binaries once, then starts nServers

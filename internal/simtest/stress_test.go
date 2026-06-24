@@ -8,37 +8,35 @@ import (
 	"testing"
 )
 
-// TestSimPrimaryStress is a larger, MULTI-SCOPE stress run of primary mode:
-// more clients, more servers, several shared scopes (so different scopes
-// anchor to different servers), a long faulted schedule, and a hard
-// convergence requirement. It exercises primary-per-scope routing across
-// many scopes under sustained partition churn — closer to a real fleet
-// than the single-scope TestSimPrimaryMode.
+// TestSimSinglePrimaryStress is a larger, MULTI-SCOPE stress run of the
+// A1 model: more clients, several shared scopes, a long schedule with
+// transient primary outages, and a hard convergence requirement. With a
+// single ordering authority per scope the fleet must always converge and
+// never lose a write — divergence is impossible by construction.
 //
 // Heavier than the other sims; still skipped under -short.
-func TestSimPrimaryStress(t *testing.T) {
+func TestSimSinglePrimaryStress(t *testing.T) {
 	if testing.Short() {
 		t.Skip("stress: builds binaries + spawns agents; skipped in -short")
 	}
 	const (
 		nClients = 5
-		nServers = 3
 		nScopes  = 4
 		nOps     = 120
 	)
 	for _, seed := range []int64{7, 99} {
 		seed := seed
 		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
-			runStress(t, seed, nClients, nServers, nScopes, nOps)
+			runStress(t, seed, nClients, nScopes, nOps)
 		})
 	}
 }
 
-func runStress(t *testing.T, seed int64, nClients, nServers, nScopes, nOps int) {
+func runStress(t *testing.T, seed int64, nClients, nScopes, nOps int) {
 	t.Helper()
 	rng := rand.New(rand.NewSource(seed))
-	h := New(t, nServers)
-	h.PrimaryMode = true
+	h := New(t, 1) // single primary (A1)
+	srv := h.Servers[0]
 
 	names := []string{"alice", "bob", "carol", "dave", "erin", "frank", "grace"}
 	clients := make([]*Client, nClients)
@@ -109,7 +107,6 @@ func runStress(t *testing.T, seed int64, nClients, nServers, nScopes, nOps int) 
 		}
 	}
 
-	down := 0
 	for step := 0; step < nOps; step++ {
 		switch rng.Intn(10) {
 		case 0, 1, 2, 3:
@@ -119,15 +116,7 @@ func runStress(t *testing.T, seed int64, nClients, nServers, nScopes, nOps int) 
 			clients[ci].Sync()
 			observe(ci)
 		case 7, 8:
-			si := rng.Intn(nServers)
-			s := h.Servers[si]
-			if s.IsDown() {
-				s.SetDown(false)
-				down--
-			} else if down < nServers-1 { // never all down
-				s.SetDown(true)
-				down++
-			}
+			srv.SetDown(!srv.IsDown()) // transient primary outage
 		case 9:
 			ci := rng.Intn(nClients)
 			set(ci)
@@ -173,7 +162,7 @@ func runStress(t *testing.T, seed int64, nClients, nServers, nScopes, nOps int) 
 		}
 	}
 	if gaps > 0 {
-		t.Fatalf("seed %d: %d (client,key) pairs not converged in primary mode; e.g. %s",
+		t.Fatalf("seed %d: %d (client,key) pairs not converged under single primary; e.g. %s",
 			seed, gaps, strings.Join(detail, ", "))
 	}
 }

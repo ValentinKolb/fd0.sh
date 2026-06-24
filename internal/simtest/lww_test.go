@@ -5,19 +5,17 @@ import (
 	"testing"
 )
 
-// TestPrimaryModeSameKeyConverges covers concurrent writes to the SAME key
-// by DIFFERENT members (review blind spot: the other sims use
-// single-writer-per-key, so genuine last-writer-wins contention is never
-// exercised). Two members repeatedly write the same key without syncing
-// in between, so their local chains diverge on that key; after syncing to
-// quiescence ALL members must agree on ONE value, and it must be one that
-// was actually written (no split-brain, no phantom).
-func TestPrimaryModeSameKeyConverges(t *testing.T) {
+// TestSinglePrimarySameKeyConverges covers concurrent writes to the SAME
+// key by DIFFERENT members against one primary. Two members repeatedly
+// write the same key without syncing in between, so their local chains
+// differ on that key; after syncing to quiescence ALL members must agree
+// on ONE value, and it must be one that was actually written (no
+// split-brain, no phantom).
+func TestSinglePrimarySameKeyConverges(t *testing.T) {
 	if testing.Short() {
 		t.Skip("spawns agents; skipped in -short")
 	}
-	h := New(t, 2)
-	h.PrimaryMode = true
+	h := New(t, 1)
 	alice := h.AddClient("alice")
 	bob := h.AddClient("bob")
 	h.ShareScope(alice, "shared", bob)
@@ -38,7 +36,6 @@ func TestPrimaryModeSameKeyConverges(t *testing.T) {
 		alice.Sync()
 		bob.Sync()
 	}
-	// Drive to quiescence.
 	for i := 0; i < 4; i++ {
 		alice.Sync()
 		bob.Sync()

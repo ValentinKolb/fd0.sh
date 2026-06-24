@@ -13,7 +13,6 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	"github.com/valentinkolb/fd0.sh/internal/chain"
-	"github.com/valentinkolb/fd0.sh/internal/fdhome"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
 	"github.com/valentinkolb/fd0.sh/internal/tui"
 )
@@ -78,15 +77,6 @@ func RunScopeCreate(ctx context.Context, label string) error {
 	if label != "" {
 		if err := s.writeScopeMeta(scopeIDStr, map[string]string{MetaKeyLabel: label}); err != nil {
 			return fmt.Errorf("write _meta: %w", err)
-		}
-	}
-	// In primary-per-scope mode, commit the scope's primary into _meta so
-	// every member reads the SAME anchor (REPLICATION.md). Best-effort: if
-	// the servers aren't reachable to pin now, the scope stays uncommitted
-	// (multi-push) until a later sync commits it.
-	if cfg, _ := fdhome.LoadConfig(s.Paths.Config); cfg.Sync.PrimaryMode() {
-		if err := s.commitScopeAnchor(ctx, scopeIDStr, ResolveServers("")); err != nil {
-			fmt.Fprintf(os.Stderr, "⚠ scope created; primary anchor not committed yet (%v) — will retry on sync\n", err)
 		}
 	}
 	if label != "" {
