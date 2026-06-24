@@ -165,24 +165,25 @@ func replayScopeViaAgent(path string, ownSuperPub, ownX25519Pub []byte, ag *agen
 	return chain.ReplayScope(path, ownSuperPub, ownX25519Pub, AgentOpener{Agent: ag})
 }
 
-// acquireLock takes the flock with optional retry. The retry budget is taken
-// from FD0_LOCK_WAIT env (highest priority) or [client].lock_wait in config
-// (fallback). Both are Go duration strings ("10s", "1m"); empty / zero means
-// fail-fast on contention.
+// defaultLockWait is how long an interactive command waits for the flock
+// when neither FD0_LOCK_WAIT nor [client].lock_wait is set. The agent's
+// background auto-sync holds the lock for the duration of a sync; a
+// fail-fast acquire would make a concurrent interactive command error
+// spuriously (the production "another fd0 instance holds the lock" churn).
+// A short queue absorbs that overlap without masking a genuinely stuck
+// holder — past the budget it still fails with a clear, actionable error.
+const defaultLockWait = "5s"
+
+// acquireLock takes the flock, waiting up to a budget on contention. The
+// budget is FD0_LOCK_WAIT (env, highest priority), else [client].lock_wait
+// (config), else defaultLockWait. All are Go duration strings ("10s", "1m").
 func acquireLock(ctx context.Context, lk *flock.Flock, configWait string) error {
 	wait := os.Getenv("FD0_LOCK_WAIT")
 	if wait == "" {
 		wait = configWait
 	}
 	if wait == "" {
-		ok, err := lk.TryLock()
-		if err != nil {
-			return fmt.Errorf("lock: %w", err)
-		}
-		if !ok {
-			return fmt.Errorf("another fd0 instance holds the lock at %s", lk.Path())
-		}
-		return nil
+		wait = defaultLockWait
 	}
 	d, err := time.ParseDuration(wait)
 	if err != nil {
@@ -198,7 +199,8 @@ func acquireLock(ctx context.Context, lk *flock.Flock, configWait string) error 
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("lock: timed out after %s", d)
+			return fmt.Errorf("another fd0 instance holds the lock at %s (waited %s) — "+
+				"if no other fd0 is running, the agent's auto-sync may be mid-run; retry shortly", lk.Path(), d)
 		}
 		select {
 		case <-ctx.Done():
