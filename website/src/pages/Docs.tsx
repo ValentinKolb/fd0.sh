@@ -487,10 +487,17 @@ on_unlock = true`}</Box>
 
     <H2>Multi-server</H2>
     <P>
-      A client can target multiple servers — fd0 pushes events to each
-      and reads from whichever responds first. The transparency log
-      is per-server but their chain tips converge because all clients
-      multi-push. Replicas cross-pin via peer discovery.
+      A client can target multiple servers. By default it{" "}
+      <strong>multi-pushes</strong> — sends each event to every server
+      and reads from whichever responds first — for read failover and
+      redundancy. Replicas cross-pin via peer discovery.
+    </P>
+    <P>
+      For a single ordering authority per scope, set{" "}
+      <Code>mode = "primary"</Code> under <Code>[sync]</Code>: each scope
+      is routed to one deterministic primary server (committed once and
+      shared by every member), so members never diverge. The default
+      stays multi-push.
     </P>
     <Note>
       <strong>Concurrent-write safety.</strong> The server returns{" "}
@@ -533,6 +540,22 @@ FD0_WATCHED=https://fd0.example.com
 FD0_DB=/data/witness.db`}</Box>
       </div>
     </div>
+
+    <H2>Disaster-recovery backup</H2>
+    <P>
+      An optional standby mirrors a primary's chains into a write-once
+      local archive — if the primary's disk dies, no event is lost. Point
+      the standby at the primary, and list the standby in the primary's{" "}
+      <Code>FD0_PEERS</Code> so it authorises the pull. The standby never
+      serves the backed-up chains; promotion is an operator restore.
+    </P>
+    <Box>{`# standby server — env
+FD0_REPLICATE_FROM=https://fd0.example.com
+FD0_REPLICATE_INTERVAL=30s
+
+# on the primary, trust the standby as a peer:
+FD0_PEERS=https://fd0-backup.example.com
+# (FD0_PEER_RESOLVE_INTERVAL — how fast peers get pinned; default 1h)`}</Box>
 
     <H2>Endpoints exposed</H2>
     <P>
