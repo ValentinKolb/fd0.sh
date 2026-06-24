@@ -166,13 +166,12 @@ Client — `~/.fd0/config.toml`:
 
 ```toml
 [sync]
-servers   = ["https://api.fd0.sh", "https://api2.fd0.sh"]   # v0.0.4+ multi-server
-# server  = "https://your-own.example"                       # legacy singular still honoured
+server    = "https://api.fd0.sh"          # the single primary (one authority per scope)
 interval  = "1h"                          # periodic background sync; "" disables
 on_unlock = true                          # sync immediately after unlock
 
 [client]
-lock_wait = "10s"                         # block up to 10s on ~/.fd0/.lock contention; "" = fail fast
+lock_wait = "5s"                          # wait up to 5s on ~/.fd0/.lock contention (default)
 
 [agent]
 idle_timeout = "5m"                       # zeroize super_priv after N idle
@@ -182,7 +181,7 @@ max_lifetime = "8h"                       # hard cap, lock after N regardless of
 clear_after_seconds = 30                  # default for `fd0 copy`; 0 disables auto-clear
 ```
 
-`servers` is the v0.0.4 multi-server array — the client pushes every event to every entry (idempotent, server-side dedup) and falls over on reads. When unset, falls back to `server` (singular), then `FD0_SERVER`, then the built-in defaults (`api.fd0.sh` + `api2.fd0.sh`, both hosted at fd0.sh). Self-hosters override by setting either field.
+`server` is the single primary the client writes and reads — fd0 has one ordering authority per scope, so replicas can never diverge. Listing more than one server (`servers = [...]`) is a hard error: a second write target could fork, and reconciling that means discarding a write. For redundancy run a server-side disaster-recovery backup (`FD0_REPLICATE_FROM`) instead — see [docs/REPLICATION.md](docs/REPLICATION.md). When `server` is unset it falls back to `FD0_SERVER`, then the built-in default (`api.fd0.sh`, hosted at fd0.sh). Self-hosters override by setting `server`.
 
 `fd0 copy NAME --clear-after=30s` overrides per-call. Env overrides: `FD0_HOME`, `FD0_SERVER`, `FD0_LOCK_WAIT`, `FD0_AGENT_IDLE`, `FD0_AGENT_MAX_LIFETIME`.
 

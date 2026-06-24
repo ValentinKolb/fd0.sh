@@ -479,31 +479,34 @@ const SyncBody = () => (
       <div>
         <div class="text-xs mb-2" style={`color:${C.dim};`}>Automatic — ~/.fd0/config.toml</div>
         <Box>{`[sync]
-servers   = ["https://api.fd0.sh", "https://api2.fd0.sh"]
+server    = "https://api.fd0.sh"
 interval  = "1h"
 on_unlock = true`}</Box>
       </div>
     </div>
 
-    <H2>Multi-server</H2>
+    <H2>One primary per client</H2>
     <P>
-      A client can target multiple servers. By default it{" "}
-      <strong>multi-pushes</strong> — sends each event to every server
-      and reads from whichever responds first — for read failover and
-      redundancy. Replicas cross-pin via peer discovery.
+      A client writes and reads to exactly <strong>one</strong> server —
+      its primary. Every scope has a single ordering authority, so two
+      servers can never disagree about a scope's history. Listing more
+      than one server in <Code>[sync]</Code> is a hard error, not a
+      silent fallback: a second write target could diverge, and resolving
+      that means discarding a write.
     </P>
     <P>
-      For a single ordering authority per scope, set{" "}
-      <Code>mode = "primary"</Code> under <Code>[sync]</Code>: each scope
-      is routed to one deterministic primary server (committed once and
-      shared by every member), so members never diverge. The default
-      stays multi-push.
+      Redundancy comes from a server-side disaster-recovery backup (see
+      the self-host section), not a second write target. The trade-off is
+      explicit: a scope's availability is its primary's uptime — there is
+      no live failover to a replica (reading a possibly-stale replica is
+      the inconsistency we avoid).
     </P>
     <Note>
-      <strong>Concurrent-write safety.</strong> The server returns{" "}
-      <Code>409 divergence</Code> for stale pushes; the client
-      refreshes, re-signs, and retries up to three times. Linear log
-      with optimistic concurrency — not CRDT commutativity.
+      <strong>Concurrent-write safety.</strong> Two members writing the
+      same scope hit the one primary; it returns <Code>409 divergence</Code>{" "}
+      for a stale push, and the client refreshes, re-signs, and retries.
+      Linear log with optimistic concurrency — one authority, so it always
+      converges.
     </Note>
   </>
 );

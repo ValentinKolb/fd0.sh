@@ -19,7 +19,7 @@ Two independent replicas, each in its own data center:
 
 Each replica runs `fd0-server` against its own SQLite DB, signs its own STHs under its own ed25519 translog key, and runs a paired `fd0-witness` (`witness.fd0.sh`, `witness2.fd0.sh`) that cosigns its STHs. Replicas peer with each other via `FD0_PEERS`: on boot each one resolves its peer's `/v1/server-info`, TOFU-pins the pubkey, and republishes the resolved entry in its own signed response.
 
-The default `fd0` client targets both replicas (`[sync].servers = [api.fd0.sh, api2.fd0.sh]`) and multi-pushes every event to both. Reads fall over to whichever server answers. Server-to-server event gossip is not yet implemented — event propagation across replicas relies on multi-pushing clients until then. See TRANSLOG.md §11 for the wire format and the peer trust model.
+The `fd0` client writes and reads to a **single primary** — `api.fd0.sh`. fd0 has one ordering authority per scope, so two servers can never disagree about a scope's history; a client config listing more than one server is a hard error (REPLICATION.md). `api2.fd0.sh` is a **disaster-recovery backup**, not a second write target: it pulls api's chains into a write-once archive via `FD0_REPLICATE_FROM` and never serves them. This eliminates the replica-divergence failure mode that multi-push had. See REPLICATION.md for the model and TRANSLOG.md §11 for the peer wire format.
 
 ## Stack
 
@@ -146,10 +146,10 @@ curl -s https://api2.example.com/v1/server-info | python3 -c "…"
 ```toml
 # ~/.fd0/config.toml
 [sync]
-servers = ["https://api.example.com", "https://api2.example.com"]
+server = "https://api.example.com"   # the single primary
 ```
 
-The client multi-pushes every event to both, falls over on reads, and runs the safety-number ceremony once per server.
+The client writes and reads only the primary — one ordering authority per scope, so nothing can diverge. The second server (`api2.example.com`) is a DR backup that pulls the primary via `FD0_REPLICATE_FROM` (step below); clients never write to it. Listing two servers here is a hard error.
 
 **5. Witness per replica (optional).** Each server has its own translog under its own key, so each needs its own witness to cosign honest STHs.
 
@@ -163,7 +163,7 @@ FD0_WITNESS_SERVER_URL: https://api2.example.com
 
 ### Operational notes
 
-- **Event propagation.** Between *live* replicas, only multi-pushing clients propagate events: a single-server client writes to one replica only; events reach the other when any multi-pushing client syncs. Live server-to-server gossip (into the serving tables) is still on the roadmap (TRANSLOG.md §11). For single-authority convergence without gossip, clients can set `[sync].mode = "primary"` (each scope routed to one server). Server-to-server **DR backup** replication is available — see below.
+- **One write authority.** Clients write/read a single primary, so there is no multi-push and no client-driven propagation between servers. Redundancy is the server-side **DR backup** below (the standby pulls the primary read-only). Live server-to-server gossip into the serving tables remains a non-goal (REPLICATION.md §5).
 - **DR backup (standby).** A server with `FD0_REPLICATE_FROM=<primary-url>` mirrors that primary's chains (encrypted events + signed STHs) into a write-once local archive (`backup_*` tables), verifying each STH under the primary's key before storing it. The primary must list the standby in its `FD0_PEERS` to authorise the pull. The standby never serves the backup; it is disaster-recovery only — if the primary's disk is lost, the standby holds every event. `FD0_REPLICATE_INTERVAL` (default 30s) sets the cadence; `FD0_PEER_RESOLVE_INTERVAL` sets how fast the primary pins the standby (default 1h — set short when bringing the pair up). Promotion (restoring from the archive) is an operator ceremony, not automatic.
 - **Adding a third replica.** Add the new URL to every existing server's `FD0_PEERS` and restart; the new server's `FD0_PEERS` lists the existing two. TOFU-pins establish in both directions on the next resolver tick (default 1h). Clients add the new URL to `[sync].servers`.
 - **Removing a replica.** Stop the container, remove the URL from the other servers' `FD0_PEERS` and from clients' `[sync].servers`. On the next boot each surviving server prunes any pinned peer no longer in its `FD0_PEERS` — this also revokes that peer's replication-pull authorization, so the stale row must not linger. (Restart the survivors to apply; the prune is automatic.)
