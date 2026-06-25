@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -65,7 +66,63 @@ func TestNonInteractiveVaultCommandDoesNotAutoUnlock(t *testing.T) {
 	}
 }
 
+func TestEmptyHomePointsToInit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("simtest builds binaries + spawns agents; skipped in -short")
+	}
+	h := New(t, 1)
+	home := filepath.Join(h.dir, "fresh")
+	hostHome := filepath.Join(h.dir, "freshh")
+	mustMkdir(t, home)
+	mustMkdir(t, hostHome)
+
+	cmd := exec.Command(h.fd0Bin, "ls")
+	cmd.Env = []string{
+		"FD0_HOME=" + home,
+		"HOME=" + hostHome,
+		"FD0_AGENT_BIN=" + h.agentBin,
+		"FD0_AUTO_PIN=1",
+		"PATH=" + pathEnv(),
+	}
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("fresh home ls should fail:\n%s", out)
+	}
+	if !strings.Contains(string(out), "fd0 init") {
+		t.Fatalf("fresh home error should point to fd0 init:\n%s", out)
+	}
+}
+
+func TestInteractiveRemovePromptsAndCanAbort(t *testing.T) {
+	if testing.Short() {
+		t.Skip("simtest builds binaries + spawns agents; skipped in -short")
+	}
+	h := New(t, 1)
+	alice := h.AddClient("alice")
+	if out, err := alice.run("scope", "create", "--label", "shared"); err != nil {
+		t.Fatalf("scope create: %v\n%s", err, out)
+	}
+	if out, err := alice.run("set", "TOKEN", "secret", "--scope", "shared"); err != nil {
+		t.Fatalf("set: %v\n%s", err, out)
+	}
+
+	out, err := runTTYAfter(alice, "Remove secret", "n\n", "rm", "TOKEN", "--scope", "shared")
+	if err == nil {
+		t.Fatalf("interactive rm should abort when declined:\n%s", out)
+	}
+	if !strings.Contains(out, "aborted") {
+		t.Fatalf("interactive rm did not report abort:\n%s", out)
+	}
+	if got, ok := alice.Get("shared", "TOKEN"); !ok || got != "secret" {
+		t.Fatalf("declined rm removed secret, got ok=%v value=%q", ok, got)
+	}
+}
+
 func runTTY(c *Client, stdin string, args ...string) (string, error) {
+	return runTTYAfter(c, "Passphrase:", stdin, args...)
+}
+
+func runTTYAfter(c *Client, prompt, stdin string, args ...string) (string, error) {
 	c.h.t.Helper()
 	c.h.mu.Lock()
 	defer c.h.mu.Unlock()
@@ -78,7 +135,7 @@ func runTTY(c *Client, stdin string, args ...string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	out := newTTYOutput("Passphrase:")
+	out := newTTYOutput(prompt)
 	done := make(chan struct{})
 	go func() {
 		_, _ = io.Copy(out, ptmx)
@@ -93,7 +150,7 @@ func runTTY(c *Client, stdin string, args ...string) (string, error) {
 			_ = cmd.Wait()
 			_ = ptmx.Close()
 			<-done
-			return out.String(), errors.New("timed out waiting for passphrase prompt")
+			return out.String(), errors.New("timed out waiting for prompt")
 		}
 	}
 	err = cmd.Wait()

@@ -121,7 +121,11 @@ func RunTalosAdd(ctx context.Context, o TalosAddOpts) error {
 		return err
 	}
 	stderrln("✓ added talos context %q (scope: %s)", c.Name, scopeName(s, scopeID))
-	return renderAndAutoMergeTalos(s)
+	if err := renderAndAutoMergeTalos(s); err != nil {
+		return err
+	}
+	hintSyncForPeers()
+	return nil
 }
 
 func buildTalosContextFromOpts(o *TalosAddOpts) (*talosctx.TalosContext, error) {
@@ -195,7 +199,11 @@ func importTalosconfigContexts(ctx context.Context, s *Session, scopeID string, 
 		}
 		stderrln("✓ imported %q from %s (scope: %s)", c.Name, o.FromConfig, scopeName(s, scopeID))
 	}
-	return renderAndAutoMergeTalos(s)
+	if err := renderAndAutoMergeTalos(s); err != nil {
+		return err
+	}
+	hintSyncForPeers()
+	return nil
 }
 
 func storeTalosContext(ctx context.Context, s *Session, scopeID string, c *talosctx.TalosContext) error {
@@ -277,7 +285,7 @@ func RunTalosShow(ctx context.Context, scopeID, name string) error {
 }
 
 // RunTalosRemove tombstones a talos context.
-func RunTalosRemove(ctx context.Context, scopeID, name string) error {
+func RunTalosRemove(ctx context.Context, scopeID, name string, yes bool) error {
 	s, err := Open(ctx)
 	if err != nil {
 		return err
@@ -288,11 +296,18 @@ func RunTalosRemove(ctx context.Context, scopeID, name string) error {
 	if err != nil {
 		return err
 	}
+	if err := confirmDanger(yes, fmt.Sprintf("Remove talos context %q from %s?", target.Name, scopeName(s, target.Scope))); err != nil {
+		return err
+	}
 	if err := s.RemoveTypedSecret(ctx, target.Scope, talosNamePrefix+target.Name); err != nil {
 		return err
 	}
 	stderrln("✓ removed talos context %q from scope %s", target.Name, scopeName(s, target.Scope))
-	return renderAndAutoMergeTalos(s)
+	if err := renderAndAutoMergeTalos(s); err != nil {
+		return err
+	}
+	hintSyncForPeers()
+	return nil
 }
 
 // RunTalosMove moves a context between scopes (you must own both).
@@ -340,7 +355,11 @@ func RunTalosMove(ctx context.Context, name, fromScope, toScope string, force bo
 			name, scopeName(s, to), scopeName(s, r.ScopeID), err, name, scopeName(s, r.ScopeID))
 	}
 	stderrln("✓ moved talos %q: %s → %s", name, scopeName(s, r.ScopeID), scopeName(s, to))
-	return renderAndAutoMergeTalos(s)
+	if err := renderAndAutoMergeTalos(s); err != nil {
+		return err
+	}
+	hintSyncForPeers()
+	return nil
 }
 
 func RunTalosEnable(ctx context.Context, merge bool) error {

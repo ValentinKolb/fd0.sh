@@ -95,7 +95,11 @@ func RunKubeAdd(ctx context.Context, o KubeAddOpts) error {
 		return err
 	}
 	stderrln("✓ added kubeconfig %q (scope: %s)", k.Name, scopeName(s, scope))
-	return renderAndAutoMergeKube(s)
+	if err := renderAndAutoMergeKube(s); err != nil {
+		return err
+	}
+	hintSyncForPeers()
+	return nil
 }
 
 func buildKubeconfigFromOpts(o *KubeAddOpts) (*kubeconfig.Kubeconfig, error) {
@@ -188,7 +192,11 @@ func addKubeconfigBytesOnSession(ctx context.Context, s *Session, scopeID, defau
 		return err
 	}
 	stderrln("✓ stored kubeconfig %q (scope: %s)", k.Name, scopeName(s, scopeID))
-	return renderAndAutoMergeKube(s)
+	if err := renderAndAutoMergeKube(s); err != nil {
+		return err
+	}
+	hintSyncForPeers()
+	return nil
 }
 
 // appendUnique appends tag to tags if not already present.
@@ -265,7 +273,11 @@ func importKubeconfigBytes(ctx context.Context, s *Session, scopeID string, raw 
 		}
 		return fmt.Errorf("--from-config: no kubeconfigs stored")
 	}
-	return renderAndAutoMergeKube(s)
+	if err := renderAndAutoMergeKube(s); err != nil {
+		return err
+	}
+	hintSyncForPeers()
+	return nil
 }
 
 func storeKubeconfig(ctx context.Context, s *Session, scopeID string, k *kubeconfig.Kubeconfig) error {
@@ -339,7 +351,7 @@ func RunKubeShow(ctx context.Context, scopeID, name string) error {
 	return nil
 }
 
-func RunKubeRemove(ctx context.Context, scopeID, name string) error {
+func RunKubeRemove(ctx context.Context, scopeID, name string, yes bool) error {
 	s, err := Open(ctx)
 	if err != nil {
 		return err
@@ -349,11 +361,18 @@ func RunKubeRemove(ctx context.Context, scopeID, name string) error {
 	if err != nil {
 		return err
 	}
+	if err := confirmDanger(yes, fmt.Sprintf("Remove kubeconfig %q from %s?", k.Name, scopeName(s, k.Scope))); err != nil {
+		return err
+	}
 	if err := s.RemoveTypedSecret(ctx, k.Scope, kubeNamePrefix+k.Name); err != nil {
 		return err
 	}
 	stderrln("✓ removed kubeconfig %q from scope %s", k.Name, scopeName(s, k.Scope))
-	return renderAndAutoMergeKube(s)
+	if err := renderAndAutoMergeKube(s); err != nil {
+		return err
+	}
+	hintSyncForPeers()
+	return nil
 }
 
 func RunKubeMove(ctx context.Context, name, fromScope, toScope string, force bool) error {
@@ -389,7 +408,11 @@ func RunKubeMove(ctx context.Context, name, fromScope, toScope string, force boo
 			name, scopeName(s, to), scopeName(s, r.ScopeID), err, name, scopeName(s, r.ScopeID))
 	}
 	stderrln("✓ moved kube %q: %s → %s", name, scopeName(s, r.ScopeID), scopeName(s, to))
-	return renderAndAutoMergeKube(s)
+	if err := renderAndAutoMergeKube(s); err != nil {
+		return err
+	}
+	hintSyncForPeers()
+	return nil
 }
 
 func RunKubeEnable(ctx context.Context, merge bool) error {

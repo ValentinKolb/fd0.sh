@@ -75,7 +75,8 @@ flow as sharing a password.
 fd0 key add laptop                       # ed25519, never on disk in plaintext
 fd0 ssh add prod-db app@db.internal \
     --jump bastion --key laptop --scope work
-fd0 ssh enable                           # one-time: Include line + shell rc hint
+fd0 ssh prod-db                          # works directly from fd0's rendered config
+fd0 ssh enable                           # optional: make plain `ssh prod-db` work too
 export SSH_AUTH_SOCK="$(fd0 ssh sock)"
 ssh prod-db                              # or: fd0 ssh   (fuzzy picker)
 ```

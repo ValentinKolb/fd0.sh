@@ -193,11 +193,30 @@ func RunUnlock(ctx context.Context, agentBin, method string) error {
 	default:
 		return fmt.Errorf("unknown method type %q on user chain", chosen.MethodType)
 	}
-	if _, err := c.Unlock(paths.Vault, paths.UserChain, chosen.MethodType, cred); err != nil {
+	ur, err := c.Unlock(paths.Vault, paths.UserChain, chosen.MethodType, cred)
+	if err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "✓ vault unlocked (%s)\n", chosen.MethodType)
+	if shouldHintInteractiveFirstSync(paths.Config, ur) {
+		fmt.Fprintln(os.Stderr, "  run `fd0 sync` once to verify and pin the server; background sync resumes after that")
+	}
 	return nil
+}
+
+func shouldHintInteractiveFirstSync(configPath string, ur *agent.UnlockResp) bool {
+	if os.Getenv(FD0AutoPinEnv) == "1" || ur == nil || len(ur.RedactedBody) == 0 {
+		return false
+	}
+	cfg, err := fdhome.LoadConfig(configPath)
+	if err != nil || !cfg.Sync.OnUnlockEnabled() {
+		return false
+	}
+	var body proto.VaultBody
+	if err := proto.Unmarshal(ur.RedactedBody, &body); err != nil {
+		return false
+	}
+	return len(body.PinnedServers) == 0
 }
 
 // pickUnlockMethod implements the method-selection rules documented on

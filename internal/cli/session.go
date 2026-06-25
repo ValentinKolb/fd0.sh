@@ -27,7 +27,7 @@ type Session struct {
 	Lock          *flock.Flock
 	Agent         *agent.Client
 	UserSuperPub  []byte
-	UserX25519Pub []byte // ed25519 → curve25519, derived once at Open
+	UserX25519Pub []byte           // ed25519 → curve25519, derived once at Open
 	Body          *proto.VaultBody // body.SuperPriv is zeroed (held in agent)
 	UserState     *chain.UserState
 }
@@ -47,6 +47,9 @@ func Open(ctx context.Context) (*Session, error) {
 	}
 	if err := paths.EnsureDirs(); err != nil {
 		return nil, err
+	}
+	if !VaultExists(paths) {
+		return nil, errors.New("no vault found — run `fd0 init` first")
 	}
 	cfg, _ := fdhome.LoadConfig(paths.Config) // missing/bad config → defaults
 	lk := flock.New(paths.Lock)
@@ -215,4 +218,3 @@ func VaultExists(p fdhome.Paths) bool {
 	_, err := os.Stat(p.Vault)
 	return err == nil
 }
-

@@ -153,7 +153,7 @@ func RunCardList(ctx context.Context) error {
 }
 
 // RunCardRemove unpins a label.
-func RunCardRemove(ctx context.Context, label string) error {
+func RunCardRemove(ctx context.Context, label string, yes bool) error {
 	s, err := Open(ctx)
 	if err != nil {
 		return err
@@ -161,6 +161,9 @@ func RunCardRemove(ctx context.Context, label string) error {
 	defer s.Close()
 	if _, ok := s.Body.PinnedIdentities[label]; !ok {
 		return fmt.Errorf("no pinned identity %q", label)
+	}
+	if err := confirmDanger(yes, fmt.Sprintf("Unpin identity %q?", label)); err != nil {
+		return err
 	}
 	delete(s.Body.PinnedIdentities, label)
 	if err := s.ReSeal(); err != nil {
@@ -230,7 +233,7 @@ func (s *Session) resolveMember(input string) ([]byte, error) {
 	if p, ok := s.Body.PinnedIdentities[input]; ok {
 		return append([]byte(nil), p.SuperPub...), nil
 	}
-	return nil, fmt.Errorf("not a card URL or pinned label: %q (run `fd0 card import <url>` first, or `fd0 trust ls`)", input)
+	return nil, fmt.Errorf("not a card URL or pinned label: %q (run `fd0 card import <url> --label <name>` first, or `fd0 card ls`)", input)
 }
 
 // indent returns s with each line prefixed by p.

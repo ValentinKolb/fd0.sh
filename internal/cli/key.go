@@ -101,6 +101,7 @@ func RunKeyAdd(ctx context.Context, o KeyOpts) error {
 	fmt.Println()
 	fmt.Println(k.AuthorizedKeyLine())
 	fmt.Println()
+	hintSyncForPeers()
 
 	return nil
 }
@@ -177,7 +178,7 @@ func RunKeyShow(ctx context.Context, scopeID, name string, pubOnly bool) error {
 // referencing the key by name keep their KeyName field; the renderer
 // emits a "missing key" warning until the host is also rmd or its
 // key reference is changed.
-func RunKeyRemove(ctx context.Context, scopeID, name string) error {
+func RunKeyRemove(ctx context.Context, scopeID, name string, yes bool) error {
 	s, err := Open(ctx)
 	if err != nil {
 		return err
@@ -187,6 +188,9 @@ func RunKeyRemove(ctx context.Context, scopeID, name string) error {
 	if err != nil {
 		return err
 	}
+	if err := confirmDanger(yes, fmt.Sprintf("Remove key %q from %s?", name, scopeName(s, r.ScopeID))); err != nil {
+		return err
+	}
 	if err := s.RemoveTypedSecret(ctx, r.ScopeID, r.Name); err != nil {
 		return err
 	}
@@ -194,6 +198,7 @@ func RunKeyRemove(ctx context.Context, scopeID, name string) error {
 	if err := renderSSHWithSessionIfEnabled(s); err != nil {
 		stderrln("⚠ ssh render: %v", err)
 	}
+	hintSyncForPeers()
 	return nil
 }
 
@@ -235,6 +240,7 @@ func RunKeyMove(ctx context.Context, name, fromScope, toScope string, force bool
 	if err := renderSSHWithSessionIfEnabled(s); err != nil {
 		stderrln("⚠ ssh render: %v", err)
 	}
+	hintSyncForPeers()
 	return nil
 }
 

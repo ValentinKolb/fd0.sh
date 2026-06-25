@@ -124,6 +124,7 @@ func RunTalosSecretsImport(ctx context.Context, scopeFlag, name, inPath string) 
 	}
 	stderrln("✓ stored %d-byte secrets.yaml as %q in scope %s",
 		len(raw), name, scopeName(s, scope))
+	hintSyncForPeers()
 	return nil
 }
 

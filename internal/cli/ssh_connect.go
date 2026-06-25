@@ -37,13 +37,14 @@ func RunSSHConnect(ctx context.Context, name string, extra []string, anyTags []s
 	if err != nil {
 		return err
 	}
-	defer s.Close()
 	hosts, err := loadHosts(s, "")
 	if err != nil {
+		s.Close()
 		return err
 	}
 	hosts = filterHosts(hosts, anyTags, nil)
 	if len(hosts) == 0 {
+		s.Close()
 		return errors.New("no fd0-managed hosts; create one with `fd0 ssh add`")
 	}
 
@@ -51,18 +52,19 @@ func RunSSHConnect(ctx context.Context, name string, extra []string, anyTags []s
 	if name != "" {
 		exact := exactMatch(hosts, name)
 		if exact != nil {
-			return execSSH(exact.Alias, extra)
+			return renderAndExecSSH(s, exact.Alias, extra)
 		}
 		prefixed := prefixMatch(hosts, name)
 		if len(prefixed) == 1 {
-			return execSSH(prefixed[0].Alias, extra)
+			return renderAndExecSSH(s, prefixed[0].Alias, extra)
 		}
 		if len(prefixed) > 1 {
 			h, err := pickHost(prefixed)
 			if err != nil {
+				s.Close()
 				return err
 			}
-			return execSSH(h.Alias, extra)
+			return renderAndExecSSH(s, h.Alias, extra)
 		}
 		// Nothing matched — fall through to picker over the full list
 		// so the user sees what IS available.
@@ -71,9 +73,10 @@ func RunSSHConnect(ctx context.Context, name string, extra []string, anyTags []s
 
 	h, err := pickHost(hosts)
 	if err != nil {
+		s.Close()
 		return err
 	}
-	return execSSH(h.Alias, extra)
+	return renderAndExecSSH(s, h.Alias, extra)
 }
 
 // exactMatch looks for a host whose alias equals name (case-sensitive
@@ -140,6 +143,47 @@ func pickHost(hosts []*sshhost.Host) (*sshhost.Host, error) {
 	return nil, errors.New("picker returned unknown alias")
 }
 
+func renderAndExecSSH(s *Session, alias string, extra []string) error {
+	if err := renderSSHForConnect(s); err != nil {
+		s.Close()
+		return err
+	}
+	s.Close()
+	configPath, err := sshConnectConfigPath()
+	if err != nil {
+		return err
+	}
+	return execSSH(alias, extra, configPath)
+}
+
+func sshConnectConfigPath() (string, error) {
+	fd0Conf := SSHConfPath()
+	userCfg := sshhost.DefaultUserConfigPath()
+	included, err := sshhost.HasInclude(userCfg, fd0Conf)
+	if err != nil {
+		return "", err
+	}
+	if included {
+		return "", nil
+	}
+	path := SSHConnectConfigPath()
+	var b strings.Builder
+	fmt.Fprintf(&b, "Include %s\n", sshConfigPathLiteral(fd0Conf))
+	if _, err := os.Stat(userCfg); err == nil {
+		fmt.Fprintf(&b, "Include %s\n", sshConfigPathLiteral(userCfg))
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	if err := writeFileAtomic(path, []byte(b.String()), 0o600); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func sshConfigPathLiteral(path string) string {
+	return `"` + strings.ReplaceAll(path, `"`, `\"`) + `"`
+}
+
 // execSSH wraps ssh with the host alias and any extra argv. We use
 // exec (syscall.Exec) to REPLACE this fd0 process with ssh so signals
 // (SIGINT, SIGWINCH) reach ssh directly and the user's terminal
@@ -147,8 +191,13 @@ func pickHost(hosts []*sshhost.Host) (*sshhost.Host, error) {
 //
 // Fallback: if syscall.Exec isn't available (unlikely on Unix), fall
 // back to running ssh as a subprocess and forwarding its exit code.
-func execSSH(alias string, extra []string) error {
-	args := append([]string{"ssh", alias}, extra...)
+func execSSH(alias string, extra []string, configPath string) error {
+	args := []string{"ssh"}
+	if configPath != "" {
+		args = append(args, "-F", configPath)
+	}
+	args = append(args, alias)
+	args = append(args, extra...)
 	bin, err := exec.LookPath("ssh")
 	if err != nil {
 		return fmt.Errorf("ssh client not on PATH: %w", err)

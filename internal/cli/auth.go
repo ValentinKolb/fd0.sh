@@ -140,7 +140,7 @@ func RunAuthAdd(ctx context.Context) error {
 // RunAuthRemove removes a method from the active set and drops its vault
 // wrap. Refuses if the target is the currently-unlocked method or if it
 // would leave zero active methods.
-func RunAuthRemove(ctx context.Context, methodID string) error {
+func RunAuthRemove(ctx context.Context, methodID string, yes bool) error {
 	s, err := Open(ctx)
 	if err != nil {
 		return err
@@ -172,6 +172,9 @@ func RunAuthRemove(ctx context.Context, methodID string) error {
 	}
 	if len(newActive) == 0 {
 		return errors.New("refuse to remove the last auth method (would lock you out forever)")
+	}
+	if err := confirmDanger(yes, fmt.Sprintf("Remove auth method %s?", methodID)); err != nil {
+		return err
 	}
 	ev, err := chain.BuildUserAuthSet(AgentSigner{Agent: s.Agent}, s.UserSuperPub, uctx.TipSeq, uctx.TipHash, newActive)
 	if err != nil {

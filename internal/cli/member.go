@@ -3,7 +3,6 @@ package cli
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -61,15 +60,15 @@ func RunScopeAddMember(ctx context.Context, scopeID, memberCardOrLabel string) e
 	if err := s.ReSeal(); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "✓ added %s… to %s (oek=v%d)\n",
-		base64.StdEncoding.EncodeToString(memberPub)[:12],
-		scopeName(s, scopeID), ev.SignedPrefix.OEKVersion)
+	fmt.Fprintf(os.Stderr, "✓ added %s to %s (oek=v%d)\n",
+		memberDisplay(s, memberPub), scopeName(s, scopeID), ev.SignedPrefix.OEKVersion)
+	hintSyncForPeers()
 	return nil
 }
 
 // RunScopeRemoveMember removes the holder of memberCardOrLabel from scopeID.
 // Rotates the OEK on accept.
-func RunScopeRemoveMember(ctx context.Context, scopeID, memberCardOrLabel string) error {
+func RunScopeRemoveMember(ctx context.Context, scopeID, memberCardOrLabel string, yes bool) error {
 	s, err := Open(ctx)
 	if err != nil {
 		return err
@@ -98,8 +97,11 @@ func RunScopeRemoveMember(ctx context.Context, scopeID, memberCardOrLabel string
 		}
 	}
 	if !found {
-		return fmt.Errorf("%s… is not a member of %s",
-			base64.StdEncoding.EncodeToString(memberPub)[:12], scopeName(s, scopeID))
+		return fmt.Errorf("%s is not a member of %s",
+			memberDisplay(s, memberPub), scopeName(s, scopeID))
+	}
+	if err := confirmDanger(yes, fmt.Sprintf("Remove %s from %s?", memberDisplay(s, memberPub), scopeName(s, scopeID))); err != nil {
+		return err
 	}
 	proj := projectionFromIndex(st.SecretIndex)
 	ev, newOEK, err := chain.BuildMemberChange(
@@ -122,9 +124,9 @@ func RunScopeRemoveMember(ctx context.Context, scopeID, memberCardOrLabel string
 	if err := s.ReSeal(); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "✓ removed %s… from %s (oek=v%d)\n",
-		base64.StdEncoding.EncodeToString(memberPub)[:12],
-		scopeName(s, scopeID), ev.SignedPrefix.OEKVersion)
+	fmt.Fprintf(os.Stderr, "✓ removed %s from %s (oek=v%d)\n",
+		memberDisplay(s, memberPub), scopeName(s, scopeID), ev.SignedPrefix.OEKVersion)
+	hintSyncForPeers()
 	return nil
 }
 
@@ -147,7 +149,7 @@ func RunScopeRemoveMember(ctx context.Context, scopeID, memberCardOrLabel string
 //
 // `scope ls` and the read/write helpers filter out `Leaving` scopes so
 // they appear gone to the user immediately.
-func RunScopeLeave(ctx context.Context, scopeID string) error {
+func RunScopeLeave(ctx context.Context, scopeID string, yes bool) error {
 	s, err := Open(ctx)
 	if err != nil {
 		return err
@@ -159,6 +161,9 @@ func RunScopeLeave(ctx context.Context, scopeID string) error {
 	}
 	st, err := s.replayAndCheckScope(scopeID)
 	if err != nil {
+		return err
+	}
+	if err := confirmDanger(yes, fmt.Sprintf("Leave %s?", scopeName(s, scopeID))); err != nil {
 		return err
 	}
 	// Build the event with op=remove, member=self.
@@ -185,6 +190,7 @@ func RunScopeLeave(ctx context.Context, scopeID string) error {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "✓ left %s (will be dropped after next sync)\n", scopeName(nil, scopeID))
+	hintSyncForPeers()
 	return nil
 }
 
@@ -211,7 +217,7 @@ func RunScopeMembers(ctx context.Context, scopeID string) error {
 		if bytes.Equal(p, s.UserSuperPub) {
 			marker = "* "
 		}
-		fmt.Printf("%s%s\n", marker, base64.StdEncoding.EncodeToString(p))
+		fmt.Printf("%s%s\n", marker, memberDisplay(s, p))
 	}
 	return nil
 }
@@ -238,7 +244,22 @@ func RunScopeRename(ctx context.Context, scopeOrLabel, newLabel string) error {
 	} else {
 		fmt.Fprintf(os.Stderr, "✓ scope renamed: '%s' → '%s' (%s)\n", old, newLabel, shortScopeID(scopeID))
 	}
+	hintSyncForPeers()
 	return nil
+}
+
+func memberDisplay(s *Session, pub []byte) string {
+	if s != nil {
+		if bytes.Equal(pub, s.UserSuperPub) {
+			return "you (" + b64sub(pub) + "…)"
+		}
+		for label, pinned := range s.Body.PinnedIdentities {
+			if bytes.Equal(pub, pinned.SuperPub) {
+				return label + " (" + b64sub(pub) + "…)"
+			}
+		}
+	}
+	return b64sub(pub) + "…"
 }
 
 // projectionFromIndex builds a MemberProjection from the in-memory secret

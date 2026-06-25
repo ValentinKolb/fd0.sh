@@ -106,7 +106,7 @@ func RunRecoveryExport(ctx context.Context, outPath string) error {
 //
 // User MUST then run `fd0 sync` against a server to learn about scopes
 // they were a member of.
-func RunRecoveryImport(ctx context.Context, inPath string) error {
+func RunRecoveryImport(ctx context.Context, inPath string, yes bool) error {
 	paths, err := fdhome.Resolve()
 	if err != nil {
 		return err
@@ -119,6 +119,9 @@ func RunRecoveryImport(ctx context.Context, inPath string) error {
 	}
 	if _, err := os.Stat(paths.UserChain); err == nil {
 		return fmt.Errorf("user chain already exists at %s; remove it first", paths.UserChain)
+	}
+	if err := confirmDanger(yes, fmt.Sprintf("Bootstrap %s from recovery file %s?", paths.Home, inPath)); err != nil {
+		return err
 	}
 	data, err := os.ReadFile(inPath)
 	if err != nil {

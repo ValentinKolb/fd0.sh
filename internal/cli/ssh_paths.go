@@ -40,6 +40,16 @@ func SSHPubKeyDir() string {
 	return filepath.Join(filepath.Dir(conf), name+".d")
 }
 
+// SSHConnectConfigPath is the composite OpenSSH config used by
+// `fd0 ssh <alias>` when the user's ~/.ssh/config has not opted into
+// fd0 with `fd0 ssh enable`. It is fully regenerable.
+func SSHConnectConfigPath() string {
+	conf := SSHConfPath()
+	base := filepath.Base(conf)
+	name := strings.TrimSuffix(base, filepath.Ext(base)) // fd0.conf -> fd0
+	return filepath.Join(filepath.Dir(conf), name+".connect.conf")
+}
+
 // SSHSocketPathForRender returns the SSH-agent socket path that gets
 // embedded into each Host's IdentityAgent directive in fd0.conf.
 // Honours FD0_SSH_SOCK for tests / non-default deployments.

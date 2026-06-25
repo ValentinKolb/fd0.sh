@@ -71,6 +71,7 @@ type keyShowCmd struct {
 type keyRmCmd struct {
 	Name  string `arg:"" help:"Key name."`
 	Scope string `name:"scope" help:"Scope label or id."`
+	Yes   bool   `name:"yes" short:"y" help:"Do not prompt before removing."`
 }
 type keyMoveCmd struct {
 	Name    string `arg:"" help:"Key name."`
@@ -127,6 +128,7 @@ type sshShowCmd struct {
 type sshRmCmd struct {
 	Alias string `arg:"" help:"Host alias."`
 	Scope string `name:"scope" help:"Scope label or id."`
+	Yes   bool   `name:"yes" short:"y" help:"Do not prompt before removing."`
 }
 type sshTagCmd struct {
 	Alias  string   `arg:"" help:"Host alias."`
@@ -210,6 +212,7 @@ type talosShowCmd struct {
 type talosRmCmd struct {
 	Name  string `arg:"" help:"Context name."`
 	Scope string `name:"scope" help:"Scope label or id."`
+	Yes   bool   `name:"yes" short:"y" help:"Do not prompt before removing."`
 }
 type talosMoveCmd struct {
 	Name    string `arg:"" help:"Context name."`
@@ -299,6 +302,7 @@ type kubeShowCmd struct {
 type kubeRmCmd struct {
 	Name  string `arg:"" help:"Cluster name."`
 	Scope string `name:"scope" help:"Scope."`
+	Yes   bool   `name:"yes" short:"y" help:"Do not prompt before removing."`
 }
 type kubeMoveCmd struct {
 	Name    string `arg:"" help:"Cluster name."`
@@ -335,6 +339,7 @@ type setCmd struct {
 type rmCmd struct {
 	Name  string `arg:"" help:"Secret name."`
 	Scope string `name:"scope" help:"Scope label or id."`
+	Yes   bool   `name:"yes" short:"y" help:"Do not prompt before removing."`
 }
 type listCmd struct{}
 
@@ -342,10 +347,10 @@ type scopeCmd struct {
 	Create       scopeCreateCmd       `cmd:"" help:"Create a new scope."`
 	List         scopeListCmd         `cmd:"" aliases:"ls" help:"List scopes."`
 	Members      scopeMembersCmd      `cmd:"" help:"List members of a scope."`
-	AddMember    scopeAddMemberCmd    `cmd:"" name:"add-member" help:"Add a member by their card."`
+	AddMember    scopeAddMemberCmd    `cmd:"" name:"add-member" help:"Add a member by card URL or pinned label."`
 	RemoveMember scopeRemoveMemberCmd `cmd:"" name:"remove-member" help:"Remove a member."`
 	Leave        scopeLeaveCmd        `cmd:"" help:"Leave a scope (remove self + drop locally)."`
-	Rename       scopeRenameCmd       `cmd:"" help:"Rename a scope's label (local only in v1)."`
+	Rename       scopeRenameCmd       `cmd:"" help:"Rename a scope's shared label."`
 }
 type scopeCreateCmd struct {
 	Label string `name:"label" help:"Optional human-readable label."`
@@ -355,15 +360,17 @@ type scopeMembersCmd struct {
 	Scope string `arg:"" optional:"" help:"Scope label or id."`
 }
 type scopeAddMemberCmd struct {
-	Card  string `arg:"" help:"Member identity card (base64 super_pub)."`
+	Card  string `arg:"" help:"Member card URL or pinned label."`
 	Scope string `name:"scope" help:"Scope label or id."`
 }
 type scopeRemoveMemberCmd struct {
-	Card  string `arg:"" help:"Member identity card (base64 super_pub)."`
+	Card  string `arg:"" help:"Member card URL or pinned label."`
 	Scope string `name:"scope" help:"Scope label or id."`
+	Yes   bool   `name:"yes" short:"y" help:"Do not prompt before removing."`
 }
 type scopeLeaveCmd struct {
 	Scope string `arg:"" optional:"" help:"Scope label or id."`
+	Yes   bool   `name:"yes" short:"y" help:"Do not prompt before leaving."`
 }
 type scopeRenameCmd struct {
 	Scope    string `arg:"" help:"Scope label or id."`
@@ -385,6 +392,7 @@ type cardImportCmd struct {
 type cardListCmd struct{}
 type cardRemoveCmd struct {
 	Label string `arg:"" help:"Pinned label to unpin."`
+	Yes   bool   `name:"yes" short:"y" help:"Do not prompt before unpinning."`
 }
 
 type recoveryCmd struct {
@@ -395,7 +403,8 @@ type recoveryExportCmd struct {
 	Out string `arg:"" name:"out" help:"Output path for the recovery file."`
 }
 type recoveryImportCmd struct {
-	In string `arg:"" name:"in" help:"Path to the recovery file."`
+	In  string `arg:"" name:"in" help:"Path to the recovery file."`
+	Yes bool   `name:"yes" short:"y" help:"Do not prompt before bootstrapping this fd0 home."`
 }
 
 type syncCmd struct {
@@ -417,7 +426,8 @@ type authAddCmd struct {
 	Force   bool   `name:"force" help:"Overwrite an existing key on slot 9d without prompting (DESTRUCTIVE: invalidates any prior YubiKey enrollment binding to the same card)."`
 }
 type authRemoveCmd struct {
-	ID string `arg:"" help:"method_id (am_...) — see 'fd0 auth ls'."`
+	ID  string `arg:"" help:"method_id (am_...) — see 'fd0 auth ls'."`
+	Yes bool   `name:"yes" short:"y" help:"Do not prompt before removing."`
 }
 type versionCmd struct{}
 
@@ -460,6 +470,9 @@ func maybeAutoUnlock(kctx *kong.Context, c *rootCLI) error {
 	paths, err := fdhome.Resolve()
 	if err != nil {
 		return err
+	}
+	if !cli.VaultExists(paths) {
+		return fmt.Errorf("no vault found — run `fd0 init` first")
 	}
 	ac := agent.NewClient(paths.AgentSock)
 	if ac.IsRunning() {
@@ -555,7 +568,7 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 	case "set <name> <value>":
 		return cli.RunSecretSet(ctx, c.Set.Scope, c.Set.Name, c.Set.Value)
 	case "rm <name>":
-		return cli.RunSecretRemove(ctx, c.Rm.Scope, c.Rm.Name)
+		return cli.RunSecretRemove(ctx, c.Rm.Scope, c.Rm.Name, c.Rm.Yes)
 	case "list", "ls":
 		return cli.RunSecretList(ctx)
 	case "scope create":
@@ -567,9 +580,9 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 	case "scope add-member <card>":
 		return cli.RunScopeAddMember(ctx, c.Scope.AddMember.Scope, c.Scope.AddMember.Card)
 	case "scope remove-member <card>":
-		return cli.RunScopeRemoveMember(ctx, c.Scope.RemoveMember.Scope, c.Scope.RemoveMember.Card)
+		return cli.RunScopeRemoveMember(ctx, c.Scope.RemoveMember.Scope, c.Scope.RemoveMember.Card, c.Scope.RemoveMember.Yes)
 	case "scope leave", "scope leave <scope>":
-		return cli.RunScopeLeave(ctx, c.Scope.Leave.Scope)
+		return cli.RunScopeLeave(ctx, c.Scope.Leave.Scope, c.Scope.Leave.Yes)
 	case "scope rename <scope> <new-label>":
 		return cli.RunScopeRename(ctx, c.Scope.Rename.Scope, c.Scope.Rename.NewLabel)
 	case "card export":
@@ -579,11 +592,11 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 	case "card list", "card ls":
 		return cli.RunCardList(ctx)
 	case "card rm <label>":
-		return cli.RunCardRemove(ctx, c.Card.Remove.Label)
+		return cli.RunCardRemove(ctx, c.Card.Remove.Label, c.Card.Remove.Yes)
 	case "recovery export <out>":
 		return cli.RunRecoveryExport(ctx, c.Recovery.Export.Out)
 	case "recovery import <in>":
-		return cli.RunRecoveryImport(ctx, c.Recovery.Import.In)
+		return cli.RunRecoveryImport(ctx, c.Recovery.Import.In, c.Recovery.Import.Yes)
 	case "sync":
 		if c.Sync.WaitLock != "" {
 			os.Setenv("FD0_LOCK_WAIT", c.Sync.WaitLock)
@@ -599,7 +612,7 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 		}
 		return cli.RunAuthAdd(ctx)
 	case "auth rm <id>":
-		return cli.RunAuthRemove(ctx, c.Auth.Remove.ID)
+		return cli.RunAuthRemove(ctx, c.Auth.Remove.ID, c.Auth.Remove.Yes)
 	case "version":
 		fmt.Printf("fd0 %s\n", version)
 		return nil
@@ -620,7 +633,7 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 	case "key show <name>":
 		return cli.RunKeyShow(ctx, c.Key.Show.Scope, c.Key.Show.Name, c.Key.Show.Pub)
 	case "key rm <name>":
-		return cli.RunKeyRemove(ctx, c.Key.Rm.Scope, c.Key.Rm.Name)
+		return cli.RunKeyRemove(ctx, c.Key.Rm.Scope, c.Key.Rm.Name, c.Key.Rm.Yes)
 	case "key move <name>":
 		return cli.RunKeyMove(ctx, c.Key.Move.Name, c.Key.Move.From, c.Key.Move.ToScope, c.Key.Move.Force)
 
@@ -654,7 +667,7 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 	case "ssh show <alias>":
 		return cli.RunHostShow(ctx, c.Ssh.Show.Scope, c.Ssh.Show.Alias)
 	case "ssh rm <alias>":
-		return cli.RunHostRemove(ctx, c.Ssh.Rm.Scope, c.Ssh.Rm.Alias)
+		return cli.RunHostRemove(ctx, c.Ssh.Rm.Scope, c.Ssh.Rm.Alias, c.Ssh.Rm.Yes)
 	case "ssh tag <alias>":
 		return cli.RunHostTag(ctx, c.Ssh.Tag.Scope, c.Ssh.Tag.Alias, c.Ssh.Tag.Add, c.Ssh.Tag.Remove)
 	case "ssh move <alias>":
@@ -703,7 +716,7 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 	case "talos show <name>":
 		return cli.RunTalosShow(ctx, c.Talos.Show.Scope, c.Talos.Show.Name)
 	case "talos rm <name>":
-		return cli.RunTalosRemove(ctx, c.Talos.Rm.Scope, c.Talos.Rm.Name)
+		return cli.RunTalosRemove(ctx, c.Talos.Rm.Scope, c.Talos.Rm.Name, c.Talos.Rm.Yes)
 	case "talos move <name>":
 		return cli.RunTalosMove(ctx, c.Talos.Move.Name, c.Talos.Move.From, c.Talos.Move.ToScope, c.Talos.Move.Force)
 	case "talos sync":
@@ -764,7 +777,7 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 	case "kube show <name>":
 		return cli.RunKubeShow(ctx, c.Kube.Show.Scope, c.Kube.Show.Name)
 	case "kube rm <name>":
-		return cli.RunKubeRemove(ctx, c.Kube.Rm.Scope, c.Kube.Rm.Name)
+		return cli.RunKubeRemove(ctx, c.Kube.Rm.Scope, c.Kube.Rm.Name, c.Kube.Rm.Yes)
 	case "kube move <name>":
 		return cli.RunKubeMove(ctx, c.Kube.Move.Name, c.Kube.Move.From, c.Kube.Move.ToScope, c.Kube.Move.Force)
 	case "kube sync":

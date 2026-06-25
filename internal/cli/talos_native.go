@@ -250,7 +250,11 @@ func RunTalosNew(ctx context.Context, o TalosNewOpts) error {
 	stderrln("  once you've handed off the install configs:")
 	stderrln("      shred -u %s", secretsPath)
 
-	return renderAndAutoMergeTalos(s)
+	if err := renderAndAutoMergeTalos(s); err != nil {
+		return err
+	}
+	hintSyncForPeers()
+	return nil
 }
 
 // runTalosctl is the thin subprocess wrapper. Streams talosctl's
@@ -384,7 +388,11 @@ func RunTalosRoleAdd(ctx context.Context, o TalosRoleAddOpts) error {
 		return err
 	}
 	stderrln("✓ stored %q (role: %s, scope: %s)", c.Name, c.Role, scopeName(s, scope))
-	return renderAndAutoMergeTalos(s)
+	if err := renderAndAutoMergeTalos(s); err != nil {
+		return err
+	}
+	hintSyncForPeers()
+	return nil
 }
 
 // RunTalosKubeconfig calls `talosctl --context X kubeconfig -` to

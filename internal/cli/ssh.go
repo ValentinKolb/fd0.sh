@@ -29,15 +29,15 @@ const hostNamePrefix = "host:"
 // HostAddOpts bundles every flag `fd0 ssh add` understands. The
 // command in cmd/fd0/main.go wires kong flags into this struct.
 type HostAddOpts struct {
-	Alias       string            // `fd0 ssh add Alias ...`
-	ConnString  string            // optional `[user@]host[:port]`
-	Hostname    string            // overrides ConnString.host
-	User        string            // overrides ConnString.user
-	Port        int               // overrides ConnString.port
-	KeyName     string            // existing fd0 key to reference
-	WithKey     bool              // generate a new key (name = Alias unless WithKeyName)
-	WithKeyName string            // custom name for the generated key
-	ProxyJump   string            // SSH alias to jump through
+	Alias       string // `fd0 ssh add Alias ...`
+	ConnString  string // optional `[user@]host[:port]`
+	Hostname    string // overrides ConnString.host
+	User        string // overrides ConnString.user
+	Port        int    // overrides ConnString.port
+	KeyName     string // existing fd0 key to reference
+	WithKey     bool   // generate a new key (name = Alias unless WithKeyName)
+	WithKeyName string // custom name for the generated key
+	ProxyJump   string // SSH alias to jump through
 	Tags        []string
 	Description string
 	Options     map[string]string
@@ -152,6 +152,7 @@ func RunHostAdd(ctx context.Context, o HostAddOpts) error {
 	if err := renderAndWarn(s); err != nil {
 		stderrln("⚠ render: %v", err)
 	}
+	hintSyncForPeers()
 	return nil
 }
 
@@ -257,7 +258,7 @@ func RunHostShow(ctx context.Context, scopeID, alias string) error {
 }
 
 // RunHostRemove tombstones the host. The next render drops the entry.
-func RunHostRemove(ctx context.Context, scopeID, alias string) error {
+func RunHostRemove(ctx context.Context, scopeID, alias string, yes bool) error {
 	s, err := Open(ctx)
 	if err != nil {
 		return err
@@ -267,6 +268,9 @@ func RunHostRemove(ctx context.Context, scopeID, alias string) error {
 	if err != nil {
 		return err
 	}
+	if err := confirmDanger(yes, fmt.Sprintf("Remove SSH host %q from %s?", alias, scopeName(s, r.ScopeID))); err != nil {
+		return err
+	}
 	if err := s.RemoveTypedSecret(ctx, r.ScopeID, r.Name); err != nil {
 		return err
 	}
@@ -274,6 +278,7 @@ func RunHostRemove(ctx context.Context, scopeID, alias string) error {
 	if err := renderAndWarn(s); err != nil {
 		stderrln("⚠ render: %v", err)
 	}
+	hintSyncForPeers()
 	return nil
 }
 
@@ -317,6 +322,7 @@ func RunHostTag(ctx context.Context, scopeID, alias string, add, remove []string
 	if err := renderAndWarn(s); err != nil {
 		stderrln("⚠ render: %v", err)
 	}
+	hintSyncForPeers()
 	return nil
 }
 
@@ -356,6 +362,7 @@ func RunHostMove(ctx context.Context, alias, fromScope, toScope string, force bo
 	if err := renderAndWarn(s); err != nil {
 		stderrln("⚠ render: %v", err)
 	}
+	hintSyncForPeers()
 	return nil
 }
 
@@ -440,6 +447,14 @@ func decodeHost(r TypedRecord) (*sshhost.Host, error) {
 // warning to stderr if the user's ssh_config doesn't reference our
 // path. Idempotent — same vault state = same bytes on disk.
 func renderAndWarn(s *Session) error {
+	return renderSSHConfig(s, true)
+}
+
+func renderSSHForConnect(s *Session) error {
+	return renderSSHConfig(s, false)
+}
+
+func renderSSHConfig(s *Session, warnInclude bool) error {
 	hosts, err := loadHosts(s, "")
 	if err != nil {
 		return err
@@ -477,7 +492,9 @@ func renderAndWarn(s *Session) error {
 	if err := writeManagedFile(target, bytes, "hosts", len(hosts)); err != nil {
 		return err
 	}
-	checkInclude(target)
+	if warnInclude {
+		checkInclude(target)
+	}
 	return nil
 }
 

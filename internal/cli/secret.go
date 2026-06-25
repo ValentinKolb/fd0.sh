@@ -84,6 +84,7 @@ func RunScopeCreate(ctx context.Context, label string) error {
 	} else {
 		fmt.Fprintf(os.Stderr, "✓ scope created (%s)\n", shortScopeID(scopeIDStr))
 	}
+	hintSync()
 	return nil
 }
 
@@ -213,6 +214,7 @@ func RunSecretSet(ctx context.Context, scopeID, name, value string) error {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "✓ %s set in %s\n", name, scopeName(s, scopeID))
+	hintSyncForPeers()
 	return nil
 }
 
@@ -378,7 +380,7 @@ func CollectAllSecrets(ctx context.Context) ([]SecretEntry, *Session, error) {
 // event with record=nil. The id stays referenced in the chain (replay sets
 // SecretIndex[id].Record = nil) so subsequent reads return "not found" and
 // listings skip it.
-func RunSecretRemove(ctx context.Context, scopeID, name string) error {
+func RunSecretRemove(ctx context.Context, scopeID, name string, yes bool) error {
 	s, err := Open(ctx)
 	if err != nil {
 		return err
@@ -406,6 +408,9 @@ func RunSecretRemove(ctx context.Context, scopeID, name string) error {
 	if sid == "" {
 		return fmt.Errorf("secret %q not found in scope %s", name, scopeName(s, scopeID))
 	}
+	if err := confirmDanger(yes, fmt.Sprintf("Remove secret %q from %s?", name, scopeName(s, scopeID))); err != nil {
+		return err
+	}
 	sd := s.Body.Scopes[scopeID]
 	var curOEK proto.OEKEntry
 	for _, e := range sd.OEKs {
@@ -431,6 +436,7 @@ func RunSecretRemove(ctx context.Context, scopeID, name string) error {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "✓ %s removed from %s\n", name, scopeName(s, scopeID))
+	hintSyncForPeers()
 	return nil
 }
 
