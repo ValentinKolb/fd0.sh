@@ -61,21 +61,20 @@ type pullCursor struct {
 // v1 is intentionally minimal: push is a single best-effort attempt; pull
 // covers every locally-known scope from cursor=local_tip.
 //
-// As of v0.0.4 RunSync is the SINGLE-server inner loop. The multi-server
-// dispatcher (RunSyncAll) wraps this, iterating one call per configured
-// server. Callers that want defaults / config / env resolution should
-// go through RunSyncAll(ResolveServers(flag)); the bare-server entry
-// here is for explicit, single-target invocations (tests, scripts).
+// RunSync targets one server. RunSyncPrimary wraps it with config/env/flag
+// resolution + post-success compaction and is the entry point most callers
+// want; the bare-server entry here is for explicit, single-target
+// invocations (tests, scripts). Passing "" resolves the primary like
+// RunSyncPrimary does.
 func RunSync(ctx context.Context, server string) error {
 	if server == "" {
-		// Resolve from env/config. RunSyncAll is the preferred entry
-		// point; defer to it for the single-primary invariant (0 or >1
-		// configured servers is an error with operator guidance).
-		servers := ResolveServers("")
-		if len(servers) != 1 {
-			return RunSyncAll(ctx, servers)
+		// Resolve the single primary from flag/env/config. A stale pre-A1
+		// [sync].servers array errors here with migration guidance.
+		resolved, err := ResolvePrimary("")
+		if err != nil {
+			return err
 		}
-		server = servers[0]
+		server = resolved
 	}
 	paths, _ := fdhome.Resolve()
 	cfg, _ := fdhome.LoadConfig(paths.Config)
@@ -592,7 +591,7 @@ func RunSync(ctx context.Context, server string) error {
 	}
 	// Compaction is intentionally NOT run here. It rewrites the local
 	// chain into a non-contiguous form (STORAGE.md §5.4), which is only
-	// safe once the primary has converged to THIS tip. RunSyncAll runs
+	// safe once the primary has converged to THIS tip. RunSyncPrimary runs
 	// CompactScopes once, after a successful round.
 	fmt.Fprintf(os.Stderr, "✓ sync ok (pushed=%d dup=%d)\n", pushed, dups)
 	return nil
@@ -615,10 +614,9 @@ func summarizeReasons(m map[string]int) string {
 }
 
 // CompactScopes opens a session and runs best-effort compaction across
-// every scope chain. Split out of RunSync (where it used to run after
-// every per-server round) so the multi-server dispatcher can gate it on
-// ALL replicas having converged — see RunSyncAll and the comment at the
-// old call site above.
+// every scope chain. Split out of RunSync so the single-primary entry
+// point (RunSyncPrimary) runs it once, only after the primary has accepted
+// this round — see the comment at the call site above.
 func CompactScopes(ctx context.Context) error {
 	s, err := Open(ctx)
 	if err != nil {

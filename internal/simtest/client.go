@@ -65,14 +65,23 @@ func (h *Harness) AddClientWithServers(name string, servers []string) *Client {
 
 func (c *Client) writeConfig() {
 	var b strings.Builder
-	b.WriteString("[sync]\nservers = [")
-	for i, u := range c.servers {
-		if i > 0 {
-			b.WriteString(", ")
+	b.WriteString("[sync]\n")
+	if len(c.servers) == 1 {
+		// A1: one primary -> the singular `server` key.
+		fmt.Fprintf(&b, "server = %q\n", c.servers[0])
+	} else {
+		// Zero or several -> emit the deprecated `servers` array to
+		// exercise the migration rejection (TestMultiServerConfigIsRejected).
+		b.WriteString("servers = [")
+		for i, u := range c.servers {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			fmt.Fprintf(&b, "%q", u)
 		}
-		fmt.Fprintf(&b, "%q", u)
+		b.WriteString("]\n")
 	}
-	b.WriteString("]\non_unlock = false\n")
+	b.WriteString("on_unlock = false\n")
 	mustWrite(c.h.t, filepath.Join(c.home, "config.toml"), b.String())
 }
 

@@ -2,6 +2,7 @@ package fdhome
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"time"
 
@@ -73,13 +74,11 @@ type SyncConfig struct {
 	// Servers are set, Servers wins. Falls back to FD0_SERVER env
 	// downstream if both are empty.
 	Server string `toml:"server"`
-	// Servers is the configured server list. fd0 writes/reads to a SINGLE
-	// primary (see REPLICATION.md): a scope has exactly one ordering
-	// authority, so replicas can never diverge. A config listing more than
-	// one server is therefore a hard error (RunSyncAll surfaces it) — for
-	// redundancy run a server-side DR backup (FD0_REPLICATE_FROM), not a
-	// second write target. Empty falls back to Server, then env, then
-	// DefaultServers.
+	// Servers is the REMOVED pre-A1 multi-server array. It is kept in the
+	// struct only so a stale config is rejected with a clear migration
+	// message (ResolvedServer) — without the field, TOML would silently
+	// ignore the key and fall back to the default server. Do not read it
+	// for resolution; use Server.
 	Servers []string `toml:"servers"`
 	// Interval as Go duration string ("1h", "5m"). Empty/zero disables.
 	Interval string `toml:"interval"`
@@ -88,38 +87,25 @@ type SyncConfig struct {
 	OnUnlock *bool `toml:"on_unlock"`
 }
 
-// DefaultServers is the hard-coded fallback when the user has neither
-// Sync.Servers, Sync.Server, nor FD0_SERVER set. Points at the hosted
-// fd0.sh primary described in docs/HOSTING.md — a self-hoster who runs
-// `fd0 init` against their own server immediately overwrites this by
-// writing config.toml. Exactly one entry: fd0 has a single write/read
-// authority; redundancy is a server-side DR backup, not a second URL.
-var DefaultServers = []string{
-	"https://api.fd0.sh",
-}
+// DefaultServer is the hosted primary used when neither [sync].server nor
+// FD0_SERVER is set (docs/HOSTING.md). A self-hoster who runs `fd0 init`
+// against their own server overwrites this by writing config.toml. fd0 has
+// a single write/read authority; redundancy is a server-side DR backup,
+// not a second URL.
+var DefaultServer = "https://api.fd0.sh"
 
-// ResolvedServers returns the effective server list, applying the
-// precedence: explicit Servers > legacy singular Server > defaults.
-// Callers add the flag/env override one level up — this stays config-
-// only so it's pure and unit-testable. The single-primary invariant
-// (len <= 1) is enforced by the sync entry point, not here, so this
-// stays a pure projection of config.
-func (c SyncConfig) ResolvedServers() []string {
+// ResolvedServer returns the configured primary: Server, else DefaultServer.
+// A still-present [sync].servers is a hard error — it was the multi-push
+// model removed in A1; the message tells the operator to use `server`.
+// Pure (config-only); flag/env override is applied one level up.
+func (c SyncConfig) ResolvedServer() (string, error) {
 	if len(c.Servers) > 0 {
-		out := make([]string, 0, len(c.Servers))
-		for _, s := range c.Servers {
-			if s != "" {
-				out = append(out, s)
-			}
-		}
-		if len(out) > 0 {
-			return out
-		}
+		return "", fmt.Errorf("[sync].servers is no longer supported — fd0 writes to a single primary; replace it with:  server = %q  (see docs/REPLICATION.md)", c.Servers[0])
 	}
 	if c.Server != "" {
-		return []string{c.Server}
+		return c.Server, nil
 	}
-	return append([]string(nil), DefaultServers...)
+	return DefaultServer, nil
 }
 
 // OnUnlockEnabled returns the effective on-unlock flag. Default is true

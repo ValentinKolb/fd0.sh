@@ -227,13 +227,14 @@ if [ -z "$CURRENT" ]; then
 # fd0 client configuration. See https://github.com/${REPO}#configuration
 # for the full reference.
 #
-# By default the client targets the hosted fd0.sh instance (both
-# replicas, multi-pushed). Override by uncommenting [sync].servers
-# below; or use the singular [sync].server key when targeting one
-# self-hosted server.
+# By default the client targets the hosted fd0.sh primary (api.fd0.sh).
+# fd0 writes and reads a SINGLE primary server — one ordering authority
+# per scope, so replicas can never diverge. For your own server, set
+# [sync].server below. For redundancy run a server-side DR backup
+# (FD0_REPLICATE_FROM), not a second write target.
 
 # [sync]
-# servers   = ["https://your-server.example", "https://your-replica.example"]
+# server    = "https://your-server.example"
 # interval  = "1h"
 # on_unlock = true
 EOF
