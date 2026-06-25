@@ -28,13 +28,13 @@ const keyNamePrefix = "ssh:"
 // `fd0 key add --import` so the command wiring in cmd/fd0/main.go
 // stays minimal.
 type KeyOpts struct {
-	Name        string
-	Scope       string
-	Type        string // "ed25519" for new; empty defers to import path
-	Comment     string
-	ImportPath  string // when non-empty, import from this path
-	Passphrase  string // for encrypted import; rarely used non-interactively
-	Force       bool   // overwrite an existing key with the same name
+	Name       string
+	Scope      string
+	Type       string // "ed25519" for new; empty defers to import path
+	Comment    string
+	ImportPath string // when non-empty, import from this path
+	Passphrase string // for encrypted import; rarely used non-interactively
+	Force      bool   // overwrite an existing key with the same name
 }
 
 // RunKeyAdd generates a new ed25519 key or imports an existing
@@ -91,6 +91,9 @@ func RunKeyAdd(ctx context.Context, o KeyOpts) error {
 
 	if err := s.SetTypedSecret(ctx, scope, keyNamePrefix+o.Name, string(k.Type), k.Marshal()); err != nil {
 		return err
+	}
+	if err := renderSSHWithSessionIfEnabled(s); err != nil {
+		stderrln("⚠ ssh render: %v", err)
 	}
 
 	// Print the public-key line right after add — the user's next
@@ -188,6 +191,9 @@ func RunKeyRemove(ctx context.Context, scopeID, name string) error {
 		return err
 	}
 	stderrln("✓ removed key %q from %s", name, scopeName(s, r.ScopeID))
+	if err := renderSSHWithSessionIfEnabled(s); err != nil {
+		stderrln("⚠ ssh render: %v", err)
+	}
 	return nil
 }
 
@@ -226,6 +232,9 @@ func RunKeyMove(ctx context.Context, name, fromScope, toScope string, force bool
 			name, scopeName(s, dest), scopeName(s, r.ScopeID), err, name, scopeName(s, r.ScopeID))
 	}
 	stderrln("✓ moved key %q: %s → %s", name, scopeName(s, r.ScopeID), scopeName(s, dest))
+	if err := renderSSHWithSessionIfEnabled(s); err != nil {
+		stderrln("⚠ ssh render: %v", err)
+	}
 	return nil
 }
 

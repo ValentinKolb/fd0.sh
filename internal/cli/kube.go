@@ -19,7 +19,7 @@ type KubeAddOpts struct {
 
 	Server string
 
-	CA   string
+	CA     string
 	CAFile string
 
 	ClientCert     string
@@ -95,7 +95,7 @@ func RunKubeAdd(ctx context.Context, o KubeAddOpts) error {
 		return err
 	}
 	stderrln("✓ added kubeconfig %q (scope: %s)", k.Name, scopeName(s, scope))
-	return renderAndWarnKube(s)
+	return renderAndAutoMergeKube(s)
 }
 
 func buildKubeconfigFromOpts(o *KubeAddOpts) (*kubeconfig.Kubeconfig, error) {
@@ -188,7 +188,7 @@ func addKubeconfigBytesOnSession(ctx context.Context, s *Session, scopeID, defau
 		return err
 	}
 	stderrln("✓ stored kubeconfig %q (scope: %s)", k.Name, scopeName(s, scopeID))
-	return renderAndWarnKube(s)
+	return renderAndAutoMergeKube(s)
 }
 
 // appendUnique appends tag to tags if not already present.
@@ -265,7 +265,7 @@ func importKubeconfigBytes(ctx context.Context, s *Session, scopeID string, raw 
 		}
 		return fmt.Errorf("--from-config: no kubeconfigs stored")
 	}
-	return renderAndWarnKube(s)
+	return renderAndAutoMergeKube(s)
 }
 
 func storeKubeconfig(ctx context.Context, s *Session, scopeID string, k *kubeconfig.Kubeconfig) error {
@@ -353,7 +353,7 @@ func RunKubeRemove(ctx context.Context, scopeID, name string) error {
 		return err
 	}
 	stderrln("✓ removed kubeconfig %q from scope %s", k.Name, scopeName(s, k.Scope))
-	return renderAndWarnKube(s)
+	return renderAndAutoMergeKube(s)
 }
 
 func RunKubeMove(ctx context.Context, name, fromScope, toScope string, force bool) error {
@@ -389,7 +389,30 @@ func RunKubeMove(ctx context.Context, name, fromScope, toScope string, force boo
 			name, scopeName(s, to), scopeName(s, r.ScopeID), err, name, scopeName(s, r.ScopeID))
 	}
 	stderrln("✓ moved kube %q: %s → %s", name, scopeName(s, r.ScopeID), scopeName(s, to))
-	return renderAndWarnKube(s)
+	return renderAndAutoMergeKube(s)
+}
+
+func RunKubeEnable(ctx context.Context, merge bool) error {
+	if err := RunKubeSync(ctx, merge); err != nil {
+		return err
+	}
+	if err := setProjectionConfig("kube", true, merge); err != nil {
+		return err
+	}
+	stderrln("✓ kube auto-refresh enabled")
+	if merge {
+		stderrln("✓ kube auto-merge enabled")
+	}
+	return nil
+}
+
+func RunKubeDisable(_ context.Context) error {
+	if err := setProjectionConfig("kube", false, false); err != nil {
+		return err
+	}
+	stderrln("✓ kube auto-refresh disabled")
+	stderrln("  generated config left at %s", kubeconfPath())
+	return nil
 }
 
 func RunKubeSync(ctx context.Context, merge bool) error {
@@ -412,6 +435,9 @@ func RunKubeSync(ctx context.Context, merge bool) error {
 			return err
 		}
 		stderrln("✓ merged into %s", userKubeconfigPath())
+		if err := setProjectionConfig("kube", true, true); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -429,6 +455,14 @@ func renderAndWarnKube(s *Session) error {
 		stderrln("⚠ %s", w)
 	}
 	return writeManagedFile(kubeconfPath(), bytes, "clusters", len(configs))
+}
+
+func renderAndAutoMergeKube(s *Session) error {
+	if err := renderAndWarnKube(s); err != nil {
+		return err
+	}
+	autoMergeKubeIfEnabled()
+	return nil
 }
 
 func loadKubeconfigs(s *Session, scopeID string) ([]*kubeconfig.Kubeconfig, error) {

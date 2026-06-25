@@ -90,27 +90,6 @@ func RunSSHSock(_ context.Context) error {
 	return nil
 }
 
-// renderSSHIfEnabled refreshes the generated ssh_config after sync, but
-// only for users who already opted in by including fd0.conf from
-// ~/.ssh/config. Sync should not create surprise SSH artifacts for users
-// who only store SSH inventory inside fd0.
-func renderSSHIfEnabled(ctx context.Context) error {
-	confPath := SSHConfPath()
-	enabled, err := sshhost.HasInclude(sshhost.DefaultUserConfigPath(), confPath)
-	if err != nil {
-		return fmt.Errorf("check ssh include: %w", err)
-	}
-	if !enabled {
-		return nil
-	}
-	s, err := Open(ctx)
-	if err != nil {
-		return err
-	}
-	defer s.Close()
-	return renderAndWarn(s)
-}
-
 // ensureEmptyFD0Conf creates a placeholder fd0.conf if none exists,
 // so `Include ~/.ssh/fd0.conf` doesn't error when ssh parses it
 // before the first render.

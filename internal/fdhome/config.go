@@ -17,6 +17,8 @@ type Config struct {
 	Client    ClientConfig     `toml:"client"`
 	Agent     AgentConfig      `toml:"agent"`
 	Clipboard ClipboardConfig  `toml:"clipboard"`
+	Kube      ProjectionConfig `toml:"kube"`
+	Talos     ProjectionConfig `toml:"talos"`
 	Witnesses []WitnessConfig  `toml:"witness"`        // [[witness]] entries
 	WitnessP  WitnessPolicy    `toml:"witness_policy"` // global cross-check policy
 }
@@ -65,6 +67,15 @@ type ClientConfig struct {
 	// LockWait is a Go duration string ("10s", "1m"). Empty = fail fast on
 	// flock contention. Overridden by FD0_LOCK_WAIT env when set.
 	LockWait string `toml:"lock_wait"`
+}
+
+// ProjectionConfig records local integration state for generated tool
+// configs. Enabled is a pointer so the CLI can distinguish "not configured
+// yet" from "explicitly disabled"; existing generated files act as a
+// migration fallback only when Enabled is absent.
+type ProjectionConfig struct {
+	Enabled   *bool `toml:"enabled"`
+	AutoMerge bool  `toml:"auto_merge"`
 }
 
 // SyncConfig drives the agent-managed background sync.

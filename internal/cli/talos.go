@@ -121,7 +121,7 @@ func RunTalosAdd(ctx context.Context, o TalosAddOpts) error {
 		return err
 	}
 	stderrln("✓ added talos context %q (scope: %s)", c.Name, scopeName(s, scopeID))
-	return renderAndWarnTalos(s)
+	return renderAndAutoMergeTalos(s)
 }
 
 func buildTalosContextFromOpts(o *TalosAddOpts) (*talosctx.TalosContext, error) {
@@ -195,7 +195,7 @@ func importTalosconfigContexts(ctx context.Context, s *Session, scopeID string, 
 		}
 		stderrln("✓ imported %q from %s (scope: %s)", c.Name, o.FromConfig, scopeName(s, scopeID))
 	}
-	return renderAndWarnTalos(s)
+	return renderAndAutoMergeTalos(s)
 }
 
 func storeTalosContext(ctx context.Context, s *Session, scopeID string, c *talosctx.TalosContext) error {
@@ -292,7 +292,7 @@ func RunTalosRemove(ctx context.Context, scopeID, name string) error {
 		return err
 	}
 	stderrln("✓ removed talos context %q from scope %s", target.Name, scopeName(s, target.Scope))
-	return renderAndWarnTalos(s)
+	return renderAndAutoMergeTalos(s)
 }
 
 // RunTalosMove moves a context between scopes (you must own both).
@@ -340,7 +340,30 @@ func RunTalosMove(ctx context.Context, name, fromScope, toScope string, force bo
 			name, scopeName(s, to), scopeName(s, r.ScopeID), err, name, scopeName(s, r.ScopeID))
 	}
 	stderrln("✓ moved talos %q: %s → %s", name, scopeName(s, r.ScopeID), scopeName(s, to))
-	return renderAndWarnTalos(s)
+	return renderAndAutoMergeTalos(s)
+}
+
+func RunTalosEnable(ctx context.Context, merge bool) error {
+	if err := RunTalosSync(ctx, merge); err != nil {
+		return err
+	}
+	if err := setProjectionConfig("talos", true, merge); err != nil {
+		return err
+	}
+	stderrln("✓ talos auto-refresh enabled")
+	if merge {
+		stderrln("✓ talos auto-merge enabled")
+	}
+	return nil
+}
+
+func RunTalosDisable(_ context.Context) error {
+	if err := setProjectionConfig("talos", false, false); err != nil {
+		return err
+	}
+	stderrln("✓ talos auto-refresh disabled")
+	stderrln("  generated config left at %s", talosconfPath())
+	return nil
 }
 
 // RunTalosSync re-renders ~/.talos/config.fd0 from the current vault
@@ -368,6 +391,9 @@ func RunTalosSync(ctx context.Context, merge bool) error {
 			return err
 		}
 		stderrln("✓ merged into %s", userTalosconfigPath())
+		if err := setProjectionConfig("talos", true, true); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -389,6 +415,14 @@ func renderAndWarnTalos(s *Session) error {
 		stderrln("⚠ %s", w)
 	}
 	return writeManagedFile(talosconfPath(), bytes, "contexts", len(contexts))
+}
+
+func renderAndAutoMergeTalos(s *Session) error {
+	if err := renderAndWarnTalos(s); err != nil {
+		return err
+	}
+	autoMergeTalosIfEnabled()
+	return nil
 }
 
 func loadTalosContexts(s *Session, scopeID string) ([]*talosctx.TalosContext, error) {

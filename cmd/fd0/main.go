@@ -148,12 +148,14 @@ type sshConnectCmd struct {
 
 // ───── talos ──────────────────────────────────────────────────────────
 type talosCmd struct {
-	Add  talosAddCmd  `cmd:"" help:"Import an existing talosconfig context (or one from --from-config)."`
-	New  talosNewCmd  `cmd:"" help:"Day-0: generate cluster PKI + talosconfig from scratch (calls talosctl)."`
-	List talosListCmd `cmd:"" aliases:"ls" help:"List talos contexts."`
-	Show talosShowCmd `cmd:"" help:"Show one talos context."`
-	Rm   talosRmCmd   `cmd:"" help:"Remove a talos context (tombstone)."`
-	Move talosMoveCmd `cmd:"" help:"Move a talos context between scopes."`
+	Enable  talosEnableCmd  `cmd:"" help:"Enable automatic talosconfig refresh after fd0 sync."`
+	Disable talosDisableCmd `cmd:"" help:"Disable automatic talosconfig refresh after fd0 sync."`
+	Add     talosAddCmd     `cmd:"" help:"Import an existing talosconfig context (or one from --from-config)."`
+	New     talosNewCmd     `cmd:"" help:"Day-0: generate cluster PKI + talosconfig from scratch (calls talosctl)."`
+	List    talosListCmd    `cmd:"" aliases:"ls" help:"List talos contexts."`
+	Show    talosShowCmd    `cmd:"" help:"Show one talos context."`
+	Rm      talosRmCmd      `cmd:"" help:"Remove a talos context (tombstone)."`
+	Move    talosMoveCmd    `cmd:"" help:"Move a talos context between scopes."`
 
 	Sync       talosSyncCmd       `cmd:"" help:"Re-render ~/.talos/config.fd0 (and merge with --merge)."`
 	RoleAdd    talosRoleAddCmd    `cmd:"" name:"role-add" help:"Mint a role-scoped client cert via talosctl + store it."`
@@ -162,6 +164,10 @@ type talosCmd struct {
 	Secrets talosSecretsCmd `cmd:"" help:"DR-grade secrets.yaml bundles."`
 }
 
+type talosEnableCmd struct {
+	Merge bool `name:"merge" help:"After every fd0 sync, also merge fd0 contexts into ~/.talos/config."`
+}
+type talosDisableCmd struct{}
 type talosAddCmd struct {
 	Name          string   `arg:"" optional:"" help:"Context name. Required unless --from-config."`
 	Endpoint      []string `name:"endpoint" help:"Talos machine API endpoint (repeat or comma-separate)."`
@@ -212,7 +218,7 @@ type talosMoveCmd struct {
 	Force   bool   `name:"force" help:"Overwrite an existing context with the same name in destination."`
 }
 type talosSyncCmd struct {
-	Merge bool `name:"merge" help:"After rendering, call talosctl config merge to fold into ~/.talos/config."`
+	Merge bool `name:"merge" help:"After rendering, fold into ~/.talos/config."`
 }
 type talosRoleAddCmd struct {
 	From        string   `name:"from" required:"" help:"Existing fd0-managed talos context with admin privileges (issuer)."`
@@ -249,13 +255,19 @@ type talosSecretsListCmd struct {
 
 // ───── kube ───────────────────────────────────────────────────────────
 type kubeCmd struct {
-	Add  kubeAddCmd  `cmd:"" help:"Add a kubeconfig cluster."`
-	List kubeListCmd `cmd:"" aliases:"ls" help:"List kubeconfig clusters."`
-	Show kubeShowCmd `cmd:"" help:"Show one kubeconfig."`
-	Rm   kubeRmCmd   `cmd:"" help:"Remove a kubeconfig (tombstone)."`
-	Move kubeMoveCmd `cmd:"" help:"Move a kubeconfig between scopes."`
-	Sync kubeSyncCmd `cmd:"" help:"Re-render ~/.kube/config.fd0 (and merge with --merge)."`
+	Enable  kubeEnableCmd  `cmd:"" help:"Enable automatic kubeconfig refresh after fd0 sync."`
+	Disable kubeDisableCmd `cmd:"" help:"Disable automatic kubeconfig refresh after fd0 sync."`
+	Add     kubeAddCmd     `cmd:"" help:"Add a kubeconfig cluster."`
+	List    kubeListCmd    `cmd:"" aliases:"ls" help:"List kubeconfig clusters."`
+	Show    kubeShowCmd    `cmd:"" help:"Show one kubeconfig."`
+	Rm      kubeRmCmd      `cmd:"" help:"Remove a kubeconfig (tombstone)."`
+	Move    kubeMoveCmd    `cmd:"" help:"Move a kubeconfig between scopes."`
+	Sync    kubeSyncCmd    `cmd:"" help:"Re-render ~/.kube/config.fd0 (and merge with --merge)."`
 }
+type kubeEnableCmd struct {
+	Merge bool `name:"merge" help:"After every fd0 sync, also merge fd0 clusters into ~/.kube/config."`
+}
+type kubeDisableCmd struct{}
 type kubeAddCmd struct {
 	Name                  string   `arg:"" optional:"" help:"Cluster name. Required unless --from-config."`
 	Server                string   `name:"server" help:"https://host:6443"`
@@ -295,7 +307,7 @@ type kubeMoveCmd struct {
 	Force   bool   `name:"force" help:"Overwrite an existing kubeconfig with the same name in destination."`
 }
 type kubeSyncCmd struct {
-	Merge bool `name:"merge" help:"After rendering, call kubectl config view --merge to fold into ~/.kube/config."`
+	Merge bool `name:"merge" help:"After rendering, fold into ~/.kube/config."`
 }
 
 type initCmd struct{}
@@ -495,6 +507,7 @@ func commandNeedsUnlockedVault(command string) bool {
 		"ssh tag <alias>",
 		"ssh move <alias>",
 		"ssh", "ssh connect", "ssh connect <alias>", "ssh connect <alias> <cmd>",
+		"talos enable",
 		"talos add", "talos add <name>",
 		"talos new <name>",
 		"talos list", "talos ls",
@@ -507,6 +520,7 @@ func commandNeedsUnlockedVault(command string) bool {
 		"talos secrets export <name>",
 		"talos secrets import <name>",
 		"talos secrets list", "talos secrets ls",
+		"kube enable",
 		"kube add", "kube add <name>",
 		"kube list", "kube ls",
 		"kube show <name>",
@@ -650,6 +664,10 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 		return cli.RunSSHConnect(ctx, c.Ssh.Connect.Alias, c.Ssh.Connect.Cmd, c.Ssh.Connect.Tag)
 
 	// ── talos ─────────────────────────────────────────────────
+	case "talos enable":
+		return cli.RunTalosEnable(ctx, c.Talos.Enable.Merge)
+	case "talos disable":
+		return cli.RunTalosDisable(ctx)
 	case "talos add", "talos add <name>":
 		return cli.RunTalosAdd(ctx, cli.TalosAddOpts{
 			Name:          c.Talos.Add.Name,
@@ -717,6 +735,10 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 		return cli.RunTalosSecretsList(ctx, c.Talos.Secrets.List.Scope)
 
 	// ── kube ──────────────────────────────────────────────────
+	case "kube enable":
+		return cli.RunKubeEnable(ctx, c.Kube.Enable.Merge)
+	case "kube disable":
+		return cli.RunKubeDisable(ctx)
 	case "kube add", "kube add <name>":
 		return cli.RunKubeAdd(ctx, cli.KubeAddOpts{
 			Name:                  c.Kube.Add.Name,

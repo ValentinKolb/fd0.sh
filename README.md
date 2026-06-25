@@ -84,22 +84,22 @@ ssh prod-db                              # or: fd0 ssh   (fuzzy picker)
 
 `fd0 talos` manages Talos client contexts and the DR-grade
 `secrets.yaml`; `fd0 kube` manages kubeconfigs for any cluster. The
-everyday paths — store, list, render, and `sync --merge` into
-`~/.talos/config` / `~/.kube/config` — are pure Go and need no extra
+everyday paths — store, list, render, enable automatic refresh, and merge
+into `~/.talos/config` / `~/.kube/config` — are pure Go and need no extra
 tools (`kubectl` is never required). Only the Talos cluster-admin paths
 that need PKI crypto or a live API connection (`talos new`,
 `talos role-add`, `talos kubeconfig`) shell out to `talosctl`.
 
 ```bash
 fd0 talos add --from-config ~/.talos/config --scope work
-fd0 talos sync --merge                   # fold into ~/.talos/config
+fd0 talos enable --merge                 # keep ~/.talos/config current after fd0 sync
 
 fd0 talos new prod --endpoint https://10.0.1.10:6443 \
     --scope work --vault-scope work-dr   # day-0: generates cluster PKI
 fd0 talos kubeconfig prod                # fetch + store the admin kubeconfig
 
 fd0 kube add --from-config ~/.kube/config --scope work
-fd0 kube sync --merge                    # fold into ~/.kube/config
+fd0 kube enable --merge                  # keep ~/.kube/config current after fd0 sync
 ```
 
 `add` / `new` / `move` across `key`, `ssh`, `talos`, `kube` refuse to
@@ -179,6 +179,14 @@ max_lifetime = "8h"                       # hard cap, lock after N regardless of
 
 [clipboard]
 clear_after_seconds = 30                  # default for `fd0 copy`; 0 disables auto-clear
+
+[kube]
+enabled    = true                         # refresh ~/.kube/config.fd0 after fd0 sync
+auto_merge = true                         # also fold into ~/.kube/config
+
+[talos]
+enabled    = true                         # refresh ~/.talos/config.fd0 after fd0 sync
+auto_merge = true                         # also fold into ~/.talos/config
 ```
 
 `server` is the single primary the client writes and reads — fd0 has one ordering authority per scope, so replicas can never diverge. Listing more than one server (`servers = [...]`) is a hard error: a second write target could fork, and reconciling that means discarding a write. For redundancy run a server-side disaster-recovery backup (`FD0_REPLICATE_FROM`) instead — see [docs/REPLICATION.md](docs/REPLICATION.md). When `server` is unset it falls back to `FD0_SERVER`, then the built-in default (`api.fd0.sh`, hosted at fd0.sh). Self-hosters override by setting `server`.

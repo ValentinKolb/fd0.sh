@@ -50,15 +50,15 @@ type TalosNewOpts struct {
 // RunTalosNew bootstraps a brand-new Talos cluster's credential
 // material:
 //
-//   1. `talosctl gen secrets` → secrets.yaml (root PKI, DR-grade)
-//   2. `talosctl gen config <name> <endpoint> --with-secrets …`
-//      → controlplane.yaml, worker.yaml, talosconfig
-//   3. Store secrets.yaml under TypeTalosSecrets in VaultScope
-//      (separate scope by default — least-privilege).
-//   4. Store the generated talosconfig context under TypeTalosContext
-//      in Scope.
-//   5. Leave controlplane.yaml + worker.yaml on disk (the user
-//      hands these to whatever provisions their nodes).
+//  1. `talosctl gen secrets` → secrets.yaml (root PKI, DR-grade)
+//  2. `talosctl gen config <name> <endpoint> --with-secrets …`
+//     → controlplane.yaml, worker.yaml, talosconfig
+//  3. Store secrets.yaml under TypeTalosSecrets in VaultScope
+//     (separate scope by default — least-privilege).
+//  4. Store the generated talosconfig context under TypeTalosContext
+//     in Scope.
+//  5. Leave controlplane.yaml + worker.yaml on disk (the user
+//     hands these to whatever provisions their nodes).
 func RunTalosNew(ctx context.Context, o TalosNewOpts) error {
 	if _, err := exec.LookPath(talosctlBin()); err != nil {
 		return fmt.Errorf("talosctl not on PATH (or FD0_TALOSCTL not set): %w", err)
@@ -250,7 +250,7 @@ func RunTalosNew(ctx context.Context, o TalosNewOpts) error {
 	stderrln("  once you've handed off the install configs:")
 	stderrln("      shred -u %s", secretsPath)
 
-	return renderAndWarnTalos(s)
+	return renderAndAutoMergeTalos(s)
 }
 
 // runTalosctl is the thin subprocess wrapper. Streams talosctl's
@@ -384,7 +384,7 @@ func RunTalosRoleAdd(ctx context.Context, o TalosRoleAddOpts) error {
 		return err
 	}
 	stderrln("✓ stored %q (role: %s, scope: %s)", c.Name, c.Role, scopeName(s, scope))
-	return renderAndWarnTalos(s)
+	return renderAndAutoMergeTalos(s)
 }
 
 // RunTalosKubeconfig calls `talosctl --context X kubeconfig -` to
