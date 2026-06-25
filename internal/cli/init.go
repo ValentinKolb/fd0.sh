@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/oklog/ulid/v2"
 
@@ -163,6 +164,16 @@ func RunUnlock(ctx context.Context, agentBin, method string) error {
 	}
 
 	c := agent.NewClient(paths.AgentSock)
+	if c.IsRunning() && !sshAgentSocketDisabledByEnv() {
+		sshSock := SSHSocketPathForRender()
+		if err := checkSSHAgentSocket(sshSock); err != nil {
+			fmt.Fprintf(os.Stderr, "warn: repairing fd0 SSH agent socket at %s\n", sshSock)
+			if err := agent.StopByPIDFile(paths.AgentPID, 2*time.Second); err != nil {
+				return sshAgentSocketUnavailable(sshSock, err)
+			}
+			c = agent.NewClient(paths.AgentSock)
+		}
+	}
 	if !c.IsRunning() {
 		if err := agent.Spawn(agentBin, paths.AgentLog); err != nil {
 			return err
@@ -200,6 +211,12 @@ func RunUnlock(ctx context.Context, agentBin, method string) error {
 	fmt.Fprintf(os.Stderr, "✓ vault unlocked (%s)\n", chosen.MethodType)
 	if shouldHintInteractiveFirstSync(paths.Config, ur) {
 		fmt.Fprintln(os.Stderr, "  run `fd0 sync` once to verify and pin the server; background sync resumes after that")
+	}
+	if !sshAgentSocketDisabledByEnv() {
+		sshSock := SSHSocketPathForRender()
+		if err := checkSSHAgentSocket(sshSock); err != nil {
+			fmt.Fprintf(os.Stderr, "warn: %v\n", sshAgentSocketUnavailable(sshSock, err))
+		}
 	}
 	return nil
 }

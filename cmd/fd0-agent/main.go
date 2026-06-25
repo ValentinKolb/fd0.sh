@@ -145,33 +145,37 @@ func main() {
 	// just returns empty when the vault is locked, which is the
 	// industry-standard "no identities" degradation). Operators can
 	// disable via FD0_SSH_SOCK="" (empty string).
-	sshSock := os.Getenv("FD0_SSH_SOCK")
-	if sshSock == "" {
+	sshSock, sshSockSet := os.LookupEnv("FD0_SSH_SOCK")
+	if !sshSockSet {
 		sshSock = sshagent.DefaultSocketPath()
 	}
-	stopSSH, err := agent.StartSSHSocket(ctx, log, sshSock, func() ([]sshagent.KeyEntry, error) {
-		// We open a CLI session per fetch — see ssh_socket.go for
-		// the concurrency notes. The flock is released by the
-		// session's Close before we return.
-		s, err := fd0cli.Open(context.Background())
-		if err != nil {
-			return nil, nil // locked / unavailable → empty list
-		}
-		defer s.Close()
-		raw, err := fd0cli.CollectKeyEntries(s)
-		if err != nil {
-			return nil, nil
-		}
-		out := make([]sshagent.KeyEntry, len(raw))
-		for i, e := range raw {
-			out[i] = sshagent.KeyEntry{Key: e.Key, Comment: e.Comment}
-		}
-		return out, nil
-	})
-	if err != nil {
-		log.Warn("ssh-agent socket disabled", "err", err)
+	if sshSock == "" {
+		log.Info("ssh-agent socket disabled", "reason", "FD0_SSH_SOCK is empty")
 	} else {
-		defer stopSSH()
+		stopSSH, err := agent.StartSSHSocket(ctx, log, sshSock, func() ([]sshagent.KeyEntry, error) {
+			// We open a CLI session per fetch — see ssh_socket.go for
+			// the concurrency notes. The flock is released by the
+			// session's Close before we return.
+			s, err := fd0cli.Open(context.Background())
+			if err != nil {
+				return nil, nil // locked / unavailable → empty list
+			}
+			defer s.Close()
+			raw, err := fd0cli.CollectKeyEntries(s)
+			if err != nil {
+				return nil, nil
+			}
+			out := make([]sshagent.KeyEntry, len(raw))
+			for i, e := range raw {
+				out[i] = sshagent.KeyEntry{Key: e.Key, Comment: e.Comment}
+			}
+			return out, nil
+		})
+		if err != nil {
+			log.Warn("ssh-agent socket disabled", "err", err)
+		} else {
+			defer stopSSH()
+		}
 	}
 
 	if err := srv.Serve(ctx); err != nil {

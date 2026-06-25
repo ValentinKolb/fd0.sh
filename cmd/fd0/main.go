@@ -38,6 +38,7 @@ type rootCLI struct {
 	Doctor   doctorCmd   `cmd:"" help:"Diagnose vault, chain, and tip-binding consistency."`
 	Key      keyCmd      `cmd:"" help:"Manage cryptographic keys (top-level; SSH and future consumers use them)."`
 	Ssh      sshCmd      `cmd:"" help:"Manage SSH hosts + connect. Without args opens a fuzzy picker."`
+	Pass     passCmd     `cmd:"" help:"Manage structured passwords, TOTP, passkeys, and small files."`
 	Talos    talosCmd    `cmd:"" help:"Manage Talos Linux contexts + secrets.yaml DR bundles."`
 	Kube     kubeCmd     `cmd:"" help:"Manage Kubernetes kubeconfig clusters (Talos, EKS, GKE, AKS, …)."`
 	Version  versionCmd  `cmd:"" help:"Print version and exit."`
@@ -146,6 +147,133 @@ type sshConnectCmd struct {
 	Alias string   `arg:"" optional:"" help:"Host alias. Empty opens picker."`
 	Tag   []string `name:"tag" help:"Pre-filter picker by tag."`
 	Cmd   []string `arg:"" optional:"" passthrough:"" help:"Command to execute on the host (passed to ssh)."`
+}
+
+// ───── pass ───────────────────────────────────────────────────────────
+type passCmd struct {
+	Browse   passBrowseCmd   `cmd:"" default:"withargs" help:"Open the interactive pass browser."`
+	Add      passAddCmd      `cmd:"" help:"Create a pass item."`
+	Find     passFindCmd     `cmd:"" help:"Find pass items by title or URL."`
+	List     passListCmd     `cmd:"" aliases:"ls" help:"List pass items."`
+	Show     passShowCmd     `cmd:"" help:"Show a pass item with secrets masked by default."`
+	Rm       passRmCmd       `cmd:"" help:"Remove a pass item."`
+	Copy     passCopyCmd     `cmd:"" help:"Copy a field value, secret, or current TOTP code."`
+	Generate passGenerateCmd `cmd:"" help:"Generate a password without storing it."`
+	Field    passFieldCmd    `cmd:"" help:"Set, get, or remove fields by slash path."`
+	Section  passSectionCmd  `cmd:"" help:"Manage section fields."`
+	TOTP     passTOTPCmd     `cmd:"" name:"totp" help:"Manage or print TOTP fields."`
+	File     passFileCmd     `cmd:"" help:"Attach or export small files."`
+}
+type passBrowseCmd struct {
+	Query      string `arg:"" optional:"" help:"Initial search query."`
+	Scope      string `name:"scope" help:"Scope label or id."`
+	ClearAfter string `name:"clear-after" help:"Override clipboard clear delay."`
+}
+type passAddCmd struct {
+	Name  string   `arg:"" help:"Item name."`
+	URL   []string `name:"url" help:"Login URL or matching URL (repeatable)."`
+	Scope string   `name:"scope" help:"Scope label or id."`
+	Force bool     `name:"force" help:"Overwrite an existing pass item with the same name."`
+}
+type passFindCmd struct {
+	Query string `arg:"" optional:"" help:"Text to match against title and URLs."`
+	URL   string `name:"url" help:"URL to match for browser/autofill lookups."`
+	Scope string `name:"scope" help:"Scope label or id."`
+	JSON  bool   `name:"json" help:"Print JSON."`
+}
+type passListCmd struct {
+	Scope string `name:"scope" help:"Scope label or id."`
+	JSON  bool   `name:"json" help:"Print JSON."`
+}
+type passShowCmd struct {
+	Name   string `arg:"" help:"Item name."`
+	Scope  string `name:"scope" help:"Scope label or id."`
+	Reveal bool   `name:"reveal" help:"Reveal secret field values in terminal output."`
+	JSON   bool   `name:"json" help:"Print decrypted item JSON."`
+}
+type passRmCmd struct {
+	Name  string `arg:"" help:"Item name."`
+	Scope string `name:"scope" help:"Scope label or id."`
+	Yes   bool   `name:"yes" short:"y" help:"Do not prompt before removing."`
+}
+type passCopyCmd struct {
+	Name       string `arg:"" help:"Item name."`
+	Field      string `arg:"" optional:"" help:"Field path. Defaults to password."`
+	Scope      string `name:"scope" help:"Scope label or id."`
+	ClearAfter string `name:"clear-after" help:"Override clipboard clear delay."`
+}
+type passGenerateCmd struct {
+	Length int  `name:"length" short:"l" help:"Password length." default:"32"`
+	Raw    bool `name:"raw" help:"Print without trailing newline."`
+}
+type passFieldCmd struct {
+	Set passFieldSetCmd `cmd:"" help:"Set a text, secret, or passkey field."`
+	Get passFieldGetCmd `cmd:"" help:"Print a text, secret, or TOTP field value."`
+	Rm  passFieldRmCmd  `cmd:"" help:"Remove a field."`
+}
+type passFieldSetCmd struct {
+	Name     string `arg:"" help:"Item name."`
+	Path     string `arg:"" help:"Field path, e.g. password or Recovery/code-1."`
+	Value    string `arg:"" optional:"" help:"Value. Use - to read from stdin."`
+	Type     string `name:"type" help:"Field type: text, secret, passkey." default:"text"`
+	Secret   bool   `name:"secret" help:"Shortcut for --type secret."`
+	Generate bool   `name:"generate" help:"Generate a secret value."`
+	Length   int    `name:"length" help:"Generated password length." default:"32"`
+	Scope    string `name:"scope" help:"Scope label or id."`
+}
+type passFieldGetCmd struct {
+	Name  string `arg:"" help:"Item name."`
+	Path  string `arg:"" help:"Field path."`
+	Scope string `name:"scope" help:"Scope label or id."`
+	Raw   bool   `name:"raw" help:"Print without trailing newline."`
+}
+type passFieldRmCmd struct {
+	Name  string `arg:"" help:"Item name."`
+	Path  string `arg:"" help:"Field path."`
+	Scope string `name:"scope" help:"Scope label or id."`
+	Yes   bool   `name:"yes" short:"y" help:"Do not prompt before removing."`
+}
+type passSectionCmd struct {
+	Add passSectionAddCmd `cmd:"" help:"Add a section by slash path."`
+}
+type passSectionAddCmd struct {
+	Name  string `arg:"" help:"Item name."`
+	Path  string `arg:"" help:"Section path."`
+	Scope string `name:"scope" help:"Scope label or id."`
+}
+type passTOTPCmd struct {
+	Add  passTOTPAddCmd  `cmd:"" help:"Store an otpauth:// TOTP URI."`
+	Code passTOTPCodeCmd `cmd:"" default:"withargs" help:"Print the current TOTP code."`
+}
+type passTOTPAddCmd struct {
+	Name  string `arg:"" help:"Item name."`
+	URI   string `arg:"" help:"otpauth://totp/... URI."`
+	Path  string `name:"field" help:"Field path. Defaults to totp."`
+	Scope string `name:"scope" help:"Scope label or id."`
+}
+type passTOTPCodeCmd struct {
+	Name  string `arg:"" help:"Item name."`
+	Path  string `arg:"" optional:"" help:"TOTP field path. Defaults to first TOTP field."`
+	Scope string `name:"scope" help:"Scope label or id."`
+	Raw   bool   `name:"raw" help:"Print only the code."`
+}
+type passFileCmd struct {
+	Add    passFileAddCmd    `cmd:"" help:"Attach a small file to an item."`
+	Export passFileExportCmd `cmd:"" help:"Export an attached file field."`
+}
+type passFileAddCmd struct {
+	Name  string `arg:"" help:"Item name."`
+	File  string `arg:"" help:"File path."`
+	Path  string `arg:"" optional:"" help:"Field path. Defaults to basename."`
+	MIME  string `name:"mime" help:"MIME type hint."`
+	Scope string `name:"scope" help:"Scope label or id."`
+}
+type passFileExportCmd struct {
+	Name  string `arg:"" help:"Item name."`
+	Path  string `arg:"" help:"File field path."`
+	Out   string `name:"out" help:"Output path. Defaults to stored file name."`
+	Scope string `name:"scope" help:"Scope label or id."`
+	Force bool   `name:"force" help:"Overwrite an existing output file."`
 }
 
 // ───── talos ──────────────────────────────────────────────────────────
@@ -520,6 +648,22 @@ func commandNeedsUnlockedVault(command string) bool {
 		"ssh tag <alias>",
 		"ssh move <alias>",
 		"ssh", "ssh connect", "ssh connect <alias>", "ssh connect <alias> <cmd>",
+		"pass", "pass <query>", "pass browse", "pass browse <query>",
+		"pass add <name>",
+		"pass find", "pass find <query>",
+		"pass list", "pass ls",
+		"pass show <name>",
+		"pass rm <name>",
+		"pass copy <name>", "pass copy <name> <field>",
+		"pass field set <name> <path>", "pass field set <name> <path> <value>",
+		"pass field get <name> <path>",
+		"pass field rm <name> <path>",
+		"pass section add <name> <path>",
+		"pass totp add <name> <uri>",
+		"pass totp", "pass totp <name>", "pass totp <name> <path>",
+		"pass totp code <name>", "pass totp code <name> <path>",
+		"pass file add <name> <file>", "pass file add <name> <file> <path>",
+		"pass file export <name> <path>",
 		"talos enable",
 		"talos add", "talos add <name>",
 		"talos new <name>",
@@ -675,6 +819,69 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 
 	case "ssh", "ssh connect", "ssh connect <alias>", "ssh connect <alias> <cmd>":
 		return cli.RunSSHConnect(ctx, c.Ssh.Connect.Alias, c.Ssh.Connect.Cmd, c.Ssh.Connect.Tag)
+
+	// ─── pass ─────────────────────────────────────────────────────────
+	case "pass", "pass <query>", "pass browse", "pass browse <query>":
+		clearAfter, err := resolveClipboardClear(c.Pass.Browse.ClearAfter)
+		if err != nil {
+			return err
+		}
+		return cli.RunPassBrowse(ctx, c.Pass.Browse.Scope, c.Pass.Browse.Query, clearAfter)
+	case "pass add <name>":
+		return cli.RunPassAdd(ctx, cli.PassAddOpts{
+			Name:  c.Pass.Add.Name,
+			URL:   c.Pass.Add.URL,
+			Scope: c.Pass.Add.Scope,
+			Force: c.Pass.Add.Force,
+		})
+	case "pass find", "pass find <query>":
+		return cli.RunPassFind(ctx, c.Pass.Find.Scope, c.Pass.Find.Query, c.Pass.Find.URL, c.Pass.Find.JSON)
+	case "pass list", "pass ls":
+		return cli.RunPassList(ctx, c.Pass.List.Scope, c.Pass.List.JSON)
+	case "pass show <name>":
+		return cli.RunPassShow(ctx, c.Pass.Show.Scope, c.Pass.Show.Name, c.Pass.Show.Reveal, c.Pass.Show.JSON)
+	case "pass rm <name>":
+		return cli.RunPassRemove(ctx, c.Pass.Rm.Scope, c.Pass.Rm.Name, c.Pass.Rm.Yes)
+	case "pass copy <name>", "pass copy <name> <field>":
+		clearAfter, err := resolveClipboardClear(c.Pass.Copy.ClearAfter)
+		if err != nil {
+			return err
+		}
+		return cli.RunPassCopy(ctx, c.Pass.Copy.Scope, c.Pass.Copy.Name, c.Pass.Copy.Field, clearAfter)
+	case "pass generate":
+		return cli.RunPassGenerate(c.Pass.Generate.Length, c.Pass.Generate.Raw)
+	case "pass field set <name> <path>", "pass field set <name> <path> <value>":
+		return cli.RunPassFieldSet(ctx, cli.PassFieldSetOpts{
+			Item:     c.Pass.Field.Set.Name,
+			Path:     c.Pass.Field.Set.Path,
+			Value:    c.Pass.Field.Set.Value,
+			Kind:     c.Pass.Field.Set.Type,
+			Secret:   c.Pass.Field.Set.Secret,
+			Generate: c.Pass.Field.Set.Generate,
+			Length:   c.Pass.Field.Set.Length,
+			Scope:    c.Pass.Field.Set.Scope,
+		})
+	case "pass field get <name> <path>":
+		return cli.RunPassFieldGet(ctx, c.Pass.Field.Get.Scope, c.Pass.Field.Get.Name, c.Pass.Field.Get.Path, c.Pass.Field.Get.Raw)
+	case "pass field rm <name> <path>":
+		return cli.RunPassFieldRemove(ctx, c.Pass.Field.Rm.Scope, c.Pass.Field.Rm.Name, c.Pass.Field.Rm.Path, c.Pass.Field.Rm.Yes)
+	case "pass section add <name> <path>":
+		return cli.RunPassSectionAdd(ctx, c.Pass.Section.Add.Scope, c.Pass.Section.Add.Name, c.Pass.Section.Add.Path)
+	case "pass totp add <name> <uri>":
+		return cli.RunPassTOTPAdd(ctx, c.Pass.TOTP.Add.Scope, c.Pass.TOTP.Add.Name, c.Pass.TOTP.Add.Path, c.Pass.TOTP.Add.URI)
+	case "pass totp", "pass totp <name>", "pass totp <name> <path>",
+		"pass totp code <name>", "pass totp code <name> <path>":
+		return cli.RunPassTOTP(ctx, c.Pass.TOTP.Code.Scope, c.Pass.TOTP.Code.Name, c.Pass.TOTP.Code.Path, c.Pass.TOTP.Code.Raw)
+	case "pass file add <name> <file>", "pass file add <name> <file> <path>":
+		return cli.RunPassFileAdd(ctx, cli.PassFileAddOpts{
+			Item:  c.Pass.File.Add.Name,
+			File:  c.Pass.File.Add.File,
+			Path:  c.Pass.File.Add.Path,
+			MIME:  c.Pass.File.Add.MIME,
+			Scope: c.Pass.File.Add.Scope,
+		})
+	case "pass file export <name> <path>":
+		return cli.RunPassFileExport(ctx, c.Pass.File.Export.Scope, c.Pass.File.Export.Name, c.Pass.File.Export.Path, c.Pass.File.Export.Out, c.Pass.File.Export.Force)
 
 	// ── talos ─────────────────────────────────────────────────
 	case "talos enable":

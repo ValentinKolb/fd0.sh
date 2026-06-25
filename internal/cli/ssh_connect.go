@@ -149,6 +149,9 @@ func renderAndExecSSH(s *Session, host *sshhost.Host, extra []string) error {
 		return err
 	}
 	s.Close()
+	if sshAgentSocketDisabledByEnv() {
+		return fmt.Errorf("fd0 SSH agent socket is disabled by FD0_SSH_SOCK; unset FD0_SSH_SOCK or set it to a socket path")
+	}
 	sshSock := SSHSocketPathForRender()
 	if err := checkSSHAgentSocket(sshSock); err != nil {
 		return sshAgentSocketUnavailable(sshSock, err)

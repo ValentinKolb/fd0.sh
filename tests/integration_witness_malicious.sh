@@ -75,7 +75,7 @@ on_unlock = false
 lock_wait = "10s"
 EOF
 }
-AL() { env FD0_HOME="$HOME_AL" "$FD0" "$@"; }
+AL() { env FD0_HOME="$HOME_AL" FD0_SSH_SOCK="$HOME_AL/ssh.sock" "$FD0" "$@"; }
 
 extract_pub_hex() {
     python3 -c "
@@ -203,8 +203,8 @@ ok "server up"
 
 # Bootstrap client + a scope, sync once (no witness yet).
 mkfd0 "$HOME_AL" "http://127.0.0.1:${SERVER_PORT}"
-printf "alice-pass\nalice-pass\n" | env FD0_HOME="$HOME_AL" "$FD0" init >/dev/null 2>&1
-printf "alice-pass\n" | env FD0_HOME="$HOME_AL" "$FD0" unlock >/dev/null 2>&1
+printf "alice-pass\nalice-pass\n" | env FD0_HOME="$HOME_AL" FD0_SSH_SOCK="$HOME_AL/ssh.sock" "$FD0" init >/dev/null 2>&1
+printf "alice-pass\n" | env FD0_HOME="$HOME_AL" FD0_SSH_SOCK="$HOME_AL/ssh.sock" "$FD0" unlock >/dev/null 2>&1
 sleep 0.3
 AL scope create --label work >/dev/null
 AL set seed v0 --scope work >/dev/null

@@ -60,7 +60,7 @@ make_alias() {
     local name="$1" home="$2"
     eval "
 ${name}() {
-    env FD0_HOME='$home' FD0_SERVER='http://127.0.0.1:${SERVER_PORT}' FD0_LOCK_WAIT=10s '$FD0' \"\$@\"
+    env FD0_HOME='$home' FD0_SSH_SOCK='$home/ssh.sock' FD0_SERVER='http://127.0.0.1:${SERVER_PORT}' FD0_LOCK_WAIT=10s '$FD0' \"\$@\"
 }"
 }
 
@@ -109,13 +109,13 @@ make_alias BD "$HOME/.fd0-bob-desktop"
 # Each device exports FD0_HOME at unlock so the agent picks up its config.
 unlock() {
     local home="$1" pass="$2"
-    printf "%s\n" "$pass" | env FD0_HOME="$home" "$FD0" unlock >/dev/null 2>&1
+    printf "%s\n" "$pass" | env FD0_HOME="$home" FD0_SSH_SOCK="$home/ssh.sock" "$FD0" unlock >/dev/null 2>&1
 }
 
 # ─── 1) Identity bootstrap (Alice + Bob laptop init, recovery to desktop)  ─
 step "1) Init Alice/Bob on their laptops"
-printf "alice-laptop-pass\nalice-laptop-pass\n" | env FD0_HOME="$HOME/.fd0-alice-laptop" "$FD0" init >/dev/null 2>&1
-printf "bob-laptop-pass\nbob-laptop-pass\n"     | env FD0_HOME="$HOME/.fd0-bob-laptop"   "$FD0" init >/dev/null 2>&1
+printf "alice-laptop-pass\nalice-laptop-pass\n" | env FD0_HOME="$HOME/.fd0-alice-laptop" FD0_SSH_SOCK="$HOME/.fd0-alice-laptop/ssh.sock" "$FD0" init >/dev/null 2>&1
+printf "bob-laptop-pass\nbob-laptop-pass\n"     | env FD0_HOME="$HOME/.fd0-bob-laptop" FD0_SSH_SOCK="$HOME/.fd0-bob-laptop/ssh.sock" "$FD0" init >/dev/null 2>&1
 unlock "$HOME/.fd0-alice-laptop" "alice-laptop-pass"
 unlock "$HOME/.fd0-bob-laptop"   "bob-laptop-pass"
 sleep 0.3
@@ -128,9 +128,9 @@ printf "bob-rec\nbob-rec\n"     | BL recovery export "$RECOVERY".bob   >>/tmp/fd
 [ -f "$RECOVERY".alice ] && ok "Alice's recovery file written" || no "Alice recovery export failed (see /tmp/fd0-multi-step2.log)"
 [ -f "$RECOVERY".bob   ] && ok "Bob's recovery file written"   || no "Bob recovery export failed"
 
-printf "alice-rec\nalice-desktop-pass\nalice-desktop-pass\n" | env FD0_HOME="$HOME/.fd0-alice-desktop" "$FD0" recovery import "$RECOVERY".alice >>/tmp/fd0-multi-step2.log 2>&1 \
+printf "alice-rec\nalice-desktop-pass\nalice-desktop-pass\n" | env FD0_HOME="$HOME/.fd0-alice-desktop" FD0_SSH_SOCK="$HOME/.fd0-alice-desktop/ssh.sock" "$FD0" recovery import "$RECOVERY".alice >>/tmp/fd0-multi-step2.log 2>&1 \
     || no "Alice restore failed: $(tail -3 /tmp/fd0-multi-step2.log)"
-printf "bob-rec\nbob-desktop-pass\nbob-desktop-pass\n"       | env FD0_HOME="$HOME/.fd0-bob-desktop"   "$FD0" recovery import "$RECOVERY".bob   >>/tmp/fd0-multi-step2.log 2>&1 \
+printf "bob-rec\nbob-desktop-pass\nbob-desktop-pass\n"       | env FD0_HOME="$HOME/.fd0-bob-desktop" FD0_SSH_SOCK="$HOME/.fd0-bob-desktop/ssh.sock" "$FD0" recovery import "$RECOVERY".bob   >>/tmp/fd0-multi-step2.log 2>&1 \
     || no "Bob restore failed: $(tail -3 /tmp/fd0-multi-step2.log)"
 unlock "$HOME/.fd0-alice-desktop" "alice-desktop-pass"
 unlock "$HOME/.fd0-bob-desktop"   "bob-desktop-pass"
@@ -318,7 +318,7 @@ expect_eq "$COUNT" "1" "after rm: one method left"
 step "17) Lock + try unlock with REMOVED passphrase — must fail"
 AL lock >/dev/null
 sleep 0.2
-if printf "alice-laptop-pass\n" | env FD0_HOME="$HOME/.fd0-alice-laptop" "$FD0" unlock >/dev/null 2>&1; then
+if printf "alice-laptop-pass\n" | env FD0_HOME="$HOME/.fd0-alice-laptop" FD0_SSH_SOCK="$HOME/.fd0-alice-laptop/ssh.sock" "$FD0" unlock >/dev/null 2>&1; then
     no "Removed passphrase still unlocks (security regression!)"
 else
     ok "Removed passphrase correctly rejected"
@@ -419,8 +419,8 @@ cat > "$TEST_HOME/config.toml" <<EOF
 idle_timeout = "37s"
 max_lifetime = "11h"
 EOF
-printf "x-pass\nx-pass\n" | env FD0_HOME="$TEST_HOME" "$FD0" init >/dev/null 2>&1
-printf "x-pass\n" | env FD0_HOME="$TEST_HOME" "$FD0" unlock >/dev/null 2>&1
+printf "x-pass\nx-pass\n" | env FD0_HOME="$TEST_HOME" FD0_SSH_SOCK="$TEST_HOME/ssh.sock" "$FD0" init >/dev/null 2>&1
+printf "x-pass\n" | env FD0_HOME="$TEST_HOME" FD0_SSH_SOCK="$TEST_HOME/ssh.sock" "$FD0" unlock >/dev/null 2>&1
 sleep 0.3
 # Look for a recent idle/max line in the agent log. The agent writes
 # "agent: auto-sync enabled" / "agent listening" but logs idle on idle
@@ -428,12 +428,12 @@ sleep 0.3
 # is unavailable on macOS — but the agent does NOT print its idle config
 # at startup. So we only verify the agent comes up; the parse code is
 # unit-tested in resolveDuration. Smoke-test: status reports unlocked.
-ST=$(env FD0_HOME="$TEST_HOME" "$FD0" status 2>&1 || true)
+ST=$(env FD0_HOME="$TEST_HOME" FD0_SSH_SOCK="$TEST_HOME/ssh.sock" "$FD0" status 2>&1 || true)
 case "$ST" in
     *"unlocked"*) ok "agent up with config-driven [agent] knobs (smoke)" ;;
     *) no "agent didn't come up cleanly: $ST" ;;
 esac
-env FD0_HOME="$TEST_HOME" "$FD0" lock >/dev/null 2>&1 || true
+env FD0_HOME="$TEST_HOME" FD0_SSH_SOCK="$TEST_HOME/ssh.sock" "$FD0" lock >/dev/null 2>&1 || true
 rm -rf "$TEST_HOME"
 
 # ─── Summary ─────────────────────────────────────────────────────────────

@@ -75,8 +75,8 @@ lock_wait = "10s"
 EOF
 }
 
-AL() { env FD0_HOME="$HOME_AL" "$FD0" "$@"; }
-BL() { env FD0_HOME="$HOME_BL" "$FD0" "$@"; }
+AL() { env FD0_HOME="$HOME_AL" FD0_SSH_SOCK="$HOME_AL/ssh.sock" "$FD0" "$@"; }
+BL() { env FD0_HOME="$HOME_BL" FD0_SSH_SOCK="$HOME_BL/ssh.sock" "$FD0" "$@"; }
 
 start_proxy() {
     local mode="$1"
@@ -201,10 +201,10 @@ ok "fd0-server up on :${SERVER_PORT}"
 # pin is for the proxy URL throughout. BL connects direct.
 mkfd0 "$HOME_BL" "http://127.0.0.1:${SERVER_PORT}"
 mkfd0 "$HOME_AL" "http://127.0.0.1:${PROXY_PORT}"
-printf "alice-pass\nalice-pass\n" | env FD0_HOME="$HOME_AL" "$FD0" init >/dev/null 2>&1
-printf "bob-pass\nbob-pass\n"     | env FD0_HOME="$HOME_BL" "$FD0" init >/dev/null 2>&1
-printf "alice-pass\n" | env FD0_HOME="$HOME_AL" "$FD0" unlock >/dev/null 2>&1
-printf "bob-pass\n"   | env FD0_HOME="$HOME_BL" "$FD0" unlock >/dev/null 2>&1
+printf "alice-pass\nalice-pass\n" | env FD0_HOME="$HOME_AL" FD0_SSH_SOCK="$HOME_AL/ssh.sock" "$FD0" init >/dev/null 2>&1
+printf "bob-pass\nbob-pass\n"     | env FD0_HOME="$HOME_BL" FD0_SSH_SOCK="$HOME_BL/ssh.sock" "$FD0" init >/dev/null 2>&1
+printf "alice-pass\n" | env FD0_HOME="$HOME_AL" FD0_SSH_SOCK="$HOME_AL/ssh.sock" "$FD0" unlock >/dev/null 2>&1
+printf "bob-pass\n"   | env FD0_HOME="$HOME_BL" FD0_SSH_SOCK="$HOME_BL/ssh.sock" "$FD0" unlock >/dev/null 2>&1
 sleep 0.3
 
 # Card exchange.

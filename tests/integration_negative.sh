@@ -99,36 +99,36 @@ step "A1) Operations on uninitialized home must refuse"
 
 write_cfg "$HOME_DIR"
 
-expect_fail "env FD0_HOME='$HOME_DIR' '$FD0' unlock <<<dummy" "" \
+expect_fail "env FD0_HOME='$HOME_DIR' FD0_SSH_SOCK='$HOME_DIR/ssh.sock' '$FD0' unlock <<<dummy" "" \
     "unlock without init refuses"
 # `fd0 status` is intentionally a thin agent-ping — exit 0 with "not running"
 # is the documented behavior for an uninitialized home.
-ST=$(env FD0_HOME="$HOME_DIR" "$FD0" status 2>&1 || true)
+ST=$(env FD0_HOME="$HOME_DIR" FD0_SSH_SOCK="$HOME_DIR/ssh.sock" "$FD0" status 2>&1 || true)
 case "$ST" in
     *"not running"*|*"locked"*) ok "status reports clean state on uninitialized home: ${ST%% *}..." ;;
     *unlocked*) no "status reports unlocked on a never-init'd home: $ST" ;;
     *) no "status output unexpected: $ST" ;;
 esac
-expect_fail "env FD0_HOME='$HOME_DIR' '$FD0' ls" "" \
+expect_fail "env FD0_HOME='$HOME_DIR' FD0_SSH_SOCK='$HOME_DIR/ssh.sock' '$FD0' ls" "" \
     "ls without init refuses"
-expect_fail "env FD0_HOME='$HOME_DIR' '$FD0' get NAME" "" \
+expect_fail "env FD0_HOME='$HOME_DIR' FD0_SSH_SOCK='$HOME_DIR/ssh.sock' '$FD0' get NAME" "" \
     "get without init refuses"
-expect_fail "env FD0_HOME='$HOME_DIR' '$FD0' set NAME value" "" \
+expect_fail "env FD0_HOME='$HOME_DIR' FD0_SSH_SOCK='$HOME_DIR/ssh.sock' '$FD0' set NAME value" "" \
     "set without init refuses"
-expect_fail "env FD0_HOME='$HOME_DIR' '$FD0' sync" "" \
+expect_fail "env FD0_HOME='$HOME_DIR' FD0_SSH_SOCK='$HOME_DIR/ssh.sock' '$FD0' sync" "" \
     "sync without init refuses"
 
 # ─────────────────────────────────────────────────────────────────────────
 # A2. Init the home for the rest of the tests
 # ─────────────────────────────────────────────────────────────────────────
 step "A2) Init alice and unlock"
-printf "alice-pass\nalice-pass\n" | env FD0_HOME="$HOME_DIR" "$FD0" init >/dev/null 2>&1 \
+printf "alice-pass\nalice-pass\n" | env FD0_HOME="$HOME_DIR" FD0_SSH_SOCK="$HOME_DIR/ssh.sock" "$FD0" init >/dev/null 2>&1 \
     && ok "init succeeded" || no "init failed"
-printf "alice-pass\n" | env FD0_HOME="$HOME_DIR" "$FD0" unlock >/dev/null 2>&1 \
+printf "alice-pass\n" | env FD0_HOME="$HOME_DIR" FD0_SSH_SOCK="$HOME_DIR/ssh.sock" "$FD0" unlock >/dev/null 2>&1 \
     && ok "unlock succeeded" || no "unlock failed"
 sleep 0.2
 
-A() { env FD0_HOME="$HOME_DIR" FD0_SERVER="http://127.0.0.1:${SERVER_PORT}" "$FD0" "$@"; }
+A() { env FD0_HOME="$HOME_DIR" FD0_SSH_SOCK="$HOME_DIR/ssh.sock" FD0_SERVER="http://127.0.0.1:${SERVER_PORT}" "$FD0" "$@"; }
 
 # ─────────────────────────────────────────────────────────────────────────
 # A3. Wrong-passphrase paths
@@ -136,10 +136,10 @@ A() { env FD0_HOME="$HOME_DIR" FD0_SERVER="http://127.0.0.1:${SERVER_PORT}" "$FD
 step "A3) Wrong passphrase rejection"
 A lock >/dev/null 2>&1
 sleep 0.2
-expect_fail "printf 'wrong-pass\n' | env FD0_HOME='$HOME_DIR' '$FD0' unlock" "" \
+expect_fail "printf 'wrong-pass\n' | env FD0_HOME='$HOME_DIR' FD0_SSH_SOCK='$HOME_DIR/ssh.sock' '$FD0' unlock" "" \
     "wrong passphrase refused"
 # After failed unlock, agent should not be in unlocked state.
-ST=$(env FD0_HOME="$HOME_DIR" "$FD0" status 2>&1 || true)
+ST=$(env FD0_HOME="$HOME_DIR" FD0_SSH_SOCK="$HOME_DIR/ssh.sock" "$FD0" status 2>&1 || true)
 case "$ST" in
     *"locked"*|*"not running"*) ok "agent state after bad unlock: not unlocked" ;;
     *unlocked*) no "agent is unlocked after wrong passphrase!" ;;
@@ -147,7 +147,7 @@ case "$ST" in
 esac
 
 # Re-unlock with right passphrase for subsequent tests.
-printf "alice-pass\n" | env FD0_HOME="$HOME_DIR" "$FD0" unlock >/dev/null 2>&1
+printf "alice-pass\n" | env FD0_HOME="$HOME_DIR" FD0_SSH_SOCK="$HOME_DIR/ssh.sock" "$FD0" unlock >/dev/null 2>&1
 sleep 0.2
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -156,14 +156,14 @@ sleep 0.2
 step "A4) Recovery import on initialized home must refuse"
 printf "rec-pass\nrec-pass\n" | A recovery export "$RECOVERY" >/dev/null 2>&1
 # Trying to import into the SAME home (already initialized) must refuse.
-expect_fail "printf 'rec-pass\nx-pass\nx-pass\n' | env FD0_HOME='$HOME_DIR' '$FD0' recovery import '$RECOVERY'" "" \
+expect_fail "printf 'rec-pass\nx-pass\nx-pass\n' | env FD0_HOME='$HOME_DIR' FD0_SSH_SOCK='$HOME_DIR/ssh.sock' '$FD0' recovery import '$RECOVERY'" "" \
     "recovery import refuses on existing vault"
 
 # ─────────────────────────────────────────────────────────────────────────
 # A5. Recovery import with wrong passphrase
 # ─────────────────────────────────────────────────────────────────────────
 step "A5) Recovery import with wrong recovery passphrase"
-expect_fail "printf 'WRONG\nx-pass\nx-pass\n' | env FD0_HOME='$HOME_DIR2' '$FD0' recovery import '$RECOVERY'" "" \
+expect_fail "printf 'WRONG\nx-pass\nx-pass\n' | env FD0_HOME='$HOME_DIR2' FD0_SSH_SOCK='$HOME_DIR2/ssh.sock' '$FD0' recovery import '$RECOVERY'" "" \
     "wrong recovery passphrase refused"
 # The target home must not have a usable vault after the failed import.
 if [ -f "$HOME_DIR2/vault.enc" ]; then
@@ -179,13 +179,13 @@ step "A6) Operations on non-existent secrets/scopes"
 A scope create --label work >/dev/null 2>&1
 A sync >/dev/null 2>&1
 
-expect_fail "env FD0_HOME='$HOME_DIR' '$FD0' get NEVER_EXISTED --scope work" "not found" \
+expect_fail "env FD0_HOME='$HOME_DIR' FD0_SSH_SOCK='$HOME_DIR/ssh.sock' '$FD0' get NEVER_EXISTED --scope work" "not found" \
     "get nonexistent secret reports 'not found'"
-expect_fail "env FD0_HOME='$HOME_DIR' '$FD0' rm NEVER_EXISTED --scope work" "" \
+expect_fail "env FD0_HOME='$HOME_DIR' FD0_SSH_SOCK='$HOME_DIR/ssh.sock' '$FD0' rm NEVER_EXISTED --scope work" "" \
     "rm nonexistent secret refuses"
-expect_fail "env FD0_HOME='$HOME_DIR' '$FD0' get FOO --scope NONEXISTENT_SCOPE" "" \
+expect_fail "env FD0_HOME='$HOME_DIR' FD0_SSH_SOCK='$HOME_DIR/ssh.sock' '$FD0' get FOO --scope NONEXISTENT_SCOPE" "" \
     "get in nonexistent scope refuses"
-expect_fail "env FD0_HOME='$HOME_DIR' '$FD0' set FOO bar --scope NONEXISTENT_SCOPE" "" \
+expect_fail "env FD0_HOME='$HOME_DIR' FD0_SSH_SOCK='$HOME_DIR/ssh.sock' '$FD0' set FOO bar --scope NONEXISTENT_SCOPE" "" \
     "set in nonexistent scope refuses"
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -221,19 +221,19 @@ SANDBOX="$HOME_DIR2"
 mkdir -p "$SANDBOX" && chmod 700 "$SANDBOX"
 # Empty config — no [sync] section.
 : > "$SANDBOX/config.toml"
-printf "x-pass\nx-pass\n" | env FD0_HOME="$SANDBOX" "$FD0" init >/dev/null 2>&1
-printf "x-pass\n" | env FD0_HOME="$SANDBOX" "$FD0" unlock >/dev/null 2>&1
+printf "x-pass\nx-pass\n" | env FD0_HOME="$SANDBOX" FD0_SSH_SOCK="$SANDBOX/ssh.sock" "$FD0" init >/dev/null 2>&1
+printf "x-pass\n" | env FD0_HOME="$SANDBOX" FD0_SSH_SOCK="$SANDBOX/ssh.sock" "$FD0" unlock >/dev/null 2>&1
 sleep 0.2
-expect_fail "env FD0_HOME='$SANDBOX' FD0_SERVER='' '$FD0' sync" "no server" \
+expect_fail "env FD0_HOME='$SANDBOX' FD0_SSH_SOCK='$SANDBOX/ssh.sock' FD0_SERVER='' '$FD0' sync" "no server" \
     "sync without server reports actionable error"
-env FD0_HOME="$SANDBOX" "$FD0" lock >/dev/null 2>&1
+env FD0_HOME="$SANDBOX" FD0_SSH_SOCK="$SANDBOX/ssh.sock" "$FD0" lock >/dev/null 2>&1
 rm -rf "$SANDBOX"
 
 # ─────────────────────────────────────────────────────────────────────────
 # A10. Sync with unreachable server
 # ─────────────────────────────────────────────────────────────────────────
 step "A10) Sync with unreachable server"
-expect_fail "env FD0_HOME='$HOME_DIR' FD0_SERVER='http://127.0.0.1:1' '$FD0' sync" "" \
+expect_fail "env FD0_HOME='$HOME_DIR' FD0_SSH_SOCK='$HOME_DIR/ssh.sock' FD0_SERVER='http://127.0.0.1:1' '$FD0' sync" "" \
     "sync against unreachable server fails cleanly"
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -247,7 +247,7 @@ server = "broken
 EOF
 # `fd0 status` doesn't read config (it's a thin agent ping). Use a
 # command that DOES read config: `fd0 sync` reads [sync].server.
-expect_fail "env FD0_HOME='$HOME_DIR2' '$FD0' sync" "" \
+expect_fail "env FD0_HOME='$HOME_DIR2' FD0_SSH_SOCK='$HOME_DIR2/ssh.sock' '$FD0' sync" "" \
     "bad TOML in config refuses cleanly"
 rm -rf "$HOME_DIR2"
 
@@ -260,15 +260,15 @@ cat > "$HOME_DIR2/config.toml" <<EOF
 [agent]
 idle_timeout = "not-a-duration"
 EOF
-printf "x-pass\nx-pass\n" | env FD0_HOME="$HOME_DIR2" "$FD0" init >/dev/null 2>&1
+printf "x-pass\nx-pass\n" | env FD0_HOME="$HOME_DIR2" FD0_SSH_SOCK="$HOME_DIR2/ssh.sock" "$FD0" init >/dev/null 2>&1
 # Unlock spawns the agent with this config. Should error out with a useful message.
-OUT=$(printf "x-pass\n" | env FD0_HOME="$HOME_DIR2" "$FD0" unlock 2>&1 || true)
+OUT=$(printf "x-pass\n" | env FD0_HOME="$HOME_DIR2" FD0_SSH_SOCK="$HOME_DIR2/ssh.sock" "$FD0" unlock 2>&1 || true)
 case "$OUT" in
     *"idle"*|*"duration"*|*"agent"*) ok "bad idle_timeout reports config error" ;;
     *unlocked*) no "agent unlocked despite invalid config: $OUT" ;;
     *) no "ambiguous agent failure on bad duration: $OUT" ;;
 esac
-env FD0_HOME="$HOME_DIR2" "$FD0" lock >/dev/null 2>&1 || true
+env FD0_HOME="$HOME_DIR2" FD0_SSH_SOCK="$HOME_DIR2/ssh.sock" "$FD0" lock >/dev/null 2>&1 || true
 rm -rf "$HOME_DIR2"
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -276,50 +276,50 @@ rm -rf "$HOME_DIR2"
 # ─────────────────────────────────────────────────────────────────────────
 step "A13) Auth removal protections"
 ACTIVE=$(A auth ls 2>&1 | awk '/^\* /{print $2}')
-expect_fail "env FD0_HOME='$HOME_DIR' '$FD0' auth rm '$ACTIVE'" "currently-unlocked" \
+expect_fail "env FD0_HOME='$HOME_DIR' FD0_SSH_SOCK='$HOME_DIR/ssh.sock' '$FD0' auth rm '$ACTIVE'" "currently-unlocked" \
     "removing currently-active method refused"
-expect_fail "env FD0_HOME='$HOME_DIR' '$FD0' auth rm am_does_not_exist" "" \
+expect_fail "env FD0_HOME='$HOME_DIR' FD0_SSH_SOCK='$HOME_DIR/ssh.sock' '$FD0' auth rm am_does_not_exist" "" \
     "removing nonexistent method_id refused"
 
 # ─────────────────────────────────────────────────────────────────────────
 # A14. card import with malformed URL
 # ─────────────────────────────────────────────────────────────────────────
 step "A14) Card import with malformed URLs"
-expect_fail "env FD0_HOME='$HOME_DIR' '$FD0' card import 'not-a-url'" "" \
+expect_fail "env FD0_HOME='$HOME_DIR' FD0_SSH_SOCK='$HOME_DIR/ssh.sock' '$FD0' card import 'not-a-url'" "" \
     "non-URL refused"
-expect_fail "env FD0_HOME='$HOME_DIR' '$FD0' card import 'fd0://card/zzzzzzz'" "" \
+expect_fail "env FD0_HOME='$HOME_DIR' FD0_SSH_SOCK='$HOME_DIR/ssh.sock' '$FD0' card import 'fd0://card/zzzzzzz'" "" \
     "fd0://card/<garbage> refused"
-expect_fail "env FD0_HOME='$HOME_DIR' '$FD0' card import 'http://example.com/card'" "" \
+expect_fail "env FD0_HOME='$HOME_DIR' FD0_SSH_SOCK='$HOME_DIR/ssh.sock' '$FD0' card import 'http://example.com/card'" "" \
     "wrong-scheme URL refused"
 
 # ─────────────────────────────────────────────────────────────────────────
 # A15. card rm of unknown label
 # ─────────────────────────────────────────────────────────────────────────
 step "A15) card rm unknown label"
-expect_fail "env FD0_HOME='$HOME_DIR' '$FD0' card rm nope" "" \
+expect_fail "env FD0_HOME='$HOME_DIR' FD0_SSH_SOCK='$HOME_DIR/ssh.sock' '$FD0' card rm nope" "" \
     "card rm of unknown label refused"
 
 # ─────────────────────────────────────────────────────────────────────────
 # A16. scope add-member of unknown card label
 # ─────────────────────────────────────────────────────────────────────────
 step "A16) scope add-member with unknown member label"
-expect_fail "env FD0_HOME='$HOME_DIR' '$FD0' scope add-member unknownlabel --scope work" "" \
+expect_fail "env FD0_HOME='$HOME_DIR' FD0_SSH_SOCK='$HOME_DIR/ssh.sock' '$FD0' scope add-member unknownlabel --scope work" "" \
     "add-member with unknown label refused"
 
 # ─────────────────────────────────────────────────────────────────────────
 # A17. scope leave for nonexistent
 # ─────────────────────────────────────────────────────────────────────────
 step "A17) scope leave nonexistent / scope rename invalid"
-expect_fail "env FD0_HOME='$HOME_DIR' '$FD0' scope leave NONEXISTENT" "" \
+expect_fail "env FD0_HOME='$HOME_DIR' FD0_SSH_SOCK='$HOME_DIR/ssh.sock' '$FD0' scope leave NONEXISTENT" "" \
     "leave nonexistent scope refused"
-expect_fail "env FD0_HOME='$HOME_DIR' '$FD0' scope rename NONEXISTENT new-label" "" \
+expect_fail "env FD0_HOME='$HOME_DIR' FD0_SSH_SOCK='$HOME_DIR/ssh.sock' '$FD0' scope rename NONEXISTENT new-label" "" \
     "rename nonexistent scope refused"
 
 # ─────────────────────────────────────────────────────────────────────────
 # A18. Doctor on healthy state — exit code is 0
 # ─────────────────────────────────────────────────────────────────────────
 step "A18) Doctor on healthy state exits 0"
-expect_ok "env FD0_HOME='$HOME_DIR' '$FD0' doctor" \
+expect_ok "env FD0_HOME='$HOME_DIR' FD0_SSH_SOCK='$HOME_DIR/ssh.sock' '$FD0' doctor" \
     "doctor exits 0 on a clean home"
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -332,7 +332,7 @@ if [ -n "$SCOPE_FILE" ]; then
     cp "$SCOPE_FILE" "$SCOPE_FILE.bak"
     # Truncate to 10 bytes — guaranteed corruption.
     head -c 10 "$SCOPE_FILE.bak" > "$SCOPE_FILE"
-    expect_fail "env FD0_HOME='$HOME_DIR' '$FD0' doctor" "" \
+    expect_fail "env FD0_HOME='$HOME_DIR' FD0_SSH_SOCK='$HOME_DIR/ssh.sock' '$FD0' doctor" "" \
         "doctor flags corrupted scope chain"
     cp "$SCOPE_FILE.bak" "$SCOPE_FILE"
     rm "$SCOPE_FILE.bak"
@@ -347,14 +347,14 @@ step "A20) Lock when locked / unlock when unlocked"
 A lock >/dev/null 2>&1
 # Second lock: depending on impl, either succeeds idempotently or errors.
 # Either is acceptable; what matters is no crash, no corruption.
-SECOND=$(env FD0_HOME="$HOME_DIR" "$FD0" lock 2>&1 || true)
+SECOND=$(env FD0_HOME="$HOME_DIR" FD0_SSH_SOCK="$HOME_DIR/ssh.sock" "$FD0" lock 2>&1 || true)
 case "$SECOND" in
     *crash*|*panic*) no "second lock crashed: $SECOND" ;;
     *) ok "second lock handled gracefully: ${SECOND:-clean}" ;;
 esac
 
 # Re-unlock for cleanup.
-printf "alice-pass\n" | env FD0_HOME="$HOME_DIR" "$FD0" unlock >/dev/null 2>&1
+printf "alice-pass\n" | env FD0_HOME="$HOME_DIR" FD0_SSH_SOCK="$HOME_DIR/ssh.sock" "$FD0" unlock >/dev/null 2>&1
 sleep 0.2
 
 # ─────────────────────────────────────────────────────────────────────────

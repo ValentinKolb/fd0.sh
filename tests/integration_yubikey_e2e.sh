@@ -122,10 +122,10 @@ lock_wait = "10s"
 EOF
 }
 
-AL() { env FD0_HOME="$HOME_AL" FD0_AGENT_BIN="$FD0_AGENT" "$FD0" "$@"; }
-AD() { env FD0_HOME="$HOME_AD" FD0_AGENT_BIN="$FD0_AGENT" "$FD0" "$@"; }
-BL() { env FD0_HOME="$HOME_BL" FD0_AGENT_BIN="$FD0_AGENT" "$FD0" "$@"; }
-CA() { env FD0_HOME="$HOME_CA" FD0_AGENT_BIN="$FD0_AGENT" "$FD0" "$@"; }
+AL() { env FD0_HOME="$HOME_AL" FD0_SSH_SOCK="$HOME_AL/ssh.sock" FD0_AGENT_BIN="$FD0_AGENT" "$FD0" "$@"; }
+AD() { env FD0_HOME="$HOME_AD" FD0_SSH_SOCK="$HOME_AD/ssh.sock" FD0_AGENT_BIN="$FD0_AGENT" "$FD0" "$@"; }
+BL() { env FD0_HOME="$HOME_BL" FD0_SSH_SOCK="$HOME_BL/ssh.sock" FD0_AGENT_BIN="$FD0_AGENT" "$FD0" "$@"; }
+CA() { env FD0_HOME="$HOME_CA" FD0_SSH_SOCK="$HOME_CA/ssh.sock" FD0_AGENT_BIN="$FD0_AGENT" "$FD0" "$@"; }
 
 CA_lock() {
     # Lock Carol's vault via the agent (clears super_priv from mlocked
@@ -192,11 +192,11 @@ mkfd0 "$HOME_AD"
 mkfd0 "$HOME_BL"
 mkfd0 "$HOME_CA"
 
-printf "alice-p\nalice-p\n" | env FD0_HOME="$HOME_AL" "$FD0" init >/dev/null 2>&1 \
+printf "alice-p\nalice-p\n" | env FD0_HOME="$HOME_AL" FD0_SSH_SOCK="$HOME_AL/ssh.sock" "$FD0" init >/dev/null 2>&1 \
     && ok "Alice init" || no "Alice init"
-printf "bob-p\nbob-p\n"     | env FD0_HOME="$HOME_BL" "$FD0" init >/dev/null 2>&1 \
+printf "bob-p\nbob-p\n"     | env FD0_HOME="$HOME_BL" FD0_SSH_SOCK="$HOME_BL/ssh.sock" "$FD0" init >/dev/null 2>&1 \
     && ok "Bob init"   || no "Bob init"
-printf "carol-pass\ncarol-pass\n" | env FD0_HOME="$HOME_CA" "$FD0" init >/dev/null 2>&1 \
+printf "carol-pass\ncarol-pass\n" | env FD0_HOME="$HOME_CA" FD0_SSH_SOCK="$HOME_CA/ssh.sock" "$FD0" init >/dev/null 2>&1 \
     && ok "Carol init (passphrase)" || no "Carol init"
 
 # ─── Phase 4: unlock + cards ──────────────────────────────────────
@@ -494,7 +494,7 @@ expect_eq "$COUNT_AFTER_LAST" "1" "auth method count still 1 after refused remov
 phase "recovery roundtrip: import Carol's recovery on a fresh device"
 HOME_RC=$HOME/.fd0-yk-recovered
 mkfd0 "$HOME_RC"
-RC() { env FD0_HOME="$HOME_RC" FD0_AGENT_BIN="$FD0_AGENT" "$FD0" "$@"; }
+RC() { env FD0_HOME="$HOME_RC" FD0_SSH_SOCK="$HOME_RC/ssh.sock" FD0_AGENT_BIN="$FD0_AGENT" "$FD0" "$@"; }
 # import: prompts for recovery passphrase + new device passphrase
 # (twice for confirmation). Carol exported with passphrase 'carol-rec'
 # (see Phase 16). The new device passphrase becomes 'recovered-pass'.
@@ -536,7 +536,7 @@ expect_eq "$RC_HAS_PASS" "1" "recovered device's chain has the passphrase method
 # server's tip. A real-world `auth add` on the recovered device
 # would fail at sync. We assert the read path works and leave the
 # limit documented; v1.x will add full user-chain sync per TODO.md.
-RC_LOCAL_TIP=$(env FD0_HOME="$HOME_RC" "$FD0" auth ls 2>/dev/null | grep -c "^" || true)
+RC_LOCAL_TIP=$(env FD0_HOME="$HOME_RC" FD0_SSH_SOCK="$HOME_RC/ssh.sock" "$FD0" auth ls 2>/dev/null | grep -c "^" || true)
 ok "recovered device local chain has $RC_LOCAL_TIP method(s); divergence with server's view is a documented v1 limit"
 
 # Lock the recovered device's agent so it doesn't linger.
@@ -660,8 +660,8 @@ expect_eq "$RETRIES_POST" "3/3" "PIN retry counter restored to 3/3 at end of tes
 phase "auto-pick logs the chosen method on stderr (DESTRUCTIVE — runs last)"
 HOME_AMB=$HOME/.fd0-yk-ambig
 mkfd0 "$HOME_AMB"
-AMB() { env FD0_HOME="$HOME_AMB" FD0_AGENT_BIN="$FD0_AGENT" "$FD0" "$@"; }
-printf "amb-pass\namb-pass\n" | env FD0_HOME="$HOME_AMB" "$FD0" init >/dev/null 2>&1
+AMB() { env FD0_HOME="$HOME_AMB" FD0_SSH_SOCK="$HOME_AMB/ssh.sock" FD0_AGENT_BIN="$FD0_AGENT" "$FD0" "$@"; }
+printf "amb-pass\namb-pass\n" | env FD0_HOME="$HOME_AMB" FD0_SSH_SOCK="$HOME_AMB/ssh.sock" "$FD0" init >/dev/null 2>&1
 printf "amb-pass\n" | AMB unlock >/dev/null 2>&1
 printf "n\n" | AMB auth add --yubikey --touch=never --force >/tmp/fd0-yk-amb-add.log 2>&1 \
     && ok "ambig-home: yubikey method added (touch-only, no PIN)" \

@@ -78,13 +78,13 @@ ok "server up (pid=$SERVER_PID)"
 
 # Bootstrap a client.
 mkfd0 "$HOME_AL"
-printf "alice-pass\nalice-pass\n" | env FD0_HOME="$HOME_AL" "$FD0" init >/dev/null 2>&1
+printf "alice-pass\nalice-pass\n" | env FD0_HOME="$HOME_AL" FD0_SSH_SOCK="$HOME_AL/ssh.sock" "$FD0" init >/dev/null 2>&1
 ok "client init done"
 
 # ---- Scenario 1: agent SIGTERM cleanup -------------------------------
 
 phase "1) Agent SIGTERM removes pid+sock"
-printf "alice-pass\n" | env FD0_HOME="$HOME_AL" "$FD0" unlock >/dev/null 2>&1
+printf "alice-pass\n" | env FD0_HOME="$HOME_AL" FD0_SSH_SOCK="$HOME_AL/ssh.sock" "$FD0" unlock >/dev/null 2>&1
 sleep 0.3
 [ -S "$HOME_AL/agent.sock" ] && ok "agent.sock exists post-unlock" || no "agent.sock missing"
 [ -f "$HOME_AL/agent.pid" ] && ok "agent.pid exists post-unlock" || no "agent.pid missing"
@@ -122,14 +122,14 @@ fi
 # ---- Scenario 2: agent restart after SIGKILL -------------------------
 
 phase "2) Agent restart after SIGKILL leaves clean state"
-printf "alice-pass\n" | env FD0_HOME="$HOME_AL" "$FD0" unlock >/dev/null 2>&1
+printf "alice-pass\n" | env FD0_HOME="$HOME_AL" FD0_SSH_SOCK="$HOME_AL/ssh.sock" "$FD0" unlock >/dev/null 2>&1
 sleep 0.3
 AGENT_PID=$(cat "$HOME_AL/agent.pid" 2>/dev/null)
 kill -KILL "$AGENT_PID" 2>/dev/null
 sleep 0.3
 # After SIGKILL, pid+sock are stale (process can't run cleanup).
 # Restart MUST detect stale pid + safe-unlink socket and start cleanly.
-RESTART_OUT=$(printf "alice-pass\n" | env FD0_HOME="$HOME_AL" "$FD0" unlock 2>&1)
+RESTART_OUT=$(printf "alice-pass\n" | env FD0_HOME="$HOME_AL" FD0_SSH_SOCK="$HOME_AL/ssh.sock" "$FD0" unlock 2>&1)
 RC=$?
 if [ $RC -eq 0 ]; then
     ok "agent restart after SIGKILL succeeded"
@@ -150,14 +150,14 @@ sleep 0.5
 # ---- Scenario 3: agent socket orphan rejection -----------------------
 
 phase "3) Listen() refuses when socket is alive but pid file is stale"
-printf "alice-pass\n" | env FD0_HOME="$HOME_AL" "$FD0" unlock >/dev/null 2>&1
+printf "alice-pass\n" | env FD0_HOME="$HOME_AL" FD0_SSH_SOCK="$HOME_AL/ssh.sock" "$FD0" unlock >/dev/null 2>&1
 sleep 0.3
 ALIVE_PID=$(cat "$HOME_AL/agent.pid" 2>/dev/null)
 # Manually remove the pid file but leave the agent + socket alive.
 rm -f "$HOME_AL/agent.pid"
 # Try to spawn a SECOND agent — it MUST refuse because socket
 # answers (codex audit fix: probeAgentSocket).
-SECOND_OUT=$(env FD0_HOME="$HOME_AL" FD0_AGENT_LOG="/dev/null" "$FD0_AGENT" 2>&1 &
+SECOND_OUT=$(env FD0_HOME="$HOME_AL" FD0_SSH_SOCK="$HOME_AL/ssh.sock" FD0_AGENT_LOG="/dev/null" "$FD0_AGENT" 2>&1 &
 SECOND_PID=$!
 sleep 1
 kill -TERM $SECOND_PID 2>/dev/null

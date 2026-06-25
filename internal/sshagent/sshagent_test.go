@@ -118,6 +118,19 @@ func TestDefaultSocketPath(t *testing.T) {
 	}
 }
 
+func TestDefaultSocketPathIsolatesCustomFD0Home(t *testing.T) {
+	t.Setenv("FD0_HOME", filepath.Join(t.TempDir(), "one"))
+	one := DefaultSocketPath()
+	t.Setenv("FD0_HOME", filepath.Join(t.TempDir(), "two"))
+	two := DefaultSocketPath()
+	if one == two {
+		t.Fatalf("custom FD0_HOME values should get distinct SSH sockets: %q", one)
+	}
+	if !strings.HasSuffix(one, ".sock") || !strings.HasSuffix(two, ".sock") {
+		t.Fatalf("socket paths must keep .sock suffix: %q %q", one, two)
+	}
+}
+
 func TestEnsureSocketDirRemovesStale(t *testing.T) {
 	tmp := t.TempDir()
 	sock := filepath.Join(tmp, "subdir", "ssh.sock")

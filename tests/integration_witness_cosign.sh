@@ -76,7 +76,7 @@ on_unlock = false
 lock_wait = "10s"
 EOF
 }
-AL() { env FD0_HOME="$HOME_AL" "$FD0" "$@"; }
+AL() { env FD0_HOME="$HOME_AL" FD0_SSH_SOCK="$HOME_AL/ssh.sock" "$FD0" "$@"; }
 
 # ---- pubkey extractors ------------------------------------------------
 
@@ -150,8 +150,8 @@ SRV_PUB_HEX=$(extract_server_pub_hex)
 
 # Client init + bootstrap a scope.
 mkfd0 "$HOME_AL" "http://127.0.0.1:${SERVER_PORT}"
-printf "alice-pass\nalice-pass\n" | env FD0_HOME="$HOME_AL" "$FD0" init >/dev/null 2>&1
-printf "alice-pass\n" | env FD0_HOME="$HOME_AL" "$FD0" unlock >/dev/null 2>&1
+printf "alice-pass\nalice-pass\n" | env FD0_HOME="$HOME_AL" FD0_SSH_SOCK="$HOME_AL/ssh.sock" "$FD0" init >/dev/null 2>&1
+printf "alice-pass\n" | env FD0_HOME="$HOME_AL" FD0_SSH_SOCK="$HOME_AL/ssh.sock" "$FD0" unlock >/dev/null 2>&1
 sleep 0.3
 
 AL scope create --label work >/dev/null

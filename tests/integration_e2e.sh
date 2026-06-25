@@ -90,13 +90,13 @@ EOF
 }
 
 # Per-device CLI invokers — each scope via FD0_HOME isolation.
-AL() { env FD0_HOME="$HOME_AL" "$FD0" "$@"; }
-AD() { env FD0_HOME="$HOME_AD" "$FD0" "$@"; }
-AP() { env FD0_HOME="$HOME_AP" "$FD0" "$@"; }
-BL() { env FD0_HOME="$HOME_BL" "$FD0" "$@"; }
-BD() { env FD0_HOME="$HOME_BD" "$FD0" "$@"; }
-CL() { env FD0_HOME="$HOME_CL" "$FD0" "$@"; }
-EL() { env FD0_HOME="$HOME_EL" "$FD0" "$@"; }
+AL() { env FD0_HOME="$HOME_AL" FD0_SSH_SOCK="$HOME_AL/ssh.sock" "$FD0" "$@"; }
+AD() { env FD0_HOME="$HOME_AD" FD0_SSH_SOCK="$HOME_AD/ssh.sock" "$FD0" "$@"; }
+AP() { env FD0_HOME="$HOME_AP" FD0_SSH_SOCK="$HOME_AP/ssh.sock" "$FD0" "$@"; }
+BL() { env FD0_HOME="$HOME_BL" FD0_SSH_SOCK="$HOME_BL/ssh.sock" "$FD0" "$@"; }
+BD() { env FD0_HOME="$HOME_BD" FD0_SSH_SOCK="$HOME_BD/ssh.sock" "$FD0" "$@"; }
+CL() { env FD0_HOME="$HOME_CL" FD0_SSH_SOCK="$HOME_CL/ssh.sock" "$FD0" "$@"; }
+EL() { env FD0_HOME="$HOME_EL" FD0_SSH_SOCK="$HOME_EL/ssh.sock" "$FD0" "$@"; }
 
 # Sync helpers — ignore exit code, capture errors via separate doctor checks.
 sync_team() {
@@ -166,27 +166,27 @@ mkfd0 "$HOME_BL"; mkfd0 "$HOME_BD"
 mkfd0 "$HOME_CL"; mkfd0 "$HOME_EL"
 
 # Init the four primary identities.
-printf "alice-pass\nalice-pass\n" | env FD0_HOME="$HOME_AL" "$FD0" init >/dev/null 2>&1
-printf "bob-pass\nbob-pass\n"     | env FD0_HOME="$HOME_BL" "$FD0" init >/dev/null 2>&1
-printf "carol-pass\ncarol-pass\n" | env FD0_HOME="$HOME_CL" "$FD0" init >/dev/null 2>&1
-printf "eve-pass\neve-pass\n"     | env FD0_HOME="$HOME_EL" "$FD0" init >/dev/null 2>&1
-printf "alice-pass\n" | env FD0_HOME="$HOME_AL" "$FD0" unlock >/dev/null 2>&1
-printf "bob-pass\n"   | env FD0_HOME="$HOME_BL" "$FD0" unlock >/dev/null 2>&1
-printf "carol-pass\n" | env FD0_HOME="$HOME_CL" "$FD0" unlock >/dev/null 2>&1
-printf "eve-pass\n"   | env FD0_HOME="$HOME_EL" "$FD0" unlock >/dev/null 2>&1
+printf "alice-pass\nalice-pass\n" | env FD0_HOME="$HOME_AL" FD0_SSH_SOCK="$HOME_AL/ssh.sock" "$FD0" init >/dev/null 2>&1
+printf "bob-pass\nbob-pass\n"     | env FD0_HOME="$HOME_BL" FD0_SSH_SOCK="$HOME_BL/ssh.sock" "$FD0" init >/dev/null 2>&1
+printf "carol-pass\ncarol-pass\n" | env FD0_HOME="$HOME_CL" FD0_SSH_SOCK="$HOME_CL/ssh.sock" "$FD0" init >/dev/null 2>&1
+printf "eve-pass\neve-pass\n"     | env FD0_HOME="$HOME_EL" FD0_SSH_SOCK="$HOME_EL/ssh.sock" "$FD0" init >/dev/null 2>&1
+printf "alice-pass\n" | env FD0_HOME="$HOME_AL" FD0_SSH_SOCK="$HOME_AL/ssh.sock" "$FD0" unlock >/dev/null 2>&1
+printf "bob-pass\n"   | env FD0_HOME="$HOME_BL" FD0_SSH_SOCK="$HOME_BL/ssh.sock" "$FD0" unlock >/dev/null 2>&1
+printf "carol-pass\n" | env FD0_HOME="$HOME_CL" FD0_SSH_SOCK="$HOME_CL/ssh.sock" "$FD0" unlock >/dev/null 2>&1
+printf "eve-pass\n"   | env FD0_HOME="$HOME_EL" FD0_SSH_SOCK="$HOME_EL/ssh.sock" "$FD0" unlock >/dev/null 2>&1
 sleep 0.3
 
 # Recovery import for Alice's other two devices.
 printf "alice-rec\nalice-rec\n" | AL recovery export "$RECOVERY_AL" >/dev/null
-printf "alice-rec\nalice-d\nalice-d\n" | env FD0_HOME="$HOME_AD" "$FD0" recovery import "$RECOVERY_AL" >/dev/null 2>&1
-printf "alice-rec\nalice-p\nalice-p\n" | env FD0_HOME="$HOME_AP" "$FD0" recovery import "$RECOVERY_AL" >/dev/null 2>&1
-printf "alice-d\n" | env FD0_HOME="$HOME_AD" "$FD0" unlock >/dev/null 2>&1
-printf "alice-p\n" | env FD0_HOME="$HOME_AP" "$FD0" unlock >/dev/null 2>&1
+printf "alice-rec\nalice-d\nalice-d\n" | env FD0_HOME="$HOME_AD" FD0_SSH_SOCK="$HOME_AD/ssh.sock" "$FD0" recovery import "$RECOVERY_AL" >/dev/null 2>&1
+printf "alice-rec\nalice-p\nalice-p\n" | env FD0_HOME="$HOME_AP" FD0_SSH_SOCK="$HOME_AP/ssh.sock" "$FD0" recovery import "$RECOVERY_AL" >/dev/null 2>&1
+printf "alice-d\n" | env FD0_HOME="$HOME_AD" FD0_SSH_SOCK="$HOME_AD/ssh.sock" "$FD0" unlock >/dev/null 2>&1
+printf "alice-p\n" | env FD0_HOME="$HOME_AP" FD0_SSH_SOCK="$HOME_AP/ssh.sock" "$FD0" unlock >/dev/null 2>&1
 
 # Recovery for Bob's second device.
 printf "bob-rec\nbob-rec\n" | BL recovery export "$RECOVERY_BL" >/dev/null
-printf "bob-rec\nbob-d\nbob-d\n" | env FD0_HOME="$HOME_BD" "$FD0" recovery import "$RECOVERY_BL" >/dev/null 2>&1
-printf "bob-d\n" | env FD0_HOME="$HOME_BD" "$FD0" unlock >/dev/null 2>&1
+printf "bob-rec\nbob-d\nbob-d\n" | env FD0_HOME="$HOME_BD" FD0_SSH_SOCK="$HOME_BD/ssh.sock" "$FD0" recovery import "$RECOVERY_BL" >/dev/null 2>&1
+printf "bob-d\n" | env FD0_HOME="$HOME_BD" FD0_SSH_SOCK="$HOME_BD/ssh.sock" "$FD0" unlock >/dev/null 2>&1
 
 sleep 0.3
 ok "7 devices initialized (Alice ×3, Bob ×2, Carol ×1, Eve ×1)"

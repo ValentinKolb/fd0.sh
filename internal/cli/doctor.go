@@ -241,11 +241,15 @@ func RunDoctor(ctx context.Context) error {
 	s.Close()
 
 	fmt.Fprintln(os.Stderr, "ssh agent socket")
-	sshSock := SSHSocketPathForRender()
-	if err := checkSSHAgentSocket(sshSock); err != nil {
-		pr("ERR", "  "+sshAgentSocketUnavailable(sshSock, err).Error())
+	if sshAgentSocketDisabledByEnv() {
+		pr("OK", "  disabled by FD0_SSH_SOCK")
 	} else {
-		pr("OK", fmt.Sprintf("  reachable at %s", sshSock))
+		sshSock := SSHSocketPathForRender()
+		if err := checkSSHAgentSocket(sshSock); err != nil {
+			pr("ERR", "  "+sshAgentSocketUnavailable(sshSock, err).Error())
+		} else {
+			pr("OK", fmt.Sprintf("  reachable at %s", sshSock))
+		}
 	}
 
 	fmt.Fprintln(os.Stderr)

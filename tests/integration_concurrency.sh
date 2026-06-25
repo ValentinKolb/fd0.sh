@@ -65,20 +65,20 @@ EOF
 
 mkfd0 "$HOME_AL"; mkfd0 "$HOME_AD"; mkfd0 "$HOME_BL"
 
-printf "alice-pass\nalice-pass\n" | env FD0_HOME="$HOME_AL" "$FD0" init >/dev/null 2>&1
-printf "bob-pass\nbob-pass\n"     | env FD0_HOME="$HOME_BL" "$FD0" init >/dev/null 2>&1
-printf "alice-pass\n" | env FD0_HOME="$HOME_AL" "$FD0" unlock >/dev/null 2>&1
-printf "bob-pass\n"   | env FD0_HOME="$HOME_BL" "$FD0" unlock >/dev/null 2>&1
+printf "alice-pass\nalice-pass\n" | env FD0_HOME="$HOME_AL" FD0_SSH_SOCK="$HOME_AL/ssh.sock" "$FD0" init >/dev/null 2>&1
+printf "bob-pass\nbob-pass\n"     | env FD0_HOME="$HOME_BL" FD0_SSH_SOCK="$HOME_BL/ssh.sock" "$FD0" init >/dev/null 2>&1
+printf "alice-pass\n" | env FD0_HOME="$HOME_AL" FD0_SSH_SOCK="$HOME_AL/ssh.sock" "$FD0" unlock >/dev/null 2>&1
+printf "bob-pass\n"   | env FD0_HOME="$HOME_BL" FD0_SSH_SOCK="$HOME_BL/ssh.sock" "$FD0" unlock >/dev/null 2>&1
 sleep 0.3
-printf "alice-rec\nalice-rec\n" | env FD0_HOME="$HOME_AL" "$FD0" recovery export "$RECOVERY" >/dev/null
-printf "alice-rec\nalice-d\nalice-d\n" | env FD0_HOME="$HOME_AD" "$FD0" recovery import "$RECOVERY" >/dev/null 2>&1
-printf "alice-d\n" | env FD0_HOME="$HOME_AD" "$FD0" unlock >/dev/null 2>&1
+printf "alice-rec\nalice-rec\n" | env FD0_HOME="$HOME_AL" FD0_SSH_SOCK="$HOME_AL/ssh.sock" "$FD0" recovery export "$RECOVERY" >/dev/null
+printf "alice-rec\nalice-d\nalice-d\n" | env FD0_HOME="$HOME_AD" FD0_SSH_SOCK="$HOME_AD/ssh.sock" "$FD0" recovery import "$RECOVERY" >/dev/null 2>&1
+printf "alice-d\n" | env FD0_HOME="$HOME_AD" FD0_SSH_SOCK="$HOME_AD/ssh.sock" "$FD0" unlock >/dev/null 2>&1
 sleep 0.3
 ok "3 devices initialized"
 
-AL() { env FD0_HOME="$HOME_AL" "$FD0" "$@"; }
-AD() { env FD0_HOME="$HOME_AD" "$FD0" "$@"; }
-BL() { env FD0_HOME="$HOME_BL" "$FD0" "$@"; }
+AL() { env FD0_HOME="$HOME_AL" FD0_SSH_SOCK="$HOME_AL/ssh.sock" "$FD0" "$@"; }
+AD() { env FD0_HOME="$HOME_AD" FD0_SSH_SOCK="$HOME_AD/ssh.sock" "$FD0" "$@"; }
+BL() { env FD0_HOME="$HOME_BL" FD0_SSH_SOCK="$HOME_BL/ssh.sock" "$FD0" "$@"; }
 
 AC=$(AL card export); BC=$(BL card export)
 AL card import "$BC" --label bob   --yes >/dev/null
@@ -177,7 +177,7 @@ sleep 0.05
 AL lock 2>&1 || true
 wait "$SYNC_PID" 2>/dev/null || true
 sleep 0.2
-printf "alice-pass\n" | env FD0_HOME="$HOME_AL" "$FD0" unlock >/dev/null 2>&1
+printf "alice-pass\n" | env FD0_HOME="$HOME_AL" FD0_SSH_SOCK="$HOME_AL/ssh.sock" "$FD0" unlock >/dev/null 2>&1
 sleep 0.2
 OUT=$(AL doctor 2>&1)
 case "$OUT" in
@@ -200,8 +200,8 @@ AD_COUNT=$(AD auth ls 2>&1 | grep -c "^[* ]")
 step "C8) Two simultaneous unlock attempts"
 AL lock >/dev/null 2>&1
 sleep 0.2
-( printf "alice-pass\n" | env FD0_HOME="$HOME_AL" "$FD0" unlock >/dev/null 2>&1 ) & PA=$!
-( printf "alice-pass\n" | env FD0_HOME="$HOME_AL" "$FD0" unlock >/dev/null 2>&1 ) & PB=$!
+( printf "alice-pass\n" | env FD0_HOME="$HOME_AL" FD0_SSH_SOCK="$HOME_AL/ssh.sock" "$FD0" unlock >/dev/null 2>&1 ) & PA=$!
+( printf "alice-pass\n" | env FD0_HOME="$HOME_AL" FD0_SSH_SOCK="$HOME_AL/ssh.sock" "$FD0" unlock >/dev/null 2>&1 ) & PB=$!
 wait "$PA" 2>/dev/null || true
 wait "$PB" 2>/dev/null || true
 sleep 0.3
@@ -215,10 +215,10 @@ esac
 step "C9) Both alice devices add the same new member"
 HOME_CL=$HOME/.fd0-conc-cl
 mkfd0 "$HOME_CL"
-printf "carol-pass\ncarol-pass\n" | env FD0_HOME="$HOME_CL" "$FD0" init >/dev/null 2>&1
-printf "carol-pass\n" | env FD0_HOME="$HOME_CL" "$FD0" unlock >/dev/null 2>&1
+printf "carol-pass\ncarol-pass\n" | env FD0_HOME="$HOME_CL" FD0_SSH_SOCK="$HOME_CL/ssh.sock" "$FD0" init >/dev/null 2>&1
+printf "carol-pass\n" | env FD0_HOME="$HOME_CL" FD0_SSH_SOCK="$HOME_CL/ssh.sock" "$FD0" unlock >/dev/null 2>&1
 sleep 0.2
-CC=$(env FD0_HOME="$HOME_CL" "$FD0" card export)
+CC=$(env FD0_HOME="$HOME_CL" FD0_SSH_SOCK="$HOME_CL/ssh.sock" "$FD0" card export)
 AL card import "$CC" --label carol --yes >/dev/null
 AD card import "$CC" --label carol --yes >/dev/null
 ( AL scope add-member carol --scope work >/dev/null 2>&1 ) & PA=$!
@@ -239,7 +239,7 @@ AD_M=$(AD scope members work 2>&1 | norm_members)
 COUNT=$(printf "%s\n" "$AL_M" | grep -c . || true)
 [ "$COUNT" -eq 3 ] && ok "member set has 3 entries (alice, bob, carol)" \
     || no "expected 3 members, got $COUNT — $AL_M"
-env FD0_HOME="$HOME_CL" "$FD0" lock >/dev/null 2>&1
+env FD0_HOME="$HOME_CL" FD0_SSH_SOCK="$HOME_CL/ssh.sock" "$FD0" lock >/dev/null 2>&1
 rm -rf "$HOME_CL"
 
 # ─── C9b. Concurrent disjoint adds (three-way merge) ─────────────────────
@@ -247,13 +247,13 @@ step "C9b) Both alice devices add DIFFERENT members concurrently"
 HOME_DL=$HOME/.fd0-conc-dl
 HOME_EL=$HOME/.fd0-conc-el
 mkfd0 "$HOME_DL"; mkfd0 "$HOME_EL"
-printf "dave-pass\ndave-pass\n" | env FD0_HOME="$HOME_DL" "$FD0" init >/dev/null 2>&1
-printf "eve-pass\neve-pass\n"   | env FD0_HOME="$HOME_EL" "$FD0" init >/dev/null 2>&1
-printf "dave-pass\n" | env FD0_HOME="$HOME_DL" "$FD0" unlock >/dev/null 2>&1
-printf "eve-pass\n"  | env FD0_HOME="$HOME_EL" "$FD0" unlock >/dev/null 2>&1
+printf "dave-pass\ndave-pass\n" | env FD0_HOME="$HOME_DL" FD0_SSH_SOCK="$HOME_DL/ssh.sock" "$FD0" init >/dev/null 2>&1
+printf "eve-pass\neve-pass\n"   | env FD0_HOME="$HOME_EL" FD0_SSH_SOCK="$HOME_EL/ssh.sock" "$FD0" init >/dev/null 2>&1
+printf "dave-pass\n" | env FD0_HOME="$HOME_DL" FD0_SSH_SOCK="$HOME_DL/ssh.sock" "$FD0" unlock >/dev/null 2>&1
+printf "eve-pass\n"  | env FD0_HOME="$HOME_EL" FD0_SSH_SOCK="$HOME_EL/ssh.sock" "$FD0" unlock >/dev/null 2>&1
 sleep 0.2
-DC=$(env FD0_HOME="$HOME_DL" "$FD0" card export)
-EC=$(env FD0_HOME="$HOME_EL" "$FD0" card export)
+DC=$(env FD0_HOME="$HOME_DL" FD0_SSH_SOCK="$HOME_DL/ssh.sock" "$FD0" card export)
+EC=$(env FD0_HOME="$HOME_EL" FD0_SSH_SOCK="$HOME_EL/ssh.sock" "$FD0" card export)
 AL card import "$DC" --label dave --yes >/dev/null
 AL card import "$EC" --label eve  --yes >/dev/null
 AD card import "$DC" --label dave --yes >/dev/null
@@ -278,8 +278,8 @@ BL_M=$(BL scope members work 2>&1 | norm_members)
 [ "$BL_M" = "$AL_M" ] \
     && ok "bob converges on the same member set" \
     || no "BL DIVERGENT — bl='$BL_M' al='$AL_M'"
-env FD0_HOME="$HOME_DL" "$FD0" lock >/dev/null 2>&1
-env FD0_HOME="$HOME_EL" "$FD0" lock >/dev/null 2>&1
+env FD0_HOME="$HOME_DL" FD0_SSH_SOCK="$HOME_DL/ssh.sock" "$FD0" lock >/dev/null 2>&1
+env FD0_HOME="$HOME_EL" FD0_SSH_SOCK="$HOME_EL/ssh.sock" "$FD0" lock >/dev/null 2>&1
 rm -rf "$HOME_DL" "$HOME_EL"
 
 # ─── C9c. Concurrent remove + secret.set on same device pair ─────────────
@@ -287,10 +287,10 @@ step "C9c) AL removes a member while AD writes a secret"
 # Setup a fresh victim member to remove.
 HOME_FL=$HOME/.fd0-conc-fl
 mkfd0 "$HOME_FL"
-printf "frank-pass\nfrank-pass\n" | env FD0_HOME="$HOME_FL" "$FD0" init >/dev/null 2>&1
-printf "frank-pass\n" | env FD0_HOME="$HOME_FL" "$FD0" unlock >/dev/null 2>&1
+printf "frank-pass\nfrank-pass\n" | env FD0_HOME="$HOME_FL" FD0_SSH_SOCK="$HOME_FL/ssh.sock" "$FD0" init >/dev/null 2>&1
+printf "frank-pass\n" | env FD0_HOME="$HOME_FL" FD0_SSH_SOCK="$HOME_FL/ssh.sock" "$FD0" unlock >/dev/null 2>&1
 sleep 0.2
-FC=$(env FD0_HOME="$HOME_FL" "$FD0" card export)
+FC=$(env FD0_HOME="$HOME_FL" FD0_SSH_SOCK="$HOME_FL/ssh.sock" "$FD0" card export)
 AL card import "$FC" --label frank --yes >/dev/null
 AD card import "$FC" --label frank --yes >/dev/null
 AL scope add-member frank --scope work >/dev/null
@@ -312,12 +312,12 @@ RACE=$(AL get RACE_KEY --scope work --raw 2>/dev/null)
     && ok "AD's racing secret survived the reconcile" \
     || no "RACE_KEY missing or wrong: '$RACE'"
 # Frank must actually be gone — the remove must have stuck.
-FRANK_PUB=$(env FD0_HOME="$HOME_FL" "$FD0" card export | sed -n 's|^fd0://card/||p' | sed 's|;.*||')
+FRANK_PUB=$(env FD0_HOME="$HOME_FL" FD0_SSH_SOCK="$HOME_FL/ssh.sock" "$FD0" card export | sed -n 's|^fd0://card/||p' | sed 's|;.*||')
 case "$AL_M" in
     *"$FRANK_PUB"*) no "frank still in member set after remove" ;;
     *) ok "frank is gone after concurrent remove+set" ;;
 esac
-env FD0_HOME="$HOME_FL" "$FD0" lock >/dev/null 2>&1
+env FD0_HOME="$HOME_FL" FD0_SSH_SOCK="$HOME_FL/ssh.sock" "$FD0" lock >/dev/null 2>&1
 rm -rf "$HOME_FL"
 
 # ─── C9d. Stale-OEK regression: dropped no-op + later secret.set ─────────
@@ -331,10 +331,10 @@ rm -rf "$HOME_FL"
 step "C9d) After member.change drops as no-op, peers must decrypt the next secret"
 HOME_GL=$HOME/.fd0-conc-gl
 mkfd0 "$HOME_GL"
-printf "gail-pass\ngail-pass\n" | env FD0_HOME="$HOME_GL" "$FD0" init >/dev/null 2>&1
-printf "gail-pass\n" | env FD0_HOME="$HOME_GL" "$FD0" unlock >/dev/null 2>&1
+printf "gail-pass\ngail-pass\n" | env FD0_HOME="$HOME_GL" FD0_SSH_SOCK="$HOME_GL/ssh.sock" "$FD0" init >/dev/null 2>&1
+printf "gail-pass\n" | env FD0_HOME="$HOME_GL" FD0_SSH_SOCK="$HOME_GL/ssh.sock" "$FD0" unlock >/dev/null 2>&1
 sleep 0.2
-GC=$(env FD0_HOME="$HOME_GL" "$FD0" card export)
+GC=$(env FD0_HOME="$HOME_GL" FD0_SSH_SOCK="$HOME_GL/ssh.sock" "$FD0" card export)
 AL card import "$GC" --label gail --yes >/dev/null
 AD card import "$GC" --label gail --yes >/dev/null
 ( AL scope add-member gail --scope work >/dev/null 2>&1 ) & PA=$!
@@ -360,7 +360,7 @@ GOT_AD=$(BL get OEK_PROBE_AD --scope work --raw 2>/dev/null)
 [ "$GOT_AD" = "from-AD" ] \
     && ok "BL decrypts AD's post-rebase secret (no stale OEK from AD)" \
     || no "AD stale OEK: BL got '$GOT_AD'"
-env FD0_HOME="$HOME_GL" "$FD0" lock >/dev/null 2>&1
+env FD0_HOME="$HOME_GL" FD0_SSH_SOCK="$HOME_GL/ssh.sock" "$FD0" lock >/dev/null 2>&1
 rm -rf "$HOME_GL"
 
 # ─── C10. Doctor on all surviving devices ────────────────────────────────

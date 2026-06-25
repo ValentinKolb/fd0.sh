@@ -72,8 +72,8 @@ lock_wait = "30s"
 EOF
 }
 
-AL() { env FD0_HOME="$HOME_AL" "$FD0" "$@"; }
-BL() { env FD0_HOME="$HOME_BL" "$FD0" "$@"; }
+AL() { env FD0_HOME="$HOME_AL" FD0_SSH_SOCK="$HOME_AL/ssh.sock" "$FD0" "$@"; }
+BL() { env FD0_HOME="$HOME_BL" FD0_SSH_SOCK="$HOME_BL/ssh.sock" "$FD0" "$@"; }
 
 # Seeded "random" via $SEED_BASE + iteration number, derived
 # deterministically with awk. Bash's $RANDOM is not seedable, so we
@@ -97,10 +97,10 @@ sleep 0.3
 ok "fd0-server up"
 
 mkfd0 "$HOME_AL"; mkfd0 "$HOME_BL"
-printf "alice-pass\nalice-pass\n" | env FD0_HOME="$HOME_AL" "$FD0" init >/dev/null 2>&1
-printf "bob-pass\nbob-pass\n"     | env FD0_HOME="$HOME_BL" "$FD0" init >/dev/null 2>&1
-printf "alice-pass\n" | env FD0_HOME="$HOME_AL" "$FD0" unlock >/dev/null 2>&1
-printf "bob-pass\n"   | env FD0_HOME="$HOME_BL" "$FD0" unlock >/dev/null 2>&1
+printf "alice-pass\nalice-pass\n" | env FD0_HOME="$HOME_AL" FD0_SSH_SOCK="$HOME_AL/ssh.sock" "$FD0" init >/dev/null 2>&1
+printf "bob-pass\nbob-pass\n"     | env FD0_HOME="$HOME_BL" FD0_SSH_SOCK="$HOME_BL/ssh.sock" "$FD0" init >/dev/null 2>&1
+printf "alice-pass\n" | env FD0_HOME="$HOME_AL" FD0_SSH_SOCK="$HOME_AL/ssh.sock" "$FD0" unlock >/dev/null 2>&1
+printf "bob-pass\n"   | env FD0_HOME="$HOME_BL" FD0_SSH_SOCK="$HOME_BL/ssh.sock" "$FD0" unlock >/dev/null 2>&1
 sleep 0.3
 ok "two devices initialized (Alice + Bob)"
 
@@ -177,7 +177,7 @@ for i in $(seq 1 "$ITERATIONS"); do
             KR=$(kill_agent "$HOME_AL")
             wait $SYNC_PID 2>/dev/null || true
             sleep 0.1
-            printf "alice-pass\n" | env FD0_HOME="$HOME_AL" "$FD0" unlock >/dev/null 2>&1
+            printf "alice-pass\n" | env FD0_HOME="$HOME_AL" FD0_SSH_SOCK="$HOME_AL/ssh.sock" "$FD0" unlock >/dev/null 2>&1
             sleep 0.2
             case "$KR" in noop:*) FAULT_NOOP=$((FAULT_NOOP+1)); CHAOS_LOG+=("iter=$i fault=0 AL-agent-kill $KR") ;; esac
             ;;
@@ -187,7 +187,7 @@ for i in $(seq 1 "$ITERATIONS"); do
             KR=$(kill_agent "$HOME_BL")
             wait $SYNC_PID 2>/dev/null || true
             sleep 0.1
-            printf "bob-pass\n" | env FD0_HOME="$HOME_BL" "$FD0" unlock >/dev/null 2>&1
+            printf "bob-pass\n" | env FD0_HOME="$HOME_BL" FD0_SSH_SOCK="$HOME_BL/ssh.sock" "$FD0" unlock >/dev/null 2>&1
             sleep 0.2
             case "$KR" in noop:*) FAULT_NOOP=$((FAULT_NOOP+1)); CHAOS_LOG+=("iter=$i fault=1 BL-agent-kill $KR") ;; esac
             ;;

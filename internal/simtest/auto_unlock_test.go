@@ -80,6 +80,7 @@ func TestEmptyHomePointsToInit(t *testing.T) {
 	cmd.Env = []string{
 		"FD0_HOME=" + home,
 		"HOME=" + hostHome,
+		"FD0_SSH_SOCK=" + filepath.Join(h.dir, "fresh.s"),
 		"FD0_AGENT_BIN=" + h.agentBin,
 		"FD0_AUTO_PIN=1",
 		"PATH=" + pathEnv(),

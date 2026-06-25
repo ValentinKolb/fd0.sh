@@ -65,10 +65,10 @@ on_unlock = false
 lock_wait = "10s"
 EOF
 
-printf "alice-pass\nalice-pass\n" | env FD0_HOME="$HOME_AL" "$FD0" init >/dev/null 2>&1
-printf "alice-pass\n"             | env FD0_HOME="$HOME_AL" "$FD0" unlock >/dev/null 2>&1
+printf "alice-pass\nalice-pass\n" | env FD0_HOME="$HOME_AL" FD0_SSH_SOCK="$HOME_AL/ssh.sock" "$FD0" init >/dev/null 2>&1
+printf "alice-pass\n"             | env FD0_HOME="$HOME_AL" FD0_SSH_SOCK="$HOME_AL/ssh.sock" "$FD0" unlock >/dev/null 2>&1
 sleep 0.3
-AL() { env FD0_HOME="$HOME_AL" "$FD0" "$@"; }
+AL() { env FD0_HOME="$HOME_AL" FD0_SSH_SOCK="$HOME_AL/ssh.sock" "$FD0" "$@"; }
 
 AL scope create --label work >/dev/null
 AL set probe1 v1 --scope work >/dev/null

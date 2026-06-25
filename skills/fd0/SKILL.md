@@ -179,6 +179,7 @@ These are not negotiable. The skill is useless and dangerous without them.
 |---|---|---|
 | `not unlocked` / `agent not running` | No active agent | `fd0 unlock` |
 | `another fd0 instance holds the lock` | The agent's background auto-sync (or another fd0) holds the flock; the client already waits ~5s before failing | Usually transient — just retry. If it persists, make sure no other fd0 is running: `ps aux \| grep fd0-agent`, kill a stale PID, then retry |
+| `fd0 SSH agent socket unavailable` / `Connection refused` from `ssh-add -L` | fd0-agent is running but its SSH-agent listener is stale or was started with the wrong socket path | Restart the agent process, not just the vault lock state: `kill "$(cat ~/.fd0/agent.pid)" 2>/dev/null; fd0 unlock`. For custom `FD0_HOME`, use that home's `agent.pid`. |
 | `429 Too Many Requests` on register | Per-IP rate limit | Retry after the `retry-after` seconds; do not loop |
 | `pinned-key-mismatch` on sync | Server's translog key rotated, or MITM | STOP. Verify the new fingerprint out-of-band BEFORE re-pinning. `~/.fd0/config.toml` does not need editing — fd0 walks through the ceremony |
 | `witness cross-check failed` | Witness disagrees with server | STOP. Possible equivocation. Open an issue with the server operator |

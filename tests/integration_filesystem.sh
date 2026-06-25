@@ -53,10 +53,10 @@ EOF
 "$FD0_SERVER_BIN" --bind=":${SERVER_PORT}" --db="$SERVER_DB" --no-ratelimit > "$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 sleep 0.3
-printf "p\np\n" | env FD0_HOME="$HOME_DIR" "$FD0" init >/dev/null 2>&1
-printf "p\n"   | env FD0_HOME="$HOME_DIR" "$FD0" unlock >/dev/null 2>&1
+printf "p\np\n" | env FD0_HOME="$HOME_DIR" FD0_SSH_SOCK="$HOME_DIR/ssh.sock" "$FD0" init >/dev/null 2>&1
+printf "p\n"   | env FD0_HOME="$HOME_DIR" FD0_SSH_SOCK="$HOME_DIR/ssh.sock" "$FD0" unlock >/dev/null 2>&1
 sleep 0.2
-A() { env FD0_HOME="$HOME_DIR" "$FD0" "$@"; }
+A() { env FD0_HOME="$HOME_DIR" FD0_SSH_SOCK="$HOME_DIR/ssh.sock" "$FD0" "$@"; }
 A scope create --label work >/dev/null 2>&1
 A set HELLO "world" --scope work >/dev/null 2>&1
 A sync >/dev/null 2>&1
@@ -82,7 +82,7 @@ A lock >/dev/null 2>&1
 pkill -f fd0-agent 2>/dev/null || true
 sleep 0.3
 chmod 777 "$HOME_DIR"
-printf "p\n" | env FD0_HOME="$HOME_DIR" "$FD0" unlock >/dev/null 2>&1 || true
+printf "p\n" | env FD0_HOME="$HOME_DIR" FD0_SSH_SOCK="$HOME_DIR/ssh.sock" "$FD0" unlock >/dev/null 2>&1 || true
 sleep 0.2
 PERMS_AFTER=$(stat -f "%Lp" "$HOME_DIR" 2>/dev/null || stat -c "%a" "$HOME_DIR" 2>/dev/null)
 [ "$PERMS_AFTER" = "700" ] \
@@ -97,7 +97,7 @@ sleep 0.2
 # simulates a crashed agent).
 touch "$HOME_DIR/agent.sock"
 # Re-unlock should clean stale socket.
-printf "p\n" | env FD0_HOME="$HOME_DIR" "$FD0" unlock >/dev/null 2>&1
+printf "p\n" | env FD0_HOME="$HOME_DIR" FD0_SSH_SOCK="$HOME_DIR/ssh.sock" "$FD0" unlock >/dev/null 2>&1
 sleep 0.2
 ST=$(A status 2>&1)
 case "$ST" in
@@ -179,7 +179,7 @@ esac
 step "F8) Second agent for the same FD0_HOME exits cleanly"
 # Agent already running on this $HOME_DIR. Try spawning a second pointed
 # at the SAME home — the socket is already bound, so the second must die.
-( env FD0_HOME="$HOME_DIR" "$FD0_AGENT" >/tmp/fd0-agent2.log 2>&1 ) &
+( env FD0_HOME="$HOME_DIR" FD0_SSH_SOCK="$HOME_DIR/ssh.sock" "$FD0_AGENT" >/tmp/fd0-agent2.log 2>&1 ) &
 AG2_PID=$!
 sleep 0.5
 if kill -0 $AG2_PID 2>/dev/null; then
@@ -202,7 +202,7 @@ if [ -f "$HOME_DIR/agent.pid" ]; then
     # Clean up stale socket + PID file the killed agent didn't get to remove.
     rm -f "$HOME_DIR/agent.sock" "$HOME_DIR/agent.pid"
 fi
-printf "p\n" | env FD0_HOME="$HOME_DIR" "$FD0" unlock >/dev/null 2>&1
+printf "p\n" | env FD0_HOME="$HOME_DIR" FD0_SSH_SOCK="$HOME_DIR/ssh.sock" "$FD0" unlock >/dev/null 2>&1
 sleep 0.2
 GOT=$(A get CRASH_TEST --scope work --raw 2>&1)
 [ "$GOT" = "v" ] \

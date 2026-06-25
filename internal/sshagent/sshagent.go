@@ -25,6 +25,8 @@ package sshagent
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -194,10 +196,12 @@ func equalBytes(a, b []byte) bool {
 	return v == 0
 }
 
-// DefaultSocketPath returns the conventional fd0 SSH-agent socket
-// path. Honours XDG_RUNTIME_DIR per the freedesktop.org spec; falls
-// back to /tmp on macOS where XDG isn't standardised. The filename
-// includes the UID so two users sharing a host get separate sockets.
+// DefaultSocketPath returns the conventional fd0 SSH-agent socket path.
+// Honours XDG_RUNTIME_DIR per the freedesktop.org spec; falls back to /tmp
+// on macOS where XDG isn't standardised. The filename includes the UID so
+// two users sharing a host get separate sockets. Non-default FD0_HOME values
+// get a per-home suffix so isolated test/demo vaults do not collide with the
+// user's real fd0-agent socket.
 func DefaultSocketPath() string {
 	dir := os.Getenv("XDG_RUNTIME_DIR")
 	if dir == "" {
@@ -206,7 +210,32 @@ func DefaultSocketPath() string {
 		dir = filepath.Join(dir, "fd0")
 	}
 	uid := os.Getuid()
-	return filepath.Join(dir, "ssh-"+strconv.Itoa(uid)+".sock")
+	name := "ssh-" + strconv.Itoa(uid)
+	if suffix := fd0HomeSocketSuffix(); suffix != "" {
+		name += "-" + suffix
+	}
+	return filepath.Join(dir, name+".sock")
+}
+
+func fd0HomeSocketSuffix() string {
+	home := os.Getenv("FD0_HOME")
+	if home == "" {
+		return ""
+	}
+	if abs, err := filepath.Abs(home); err == nil {
+		home = abs
+	}
+	if userHome, err := os.UserHomeDir(); err == nil {
+		defaultHome := filepath.Join(userHome, ".fd0")
+		if abs, err := filepath.Abs(defaultHome); err == nil {
+			defaultHome = abs
+		}
+		if home == defaultHome {
+			return ""
+		}
+	}
+	sum := sha256.Sum256([]byte(home))
+	return hex.EncodeToString(sum[:])[:12]
 }
 
 // EnsureSocketDir creates the parent directory for the socket with

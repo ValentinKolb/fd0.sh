@@ -54,13 +54,13 @@ make_alias() {
     local name="$1" home="$2"
     eval "
 ${name}() {
-    env FD0_HOME='$home' FD0_SERVER='http://127.0.0.1:${SERVER_PORT}' '$FD0' \"\$@\"
+    env FD0_HOME='$home' FD0_SSH_SOCK='$home/ssh.sock' FD0_SERVER='http://127.0.0.1:${SERVER_PORT}' '$FD0' \"\$@\"
 }"
 }
 
 unlock_one() {
     local home="$1" pass="$2"
-    printf "%s\n" "$pass" | env FD0_HOME="$home" "$FD0" unlock >/dev/null 2>&1
+    printf "%s\n" "$pass" | env FD0_HOME="$home" FD0_SSH_SOCK="$home/ssh.sock" "$FD0" unlock >/dev/null 2>&1
 }
 
 write_config() {
@@ -118,15 +118,15 @@ DEV_HOMES=(
 )
 
 # ─── identity bootstrap ──────────────────────────────────────────────────
-printf "alice-l\nalice-l\n" | env FD0_HOME="$HOME/.fd0-alice-laptop" "$FD0" init >/dev/null 2>&1
-printf "bob-l\nbob-l\n"     | env FD0_HOME="$HOME/.fd0-bob-laptop"   "$FD0" init >/dev/null 2>&1
+printf "alice-l\nalice-l\n" | env FD0_HOME="$HOME/.fd0-alice-laptop" FD0_SSH_SOCK="$HOME/.fd0-alice-laptop/ssh.sock" "$FD0" init >/dev/null 2>&1
+printf "bob-l\nbob-l\n"     | env FD0_HOME="$HOME/.fd0-bob-laptop" FD0_SSH_SOCK="$HOME/.fd0-bob-laptop/ssh.sock" "$FD0" init >/dev/null 2>&1
 unlock_one "$HOME/.fd0-alice-laptop" "alice-l"
 unlock_one "$HOME/.fd0-bob-laptop"   "bob-l"
 sleep 0.3
 printf "rec-a\nrec-a\n" | AL recovery export "$RECOVERY".alice >/dev/null
 printf "rec-b\nrec-b\n" | BL recovery export "$RECOVERY".bob   >/dev/null
-printf "rec-a\nalice-d\nalice-d\n" | env FD0_HOME="$HOME/.fd0-alice-desktop" "$FD0" recovery import "$RECOVERY".alice >/dev/null 2>&1
-printf "rec-b\nbob-d\nbob-d\n"     | env FD0_HOME="$HOME/.fd0-bob-desktop"   "$FD0" recovery import "$RECOVERY".bob   >/dev/null 2>&1
+printf "rec-a\nalice-d\nalice-d\n" | env FD0_HOME="$HOME/.fd0-alice-desktop" FD0_SSH_SOCK="$HOME/.fd0-alice-desktop/ssh.sock" "$FD0" recovery import "$RECOVERY".alice >/dev/null 2>&1
+printf "rec-b\nbob-d\nbob-d\n"     | env FD0_HOME="$HOME/.fd0-bob-desktop" FD0_SSH_SOCK="$HOME/.fd0-bob-desktop/ssh.sock" "$FD0" recovery import "$RECOVERY".bob   >/dev/null 2>&1
 unlock_one "$HOME/.fd0-alice-desktop" "alice-d"
 unlock_one "$HOME/.fd0-bob-desktop"   "bob-d"
 sleep 0.3

@@ -63,10 +63,10 @@ on_unlock = false
 lock_wait = "5s"
 EOF
 start_server --no-ratelimit && ok "server up" || no "server failed to start"
-printf "p\np\n" | env FD0_HOME="$HOME_DIR" "$FD0" init >/dev/null 2>&1
-printf "p\n"   | env FD0_HOME="$HOME_DIR" "$FD0" unlock >/dev/null 2>&1
+printf "p\np\n" | env FD0_HOME="$HOME_DIR" FD0_SSH_SOCK="$HOME_DIR/ssh.sock" "$FD0" init >/dev/null 2>&1
+printf "p\n"   | env FD0_HOME="$HOME_DIR" FD0_SSH_SOCK="$HOME_DIR/ssh.sock" "$FD0" unlock >/dev/null 2>&1
 sleep 0.2
-A() { env FD0_HOME="$HOME_DIR" "$FD0" "$@"; }
+A() { env FD0_HOME="$HOME_DIR" FD0_SSH_SOCK="$HOME_DIR/ssh.sock" "$FD0" "$@"; }
 A scope create --label work >/dev/null 2>&1
 A sync >/dev/null 2>&1
 

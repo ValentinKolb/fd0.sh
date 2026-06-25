@@ -62,14 +62,14 @@ mkfd0() {
 server    = "http://127.0.0.1:${SERVER_PORT}"
 on_unlock = false
 EOF
-    printf "%s\n%s\n" "$pass" "$pass" | env FD0_HOME="$home" "$FD0" init >/dev/null 2>&1
-    printf "%s\n" "$pass" | env FD0_HOME="$home" "$FD0" unlock >/dev/null 2>&1
+    printf "%s\n%s\n" "$pass" "$pass" | env FD0_HOME="$home" FD0_SSH_SOCK="$home/ssh.sock" "$FD0" init >/dev/null 2>&1
+    printf "%s\n" "$pass" | env FD0_HOME="$home" FD0_SSH_SOCK="$home/ssh.sock" "$FD0" unlock >/dev/null 2>&1
 }
 mkfd0 "$HOME_A" "alice-pass"
 mkfd0 "$HOME_B" "bob-pass"
 sleep 0.3
-A() { env FD0_HOME="$HOME_A" "$FD0" "$@"; }
-B() { env FD0_HOME="$HOME_B" "$FD0" "$@"; }
+A() { env FD0_HOME="$HOME_A" FD0_SSH_SOCK="$HOME_A/ssh.sock" "$FD0" "$@"; }
+B() { env FD0_HOME="$HOME_B" FD0_SSH_SOCK="$HOME_B/ssh.sock" "$FD0" "$@"; }
 ok "two devices initialized"
 
 # Cards

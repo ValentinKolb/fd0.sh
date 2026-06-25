@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
+	"syscall"
 	"time"
 )
 
@@ -62,4 +65,34 @@ func WaitReady(sockPath string, timeout time.Duration) error {
 		time.Sleep(50 * time.Millisecond)
 	}
 	return fmt.Errorf("agent: not ready after %s", timeout)
+}
+
+// StopByPIDFile terminates the fd0-agent process recorded in pidPath.
+func StopByPIDFile(pidPath string, timeout time.Duration) error {
+	b, err := os.ReadFile(pidPath)
+	if err != nil {
+		return fmt.Errorf("agent: read PID file %s: %w", pidPath, err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || pid <= 1 {
+		return fmt.Errorf("agent: invalid PID file %s", pidPath)
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return fmt.Errorf("agent: find pid %d: %w", pid, err)
+	}
+	if err := proc.Signal(syscall.SIGTERM); err != nil {
+		return fmt.Errorf("agent: stop pid %d: %w", pid, err)
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if err := proc.Signal(syscall.Signal(0)); err != nil {
+			return nil
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if err := proc.Signal(syscall.SIGKILL); err != nil {
+		return fmt.Errorf("agent: kill pid %d after timeout: %w", pid, err)
+	}
+	return nil
 }

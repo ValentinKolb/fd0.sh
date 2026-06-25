@@ -22,7 +22,7 @@ type PickerResult struct {
 }
 
 // RunPicker shows a single-select inline list. Up/Down moves the cursor,
-// Enter selects, Esc/Ctrl-C cancels. Same inline rendering policy as Run.
+// Enter selects, Esc/q/Ctrl-C cancels. Same inline rendering policy as Run.
 func RunPicker(prompt string, items []PickerItem) (PickerResult, error) {
 	if len(items) == 0 {
 		return PickerResult{}, fmt.Errorf("picker: empty items")
@@ -79,6 +79,11 @@ func (m *pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.cursor < len(m.items)-1 {
 			m.cursor++
 		}
+	case tea.KeyRunes:
+		if strings.ToLower(string(k.Runes)) == "q" {
+			m.cancelled = true
+			return m, tea.Quit
+		}
 	}
 	return m, nil
 }
@@ -124,7 +129,7 @@ func (m *pickerModel) View() string {
 		}
 		b.WriteByte('\n')
 	}
-	footer := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("↑↓ select · enter · esc")
+	footer := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("↑↓ select · enter · esc/q")
 	b.WriteString(pad(footer))
 	b.WriteByte('\n')
 	return b.String()

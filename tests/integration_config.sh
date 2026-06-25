@@ -55,7 +55,7 @@ sleep 0.4
 curl -fsS "http://127.0.0.1:${SERVER_PORT}/health" >/dev/null && ok "primary server up on :$SERVER_PORT"
 curl -fsS "http://127.0.0.1:${SERVER_ALT_PORT}/health" >/dev/null && ok "alt server up on :$SERVER_ALT_PORT"
 
-A() { env FD0_HOME="$HOME_DIR" "$FD0" "$@"; }
+A() { env FD0_HOME="$HOME_DIR" FD0_SSH_SOCK="$HOME_DIR/ssh.sock" "$FD0" "$@"; }
 
 # Helper: write a config.toml fragment for the home, replacing any prior.
 write_cfg() {
@@ -82,7 +82,7 @@ write_cfg <<EOF
 [sync]
 on_unlock = false
 EOF
-OUT=$(env FD0_HOME="$HOME_DIR" FD0_SERVER='' "$FD0" sync 2>&1 || true)
+OUT=$(env FD0_HOME="$HOME_DIR" FD0_SSH_SOCK="$HOME_DIR/ssh.sock" FD0_SERVER='' "$FD0" sync 2>&1 || true)
 case "$OUT" in
     *"no server"*) ok "no-config + no-env + no-flag → clear error" ;;
     *) no "expected 'no server' error, got: $OUT" ;;
@@ -94,7 +94,7 @@ write_cfg <<EOF
 server    = "http://127.0.0.1:${SERVER_PORT}"
 on_unlock = false
 EOF
-OUT=$(env FD0_HOME="$HOME_DIR" FD0_SERVER='' "$FD0" sync 2>&1 || true)
+OUT=$(env FD0_HOME="$HOME_DIR" FD0_SSH_SOCK="$HOME_DIR/ssh.sock" FD0_SERVER='' "$FD0" sync 2>&1 || true)
 case "$OUT" in
     *"sync ok"*) ok "config-only resolves" ;;
     *) no "expected sync ok, got: $OUT" ;;
@@ -107,7 +107,7 @@ write_cfg <<EOF
 server    = "http://127.0.0.1:${SERVER_ALT_PORT}"
 on_unlock = false
 EOF
-OUT=$(env FD0_HOME="$HOME_DIR" FD0_SERVER="http://127.0.0.1:${SERVER_PORT}" "$FD0" sync 2>&1 || true)
+OUT=$(env FD0_HOME="$HOME_DIR" FD0_SSH_SOCK="$HOME_DIR/ssh.sock" FD0_SERVER="http://127.0.0.1:${SERVER_PORT}" "$FD0" sync 2>&1 || true)
 case "$OUT" in
     *"sync ok"*) ok "env overrides config" ;;
     *) no "env override failed: $OUT" ;;
@@ -115,7 +115,7 @@ esac
 
 # D1d — flag overrides env (and config)
 # Env points at alt, flag at primary. Use the alt env to ensure flag wins.
-OUT=$(env FD0_HOME="$HOME_DIR" FD0_SERVER="http://127.0.0.1:${SERVER_ALT_PORT}" "$FD0" sync --server "http://127.0.0.1:${SERVER_PORT}" 2>&1 || true)
+OUT=$(env FD0_HOME="$HOME_DIR" FD0_SSH_SOCK="$HOME_DIR/ssh.sock" FD0_SERVER="http://127.0.0.1:${SERVER_ALT_PORT}" "$FD0" sync --server "http://127.0.0.1:${SERVER_PORT}" 2>&1 || true)
 case "$OUT" in
     *"sync ok"*) ok "flag overrides env" ;;
     *) no "flag override failed: $OUT" ;;
@@ -156,7 +156,7 @@ ELAPSED=$((END - START))
 HOLD=$!
 sleep 0.05
 START=$(date +%s%N 2>/dev/null || date +%s)
-env FD0_HOME="$HOME_DIR" FD0_LOCK_WAIT="" FD0_SERVER="http://127.0.0.1:${SERVER_PORT}" \
+env FD0_HOME="$HOME_DIR" FD0_SSH_SOCK="$HOME_DIR/ssh.sock" FD0_LOCK_WAIT="" FD0_SERVER="http://127.0.0.1:${SERVER_PORT}" \
     "$FD0" sync >/dev/null 2>&1 || true
 END=$(date +%s%N 2>/dev/null || date +%s)
 wait $HOLD 2>/dev/null || true
@@ -231,9 +231,9 @@ on_unlock = false
 idle_timeout = "BOGUS"
 EOF
 # Config is bad, but env=15m should override.
-printf "p\n" | env FD0_HOME="$HOME_DIR" FD0_AGENT_IDLE="15m" "$FD0" unlock >/dev/null 2>&1
+printf "p\n" | env FD0_HOME="$HOME_DIR" FD0_SSH_SOCK="$HOME_DIR/ssh.sock" FD0_AGENT_IDLE="15m" "$FD0" unlock >/dev/null 2>&1
 sleep 0.2
-ST=$(env FD0_HOME="$HOME_DIR" "$FD0" status 2>&1)
+ST=$(env FD0_HOME="$HOME_DIR" FD0_SSH_SOCK="$HOME_DIR/ssh.sock" "$FD0" status 2>&1)
 case "$ST" in
     *unlocked*) ok "env FD0_AGENT_IDLE overrides bogus config" ;;
     *) no "env override failed when config is bogus: $ST" ;;
@@ -245,7 +245,7 @@ esac
 A lock >/dev/null 2>&1
 pkill -f "$FD0_AGENT" 2>/dev/null || true
 sleep 0.3
-OUT=$(printf "p\n" | env FD0_HOME="$HOME_DIR" FD0_AGENT_IDLE="" "$FD0" unlock 2>&1 || true)
+OUT=$(printf "p\n" | env FD0_HOME="$HOME_DIR" FD0_SSH_SOCK="$HOME_DIR/ssh.sock" FD0_AGENT_IDLE="" "$FD0" unlock 2>&1 || true)
 case "$OUT" in
     *"idle"*|*"BOGUS"*|*"duration"*|*"agent"*|*"not ready"*) ok "bad config + no env → clear failure" ;;
     *unlocked*) no "agent unlocked despite bad idle_timeout: $OUT" ;;
@@ -287,9 +287,9 @@ on_unlock = false
 [agent]
 max_lifetime = "WAT"
 EOF
-printf "p\n" | env FD0_HOME="$HOME_DIR" FD0_AGENT_MAX_LIFETIME="6h" "$FD0" unlock >/dev/null 2>&1
+printf "p\n" | env FD0_HOME="$HOME_DIR" FD0_SSH_SOCK="$HOME_DIR/ssh.sock" FD0_AGENT_MAX_LIFETIME="6h" "$FD0" unlock >/dev/null 2>&1
 sleep 0.2
-ST=$(env FD0_HOME="$HOME_DIR" "$FD0" status 2>&1)
+ST=$(env FD0_HOME="$HOME_DIR" FD0_SSH_SOCK="$HOME_DIR/ssh.sock" "$FD0" status 2>&1)
 case "$ST" in
     *unlocked*) ok "FD0_AGENT_MAX_LIFETIME overrides bogus config" ;;
     *) no "env override failed: $ST" ;;
