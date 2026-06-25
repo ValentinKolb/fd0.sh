@@ -10,20 +10,20 @@ Reference for the public hosted instance — `https://fd0.sh`, `https://api.fd0.
 
 ## Topology
 
-Two independent replicas, each in its own data center:
+A single primary plus a disaster-recovery backup, each in its own data center:
 
-| Hostname | Location | Self-label |
-|---|---|---|
-| `api.fd0.sh`  | SWU Ulm — Kolb Antik Proxmox cluster | `swu-ulm` |
-| `api2.fd0.sh` | Hetzner Falkenstein — Hetzner Cloud VM | `hetzner-fsn1` |
+| Hostname | Role | Location | Self-label |
+|---|---|---|---|
+| `api.fd0.sh`  | Primary | SWU Ulm — Kolb Antik Proxmox cluster | `swu-ulm` |
+| `api2.fd0.sh` | DR backup | Hetzner Falkenstein — Hetzner Cloud VM | `hetzner-fsn1` |
 
-Each replica runs `fd0-server` against its own SQLite DB, signs its own STHs under its own ed25519 translog key, and runs a paired `fd0-witness` (`witness.fd0.sh`, `witness2.fd0.sh`) that cosigns its STHs. Replicas peer with each other via `FD0_PEERS`: on boot each one resolves its peer's `/v1/server-info`, TOFU-pins the pubkey, and republishes the resolved entry in its own signed response.
+Each server runs `fd0-server` against its own SQLite DB, signs its own STHs under its own ed25519 translog key, and runs a paired `fd0-witness` (`witness.fd0.sh`, `witness2.fd0.sh`) that cosigns its STHs. The two servers are peered via `FD0_PEERS`: on boot each one resolves its peer's `/v1/server-info`, TOFU-pins the pubkey, and republishes the resolved entry in its own signed response. This peer authorisation is what lets the DR backup pull from the primary.
 
 The `fd0` client writes and reads to a **single primary** — `api.fd0.sh`. fd0 has one ordering authority per scope, so two servers can never disagree about a scope's history; a client config listing more than one server is a hard error (REPLICATION.md). `api2.fd0.sh` is a **disaster-recovery backup**, not a second write target: it pulls api's chains into a write-once archive via `FD0_REPLICATE_FROM` and never serves them. This eliminates the replica-divergence failure mode that multi-push had. See REPLICATION.md for the model and TRANSLOG.md §11 for the peer wire format.
 
 ## Stack
 
-The two replicas run different distros, container runtimes, and proxies so a CVE or regression in one component cannot affect both.
+The primary and the DR backup run different distros, container runtimes, and proxies so a CVE or regression in one component cannot affect both.
 
 | Layer | api.fd0.sh (SWU) | api2.fd0.sh (Hetzner) |
 |---|---|---|
@@ -51,7 +51,7 @@ The zero-knowledge contract in PROTOCOL.md applies to the hosted instance withou
 |---|---|---|
 | Network | TLS-terminated request timing, source IPs, body sizes | Decrypted bodies — ciphertext on the wire and on disk |
 | Storage | Ciphertext + signed event headers | Secret values, secret names, scope memberships, passphrases, keys |
-| Operational | Stop a replica, change DNS, sign STHs under the server key | Anything in the columns above, even with root on the host |
+| Operational | Stop the primary or the backup, change DNS, sign STHs under the server key | Anything in the columns above, even with root on the host |
 
 A server that tries to show different histories to different clients leaves a publishable proof: every STH is signed under the server key and cosigned by the paired witness, and divergent STHs at the same `tree_size` are evidence of equivocation.
 
@@ -60,9 +60,9 @@ A server that tries to show different histories to different clients leaves a pu
 VM-level snapshots use each provider's primitives:
 
 - **api.fd0.sh (SWU)** — hourly Proxmox snapshots, daily off-site copy to Hetzner S3 object storage in a separate data center. The off-site copy survives a complete SWU incident.
-- **api2.fd0.sh (Hetzner)** — daily Hetzner Cloud backups. No additional off-site replication: api.fd0.sh's own copy of the data, populated by multi-pushing clients, is the implicit off-site for api2.
+- **api2.fd0.sh (Hetzner)** — daily Hetzner Cloud backups. It is itself the DR backup of api.fd0.sh: its write-once `backup_*` archive, populated by the `FD0_REPLICATE_FROM` pull, holds every event the primary has, so api2 is the off-site copy of api's data.
 
-App-level backups run on both replicas:
+App-level backups run on both servers:
 
 1. **Daily SQLite snapshots** — `sqlite3 .backup` of `fd0.db` and `witness.db`, gzipped, 30-day rotation. Driven by a systemd timer; output at `/var/backups/fd0/` or `/srv/fd0/backups/`.
 2. **Crypto keys off-host** — translog signing key and witness cosign key, exported once and stored in an off-host encrypted vault. These keys are stable for the life of the server; a fresh host restored with the original key needs no re-pinning.
@@ -110,13 +110,13 @@ server = "https://your-domain.example"
 
 Add your own TLS terminator in front of `:4048`. Done.
 
-### Two replicas (mutual peers)
+### Primary + DR backup
 
-The shape `fd0.sh` itself runs.
+The shape `fd0.sh` itself runs: one primary that serves clients, one standby that pulls the primary into a write-once archive.
 
-**1. DNS.** Point `api.example.com` and `api2.example.com` at their respective VMs.
+**1. DNS.** Point `api.example.com` (primary) and `api2.example.com` (DR backup) at their respective VMs.
 
-**2. Server A.**
+**2. Primary (server A).** Lists the standby in `FD0_PEERS` to authorise its pull.
 
 ```yaml
 environment:
@@ -125,12 +125,13 @@ environment:
   FD0_METRICS_TOKEN: ${METRICS_TOKEN:?}
 ```
 
-**3. Server B.**
+**3. DR backup (server B).** Pulls the primary read-only via `FD0_REPLICATE_FROM`, and peers back so the primary can pin it.
 
 ```yaml
 environment:
   FD0_LABEL: site-b
   FD0_PEERS: https://api.example.com
+  FD0_REPLICATE_FROM: https://api.example.com
   FD0_METRICS_TOKEN: ${METRICS_TOKEN:?}
 ```
 
@@ -151,7 +152,7 @@ server = "https://api.example.com"   # the single primary
 
 The client writes and reads only the primary — one ordering authority per scope, so nothing can diverge. The second server (`api2.example.com`) is a DR backup that pulls the primary via `FD0_REPLICATE_FROM` (step below); clients never write to it. Listing two servers here is a hard error.
 
-**5. Witness per replica (optional).** Each server has its own translog under its own key, so each needs its own witness to cosign honest STHs.
+**5. Witness per server (optional).** Each server has its own translog under its own key, so each needs its own witness to cosign honest STHs.
 
 ```yaml
 # witness-a — paired with server A
@@ -165,9 +166,9 @@ FD0_WITNESS_SERVER_URL: https://api2.example.com
 
 - **One write authority.** Clients write/read a single primary, so there is no multi-push and no client-driven propagation between servers. Redundancy is the server-side **DR backup** below (the standby pulls the primary read-only). Live server-to-server gossip into the serving tables remains a non-goal (REPLICATION.md §5).
 - **DR backup (standby).** A server with `FD0_REPLICATE_FROM=<primary-url>` mirrors that primary's chains (encrypted events + signed STHs) into a write-once local archive (`backup_*` tables), verifying each STH under the primary's key before storing it. The primary must list the standby in its `FD0_PEERS` to authorise the pull. The standby never serves the backup; it is disaster-recovery only — if the primary's disk is lost, the standby holds every event. `FD0_REPLICATE_INTERVAL` (default 30s) sets the cadence; `FD0_PEER_RESOLVE_INTERVAL` sets how fast the primary pins the standby (default 1h — set short when bringing the pair up). Promotion (restoring from the archive) is an operator ceremony, not automatic.
-- **Adding a third replica.** Add the new URL to every existing server's `FD0_PEERS` and restart; the new server's `FD0_PEERS` lists the existing two. TOFU-pins establish in both directions on the next resolver tick (default 1h). Clients add the new URL to `[sync].servers`.
-- **Removing a replica.** Stop the container, remove the URL from the other servers' `FD0_PEERS` and from clients' `[sync].servers`. On the next boot each surviving server prunes any pinned peer no longer in its `FD0_PEERS` — this also revokes that peer's replication-pull authorization, so the stale row must not linger. (Restart the survivors to apply; the prune is automatic.)
+- **Adding redundancy.** Redundancy is a DR-backup peer, not a second write target — clients always point at the one primary (`[sync].server`) and never list extra URLs. To add a standby, stand up a server with `FD0_REPLICATE_FROM=<primary-url>`, add its URL to the primary's `FD0_PEERS`, and restart the primary. The TOFU-pin establishes on the next resolver tick (default 1h), which authorises the pull.
+- **Removing a backup.** Stop the container and remove its URL from the primary's `FD0_PEERS`. On the next boot the primary prunes any pinned peer no longer in its `FD0_PEERS` — this also revokes that peer's replication-pull authorization, so the stale row must not linger. (Restart the primary to apply; the prune is automatic.) Clients are unaffected: they only ever held the primary's URL.
 - **Rotating a server's ed25519 key.** Same ceremony as a single-server rotation (TRANSLOG.md §4.3). Every client and every peering server must re-pin. Peers refuse silent rotation; the operator wipes the row (`DELETE FROM peers WHERE url = ?`) and the resolver re-TOFUs on the next tick.
-- **Per-replica backups.** Each server has its own SQLite DB and its own ed25519 key. Losing one replica's data does not corrupt the other, but it costs the witness archive for STHs signed under the lost key.
+- **Per-server backups.** Each server has its own SQLite DB and its own ed25519 key. Losing the standby's data costs only its DR archive; losing the primary's disk is recoverable from the standby's `backup_*` archive via the promotion ceremony (REPLICATION.md §3).
 
 The blocks in [`deploy/`](../deploy/) work behind any reverse proxy that terminates TLS and forwards to the container's port. To reproduce `fd0.sh` end-to-end, follow the Stack section above with the matching distro / runtime / proxy on each host.

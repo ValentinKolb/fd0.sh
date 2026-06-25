@@ -419,19 +419,19 @@ ghp_xxxxxxxxxxxxxxxxxxxx`}</Shell>
             <BackendCol
               badge="Self-host"
               title="Run fd0-server yourself."
-              body="Docker compose blocks in deploy/ for fd0-server and fd0-witness — bring your own TLS terminator. The full production recipe (replicas, mutual peering, ACME, witnesses, backups, key rotation) is in docs/HOSTING.md and is what fd0.sh itself runs."
+              body="Docker compose blocks in deploy/ for fd0-server and fd0-witness — bring your own TLS terminator. The full production recipe (a DR backup, ACME, witnesses, backups, key rotation) is in docs/HOSTING.md and is what fd0.sh itself runs."
               code="cd deploy/server && METRICS_TOKEN=$(openssl rand -hex 32) docker compose up -d"
-              codeNote="Multi-server replicas: set FD0_LABEL + FD0_PEERS on each server, declare both URLs in [sync].servers on the client, multi-push runs by default."
+              codeNote="One primary per client — clients set [sync].server. For redundancy run a standby with FD0_REPLICATE_FROM=<primary> (the primary lists it in FD0_PEERS); it mirrors the primary read-only for disaster recovery."
             />
             <BackendCol
               badge="Hosted at fd0.sh"
               title="Use the managed instance."
-              body="Two replicas in two German data centers, operated by Kolb Antik GmbH. api.fd0.sh at SWU Ulm (Rocky + Podman + Caddy), api2.fd0.sh at Hetzner Falkenstein (Debian + Docker + Traefik) — deliberate stack diversity. Same ciphertext-only contract — the operator cannot decrypt secrets."
-              code={`# ~/.fd0/config.toml — these are the default servers
+              body="A single primary plus a disaster-recovery backup, in two German data centers, operated by Kolb Antik GmbH. api.fd0.sh (primary) at SWU Ulm (Rocky + Podman + Caddy), api2.fd0.sh (DR backup) at Hetzner Falkenstein (Debian + Docker + Traefik) — deliberate stack diversity. Same ciphertext-only contract — the operator cannot decrypt secrets."
+              code={`# ~/.fd0/config.toml — this is the default
 [sync]
-servers   = ["https://api.fd0.sh", "https://api2.fd0.sh"]
+server    = "https://api.fd0.sh"
 on_unlock = true`}
-              codeNote="Hourly Proxmox snapshots + daily off-site Hetzner S3 copy on SWU; daily Hetzner Cloud backups on the replica; daily encrypted SQLite snapshots on both. Full writeup: docs/HOSTING.md."
+              codeNote="Hourly Proxmox snapshots + daily off-site Hetzner S3 copy on SWU; daily Hetzner Cloud backups on the DR backup; daily encrypted SQLite snapshots on both. Full writeup: docs/HOSTING.md."
             />
           </div>
         </div>
@@ -573,7 +573,7 @@ ghp_xxxxxxxxxxxxxxxxxxxx`}
 │ kubectl …      │ ◀│   super_priv    │   │ signed events      │ ✓ │ archives forks     │
 │                │  │   vault.enc     │   │                    │   │ independent host   │
 └────────────────┘  └─────────────────┘   └────────────────────┘   └────────────────────┘
-   ssh-agent         multi-push to replicas (api.fd0.sh + api2.fd0.sh) · peers cross-pin
+   ssh-agent         single primary (api.fd0.sh) · DR backup mirrors it read-only
    protocol`}</pre>
             <div
               class="text-[12px] text-center px-6 pb-6 pt-1"

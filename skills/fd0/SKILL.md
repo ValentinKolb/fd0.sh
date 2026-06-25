@@ -62,17 +62,17 @@ Adding a member wraps the OEK to their card. Removing a member rotates the OEK s
 ```
 fd0 init            # generate identity, set passphrase (TWO entries — confirmation)
 fd0 unlock          # decrypts the vault, spawns the agent, holds super_priv mlocked
-fd0 sync            # registers identity with the configured server(s)
+fd0 sync            # registers identity with the configured server
 ```
 
-Defaults: client targets `https://api.fd0.sh` + `https://api2.fd0.sh` (the hosted instance, both replicas, multi-pushed). To self-host, the user edits `~/.fd0/config.toml` before `fd0 sync`:
+Defaults: client targets the single primary `https://api.fd0.sh` (the hosted instance; `api2.fd0.sh` is a server-side DR backup, not a second client target). Every write and read for every scope goes to that one primary. To self-host, the user edits `~/.fd0/config.toml` before `fd0 sync`:
 
 ```toml
 [sync]
-servers = ["https://your-server.example"]
+server = "https://your-server.example"
 ```
 
-The first sync to each server triggers a TOFU pin: fd0 prints a 12-group fingerprint, the user verifies it out of band, and types `y`. Subsequent syncs short-circuit. **Never bypass this** unattended with `FD0_AUTO_PIN=1` unless the user has explicitly accepted the risk for a scripted context.
+The first sync triggers a TOFU pin: fd0 prints a 12-group fingerprint, the user verifies it out of band, and types `y`. Subsequent syncs short-circuit. **Never bypass this** unattended with `FD0_AUTO_PIN=1` unless the user has explicitly accepted the risk for a scripted context.
 
 ## Storing and fetching
 
@@ -182,7 +182,7 @@ These are not negotiable. The skill is useless and dangerous without them.
 | `429 Too Many Requests` on register | Per-IP rate limit | Retry after the `retry-after` seconds; do not loop |
 | `pinned-key-mismatch` on sync | Server's translog key rotated, or MITM | STOP. Verify the new fingerprint out-of-band BEFORE re-pinning. `~/.fd0/config.toml` does not need editing — fd0 walks through the ceremony |
 | `witness cross-check failed` | Witness disagrees with server | STOP. Possible equivocation. Open an issue with the server operator |
-| `no server configured` | No `[sync].servers` set, no `FD0_SERVER` env, defaults disabled somehow | Add `[sync].servers = [...]` or pass `--server URL` |
+| `no server configured` | No `[sync].server` set, no `FD0_SERVER` env, defaults disabled somehow | Add `[sync].server = "URL"` or pass `--server URL` |
 | Sync says `pushed=0 dup=0` repeatedly | No local events to push | Normal — sync still pulls. Use `fd0 doctor` to confirm local state is sane |
 
 ## When to read the reference files

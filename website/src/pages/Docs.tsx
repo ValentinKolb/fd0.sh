@@ -105,8 +105,8 @@ const OverviewBody = () => (
         { href: "/docs/cli", t: "CLI reference", d: "fd0 init, set, get, ls, sync, …" },
         { href: "/docs/ssh", t: "SSH", d: "Keys + hosts as scope-shared secrets." },
         { href: "/docs/talos", t: "Talos & Kube", d: "Talos contexts, secrets.yaml DR, kubeconfigs." },
-        { href: "/docs/sync", t: "Sync", d: "Multi-device, multi-server, replica failover." },
-        { href: "/docs/server", t: "Self-host server", d: "docker-compose, replicas, witness." },
+        { href: "/docs/sync", t: "Sync", d: "Multi-device sync to one primary." },
+        { href: "/docs/server", t: "Self-host server", d: "docker-compose, DR backup, witness." },
         { href: "/docs/yubikey", t: "YubiKey unlock", d: "On-card X25519, PIV slot 9d." },
         { href: "/docs/recovery", t: "Recovery", d: "Restore identity on a fresh device." },
       ].map((c) => (
@@ -125,7 +125,7 @@ const OverviewBody = () => (
     <P>
       The CLI is the same binary either way. You pick a backend by
       pointing the client at the URLs in <Code>~/.fd0/config.toml</Code>{" "}
-      — defaults are the hosted <Code>fd0.sh</Code> replicas.
+      — the default is the hosted <Code>fd0.sh</Code> primary.
     </P>
     <Box>{`# hosted (default; no config needed)
 $ fd0 init && fd0 unlock && fd0 sync
@@ -133,7 +133,7 @@ $ fd0 init && fd0 unlock && fd0 sync
 # self-hosted (point at your server)
 $ cat >~/.fd0/config.toml <<EOF
 [sync]
-servers = ["https://fd0.example.com"]
+server = "https://fd0.example.com"
 EOF`}</Box>
   </>
 );
@@ -518,8 +518,8 @@ const ServerBody = () => (
     <P>
       Self-host with Docker. The recommended path is the
       docker-compose blocks in <Code>deploy/</Code>. To use the hosted
-      instance instead, skip this section — the client defaults to{" "}
-      <Code>api.fd0.sh</Code> + <Code>api2.fd0.sh</Code>.
+      instance instead, skip this section — the client defaults to the
+      hosted primary <Code>api.fd0.sh</Code>.
     </P>
 
     <H2>Compose blocks</H2>
@@ -807,7 +807,7 @@ export const DocsTalos = ssr(async (c) => {
 export const DocsSync = ssr(async (c) => {
   c.get("page").title = "fd0 — Sync";
   return () => (
-    <DocsLayout current="sync" title="Sync." kicker="06 · Multi-device, multi-server">
+    <DocsLayout current="sync" title="Sync." kicker="06 · Multi-device, single primary">
       <SyncBody />
     </DocsLayout>
   );

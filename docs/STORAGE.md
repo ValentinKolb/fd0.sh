@@ -294,11 +294,11 @@ Kept events do not form a contiguous prev_hash chain in the local file. Verifica
 2. Per-event signature and envelope checks.
 3. Server retention of the full chain for audit (re-pull from `cursor=0`).
 
-### 5.5 Compaction timing under multiple replicas
+### 5.5 Compaction timing
 
 Compaction rewrites the single local chain file into the non-contiguous form above (§5.4). That is safe to push only against a server that already holds every event up to the compaction tip — a server still *behind* the tip can no longer fast-forward the gapped chain (the intermediate events it needs have been dropped locally) and is forced into an unrecoverable divergence.
 
-With multiple configured replicas (`[sync].servers`) the client therefore gates compaction on **every** replica having accepted the current tip in the same sync round. Compaction runs once, after the full multi-server fan-out, and only when all replicas succeeded; if any replica is unreachable or behind, compaction is skipped and retried on a later round where all converge. The single-server case is the degenerate form: one replica, so "all converged" == "that sync succeeded."
+Under the single-primary model (`[sync].server`) the client therefore gates compaction on the primary having accepted the current tip in a sync round. Compaction runs only after that sync succeeded; if the primary is unreachable or behind, compaction is skipped and retried on a later round once the primary holds the tip.
 
 ---
 

@@ -45,7 +45,7 @@ Every state-changing operation is an event. Events are append-only and chained: 
 
 Events are CBOR-encoded, signed by their author's super_priv, and content-addressed by `event_id = SHA256(canonical_cbor)`. The server's `events.event_id UNIQUE` constraint provides idempotent dedup: pushing the same event twice is a no-op.
 
-This is why the multi-server client can push every event to every configured server — duplicates are handled at the storage layer for free.
+This is why an idempotent re-push of an event the primary already stored is a no-op — duplicates are handled at the storage layer for free, so a retried sync never double-applies anything.
 
 ## Transparency log
 
@@ -61,18 +61,18 @@ Independent **witnesses** poll each server's STH and cosign honest tree-heads. T
 
 This is why clients enforce a "pin matches" rule on every sync. A pin-mismatch is either operator-side key rotation (requires manual ceremony) or attack — both deserve refusal until manually resolved.
 
-## Multi-server replicas
+## Single primary + DR backup
 
-A client can target multiple servers via `[sync].servers = [...]`. The default hosted-fd0.sh client targets `api.fd0.sh` + `api2.fd0.sh`.
+A client targets **exactly one** server — the primary — via `[sync].server = "..."`. Every write and every read for every scope goes to that one primary, which is the sole ordering authority for the scope. With one authority, two histories can never disagree, so the chains can never fork. The default hosted-fd0.sh client targets the single primary `api.fd0.sh`.
 
-Multi-server semantics:
+A configuration listing more than one server (the old `[sync].servers = [...]` array) is a **hard error**: fd0 refuses to start and prints a migration message pointing the operator to `[sync].server` plus a server-side DR backup. There is no multi-push and no live read-failover — reading from a possibly-stale second server is exactly the inconsistency this model eliminates. A scope's availability equals its primary's uptime; already-synced secrets stay readable locally because the vault is local.
 
-- **Push** — every event is pushed to every configured server in the same sync round. Server-side idempotent dedup absorbs duplicates.
-- **Read** — first server that answers wins; subsequent servers are tried on transport failure.
-- **Per-server state** — push floor and last verified STH are tracked PER server in the vault (`ScopeVaultData.PerServer[url]`). Each server's translog is independent and verified against its own pin.
-- **Server peering** — each server advertises its peer URLs + signed pubkeys in `/v1/server-info`. This is HINT, not authority — clients pin each server they actually use via the TOFU ceremony, independently.
+Semantics:
 
-There is currently no server-to-server gossip. Cross-replica event propagation relies entirely on multi-pushing clients. A client that pushes only to one server leaves that data unreachable from the others until any multi-pushing client syncs.
+- **Push / read** — both go to the one primary. A retried sync is idempotent (server-side dedup), never a double-apply.
+- **Per-server state** — push floor and last verified STH for the primary are tracked in the vault; the primary's translog is verified against its TOFU pin.
+
+Redundancy comes from a **server-side disaster-recovery backup**, not a second write target. A standby configured with `FD0_REPLICATE_FROM=<primary-url>` pulls the primary's chains into a write-once local archive, verifying each STH under the primary's key before storing it. The backup never serves or re-signs those chains, so it can never become a second authority. The primary authorises the pull by listing the standby in `FD0_PEERS` (a TOFU-pinned peer); removing it there revokes the pull. Promoting a backup to a new primary is a deliberate operator ceremony, not automatic failover. (Hosting this is out of scope for the CLI user — see `docs/REPLICATION.md` and `docs/HOSTING.md`.)
 
 ## What this means for an agent using fd0
 

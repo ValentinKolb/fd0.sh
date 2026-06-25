@@ -16,6 +16,30 @@ as before.
 Tags before `client-v0.0.5` used the unified `vX.Y.Z` scheme (one
 release shipped all artefacts together) and are retained as-is.
 
+## client-v0.6.0 — 2026-06-25
+
+Single-primary write model (A1). The client now writes and reads exactly
+one primary server per scope, so two independent servers can never
+disagree about a scope's history. Multi-push is removed: it could leave
+replicas divergent, and any auto-merge would discard a conflicting write.
+
+- **BREAKING (config):** the `[sync].servers = [...]` array is replaced by
+  the singular `[sync].server = "https://…"`. A config still using the
+  array is a hard error with a migration message. The built-in default is
+  a single `https://api.fd0.sh`.
+- Removed the cross-replica read-failover (a possibly-stale replica must
+  never serve a read) and the `[sync].mode = "primary"` option.
+- Redundancy is now a server-side DR backup (`FD0_REPLICATE_FROM`), not a
+  second write target — see `docs/REPLICATION.md`.
+- The interactive lock waits briefly by default instead of failing fast,
+  so a command no longer errors "another fd0 instance holds the lock"
+  while the agent's auto-sync is mid-run; divergence output is summarized
+  rather than printed once per refused push.
+
+`fd0-website` → `0.0.12` brings the site and docs in line with the model.
+Servers are unchanged: `fd0-server` stays on `server-v0.2.0`, and its
+DR-backup machinery (shipped in `server-v0.2.0`) is retained.
+
 ## fd0-v0.1.0 — 2026-06-08
 
 Coordinated bump of all four components to 0.1.0. Consolidates every

@@ -51,18 +51,17 @@ Both composes are env-driven. Required vars are declared with `:?` so `docker co
 | server | `METRICS_TOKEN` | `FD0_LABEL`, `FD0_PEERS`, `FD0_BIND`, `FD0_DB`, `FD0_RATELIMIT_*` |
 | witness | `SERVER_URL`, `METRICS_TOKEN` | `FD0_WITNESS_SERVER_PUB`, `FD0_WITNESS_POLL_INTERVAL`, `FD0_WITNESS_CHAINS` |
 
-### Multi-server (v0.0.4+)
+### Redundancy: DR backup
 
-Running two `fd0-server` instances in different data centers? The wire format and resolver are documented in `docs/TRANSLOG.md` §11; the step-by-step recipe (DNS, TLS, peer config, client config, rotation) is in [`docs/HOSTING.md`](../docs/HOSTING.md#self-hosting-with-replicas).
+A client writes and reads **exactly one** primary (`[sync].server`) — that one server is the sole ordering authority for every scope, so divergence is impossible by construction. There is no client-side multi-push or read-failover. Redundancy comes from a server-side disaster-recovery backup, not a second write target. The design rationale is in [`docs/REPLICATION.md`](../docs/REPLICATION.md).
 
-Quick version:
+To run a DR backup:
 
-1. Each server gets `FD0_LABEL` ([a-z0-9-]{0,32}) and `FD0_PEERS` pointing at every OTHER replica.
-2. On boot each server fetches each peer's `/v1/server-info`, TOFU-pins the peer's signing pubkey, and republishes the resolved list (signed) in its own `/v1/server-info`.
-3. Clients declare `[sync].servers = [...]` in `~/.fd0/config.toml`; the client multi-pushes to every entry per sync round (idempotent, server-side dedup) and falls over on reads.
-4. Until server-side gossip lands, only multi-pushing clients propagate events across replicas — a single-server client populates one replica only.
+1. The primary gets `FD0_LABEL` ([a-z0-9-]{0,32}) and lists the standby in `FD0_PEERS` to authorise the pull.
+2. The standby is configured with `FD0_REPLICATE_FROM=<primary-url>`. It fetches the primary's `/v1/server-info`, TOFU-pins the primary's signing pubkey, and pulls the primary's chains into a write-once local archive (`backup_*` tables), verifying each STH under the primary's key.
+3. The standby **never serves** the backed-up chains and never re-signs them, so it can never become a second authority. Promotion to a new primary is a manual operator ceremony (restore the archive into a fresh identity, re-pin clients).
 
-Both replicas should run their own `fd0-witness` (poll URL = the local replica) so equivocation is detected independently per server.
+Each server runs its own `fd0-witness` (poll URL = the local server) so equivocation is detected independently per server.
 
 Full env-var reference per binary: `fd0-server --help`, `fd0-witness --help`.
 
@@ -79,4 +78,4 @@ Lose either and clients will need to re-pin. Snapshot the volumes (or use `sqlit
 
 To watch a second server, drop a second copy of `witness/compose.yml` in its own directory, set a different `SERVER_URL`, give the volumes different names. Each witness runs as an independent process with its own DB and metrics endpoint.
 
-To run a second server (different domain, different operator), drop a second copy of `server/compose.yml` with its own volume. Two fd0-servers can coexist on one host as long as their `ports:` don't collide.
+To run a second server — a DR backup (`FD0_REPLICATE_FROM=<primary-url>`) or an independent primary on its own domain — drop a second copy of `server/compose.yml` with its own volume. Two fd0-servers can coexist on one host as long as their `ports:` don't collide.

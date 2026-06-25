@@ -570,7 +570,7 @@ Peer `label` is filtered through the same `[a-z0-9-]{0,32}` charset the server a
 
 ### 11.2 Client side
 
-The v0.0.4 client treats `peers` as informational metadata. Multi-server sync is driven by `[sync].servers` in `~/.fd0/config.toml` — the operator declares which servers to push to. Auto-pinning a peer just because a server claims it exists would let one malicious operator silently inject Sybil replicas under their control.
+The client treats `peers` as informational metadata, not a sync target. There is no multi-server client sync: a client reads and writes exactly one primary (`[sync].server` in `~/.fd0/config.toml`). The peer list instead authorises server-to-server DR-backup replication — a standby with `FD0_REPLICATE_FROM=<primary>` is allowed to pull the primary's chains only because the primary lists it in `FD0_PEERS`. Auto-pinning a peer just because a server claims it exists would let one malicious operator silently inject Sybil replicas under their control.
 
 Future revisions MAY add `fd0 peer add <url>` to import a hint with confirmation, and `fd0 peer audit` to compare each pinned server's peer list against the others (intersection-trust). Both layer on top of the wire format defined here without protocol changes.
 

@@ -147,7 +147,7 @@ cd deploy/server
 METRICS_TOKEN=$(openssl rand -hex 32) docker compose up -d
 ```
 
-Put your own TLS terminator in front. The full production recipe — replicas, mutual peering, ACME, witnesses, backups, key rotation — is in [`docs/HOSTING.md`](./docs/HOSTING.md), which is also how `fd0.sh` itself runs.
+Put your own TLS terminator in front. The full production recipe — a DR backup, ACME, witnesses, backups, key rotation — is in [`docs/HOSTING.md`](./docs/HOSTING.md), which is also how `fd0.sh` itself runs.
 
 Endpoints exposed by `fd0-server`:
 
@@ -191,7 +191,7 @@ Server — flags or env:
 fd0-server --bind=:4048 --db=./fd0.db
 ```
 
-`FD0_BIND`, `FD0_DB`, `FD0_MAX_BODY`, `FD0_METRICS_TOKEN`, `FD0_VERBOSE`, `FD0_LABEL`, `FD0_PEERS`, plus rate-limit knobs (`FD0_RATELIMIT_*`). `fd0-server --help` for the full list. Multi-server topology and the peer-hint wire format are documented in `docs/TRANSLOG.md` §11.
+`FD0_BIND`, `FD0_DB`, `FD0_MAX_BODY`, `FD0_METRICS_TOKEN`, `FD0_VERBOSE`, `FD0_LABEL`, `FD0_PEERS`, plus rate-limit knobs (`FD0_RATELIMIT_*`). `fd0-server --help` for the full list. The server-to-server peer (DR-backup) auth and the peer-hint wire format are documented in `docs/TRANSLOG.md` §11.
 
 ## Diagnostics
 
