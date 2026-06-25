@@ -16,6 +16,7 @@ import {
   DocsServer,
   DocsYubikey,
   DocsRecovery,
+  DocsTroubleshooting,
 } from "./pages/Docs";
 import Home from "./pages/Home";
 import Impressum from "./pages/Impressum";
@@ -139,6 +140,16 @@ const app = new Hono()
       rewriteRequestPath: (p) => p.replace(/^\/public/, ""),
     }),
   )
+  .get("/files/compose.yml", async (c) => {
+    const file = Bun.file("./public/files/compose.yml");
+    if (!(await file.exists())) return c.notFound();
+    return new Response(file, {
+      headers: {
+        "Content-Type": "text/yaml; charset=utf-8",
+        "Cache-Control": "public, max-age=300",
+      },
+    });
+  })
   // SEO files
   .get("/robots.txt", (c) =>
     c.body(
@@ -169,6 +180,7 @@ const app = new Hono()
       "/docs/server",
       "/docs/yubikey",
       "/docs/recovery",
+      "/docs/troubleshooting",
       "/spec",
       "/spec/wire",
       "/spec/crypto",
@@ -216,6 +228,7 @@ const app = new Hono()
   .get("/docs/server", ...DocsServer)
   .get("/docs/yubikey", ...DocsYubikey)
   .get("/docs/recovery", ...DocsRecovery)
+  .get("/docs/troubleshooting", ...DocsTroubleshooting)
   .get("/spec", ...SpecOverview)
   .get("/spec/wire", ...SpecWire)
   .get("/spec/crypto", ...SpecCrypto)

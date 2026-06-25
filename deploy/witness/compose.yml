@@ -5,8 +5,10 @@
 #
 # Quick start:
 #
-#   SERVER_URL=https://api.fd0.sh \
-#   METRICS_TOKEN=$(openssl rand -hex 32) \
+#   umask 077
+#   printf 'SERVER_URL=%s\n' 'https://api.fd0.sh' > .env
+#   printf 'METRICS_TOKEN=%s\n' "$(openssl rand -hex 32)" >> .env
+#   case "$(uname -m)" in arm64|aarch64) printf 'FD0_WITNESS_IMAGE=%s\n' 'ghcr.io/valentinkolb/fd0-witness:latest-arm64' >> .env ;; esac
 #   docker compose up -d
 #
 # Health check:
@@ -21,10 +23,13 @@
 
 services:
   fd0-witness:
-    image: ghcr.io/valentinkolb/fd0-witness:latest
+    # Override with FD0_WITNESS_IMAGE in .env.
+    image: ${FD0_WITNESS_IMAGE:-ghcr.io/valentinkolb/fd0-witness:latest}
+    env_file:
+      - .env
     restart: unless-stopped
     ports:
-      - "4049:4049"
+      - "127.0.0.1:4049:4049"
     environment:
       # Required — the fd0-server this witness watches.
       FD0_WITNESS_SERVER_URL: ${SERVER_URL:?set SERVER_URL (e.g. https://api.fd0.sh)}

@@ -157,9 +157,9 @@ const WitnessPage = (p: { snap: WitnessSnapshot }) => {
         </h1>
         <p class="mt-5 text-lg leading-relaxed max-w-2xl" style={`color:${C.dim};`}>
           Independent observer of the fd0.sh server's signed tree
-          heads. Every honest STH is cosigned; divergent STHs are
-          archived rather than cosigned. Pin the witness pubkey below
-          in your client to require its cosign on every sync.
+          heads. Consistency-verified observations are cosigned; fork evidence
+          is archived and flagged. Pin the witness pubkey below in your client
+          to require its cosign on every sync.
         </p>
         <div class="mt-7 flex flex-wrap items-center gap-3 text-sm">
           <StatusPill state={state} />
@@ -292,7 +292,7 @@ $ curl -sS ${snap.witnessURL}/v1/observed/$(echo -n "${snap.serverURL}" | basenc
             , every sync verifies the server's STH against this
             witness's cosign. If the server ever publishes a fork — two
             distinct root hashes at the same tree_size — the witness
-            stops cosigning and{" "}
+            flags equivocation and{" "}
             <span style={`color:${C.acc};`}>
               your client refuses the sync
             </span>

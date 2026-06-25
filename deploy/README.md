@@ -1,6 +1,7 @@
 # Deploy
 
-Minimal docker-compose building blocks for the two fd0 services. No reverse proxy, no TLS, no opinions about your infrastructure — bring your own.
+Minimal docker-compose building blocks for the two fd0 services. They bind to
+localhost by default. Add your own reverse proxy, TLS, and firewall policy.
 
 ```
 deploy/
@@ -12,15 +13,35 @@ For the full TLS-terminated production recipe (Caddy + Let's Encrypt + Podman qu
 
 ## fd0-server
 
-Stores ciphertext and signed event headers. Serves the v1 API on port 4048.
+Stores ciphertext and signed event headers. Serves the v1 API on
+`127.0.0.1:4048` by default.
+
+Fresh host, no repository checkout:
 
 ```sh
-cd deploy/server
-METRICS_TOKEN=$(openssl rand -hex 32) docker compose up -d
+mkdir fd0-server
+cd fd0-server
+curl -fsSLO https://fd0.sh/files/compose.yml
+umask 077
+printf 'METRICS_TOKEN=%s\n' "$(openssl rand -hex 32)" > .env
+case "$(uname -m)" in arm64|aarch64) printf 'FD0_SERVER_IMAGE=%s\n' 'ghcr.io/valentinkolb/fd0-server:latest-arm64' >> .env ;; esac
+docker compose up -d
 curl http://localhost:4048/health
 ```
 
-Put your TLS terminator in front, then point your fd0 client at it:
+From this repository:
+
+```sh
+cd deploy/server
+umask 077
+printf 'METRICS_TOKEN=%s\n' "$(openssl rand -hex 32)" > .env
+case "$(uname -m)" in arm64|aarch64) printf 'FD0_SERVER_IMAGE=%s\n' 'ghcr.io/valentinkolb/fd0-server:latest-arm64' >> .env ;; esac
+docker compose up -d
+curl http://localhost:4048/health
+```
+
+Put your TLS terminator on the same host or proxy to `127.0.0.1:4048`, then
+point your fd0 client at it:
 
 ```toml
 # ~/.fd0/config.toml
@@ -30,12 +51,16 @@ server = "https://your-domain.example"
 
 ## fd0-witness
 
-Polls one fd0-server's transparency log, countersigns honest STHs, archives divergent ones. Detects equivocation.
+Polls one fd0-server's transparency log, archives observed STHs, cosigns consistency-verified observations, and flags divergent roots. Binds to `127.0.0.1:4049` by default.
 
 ```sh
 cd deploy/witness
-SERVER_URL=https://api.fd0.sh \
-METRICS_TOKEN=$(openssl rand -hex 32) \
+umask 077
+{
+  printf 'SERVER_URL=%s\n' 'https://api.fd0.sh'
+  printf 'METRICS_TOKEN=%s\n' "$(openssl rand -hex 32)"
+} > .env
+case "$(uname -m)" in arm64|aarch64) printf 'FD0_WITNESS_IMAGE=%s\n' 'ghcr.io/valentinkolb/fd0-witness:latest-arm64' >> .env ;; esac
 docker compose up -d
 curl http://localhost:4049/health
 ```
@@ -44,16 +69,20 @@ The witness auto-discovers chains from the server's `/v1/chains` endpoint and TO
 
 ## Configuration
 
-Both composes are env-driven. Required vars are declared with `:?` so `docker compose up` refuses to start without them. Optional vars are commented in the compose files showing their defaults — uncomment to override.
+Both composes are env-driven. Required vars are declared with `:?` so `docker compose up` refuses to start without them. Optional `FD0_*` vars can be added to `.env`; the compose files load that file into the container.
 
 | Service | Required | Useful optionals |
 |---|---|---|
-| server | `METRICS_TOKEN` | `FD0_LABEL`, `FD0_PEERS`, `FD0_BIND`, `FD0_DB`, `FD0_RATELIMIT_*` |
-| witness | `SERVER_URL`, `METRICS_TOKEN` | `FD0_WITNESS_SERVER_PUB`, `FD0_WITNESS_POLL_INTERVAL`, `FD0_WITNESS_CHAINS` |
+| server | `METRICS_TOKEN` | `FD0_SERVER_IMAGE`, `FD0_LABEL`, `FD0_PEERS`, `FD0_PEER_RESOLVE_INTERVAL`, `FD0_REPLICATE_FROM`, `FD0_BIND`, `FD0_DB`, `FD0_RATELIMIT_*` |
+| witness | `SERVER_URL`, `METRICS_TOKEN` | `FD0_WITNESS_IMAGE`, `FD0_WITNESS_SERVER_PUB`, `FD0_WITNESS_POLL_INTERVAL`, `FD0_WITNESS_CHAINS` |
+
+Current image tags are per architecture: `latest` for amd64 and `latest-arm64`
+for arm64. Set `FD0_SERVER_IMAGE` or `FD0_WITNESS_IMAGE` in `.env` when the
+default tag is not the one you want. For production, pin a released image tag.
 
 ### Redundancy: DR backup
 
-A client writes and reads **exactly one** primary (`[sync].server`) — that one server is the sole ordering authority for every scope, so divergence is impossible by construction. There is no client-side multi-push or read-failover. Redundancy comes from a server-side disaster-recovery backup, not a second write target. The design rationale is in [`docs/REPLICATION.md`](../docs/REPLICATION.md).
+A client writes and reads **exactly one** primary (`[sync].server`) — that one server is the sole ordering authority for every scope, and clients never reconcile two writable authorities. There is no client-side multi-push or read-failover. Malicious-server equivocation is handled by the translog and witness layer. Redundancy comes from a server-side disaster-recovery backup, not a second write target. The design rationale is in [`docs/REPLICATION.md`](../docs/REPLICATION.md).
 
 To run a DR backup:
 

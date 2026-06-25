@@ -194,7 +194,7 @@ const Impressum = () => (
           </a>
         </div>
         <div class="mt-6 dim text-xs flex justify-between items-baseline">
-          <span>fd0.sh — v1.0 — Apache-2.0</span>
+          <span>fd0.sh — Apache-2.0</span>
           <a href="/">../</a>
         </div>
       </footer>

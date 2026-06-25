@@ -92,7 +92,8 @@ export type DocsKey =
   | "server"
   | "yubikey"
   | "sync"
-  | "recovery";
+  | "recovery"
+  | "troubleshooting";
 
 export const DOCS_NAV: { key: DocsKey; href: string; label: string; group: string }[] = [
   { key: "overview", href: "/docs", label: "Overview", group: "Start" },
@@ -105,6 +106,7 @@ export const DOCS_NAV: { key: DocsKey; href: string; label: string; group: strin
   { key: "server", href: "/docs/server", label: "Self-host server", group: "Deploy" },
   { key: "yubikey", href: "/docs/yubikey", label: "YubiKey unlock", group: "Hardware" },
   { key: "recovery", href: "/docs/recovery", label: "Recovery", group: "Hardware" },
+  { key: "troubleshooting", href: "/docs/troubleshooting", label: "Troubleshooting", group: "Support" },
 ];
 
 export const DocsLayout = (p: { current: DocsKey; title: string; kicker?: string; children: any }) => {
@@ -112,7 +114,7 @@ export const DocsLayout = (p: { current: DocsKey; title: string; kicker?: string
   for (const item of DOCS_NAV) {
     (groups[item.group] ??= []).push(item);
   }
-  const groupOrder = ["Start", "Use", "Deploy", "Hardware"];
+  const groupOrder = ["Start", "Use", "Deploy", "Hardware", "Support"];
   return (
     <div
       class="min-h-screen"
@@ -132,7 +134,7 @@ export const DocsLayout = (p: { current: DocsKey; title: string; kicker?: string
             class="text-[11px] tracking-[0.18em] uppercase mb-4 pb-3"
             style={`color:${C.acc};border-bottom:1px solid ${C.border};`}
           >
-            Reference · v1.0
+            Docs
           </div>
           <nav class="flex flex-col gap-5">
             {groupOrder.map((g) =>
@@ -255,7 +257,7 @@ export const SPEC_NAV: {
 }[] = [
   { key: "overview", href: "/spec", label: "Overview", hex: "0x00", glyph: "◇" },
   { key: "wire", href: "/spec/wire", label: "Wire format", hex: "0x01", glyph: "⌬", link: "https://github.com/ValentinKolb/fd0.sh/blob/main/docs/PROTOCOL.md" },
-  { key: "crypto", href: "/spec/crypto", label: "Cryptography", hex: "0x02", glyph: "⚛", link: "https://github.com/ValentinKolb/fd0.sh/blob/main/docs/PROTOCOL.md#cryptography" },
+  { key: "crypto", href: "/spec/crypto", label: "Cryptography", hex: "0x02", glyph: "⚛", link: "https://github.com/ValentinKolb/fd0.sh/blob/main/docs/PROTOCOL.md#1-primitives" },
   { key: "storage", href: "/spec/storage", label: "Storage", hex: "0x03", glyph: "▢", link: "https://github.com/ValentinKolb/fd0.sh/blob/main/docs/STORAGE.md" },
   { key: "sync", href: "/spec/sync", label: "Sync protocol", hex: "0x04", glyph: "⇄", link: "https://github.com/ValentinKolb/fd0.sh/blob/main/docs/API.md" },
   { key: "translog", href: "/spec/translog", label: "Transparency log", hex: "0x05", glyph: "⊞", link: "https://github.com/ValentinKolb/fd0.sh/blob/main/docs/TRANSLOG.md" },
@@ -285,7 +287,7 @@ export const SpecLayout = (p: { current: SpecKey; title: string; children: any }
               class="inline-block w-1.5 h-1.5 rounded-full fd0-pulse"
               style={`background:${C.sage};`}
             />
-            spec · v1.0
+            spec
           </div>
           <div
             class="text-[10px] mb-5 leading-[1.5]"
@@ -491,7 +493,7 @@ export const Footer = () => (
       class="max-w-6xl mx-auto mt-10 pt-6 flex flex-wrap justify-between items-center gap-3 text-xs"
       style={`border-top:1px solid ${C.border};`}
     >
-      <div>fd0.sh — v1.0 — Apache-2.0</div>
+      <div>fd0.sh — Apache-2.0</div>
       <div>self-hosted · no telemetry · no cloud</div>
     </div>
   </footer>

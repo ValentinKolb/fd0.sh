@@ -73,20 +73,43 @@ if (cssOutput) {
 // preload script (gitignored) — we skip it here because the Tailwind
 // build above already wrote the production version to dist/public/.
 if (existsSync("public")) {
-  let copied = 0;
-  let bytes = 0;
-  for (const f of readdirSync("public")) {
-    if (f === "styles.css") continue;
-    const src = `public/${f}`;
-    if (!statSync(src).isFile()) continue;
-    const dst = `${DIST_PUBLIC}/${f}`;
-    await Bun.write(dst, Bun.file(src));
-    copied++;
-    bytes += statSync(dst).size;
-  }
+  const copyPublicAssets = async (
+    srcDir: string,
+    dstDir: string,
+    rel = "",
+  ): Promise<{ copied: number; bytes: number }> => {
+    let copied = 0;
+    let bytes = 0;
+    for (const f of readdirSync(srcDir)) {
+      const childRel = rel ? `${rel}/${f}` : f;
+      if (childRel === "styles.css") continue;
+
+      const src = `${srcDir}/${f}`;
+      const dst = `${dstDir}/${f}`;
+      const st = statSync(src);
+      if (st.isDirectory()) {
+        mkdirSync(dst, { recursive: true });
+        const nested = await copyPublicAssets(src, dst, childRel);
+        copied += nested.copied;
+        bytes += nested.bytes;
+        continue;
+      }
+      if (!st.isFile()) continue;
+      await Bun.write(dst, Bun.file(src));
+      copied++;
+      bytes += statSync(dst).size;
+    }
+    return { copied, bytes };
+  };
+
+  const { copied, bytes } = await copyPublicAssets("public", DIST_PUBLIC);
   if (copied > 0) {
     console.log(`✓ assets: ${copied} file(s), ${bytes} bytes → ${DIST_PUBLIC}/`);
   }
+}
+if (!existsSync(`${DIST_PUBLIC}/files/compose.yml`)) {
+  console.error("missing public file: dist/public/files/compose.yml");
+  process.exit(1);
 }
 
 // ─── fonts ─────────────────────────────────────────────────────────

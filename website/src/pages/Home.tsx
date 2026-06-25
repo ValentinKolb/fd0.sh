@@ -181,7 +181,7 @@ const Home = () => (
               class="inline-block w-1.5 h-1.5 rounded-full"
               style={`background:${C.acc};`}
             />
-            v1.0 · Apache-2.0 · zero-knowledge
+            Apache-2.0 · client-side encrypted
           </div>
           <h1 class="text-[2.6rem] md:text-[3.4rem] leading-[1.05] tracking-tight font-medium">
             <span class="fd0-rotword-wrap">
@@ -224,7 +224,7 @@ const Home = () => (
             }
           `} />
           <script innerHTML={`(function(){
-            var words = ['Secrets','SSH keys','SSH hosts','Git signing'];
+            var words = ['Secrets','SSH keys','SSH hosts','Kube configs'];
             var el  = document.getElementById('fd0-rotword');
             var bar = document.getElementById('fd0-rotbar');
             if (!el || !bar) return;
@@ -260,10 +260,10 @@ const Home = () => (
           >
             One zero-knowledge vault for the credentials you'd otherwise
             scatter across <span style={`color:${C.acc};`}>.ssh</span>,{" "}
-            <span style={`color:${C.acc};`}>.gnupg</span>, and someone's
-            Notion page. The server stores ciphertext and signed events
-            only. Sharing membership rotates per-scope keys atomically.
-            Independent witness cosigns every server tree-head.
+            <span style={`color:${C.acc};`}>kubeconfig</span>, Talos config,
+            and someone's Notion page. The server stores ciphertext and signed
+            events only. Sharing membership rotates per-scope keys atomically.
+            Configured witnesses can detect server-side forks.
           </p>
           <div class="mt-8 flex flex-wrap items-center gap-3">
             <Btn href="#install" primary>
@@ -287,10 +287,10 @@ const Home = () => (
           </div>
         </div>
 
-        <TermFrame title="~ — fd0 sync">
+        <TermFrame title="example — fd0 sync">
           <Shell>{`$ fd0 sync
 → POST /v1/sync  scope=work  push=3
-← 200 OK  pull=0  sth=cosigned@43
+← 200 OK  pull=0  sth=verified@43
 ✓ chain advanced (seq=7)
 ✓ STH verified
 
@@ -318,8 +318,8 @@ ghp_xxxxxxxxxxxxxxxxxxxx`}</Shell>
         />
         <PropertyCard
           label="Releases"
-          value="cosign-signed"
-          sub="keyless, GitHub Actions OIDC"
+          value="signed installer"
+          sub="cosign-verifiable manifest"
         />
         <PropertyCard
           label="Source"
@@ -348,7 +348,7 @@ ghp_xxxxxxxxxxxxxxxxxxxx`}</Shell>
           <Feature
             kicker="Encryption"
             title="The server cannot decrypt."
-            body="Every secret is sealed by the client before it leaves the device. The server stores ciphertext and signed event headers — an operator with full database access reads nothing."
+            body="Every secret is sealed by the client before it leaves the device. The server stores ciphertext and signed event metadata — an operator with full database access reads no secret values or secret names."
           />
           <Feature
             kicker="Membership"
@@ -357,8 +357,8 @@ ghp_xxxxxxxxxxxxxxxxxxxx`}</Shell>
           />
           <Feature
             kicker="Transparency"
-            title="The server cannot equivocate."
-            body="Every signed tree head is cosigned by an independent witness. Two clients comparing notes — or a third-party observer — detect server-side forks."
+            title="Forks are detectable."
+            body="The server signs every tree head. With configured witnesses or clients comparing notes, divergent histories become publishable evidence."
           />
         </div>
       </div>
@@ -381,8 +381,9 @@ ghp_xxxxxxxxxxxxxxxxxxxx`}</Shell>
           Install the client. Pick a backend.
         </h2>
         <p class="text-base leading-relaxed max-w-2xl mb-10" style={`color:${C.dim};`}>
-          Same client either way. The two backends differ only in who
-          runs the server — the protocol guarantees are identical.
+          Same client either way. The main difference is who runs the server.
+          Client-side encryption and scope membership work the
+          same; witness enforcement depends on your client config.
         </p>
 
         {/* step 1: install client */}
@@ -403,7 +404,8 @@ ghp_xxxxxxxxxxxxxxxxxxxx`}</Shell>
             Installs <span style={`color:${C.acc};`}>fd0</span> and{" "}
             <span style={`color:${C.acc};`}>fd0-agent</span> to{" "}
             <span style={`color:${C.acc};`}>~/.local/bin</span>.
-            Cosign-verified.
+            Verifies the release manifest when <span style={`color:${C.acc};`}>cosign</span>{" "}
+            is installed.
           </div>
         </div>
 
@@ -419,19 +421,24 @@ ghp_xxxxxxxxxxxxxxxxxxxx`}</Shell>
             <BackendCol
               badge="Self-host"
               title="Run fd0-server yourself."
-              body="Docker compose blocks in deploy/ for fd0-server and fd0-witness — bring your own TLS terminator. The full production recipe (a DR backup, ACME, witnesses, backups, key rotation) is in docs/HOSTING.md and is what fd0.sh itself runs."
-              code="cd deploy/server && METRICS_TOKEN=$(openssl rand -hex 32) docker compose up -d"
+              body="Download the minimal compose file, run one fd0-server on localhost, and put your own TLS terminator in front. Pin image tags for production."
+              code={`mkdir fd0-server && cd fd0-server
+curl -fsSLO https://fd0.sh/files/compose.yml
+umask 077
+printf 'METRICS_TOKEN=%s\\n' "$(openssl rand -hex 32)" > .env
+case "$(uname -m)" in arm64|aarch64) printf 'FD0_SERVER_IMAGE=%s\\n' 'ghcr.io/valentinkolb/fd0-server:latest-arm64' >> .env ;; esac
+docker compose up -d`}
               codeNote="One primary per client — clients set [sync].server. For redundancy run a standby with FD0_REPLICATE_FROM=<primary> (the primary lists it in FD0_PEERS); it mirrors the primary read-only for disaster recovery."
             />
             <BackendCol
               badge="Hosted at fd0.sh"
               title="Use the managed instance."
-              body="A single primary plus a disaster-recovery backup, in two German data centers, operated by Kolb Antik GmbH. api.fd0.sh (primary) at SWU Ulm (Rocky + Podman + Caddy), api2.fd0.sh (DR backup) at Hetzner Falkenstein (Debian + Docker + Traefik) — deliberate stack diversity. Same ciphertext-only contract — the operator cannot decrypt secrets."
+              body="A managed primary plus a disaster-recovery backup operated by Kolb Antik GmbH in Germany. Same ciphertext-only contract: the operator cannot decrypt secrets."
               code={`# ~/.fd0/config.toml — this is the default
 [sync]
 server    = "https://api.fd0.sh"
 on_unlock = true`}
-              codeNote="Hourly Proxmox snapshots + daily off-site Hetzner S3 copy on SWU; daily Hetzner Cloud backups on the DR backup; daily encrypted SQLite snapshots on both. Full writeup: docs/HOSTING.md."
+              codeNote="The production runbook linked from /docs/server covers hosting topology, backups, metrics, witnesses, and key rotation."
             />
           </div>
         </div>
@@ -463,7 +470,7 @@ Choose a passphrase: ********
           <Step
             n="02"
             title="Unlock once per session"
-            body="The agent holds super_priv in mlocked memory after unlock. The CLI signs and decrypts through it without re-prompting until you fd0 lock."
+            body="The agent holds the unlocked identity in memory. The CLI signs and decrypts through it without re-prompting until you run fd0 lock."
             code={`$ fd0 unlock
 Passphrase: ********
 ✓ agent started
@@ -481,12 +488,12 @@ ghp_xxxxxxxxxxxxxxxxxxxx`}
           <Step
             n="04"
             title="Sync — local goes to the server"
-            body="Sync is the only command that talks to the server. Ciphertext goes up, signed events come back, the transparency log advances."
+            body="fd0 sync is the explicit network command. The agent can also sync after unlock when on_unlock is enabled."
             code={`$ fd0 sync
 → POST /v1/sync  scope=work  push=3 events
-← 200 OK         pull=0      sth=cosigned@tree_size=43
-✓ events written to ~/.fd0/chains/scope_work.cbor
-✓ STH verified against pinned server pubkey + witness cosign`}
+← 200 OK         pull=0      sth=verified@tree_size=43
+✓ local chain updated
+✓ STH verified against the pinned server key`}
           />
         </div>
       </div>
@@ -555,11 +562,11 @@ ghp_xxxxxxxxxxxxxxxxxxxx`}
           Four binaries. Keys stay on your device.
         </h2>
         <p class="text-base mb-10 max-w-2xl" style={`color:${C.dim};`}>
-          The client and the agent run locally; super_priv is mlocked
-          into the agent and never written to disk. Standard tools
-          (ssh, git, scp) attach via the ssh-agent socket — no
-          fd0-lock-in for the consumer. The server and witness hold
-          ciphertext and signatures, never keys.
+          The client and the agent run locally. After unlock, private key
+          material stays in the agent and is never written to disk in
+          plaintext. Standard tools (ssh, git, scp) attach through the
+          ssh-agent socket. The server holds ciphertext and signed events; the
+          witness holds signed tree heads. Neither holds secret keys.
         </p>
         <div class="overflow-x-auto -mx-6 px-6 flex justify-center">
           <div class="w-fit">
@@ -569,8 +576,8 @@ ghp_xxxxxxxxxxxxxxxxxxxx`}
             >{`consumers           your device           server                  observer
 ┌────────────────┐  ┌─────────────────┐   ┌────────────────────┐   ┌────────────────────┐
 │ ssh, scp,      │  │ fd0  (CLI)      │   │ fd0-server         │   │ fd0-witness        │
-│ git, rsync,    │ ─│ fd0-agent       │ ─▶│ ciphertext +       │ ─▶│ cosigns honest STH │
-│ kubectl …      │ ◀│   super_priv    │   │ signed events      │ ✓ │ archives forks     │
+│ git, rsync,    │ ─│ fd0-agent       │ ─▶│ ciphertext +       │ ─▶│ cosigns verified   │
+│ kubectl …      │ ◀│   unlocked keys │   │ signed events      │ ✓ │ archives forks     │
 │                │  │   vault.enc     │   │                    │   │ independent host   │
 └────────────────┘  └─────────────────┘   └────────────────────┘   └────────────────────┘
    ssh-agent         single primary (api.fd0.sh) · DR backup mirrors it read-only
@@ -673,7 +680,7 @@ $ fd0 sync`}</Shell>
             <p class="mt-3 text-[13px]" style={`color:${C.dim};`}>
               Bob's next sync gives him the key, the host, and the
               tags. <span style={`color:${C.acc};`}>fd0 scope remove-member</span>{" "}
-              rotates the per-scope OEK — his next sync drops it.
+              rotates the per-scope key — his next sync drops access.
             </p>
           </div>
           <div
@@ -689,7 +696,7 @@ $ fd0 sync`}</Shell>
             <p class="text-[13px]" style={`color:${C.dim};`}>
               fd0-agent talks the same protocol as OpenSSH ssh-agent.
               <span style={`color:${C.acc};`}> ssh, git, scp, rsync, VS Code Remote</span> —
-              anything that respects <code style={`color:${C.acc};font-family:${FONT_MONO};`}>SSH_AUTH_SOCK</code> just
+              anything that respects <code style={`color:${C.acc};font-family:${FONT_MONO};`}>SSH_AUTH_SOCK</code>
               works. fd0 never writes anything to the remote server.
             </p>
           </div>
@@ -707,10 +714,10 @@ $ fd0 sync`}</Shell>
           Specified, not implied.
         </h2>
         <p class="text-base mb-9 max-w-2xl mx-auto" style={`color:${C.dim};`}>
-          Reference covers every command and config option. The
-          specification covers the wire format, cryptographic
-          constructions, on-disk format, transparency log, and threat
-          model. Both versioned with the binaries.
+          Docs cover the common workflows. <code style={`color:${C.acc};font-family:${FONT_MONO};`}>fd0 --help</code>{" "}
+          covers the full command surface. The specification covers the wire
+          format, cryptographic constructions, on-disk format, transparency log,
+          and threat model.
         </p>
         <div class="flex flex-wrap justify-center gap-3">
           <Btn href="/docs" primary>

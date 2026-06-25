@@ -16,7 +16,8 @@ The wire format and cryptographic constructions follow `PROTOCOL.md` conventions
 8. [Witness binary](#8-witness-binary)
 9. [Compaction](#9-compaction)
 10. [Deferred to v1.x and beyond](#10-deferred-to-v1x-and-beyond)
-11. [Threat-model implications](#11-threat-model-implications)
+11. [Peer hints](#11-peer-hints-v004)
+12. [Threat-model implications](#12-threat-model-implications)
 
 ---
 
@@ -156,9 +157,9 @@ PeerInfo = {
 
 Self-signed — the only thing this proves is that the holder of `server_priv` issued the record. The first-contact pinning ceremony (§6.1) is what binds the key to the operator the user trusts.
 
-`label` and `peers` were added in v0.0.4. Both fields use CBOR `omitempty` — a solo server with `FD0_LABEL` unset produces signed bytes byte-identical to the pre-v0.0.4 format (the witness binary reuses the same record type, sets neither, and its signatures remain stable). When either field IS populated, the signature input changes — downstream verifiers MUST be built against the v0.0.4+ struct. Wire-additivity rule (§5) guarantees that older clients can still decode the response; they just can't verify it.
+`label` and `peers` are optional. Both fields use CBOR `omitempty` — a solo server with `FD0_LABEL` unset produces signed bytes without either field (the witness binary reuses the same record type, sets neither, and its signatures remain stable). When either field is populated, the signature input includes it, so verifiers must use the current `ServerInfo` shape.
 
-`peers` is the OPERATOR'S claim about which replicas exist. Per the wire-additivity rule, clients MAY ignore it (and the v0.0.4 client does until peer-aware sync paths land). Trust is HINTS-not-TRUST per §11: a client that wants to use a peer must add it explicitly to its config and run the first-contact pinning ceremony against that peer's own `/v1/server-info`.
+`peers` is the operator's signed claim about which DR backups exist. Current clients treat it as informational; they still read and write one configured primary. Server-side DR replication uses the primary's `FD0_PEERS` list to authorize a standby pulling with `FD0_REPLICATE_FROM`. Trust is HINTS-not-TRUST per §11: any component that talks to a peer must run the first-contact pinning ceremony against that peer's own `/v1/server-info`.
 
 ### 4.3 Key rotation (operational ceremony)
 
@@ -329,7 +330,7 @@ For each pulled scope with a non-empty `events[]`:
    b. Recompute `leaf_hash(event_id_bytes(events[i]))`.
    c. Walk the audit path, compare against `sth.root_hash`. Reject on mismatch.
 4. Append events to the local chain (existing path).
-5. Persist the new STH as `LastSTH` for this chain. Replace any earlier persisted STH unconditionally — the just-verified consistency proof is the proof of monotonic tree growth.
+5. Persist the new STH as `LastSTH` for this chain. Replace any earlier persisted STH unconditionally — the verified consistency proof is the proof of monotonic tree growth.
 
 For `denied=true` responses: the server omits the STH; client drops the scope as before. (Denied means the server claims we are not a member; we have no verified STH to anchor.)
 
@@ -570,7 +571,7 @@ Peer `label` is filtered through the same `[a-z0-9-]{0,32}` charset the server a
 
 ### 11.2 Client side
 
-The client treats `peers` as informational metadata, not a sync target. There is no multi-server client sync: a client reads and writes exactly one primary (`[sync].server` in `~/.fd0/config.toml`). The peer list instead authorises server-to-server DR-backup replication — a standby with `FD0_REPLICATE_FROM=<primary>` is allowed to pull the primary's chains only because the primary lists it in `FD0_PEERS`. Auto-pinning a peer just because a server claims it exists would let one malicious operator silently inject Sybil replicas under their control.
+The client treats `peers` as informational metadata, not a sync target. There is no multi-server client sync: a client reads and writes exactly one primary (`[sync].server` in `~/.fd0/config.toml`). The peer list instead authorises server-to-server DR-backup replication — a standby with `FD0_REPLICATE_FROM=<primary>` is allowed to pull the primary's chains only because the primary lists it in `FD0_PEERS`. Auto-pinning a server-provided peer claim would let one malicious operator silently inject Sybil replicas under their control.
 
 Future revisions MAY add `fd0 peer add <url>` to import a hint with confirmation, and `fd0 peer audit` to compare each pinned server's peer list against the others (intersection-trust). Both layer on top of the wire format defined here without protocol changes.
 
@@ -582,7 +583,7 @@ Future revisions MAY add `fd0 peer add <url>` to import a hint with confirmation
 
 ---
 
-## 11. Threat-model implications
+## 12. Threat-model implications
 
 The transparency log changes how `THREATS.md` reasons about server
 equivocation:

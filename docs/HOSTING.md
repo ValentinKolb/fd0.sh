@@ -17,9 +17,11 @@ A single primary plus a disaster-recovery backup, each in its own data center:
 | `api.fd0.sh`  | Primary | SWU Ulm — Kolb Antik Proxmox cluster | `swu-ulm` |
 | `api2.fd0.sh` | DR backup | Hetzner Falkenstein — Hetzner Cloud VM | `hetzner-fsn1` |
 
-Each server runs `fd0-server` against its own SQLite DB, signs its own STHs under its own ed25519 translog key, and runs a paired `fd0-witness` (`witness.fd0.sh`, `witness2.fd0.sh`) that cosigns its STHs. The two servers are peered via `FD0_PEERS`: on boot each one resolves its peer's `/v1/server-info`, TOFU-pins the pubkey, and republishes the resolved entry in its own signed response. This peer authorisation is what lets the DR backup pull from the primary.
+Each server runs `fd0-server` against its own SQLite DB and signs its own STHs under its own ed25519 translog key. Each server also has a paired `fd0-witness` (`witness.fd0.sh`, `witness2.fd0.sh`) that archives observed STHs and cosigns consistency-verified observations for that server.
 
-The `fd0` client writes and reads to a **single primary** — `api.fd0.sh`. fd0 has one ordering authority per scope, so two servers can never disagree about a scope's history; a client config listing more than one server is a hard error (REPLICATION.md). `api2.fd0.sh` is a **disaster-recovery backup**, not a second write target: it pulls api's chains into a write-once archive via `FD0_REPLICATE_FROM` and never serves them. This eliminates the replica-divergence failure mode that multi-push had. See REPLICATION.md for the model and TRANSLOG.md §11 for the peer wire format.
+Peer authorization is one-directional. The primary lists the DR backup in `FD0_PEERS`; that authorizes the backup to pull the primary through `FD0_REPLICATE_FROM`. A server may also publish peer metadata in `/v1/server-info`, but clients treat it as informational.
+
+The `fd0` client writes and reads to a **single primary** — `api.fd0.sh`. Clients never reconcile two writable authorities; a client config listing more than one server is a hard error (REPLICATION.md). `api2.fd0.sh` is a **disaster-recovery backup**, not a second write target: it pulls api's chains into a write-once archive via `FD0_REPLICATE_FROM` and never serves them. Malicious-server equivocation remains a translog and witness concern. See REPLICATION.md for the model and TRANSLOG.md §11 for the peer wire format.
 
 ## Stack
 
@@ -35,7 +37,7 @@ The primary and the DR backup run different distros, container runtimes, and pro
 | Database | SQLite (both, bundled with the binary) ||
 | Binaries | `fd0-server`, `fd0-witness`, `fd0-website` from this repo (both) ||
 
-Build artefacts come from the [release-docker workflow](../.github/workflows/release-docker.yml) — multi-arch images signed by GitHub's OIDC.
+Build artefacts come from the [release-docker workflow](../.github/workflows/release-docker.yml). Current Docker tags are published per architecture: `latest` for amd64 and `latest-arm64` for arm64.
 
 ## Network
 
@@ -50,10 +52,10 @@ The zero-knowledge contract in PROTOCOL.md applies to the hosted instance withou
 | | Visible to operator | Not visible to operator |
 |---|---|---|
 | Network | TLS-terminated request timing, source IPs, body sizes | Decrypted bodies — ciphertext on the wire and on disk |
-| Storage | Ciphertext + signed event headers | Secret values, secret names, scope memberships, passphrases, keys |
+| Storage | Ciphertext, signed event headers, chain ids, event timing/order, member public keys, and membership changes | Secret values, secret names, passphrases, private keys, and scope keys |
 | Operational | Stop the primary or the backup, change DNS, sign STHs under the server key | Anything in the columns above, even with root on the host |
 
-A server that tries to show different histories to different clients leaves a publishable proof: every STH is signed under the server key and cosigned by the paired witness, and divergent STHs at the same `tree_size` are evidence of equivocation.
+A server that tries to show different histories to different clients leaves a publishable proof: every STH is signed under the server key; the paired witness cosigns consistency-verified STHs and archives fork evidence such as divergent roots at the same `tree_size`.
 
 ## Backups
 
@@ -96,8 +98,13 @@ The setup above is reproducible. Two shapes are supported.
 ### Single server
 
 ```bash
-cd deploy/server
-METRICS_TOKEN=$(openssl rand -hex 32) docker compose up -d
+mkdir fd0-server
+cd fd0-server
+curl -fsSLO https://fd0.sh/files/compose.yml
+umask 077
+printf 'METRICS_TOKEN=%s\n' "$(openssl rand -hex 32)" > .env
+case "$(uname -m)" in arm64|aarch64) printf 'FD0_SERVER_IMAGE=%s\n' 'ghcr.io/valentinkolb/fd0-server:latest-arm64' >> .env ;; esac
+docker compose up -d
 ```
 
 Client config:
@@ -108,7 +115,13 @@ Client config:
 server = "https://your-domain.example"
 ```
 
-Add your own TLS terminator in front of `:4048`. Done.
+The compose file binds `127.0.0.1:4048` by default. Add your own TLS
+terminator in front before pointing real clients at it. The quickstart writes
+the arm64 image override when it detects an ARM host. For production, pin a
+released image tag instead of tracking `latest`.
+
+The same server compose file is also kept in `deploy/server/compose.yml` for
+repository checkouts.
 
 ### Primary + DR backup
 
@@ -125,21 +138,25 @@ environment:
   FD0_METRICS_TOKEN: ${METRICS_TOKEN:?}
 ```
 
-**3. DR backup (server B).** Pulls the primary read-only via `FD0_REPLICATE_FROM`, and peers back so the primary can pin it.
+**3. DR backup (server B).** Pulls the primary read-only via `FD0_REPLICATE_FROM`. It does not need `FD0_PEERS` for that pull.
 
 ```yaml
 environment:
   FD0_LABEL: site-b
-  FD0_PEERS: https://api.example.com
   FD0_REPLICATE_FROM: https://api.example.com
   FD0_METRICS_TOKEN: ${METRICS_TOKEN:?}
 ```
 
-On boot each server resolves the other's `/v1/server-info`, TOFU-pins the pubkey in its own `peers` SQLite table, and republishes the resolved entry. Verify both directions:
+On boot, the primary resolves the standby's `/v1/server-info`, TOFU-pins its pubkey, and authorizes the standby pull because the standby URL is listed in the primary's `FD0_PEERS`. Check the published peer list:
 
 ```bash
-curl -s https://api.example.com/v1/server-info  | python3 -c "import sys,cbor2;d=cbor2.loads(sys.stdin.buffer.read());print(d.get('label'), d.get('peers'))"
-curl -s https://api2.example.com/v1/server-info | python3 -c "…"
+python3 -m venv .venv-fd0-cbor
+. .venv-fd0-cbor/bin/activate
+python -m pip install cbor2
+curl -fsS https://api.example.com/v1/server-info \
+  | python -c 'import sys,cbor2; d=cbor2.loads(sys.stdin.buffer.read()); print(d.get("label"), d.get("peers"))'
+curl -fsS https://api2.example.com/v1/server-info \
+  | python -c 'import sys,cbor2; d=cbor2.loads(sys.stdin.buffer.read()); print(d.get("label"), d.get("peers"))'
 ```
 
 **4. Client config.**
@@ -152,7 +169,7 @@ server = "https://api.example.com"   # the single primary
 
 The client writes and reads only the primary — one ordering authority per scope, so nothing can diverge. The second server (`api2.example.com`) is a DR backup that pulls the primary via `FD0_REPLICATE_FROM` (step below); clients never write to it. Listing two servers here is a hard error.
 
-**5. Witness per server (optional).** Each server has its own translog under its own key, so each needs its own witness to cosign honest STHs.
+**5. Witness per server (optional).** Each server has its own translog under its own key, so each needs its own witness to archive observations and cosign consistency-verified STHs.
 
 ```yaml
 # witness-a — paired with server A
@@ -171,4 +188,4 @@ FD0_WITNESS_SERVER_URL: https://api2.example.com
 - **Rotating a server's ed25519 key.** Same ceremony as a single-server rotation (TRANSLOG.md §4.3). Every client and every peering server must re-pin. Peers refuse silent rotation; the operator wipes the row (`DELETE FROM peers WHERE url = ?`) and the resolver re-TOFUs on the next tick.
 - **Per-server backups.** Each server has its own SQLite DB and its own ed25519 key. Losing the standby's data costs only its DR archive; losing the primary's disk is recoverable from the standby's `backup_*` archive via the promotion ceremony (REPLICATION.md §3).
 
-The blocks in [`deploy/`](../deploy/) work behind any reverse proxy that terminates TLS and forwards to the container's port. To reproduce `fd0.sh` end-to-end, follow the Stack section above with the matching distro / runtime / proxy on each host.
+The compose examples work behind any reverse proxy that terminates TLS and forwards to the container's port. To reproduce `fd0.sh` end-to-end, follow the Stack section above with the matching distro / runtime / proxy on each host.
