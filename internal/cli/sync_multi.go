@@ -52,5 +52,8 @@ func RunSyncPrimary(ctx context.Context, flagServer string) error {
 		return err
 	}
 	_ = CompactScopes(ctx)
+	if err := renderSSHIfEnabled(ctx); err != nil {
+		stderrln("⚠ ssh render: %v", err)
+	}
 	return nil
 }
