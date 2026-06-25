@@ -178,7 +178,7 @@ These are not negotiable. The skill is useless and dangerous without them.
 | Symptom | Likely cause | Action |
 |---|---|---|
 | `not unlocked` / `agent not running` | No active agent | `fd0 unlock` |
-| `another fd0 instance holds the lock` | Stale agent or concurrent op | Wait, or `fd0 lock` then retry; if persistent, `ps aux \| grep fd0-agent` and kill the stale PID |
+| `another fd0 instance holds the lock` | The agent's background auto-sync (or another fd0) holds the flock; the client already waits ~5s before failing | Usually transient — just retry. If it persists, make sure no other fd0 is running: `ps aux \| grep fd0-agent`, kill a stale PID, then retry |
 | `429 Too Many Requests` on register | Per-IP rate limit | Retry after the `retry-after` seconds; do not loop |
 | `pinned-key-mismatch` on sync | Server's translog key rotated, or MITM | STOP. Verify the new fingerprint out-of-band BEFORE re-pinning. `~/.fd0/config.toml` does not need editing — fd0 walks through the ceremony |
 | `witness cross-check failed` | Witness disagrees with server | STOP. Possible equivocation. Open an issue with the server operator |

@@ -40,8 +40,8 @@ Caveat the agent must explain to users: removal does NOT retroactively un-leak s
 
 Every state-changing operation is an event. Events are append-only and chained: each event's `prev_hash` covers the previous event in its chain. There are two chain kinds per user:
 
-- **User chain** — `user:<shortId>`. Contains `auth.set` events (adding or rotating unlock methods).
-- **Scope chain** — `scope:<scope_id>`, one per scope. Contains `scope.create`, `member.change`, `secret.set`, `secret.remove`, and `oek.rotate` events.
+- **User chain** — `user:<shortId>`. One event kind: `auth.set` (a signed snapshot of the active unlock methods; adding or rotating credentials posts a new one).
+- **Scope chain** — `scope:<scope_id>`, one per scope. Two event kinds: `member.change` and `secret.set`. A scope's first event is a `member.change op=add` (that is how the scope is created and its `scope_id` derived); a `secret.set` with a nil record is a tombstone (removal); the OEK is rotated as part of a `member.change op=remove`.
 
 Events are CBOR-encoded, signed by their author's super_priv, and content-addressed by `event_id = SHA256(canonical_cbor)`. The server's `events.event_id UNIQUE` constraint provides idempotent dedup: pushing the same event twice is a no-op.
 

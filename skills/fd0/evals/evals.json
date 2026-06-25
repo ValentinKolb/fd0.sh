@@ -4,7 +4,7 @@
     {
       "id": "first-setup",
       "prompt": "Ich will meinen GitHub deploy key so speichern dass ich ihn von mehreren Rechnern nutzen kann ohne ihn irgendwo committen zu müssen. Hab gehört man kann das mit fd0 machen — wie geh ich vor?",
-      "expected_output": "Step-by-step guidance covering: fd0 init (passphrase set), fd0 unlock, scope create, fd0 set DEPLOY_KEY ... with --scope, fd0 sync. Mentions default servers (api.fd0.sh + api2.fd0.sh) or how to configure own server. Warns about passphrase handling. Mentions or implies the TOFU pin ceremony on first sync.",
+      "expected_output": "Step-by-step guidance covering: fd0 init (passphrase set), fd0 unlock, scope create, fd0 set DEPLOY_KEY ... with --scope, fd0 sync. Mentions the default single primary (api.fd0.sh) or how to configure your own server via [sync].server. Warns about passphrase handling. Mentions or implies the TOFU pin ceremony on first sync.",
       "files": []
     },
     {
