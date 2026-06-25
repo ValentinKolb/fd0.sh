@@ -12,6 +12,7 @@ import (
 	"github.com/alecthomas/kong"
 	"github.com/awnumar/memguard"
 
+	"github.com/valentinkolb/fd0.sh/internal/agent"
 	"github.com/valentinkolb/fd0.sh/internal/cli"
 	"github.com/valentinkolb/fd0.sh/internal/fdhome"
 )
@@ -20,17 +21,17 @@ import (
 var version = "dev"
 
 type rootCLI struct {
-	Init    initCmd    `cmd:"" help:"Create a new identity and vault."`
-	Unlock  unlockCmd  `cmd:"" help:"Start the agent and unlock the vault."`
-	Lock    lockCmd    `cmd:"" help:"Lock the vault and stop the agent."`
-	Status  statusCmd  `cmd:"" help:"Show agent status."`
-	Get     getCmd     `cmd:"" help:"Print a secret to stdout. Interactive when called without NAME."`
-	Copy    copyCmd    `cmd:"" help:"Copy a secret to the clipboard with auto-clear."`
-	Set     setCmd     `cmd:"" help:"Add or update a secret."`
-	Rm      rmCmd      `cmd:"" help:"Remove a secret (writes a tombstone)."`
-	List    listCmd    `cmd:"" aliases:"ls" help:"List secrets."`
-	Scope   scopeCmd   `cmd:"" help:"Scope management."`
-	Sync    syncCmd    `cmd:"" help:"Sync with the fd0 server."`
+	Init     initCmd     `cmd:"" help:"Create a new identity and vault."`
+	Unlock   unlockCmd   `cmd:"" help:"Start the agent and unlock the vault."`
+	Lock     lockCmd     `cmd:"" help:"Lock the vault and stop the agent."`
+	Status   statusCmd   `cmd:"" help:"Show agent status."`
+	Get      getCmd      `cmd:"" help:"Print a secret to stdout. Interactive when called without NAME."`
+	Copy     copyCmd     `cmd:"" help:"Copy a secret to the clipboard with auto-clear."`
+	Set      setCmd      `cmd:"" help:"Add or update a secret."`
+	Rm       rmCmd       `cmd:"" help:"Remove a secret (writes a tombstone)."`
+	List     listCmd     `cmd:"" aliases:"ls" help:"List secrets."`
+	Scope    scopeCmd    `cmd:"" help:"Scope management."`
+	Sync     syncCmd     `cmd:"" help:"Sync with the fd0 server."`
 	Card     cardCmd     `cmd:"" help:"Identity card (export your super_pub for invites)."`
 	Recovery recoveryCmd `cmd:"" help:"Offline backup of super_priv (for new devices or disaster recovery)."`
 	Auth     authCmd     `cmd:"" help:"Manage unlock methods (passphrases, future yubikeys)."`
@@ -154,9 +155,9 @@ type talosCmd struct {
 	Rm   talosRmCmd   `cmd:"" help:"Remove a talos context (tombstone)."`
 	Move talosMoveCmd `cmd:"" help:"Move a talos context between scopes."`
 
-	Sync         talosSyncCmd         `cmd:"" help:"Re-render ~/.talos/config.fd0 (and merge with --merge)."`
-	RoleAdd      talosRoleAddCmd      `cmd:"" name:"role-add" help:"Mint a role-scoped client cert via talosctl + store it."`
-	Kubeconfig   talosKubeconfigCmd   `cmd:"" help:"Fetch a fresh admin kubeconfig from a Talos cluster + store it."`
+	Sync       talosSyncCmd       `cmd:"" help:"Re-render ~/.talos/config.fd0 (and merge with --merge)."`
+	RoleAdd    talosRoleAddCmd    `cmd:"" name:"role-add" help:"Mint a role-scoped client cert via talosctl + store it."`
+	Kubeconfig talosKubeconfigCmd `cmd:"" help:"Fetch a fresh admin kubeconfig from a Talos cluster + store it."`
 
 	Secrets talosSecretsCmd `cmd:"" help:"DR-grade secrets.yaml bundles."`
 }
@@ -353,7 +354,7 @@ type scopeLeaveCmd struct {
 	Scope string `arg:"" optional:"" help:"Scope label or id."`
 }
 type scopeRenameCmd struct {
-	Scope string `arg:"" help:"Scope label or id."`
+	Scope    string `arg:"" help:"Scope label or id."`
 	NewLabel string `arg:"" name:"new-label" help:"New label."`
 }
 
@@ -427,9 +428,94 @@ func main() {
 		kong.Description("zero-knowledge secret store · v"+version),
 		kong.UsageOnError(),
 	)
+	if err := maybeAutoUnlock(ctx, &c); err != nil {
+		fmt.Fprintln(os.Stderr, "✗ "+err.Error())
+		os.Exit(1)
+	}
 	if err := dispatch(ctx, &c); err != nil {
 		fmt.Fprintln(os.Stderr, "✗ "+err.Error())
 		os.Exit(1)
+	}
+}
+
+func maybeAutoUnlock(kctx *kong.Context, c *rootCLI) error {
+	if !commandNeedsUnlockedVault(kctx.Command()) {
+		return nil
+	}
+	if !cli.IsTTY(os.Stdin) || !cli.IsTTY(os.Stderr) {
+		return nil
+	}
+	paths, err := fdhome.Resolve()
+	if err != nil {
+		return err
+	}
+	ac := agent.NewClient(paths.AgentSock)
+	if ac.IsRunning() {
+		st, err := ac.Status()
+		if err == nil && st.Unlocked {
+			return nil
+		}
+	}
+	return cli.RunUnlock(context.Background(), c.Unlock.AgentBin, "")
+}
+
+func commandNeedsUnlockedVault(command string) bool {
+	switch command {
+	case "get", "get <name>",
+		"copy", "copy <name>",
+		"set <name> <value>",
+		"rm <name>",
+		"list", "ls",
+		"scope create",
+		"scope list", "scope ls",
+		"scope members", "scope members <scope>",
+		"scope add-member <card>",
+		"scope remove-member <card>",
+		"scope leave", "scope leave <scope>",
+		"scope rename <scope> <new-label>",
+		"card export",
+		"card import <url>",
+		"card list", "card ls",
+		"card rm <label>",
+		"recovery export <out>",
+		"sync",
+		"doctor",
+		"auth list", "auth ls",
+		"auth add",
+		"auth rm <id>",
+		"key add <name>",
+		"key list", "key ls",
+		"key show <name>",
+		"key rm <name>",
+		"key move <name>",
+		"ssh add <alias>", "ssh add <alias> <conn>",
+		"ssh list", "ssh ls",
+		"ssh show <alias>",
+		"ssh rm <alias>",
+		"ssh tag <alias>",
+		"ssh move <alias>",
+		"ssh", "ssh connect", "ssh connect <alias>", "ssh connect <alias> <cmd>",
+		"talos add", "talos add <name>",
+		"talos new <name>",
+		"talos list", "talos ls",
+		"talos show <name>",
+		"talos rm <name>",
+		"talos move <name>",
+		"talos sync",
+		"talos role-add",
+		"talos kubeconfig <name>",
+		"talos secrets export <name>",
+		"talos secrets import <name>",
+		"talos secrets list", "talos secrets ls",
+		"kube add", "kube add <name>",
+		"kube list", "kube ls",
+		"kube show <name>",
+		"kube rm <name>",
+		"kube move <name>",
+		"kube sync":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -667,9 +753,9 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 
 // resolveClipboardClear returns the effective clear-after duration. Order:
 //
-//	1. CLI flag (--clear-after=...) when non-empty
-//	2. [clipboard].clear_after_seconds from ~/.fd0/config.toml
-//	3. 30s default
+//  1. CLI flag (--clear-after=...) when non-empty
+//  2. [clipboard].clear_after_seconds from ~/.fd0/config.toml
+//  3. 30s default
 func resolveClipboardClear(flag string) (time.Duration, error) {
 	if flag != "" {
 		d, err := time.ParseDuration(flag)

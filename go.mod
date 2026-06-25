@@ -10,6 +10,7 @@ require (
 	github.com/awnumar/memguard v0.23.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
+	github.com/creack/pty v1.1.24
 	github.com/fxamacker/cbor/v2 v2.9.1
 	github.com/go-piv/piv-go/v2 v2.6.0
 	github.com/gofrs/flock v0.13.0
