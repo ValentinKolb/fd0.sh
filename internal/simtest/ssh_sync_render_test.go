@@ -2,6 +2,7 @@ package simtest
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -52,8 +53,12 @@ func TestSyncRendersSSHConfigWhenEnabled(t *testing.T) {
 		t.Fatalf("rendered ssh config missing remote hostname:\n%s", conf)
 	}
 	pubPath := filepath.Join(bob.hostDir, ".ssh", "fd0.d", "prod-db.pub")
-	if _, err := os.Stat(pubPath); err != nil {
+	info, err := os.Stat(pubPath)
+	if err != nil {
 		t.Fatalf("expected public-key selector %s: %v", pubPath, err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("public-key selector mode: got %o want 0600", got)
 	}
 }
 
@@ -124,6 +129,48 @@ func TestSSHConnectWorksWithoutSSHEnable(t *testing.T) {
 	}
 	if !strings.Contains(string(fd0Raw), "Host prod-db\n") {
 		t.Fatalf("fd0 ssh config missing prod-db:\n%s", fd0Raw)
+	}
+}
+
+func TestSSHConnectReportsRefusingSSHAgentSocket(t *testing.T) {
+	if testing.Short() {
+		t.Skip("simtest builds binaries + spawns agents; skipped in -short")
+	}
+
+	h := New(t, 1)
+	alice := h.AddClient("alice")
+	if out, err := alice.run("scope", "create", "--label", "shared"); err != nil {
+		t.Fatalf("scope create: %v\n%s", err, out)
+	}
+	if out, err := alice.run("ssh", "add", "prod-db", "app@db.internal", "--scope", "shared"); err != nil {
+		t.Fatalf("ssh add: %v\n%s", err, out)
+	}
+
+	staleSock := filepath.Join(h.dir, "stale-connect-ssh.sock")
+	leaveStaleUnixSocket(t, staleSock)
+
+	fakeBin := filepath.Join(h.dir, "fakebin-stale")
+	mustMkdir(t, fakeBin)
+	argsPath := filepath.Join(h.dir, "ssh-should-not-run.txt")
+	sshPath := filepath.Join(fakeBin, "ssh")
+	script := "#!/bin/sh\nprintf ran > '" + argsPath + "'\n"
+	if err := os.WriteFile(sshPath, []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake ssh: %v", err)
+	}
+
+	cmd := exec.Command(h.fd0Bin, "ssh", "prod-db")
+	cmd.Env = replaceEnv(alice.env(), "FD0_SSH_SOCK", staleSock)
+	cmd.Env = replaceEnv(cmd.Env, "PATH", fakeBin+string(os.PathListSeparator)+pathEnv())
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("fd0 ssh should fail before exec with stale socket:\n%s", out)
+	}
+	text := string(out)
+	if !strings.Contains(text, "fd0 SSH agent socket unavailable") || !strings.Contains(text, staleSock) {
+		t.Fatalf("fd0 ssh did not report stale socket clearly:\n%s", text)
+	}
+	if _, err := os.Stat(argsPath); !os.IsNotExist(err) {
+		t.Fatalf("fake ssh should not have been executed, stat err=%v", err)
 	}
 }
 

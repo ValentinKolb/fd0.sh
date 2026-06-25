@@ -52,11 +52,11 @@ func RunSSHConnect(ctx context.Context, name string, extra []string, anyTags []s
 	if name != "" {
 		exact := exactMatch(hosts, name)
 		if exact != nil {
-			return renderAndExecSSH(s, exact.Alias, extra)
+			return renderAndExecSSH(s, exact, extra)
 		}
 		prefixed := prefixMatch(hosts, name)
 		if len(prefixed) == 1 {
-			return renderAndExecSSH(s, prefixed[0].Alias, extra)
+			return renderAndExecSSH(s, prefixed[0], extra)
 		}
 		if len(prefixed) > 1 {
 			h, err := pickHost(prefixed)
@@ -64,7 +64,7 @@ func RunSSHConnect(ctx context.Context, name string, extra []string, anyTags []s
 				s.Close()
 				return err
 			}
-			return renderAndExecSSH(s, h.Alias, extra)
+			return renderAndExecSSH(s, h, extra)
 		}
 		// Nothing matched — fall through to picker over the full list
 		// so the user sees what IS available.
@@ -76,7 +76,7 @@ func RunSSHConnect(ctx context.Context, name string, extra []string, anyTags []s
 		s.Close()
 		return err
 	}
-	return renderAndExecSSH(s, h.Alias, extra)
+	return renderAndExecSSH(s, h, extra)
 }
 
 // exactMatch looks for a host whose alias equals name (case-sensitive
@@ -143,17 +143,21 @@ func pickHost(hosts []*sshhost.Host) (*sshhost.Host, error) {
 	return nil, errors.New("picker returned unknown alias")
 }
 
-func renderAndExecSSH(s *Session, alias string, extra []string) error {
+func renderAndExecSSH(s *Session, host *sshhost.Host, extra []string) error {
 	if err := renderSSHForConnect(s); err != nil {
 		s.Close()
 		return err
 	}
 	s.Close()
+	sshSock := SSHSocketPathForRender()
+	if err := checkSSHAgentSocket(sshSock); err != nil {
+		return sshAgentSocketUnavailable(sshSock, err)
+	}
 	configPath, err := sshConnectConfigPath()
 	if err != nil {
 		return err
 	}
-	return execSSH(alias, extra, configPath)
+	return execSSH(host.Alias, extra, configPath)
 }
 
 func sshConnectConfigPath() (string, error) {

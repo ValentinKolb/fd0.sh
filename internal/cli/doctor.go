@@ -14,12 +14,13 @@ import (
 // RunDoctor performs read-only health checks across the local fd0 home.
 //
 // Checks:
-//   1. Vault is openable; agent is unlocked.
-//   2. User chain replays cleanly; tip matches vault.AuthTip.
-//   3. Each subscribed scope chain replays; tip matches vault.ChainTip;
-//      current OEK is present in vault; member set contains us.
-//   4. No orphaned chain files (file present but not in vault.Scopes).
-//   5. _meta is present where labels exist (informational).
+//  1. Vault is openable; agent is unlocked.
+//  2. User chain replays cleanly; tip matches vault.AuthTip.
+//  3. Each subscribed scope chain replays; tip matches vault.ChainTip;
+//     current OEK is present in vault; member set contains us.
+//  4. No orphaned chain files (file present but not in vault.Scopes).
+//  5. _meta is present where labels exist (informational).
+//  6. fd0's SSH-agent socket accepts Unix connections.
 //
 // Exits with status 1 if any HIGH-severity issue is found.
 func RunDoctor(ctx context.Context) error {
@@ -27,7 +28,6 @@ func RunDoctor(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer s.Close()
 	bad := 0
 	warn := 0
 	pr := func(level, msg string) {
@@ -236,6 +236,16 @@ func RunDoctor(ctx context.Context) error {
 	}
 	if bad+warn == 0 {
 		pr("OK", "no orphans")
+	}
+
+	s.Close()
+
+	fmt.Fprintln(os.Stderr, "ssh agent socket")
+	sshSock := SSHSocketPathForRender()
+	if err := checkSSHAgentSocket(sshSock); err != nil {
+		pr("ERR", "  "+sshAgentSocketUnavailable(sshSock, err).Error())
+	} else {
+		pr("OK", fmt.Sprintf("  reachable at %s", sshSock))
 	}
 
 	fmt.Fprintln(os.Stderr)

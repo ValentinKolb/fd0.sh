@@ -82,12 +82,18 @@ func TestValidate(t *testing.T) {
 	}
 
 	bad := []*TalosContext{
-		{Name: "0bad-start"},                                          // alias regex
-		{Name: "ok"},                                                  // no endpoints
-		{Name: "ok", Endpoints: []string{"x"}},                        // no ca
-		{Name: "ok", Endpoints: []string{"x"}, CA: "not-base64!"},     // bad base64
-		{Name: "ok", Endpoints: []string{"x"}, CA: b64("a")},          // no crt/key
-		{Name: "ok", Endpoints: []string{"x"}, CA: b64("a"), Crt: b64("b"), Key: b64("c"), Role: "garbage"}, // bad role
+		// alias regex
+		{Name: "0bad-start"},
+		// no endpoints
+		{Name: "ok"},
+		// no ca
+		{Name: "ok", Endpoints: []string{"x"}},
+		// bad base64
+		{Name: "ok", Endpoints: []string{"x"}, CA: "not-base64!"},
+		// no crt/key
+		{Name: "ok", Endpoints: []string{"x"}, CA: b64("a")},
+		// bad role
+		{Name: "ok", Endpoints: []string{"x"}, CA: b64("a"), Crt: b64("b"), Key: b64("c"), Role: "garbage"},
 	}
 	for i, c := range bad {
 		if err := c.Validate(); err == nil {
@@ -136,6 +142,23 @@ func TestRenderDeterministic(t *testing.T) {
 	}
 	if !strings.Contains(string(a), "fd0 — managed talosconfig") {
 		t.Error("header missing")
+	}
+}
+
+func TestRenderSingleContextBecomesActive(t *testing.T) {
+	in := RenderInput{
+		Now: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC),
+		Contexts: []*TalosContext{
+			{
+				Name: "prod-1", Scope: "work",
+				Endpoints: []string{"10.0.1.10"},
+				CA:        b64("ca"), Crt: b64("crt"), Key: b64("key"),
+			},
+		},
+	}
+	out, _ := Render(in)
+	if !strings.Contains(string(out), "context: prod-1") {
+		t.Fatalf("single rendered context should become active:\n%s", out)
 	}
 }
 

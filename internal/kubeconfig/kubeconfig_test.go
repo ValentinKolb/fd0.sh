@@ -104,11 +104,16 @@ func TestValidate(t *testing.T) {
 	}
 
 	bad := []*Kubeconfig{
-		{Name: "bad name", Server: "https://x", CA: b64("a"), Token: "t"}, // alias regex (spaces forbidden)
-		{Name: "ok", Server: "ssh://x", CA: b64("a"), Token: "t"},     // bad scheme
-		{Name: "ok", Server: "https://x"},                             // no CA, no skip, no auth
-		{Name: "ok", Server: "https://x", CA: "not-base64!", Token: "t"}, // bad ca
-		{Name: "ok", Server: "https://x", CA: b64("a")},               // no auth at all
+		// alias regex (spaces forbidden)
+		{Name: "bad name", Server: "https://x", CA: b64("a"), Token: "t"},
+		// bad scheme
+		{Name: "ok", Server: "ssh://x", CA: b64("a"), Token: "t"},
+		// no CA, no skip, no auth
+		{Name: "ok", Server: "https://x"},
+		// bad ca
+		{Name: "ok", Server: "https://x", CA: "not-base64!", Token: "t"},
+		// no auth at all
+		{Name: "ok", Server: "https://x", CA: b64("a")},
 	}
 	for i, k := range bad {
 		if err := k.Validate(); err == nil {
@@ -148,6 +153,23 @@ func TestRenderDeterministic(t *testing.T) {
 	}
 	if len(kk) != 1 || kk[0].Name != "prod" {
 		t.Errorf("re-parse drifted: %+v", kk)
+	}
+}
+
+func TestRenderSingleConfigBecomesCurrentContext(t *testing.T) {
+	in := RenderInput{
+		Now: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC),
+		Configs: []*Kubeconfig{
+			{
+				Name: "prod", Scope: "work",
+				Server: "https://10.0.1.10:6443",
+				CA:     b64("ca"), ClientCert: b64("crt"), ClientKey: b64("key"),
+			},
+		},
+	}
+	out, _ := Render(in)
+	if !strings.Contains(string(out), "current-context: prod") {
+		t.Fatalf("single rendered kubeconfig should become current-context:\n%s", out)
 	}
 }
 

@@ -18,8 +18,10 @@ type RenderInput struct {
 	// for filtering / cross-scope dedup before invoking Render.
 	Contexts []*TalosContext
 
-	// ActiveContext, if non-empty and matching a context in the
-	// list, is emitted as the `context:` top-level pointer.
+	// ActiveContext, if non-empty and matching a context in the list,
+	// is emitted as the `context:` top-level pointer. When empty, a
+	// single rendered context becomes active automatically; multiple
+	// contexts omit it.
 	ActiveContext string
 
 	// Now is injected so the header timestamp is reproducible
@@ -56,8 +58,12 @@ func Render(in RenderInput) (data []byte, warnings []string) {
 	out := rawTalosconfig{
 		Contexts: map[string]*rawContext{},
 	}
-	if in.ActiveContext != "" && seen[in.ActiveContext] != nil {
-		out.Context = in.ActiveContext
+	active := in.ActiveContext
+	if active == "" && len(emit) == 1 {
+		active = emit[0].Name
+	}
+	if active != "" && seen[active] != nil {
+		out.Context = active
 	}
 	for _, c := range emit {
 		out.Contexts[c.Name] = &rawContext{
@@ -93,7 +99,7 @@ func renderHeader(cc []*TalosContext, now time.Time, warnings []string) string {
 	fmt.Fprintln(&buf, "#            config merge ~/.talos/config.fd0")
 	fmt.Fprintln(&buf, "# (`fd0 talos sync --merge` does this automatically).")
 	fmt.Fprintln(&buf, "#")
-	fmt.Fprintf(&buf,  "# Rendered at %s · %d context(s)\n",
+	fmt.Fprintf(&buf, "# Rendered at %s · %d context(s)\n",
 		now.UTC().Format("2006-01-02 15:04:05 UTC"), len(cc))
 
 	// Inventory grouped by scope. Helpful for `cat ~/.talos/config.fd0 | head`.

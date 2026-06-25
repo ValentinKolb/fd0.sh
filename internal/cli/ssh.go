@@ -523,7 +523,7 @@ func syncPubKeyFiles(dir string, hosts []*sshhost.Host, keyPub map[string][]byte
 			pub = append(append([]byte(nil), pub...), '\n')
 		}
 		name := h.Alias + ".pub"
-		if err := writeFileAtomic(filepath.Join(dir, name), pub, 0o644); err != nil {
+		if err := writeFileAtomic(filepath.Join(dir, name), pub, 0o600); err != nil {
 			return err
 		}
 		wanted[name] = true

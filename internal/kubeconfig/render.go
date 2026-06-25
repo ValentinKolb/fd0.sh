@@ -15,9 +15,9 @@ type RenderInput struct {
 	// and de-duplicates first.
 	Configs []*Kubeconfig
 
-	// CurrentContext, if non-empty and matching a config in the
-	// list, becomes the rendered current-context. Otherwise it's
-	// omitted.
+	// CurrentContext, if non-empty and matching a config in the list,
+	// becomes the rendered current-context. When empty, a single rendered
+	// config becomes current automatically; multiple configs omit it.
 	CurrentContext string
 
 	// Now feeds the header timestamp.
@@ -46,8 +46,12 @@ func Render(in RenderInput) (data []byte, warnings []string) {
 		APIVersion: "v1",
 		Kind:       "Config",
 	}
-	if in.CurrentContext != "" && seen[in.CurrentContext] != nil {
-		raw.CurrentContext = in.CurrentContext
+	current := in.CurrentContext
+	if current == "" && len(emit) == 1 {
+		current = emit[0].Name
+	}
+	if current != "" && seen[current] != nil {
+		raw.CurrentContext = current
 	}
 	for _, k := range emit {
 		raw.Clusters = append(raw.Clusters, rawClusterItem{
