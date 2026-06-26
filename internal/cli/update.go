@@ -212,7 +212,7 @@ func RunUpdate(ctx context.Context, opts UpdateOptions) error {
 		fmt.Fprintf(opts.Stdout, "updated fd0 to %s\n", target.Version)
 	}
 	if updateAgentAppearsRunning() {
-		fmt.Fprintln(opts.Stdout, "restart the agent to use the new fd0-agent: fd0 lock && fd0 unlock")
+		fmt.Fprintln(opts.Stdout, "restart the agent to use the new fd0-agent: fd0 agent restart")
 	}
 	return nil
 }

@@ -309,7 +309,7 @@ func summariseMethodTypes(active []proto.AuthMethod) string {
 	return strings.Join(out, ", ")
 }
 
-// RunLock asks the agent to lock and exit.
+// RunLock asks the running agent to forget vault secrets.
 func RunLock(ctx context.Context) error {
 	paths, err := fdhome.Resolve()
 	if err != nil {

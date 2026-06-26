@@ -24,7 +24,8 @@ var version = "dev"
 type rootCLI struct {
 	Init     initCmd     `cmd:"" help:"Create a new identity and vault."`
 	Unlock   unlockCmd   `cmd:"" help:"Start the agent and unlock the vault."`
-	Lock     lockCmd     `cmd:"" help:"Lock the vault and stop the agent."`
+	Lock     lockCmd     `cmd:"" help:"Lock the vault in the running agent."`
+	Agent    agentCmd    `cmd:"" help:"Manage the local fd0-agent process."`
 	Status   statusCmd   `cmd:"" help:"Show agent status."`
 	Get      getCmd      `cmd:"" help:"Print a secret to stdout. Interactive when called without NAME."`
 	Copy     copyCmd     `cmd:"" help:"Copy a secret to the clipboard with auto-clear."`
@@ -451,6 +452,16 @@ type unlockCmd struct {
 }
 type lockCmd struct{}
 type statusCmd struct{}
+type agentCmd struct {
+	Status  agentStatusCmd  `cmd:"" help:"Show fd0-agent process, vault, and SSH socket state."`
+	Restart agentRestartCmd `cmd:"" help:"Restart fd0-agent and prompt to unlock again if needed."`
+	Stop    agentStopCmd    `cmd:"" help:"Stop fd0-agent and clean stale sockets when safe."`
+}
+type agentStatusCmd struct{}
+type agentRestartCmd struct {
+	AgentBin string `name:"agent-bin" help:"Path to fd0-agent binary." env:"FD0_AGENT_BIN"`
+}
+type agentStopCmd struct{}
 type getCmd struct {
 	Name  string `arg:"" optional:"" help:"Secret name."`
 	Scope string `name:"scope" help:"Scope ID."`
@@ -712,6 +723,12 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 		return cli.RunUnlock(ctx, c.Unlock.AgentBin, c.Unlock.Method)
 	case "lock":
 		return cli.RunLock(ctx)
+	case "agent status":
+		return cli.RunAgentStatus(ctx)
+	case "agent restart":
+		return cli.RunAgentRestart(ctx, c.Agent.Restart.AgentBin)
+	case "agent stop":
+		return cli.RunAgentStop(ctx)
 	case "status":
 		return cli.RunStatus(ctx)
 	case "get", "get <name>":

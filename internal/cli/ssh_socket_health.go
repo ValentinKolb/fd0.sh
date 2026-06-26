@@ -5,8 +5,6 @@ import (
 	"net"
 	"os"
 	"time"
-
-	"github.com/valentinkolb/fd0.sh/internal/fdhome"
 )
 
 func checkSSHAgentSocket(path string) error {
@@ -31,9 +29,5 @@ func sshAgentSocketDisabledByEnv() bool {
 }
 
 func restartAgentHint() string {
-	paths, err := fdhome.Resolve()
-	if err != nil {
-		return "restart fd0-agent, then run `fd0 unlock`"
-	}
-	return fmt.Sprintf("restart fd0-agent with `kill \"$(cat %s)\" 2>/dev/null; fd0 unlock`; `fd0 lock && fd0 unlock` is not enough because it does not restart the agent process", paths.AgentPID)
+	return "run `fd0 agent restart`"
 }

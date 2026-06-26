@@ -34,7 +34,8 @@ func TestDoctorReportsRefusingSSHAgentSocket(t *testing.T) {
 	text := string(out)
 	if !strings.Contains(text, "ssh agent socket") ||
 		!strings.Contains(text, "fd0 SSH agent socket unavailable") ||
-		!strings.Contains(text, staleSock) {
+		!strings.Contains(text, staleSock) ||
+		!strings.Contains(text, "fd0 agent restart") {
 		t.Fatalf("doctor did not report stale ssh-agent socket clearly:\n%s", text)
 	}
 }

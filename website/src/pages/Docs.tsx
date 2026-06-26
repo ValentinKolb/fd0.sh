@@ -250,7 +250,7 @@ $ fd0 update`}</Box>
       <Code>fd0 update</Code> updates <Code>fd0</Code> and{" "}
       <Code>fd0-agent</Code> from the latest client release. It verifies the
       archive checksum and uses cosign when available. If the agent is running,
-      restart it after the update with <Code>fd0 lock && fd0 unlock</Code>.
+      restart it after the update with <Code>fd0 agent restart</Code>.
     </P>
     <Note>
       Windows is not supported yet. The binaries cross-compile, but the agent
@@ -322,7 +322,10 @@ $ fd0 ls`}</Box>
     <H2>Local health</H2>
     <Cmd signature="fd0 status" body="Show whether the agent is running and whether the vault is unlocked." />
     <Cmd signature="fd0 doctor" body="Replay local chains, check vault tips, auth wraps, scope keys, orphan chain files, and SSH socket health." />
-    <Cmd signature="fd0 lock" body="Stop the agent session and zeroize in-memory keys." />
+    <Cmd signature="fd0 lock" body="Lock the vault in the running agent and zeroize in-memory keys." />
+    <Cmd signature="fd0 agent status" body="Show fd0-agent process, vault, agent socket, and SSH socket state." />
+    <Cmd signature="fd0 agent restart" body="Replace fd0-agent with the current binary and repair stale agent sockets." />
+    <Cmd signature="fd0 agent stop" body="Stop fd0-agent and clean stale sockets when safe." />
     <Note>
       If a command needs an unlocked vault in an interactive terminal, fd0
       prompts for the passphrase instead of failing immediately.
@@ -597,10 +600,10 @@ $ ssh -G prod-db | grep -E 'hostname|identityagent|identityfile'`}</Box>
 
     <H2>SSH agent socket is stale</H2>
     <P>
-      If <Code>ssh-add -L</Code> returns connection refused, restart the fd0
-      agent by unlocking again. <Code>fd0 doctor</Code> reports this state.
+      If <Code>ssh-add -L</Code> returns connection refused, restart{" "}
+      <Code>fd0-agent</Code>. <Code>fd0 doctor</Code> reports this state.
     </P>
-    <Box>{`$ fd0 unlock
+    <Box>{`$ fd0 agent restart
 $ SSH_AUTH_SOCK="$(fd0 ssh sock)" ssh-add -L`}</Box>
 
     <H2>kubectl or talosctl has no current context</H2>
