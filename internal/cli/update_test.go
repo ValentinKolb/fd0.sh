@@ -21,16 +21,20 @@ func TestUpdateVersionHelpers(t *testing.T) {
 	cases := []struct {
 		in      string
 		tag     string
+		dl      string
 		version string
 	}{
-		{"0.8.0", "client-v0.8.0", "0.8.0"},
-		{"v0.8.0", "client-v0.8.0", "0.8.0"},
-		{"client-v0.8.0", "client-v0.8.0", "0.8.0"},
-		{"fd0-v1.2.3", "fd0-v1.2.3", "1.2.3"},
+		{"0.8.0", "client-v0.8.0", "v0.8.0", "0.8.0"},
+		{"v0.8.0", "client-v0.8.0", "v0.8.0", "0.8.0"},
+		{"client-v0.8.0", "client-v0.8.0", "v0.8.0", "0.8.0"},
+		{"fd0-v1.2.3", "fd0-v1.2.3", "v1.2.3", "1.2.3"},
 	}
 	for _, c := range cases {
 		if got := canonicalClientReleaseTag(c.in); got != c.tag {
 			t.Fatalf("canonicalClientReleaseTag(%q)=%q want %q", c.in, got, c.tag)
+		}
+		if got := explicitDownloadTag(c.in); got != c.dl {
+			t.Fatalf("explicitDownloadTag(%q)=%q want %q", c.in, got, c.dl)
 		}
 		if got := releaseVersionNumber(c.tag); got != c.version {
 			t.Fatalf("releaseVersionNumber(%q)=%q want %q", c.tag, got, c.version)
@@ -47,9 +51,9 @@ func TestRunUpdateCheckUsesLatestClientRelease(t *testing.T) {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
 		fmt.Fprint(w, `[
-			{"tag_name":"website-v0.0.99","draft":false,"prerelease":false},
-			{"tag_name":"client-v0.9.0-rc.1","draft":false,"prerelease":true},
-			{"tag_name":"client-v0.9.0","draft":false,"prerelease":false}
+			{"name":"website-v0.0.99","tag_name":"website-v0.0.99","draft":false,"prerelease":false},
+			{"name":"client-v0.9.0-rc.1","tag_name":"v0.9.0-rc.1","draft":false,"prerelease":true},
+			{"name":"client-v0.9.0","tag_name":"v0.9.0","draft":false,"prerelease":false}
 		]`)
 	}))
 	defer srv.Close()
@@ -71,6 +75,9 @@ func TestRunUpdateCheckUsesLatestClientRelease(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "fd0 0.9.0 is available") {
 		t.Fatalf("unexpected output:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "client-v0.9.0") {
+		t.Fatalf("output should show scoped release name:\n%s", out.String())
 	}
 }
 
@@ -168,9 +175,9 @@ func updateFixtureServer(t *testing.T, archive []byte, checksum string) *httptes
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/download/client-v0.9.0/fd0_linux_amd64.tar.gz":
+		case "/download/v0.9.0/fd0_linux_amd64.tar.gz":
 			_, _ = w.Write(archive)
-		case "/download/client-v0.9.0/checksums.txt":
+		case "/download/v0.9.0/checksums.txt":
 			fmt.Fprintf(w, "%s  fd0_linux_amd64.tar.gz\n", checksum)
 		default:
 			http.NotFound(w, r)

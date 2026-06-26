@@ -55,8 +55,15 @@ type UpdateOptions struct {
 
 type updateRelease struct {
 	TagName    string `json:"tag_name"`
+	Name       string `json:"name"`
 	Draft      bool   `json:"draft"`
 	Prerelease bool   `json:"prerelease"`
+}
+
+type updateTarget struct {
+	DownloadTag string
+	DisplayTag  string
+	Version     string
 }
 
 type semver struct {
@@ -109,31 +116,30 @@ func RunUpdate(ctx context.Context, opts UpdateOptions) error {
 	if err != nil {
 		return err
 	}
-	targetTag := opts.Version
-	if targetTag == "latest" {
-		targetTag, err = latestClientReleaseTag(ctx, opts.HTTPClient, opts.APIBase)
+	target := updateTarget{}
+	if opts.Version == "latest" {
+		target, err = latestClientReleaseTarget(ctx, opts.HTTPClient, opts.APIBase)
 		if err != nil {
 			return err
 		}
 	} else {
-		targetTag = canonicalClientReleaseTag(targetTag)
+		target, err = explicitUpdateTarget(opts.Version)
+		if err != nil {
+			return err
+		}
 	}
-	targetVersion := releaseVersionNumber(targetTag)
-	if targetVersion == "" {
-		return fmt.Errorf("update: release tag %q is not a client semver tag", targetTag)
-	}
-	relation, comparable := compareVersionStrings(current, targetVersion)
+	relation, comparable := compareVersionStrings(current, target.Version)
 	if opts.CheckOnly {
-		printUpdatePlan(opts.Stdout, prefix, current, targetVersion, targetTag, "check", false, false)
+		printUpdatePlan(opts.Stdout, prefix, current, target.Version, target.DisplayTag, "check", false, false)
 		if comparable && relation >= 0 {
 			fmt.Fprintln(opts.Stdout, "fd0 is up to date")
 			return nil
 		}
-		fmt.Fprintf(opts.Stdout, "fd0 %s is available\n", targetVersion)
+		fmt.Fprintf(opts.Stdout, "fd0 %s is available\n", target.Version)
 		return ErrUpdateAvailable
 	}
 	if comparable && relation == 0 {
-		fmt.Fprintf(opts.Stdout, "fd0 %s already installed at %s\n", targetVersion, prefix)
+		fmt.Fprintf(opts.Stdout, "fd0 %s already installed at %s\n", target.Version, prefix)
 		return nil
 	}
 	action := "update"
@@ -143,13 +149,13 @@ func RunUpdate(ctx context.Context, opts UpdateOptions) error {
 		action = "downgrade"
 	}
 	cosignEnabled := !opts.NoVerify && commandExists("cosign")
-	printUpdatePlan(opts.Stdout, prefix, current, targetVersion, targetTag, action, cosignEnabled, !opts.NoVerify)
+	printUpdatePlan(opts.Stdout, prefix, current, target.Version, target.DisplayTag, action, cosignEnabled, !opts.NoVerify)
 	if action == "downgrade" && !opts.Yes {
-		if err := confirmUpdate(false, fmt.Sprintf("Downgrade fd0 from %s to %s?", current, targetVersion)); err != nil {
+		if err := confirmUpdate(false, fmt.Sprintf("Downgrade fd0 from %s to %s?", current, target.Version)); err != nil {
 			return err
 		}
 	} else if !opts.Yes {
-		if err := confirmUpdate(false, fmt.Sprintf("Proceed with fd0 %s to %s?", action, targetVersion)); err != nil {
+		if err := confirmUpdate(false, fmt.Sprintf("Proceed with fd0 %s to %s?", action, target.Version)); err != nil {
 			return err
 		}
 	}
@@ -160,7 +166,7 @@ func RunUpdate(ctx context.Context, opts UpdateOptions) error {
 	}
 	defer os.RemoveAll(tmp)
 	archiveName := "fd0_" + platform + ".tar.gz"
-	base := strings.TrimRight(opts.ReleaseBase, "/") + "/download/" + targetTag
+	base := strings.TrimRight(opts.ReleaseBase, "/") + "/download/" + target.DownloadTag
 	archivePath := filepath.Join(tmp, archiveName)
 	fmt.Fprintf(opts.Stderr, "fetch %s\n", base+"/"+archiveName)
 	if err := downloadToFile(ctx, opts.HTTPClient, base+"/"+archiveName, archivePath, updateArchiveMaxBytes); err != nil {
@@ -201,9 +207,9 @@ func RunUpdate(ctx context.Context, opts UpdateOptions) error {
 		return err
 	}
 	if action == "install" {
-		fmt.Fprintf(opts.Stdout, "installed fd0 %s\n", targetVersion)
+		fmt.Fprintf(opts.Stdout, "installed fd0 %s\n", target.Version)
 	} else {
-		fmt.Fprintf(opts.Stdout, "updated fd0 to %s\n", targetVersion)
+		fmt.Fprintf(opts.Stdout, "updated fd0 to %s\n", target.Version)
 	}
 	if updateAgentAppearsRunning() {
 		fmt.Fprintln(opts.Stdout, "restart the agent to use the new fd0-agent: fd0 lock && fd0 unlock")
@@ -274,24 +280,68 @@ func parseFD0VersionOutput(out string) string {
 	return ""
 }
 
-func latestClientReleaseTag(ctx context.Context, hc *http.Client, apiBase string) (string, error) {
+func latestClientReleaseTarget(ctx context.Context, hc *http.Client, apiBase string) (updateTarget, error) {
 	body, err := downloadBytes(ctx, hc, strings.TrimRight(apiBase, "/")+"/releases?per_page=50", updateSmallFileMaxBytes)
 	if err != nil {
-		return "", err
+		return updateTarget{}, err
 	}
 	var releases []updateRelease
 	if err := json.Unmarshal(body, &releases); err != nil {
-		return "", fmt.Errorf("update: parse releases API: %w", err)
+		return updateTarget{}, fmt.Errorf("update: parse releases API: %w", err)
 	}
 	for _, r := range releases {
 		if r.Draft || r.Prerelease {
 			continue
 		}
-		if strings.HasPrefix(r.TagName, "client-v") || strings.HasPrefix(r.TagName, "fd0-v") {
-			return r.TagName, nil
+		display := clientReleaseDisplayTag(r)
+		if display == "" {
+			continue
 		}
+		target, err := updateTargetFromTags(r.TagName, display)
+		if err != nil {
+			return updateTarget{}, err
+		}
+		return target, nil
 	}
-	return "", errors.New("update: no client release found")
+	return updateTarget{}, errors.New("update: no client release found")
+}
+
+func explicitUpdateTarget(v string) (updateTarget, error) {
+	downloadTag := explicitDownloadTag(v)
+	displayTag := canonicalClientReleaseTag(v)
+	return updateTargetFromTags(downloadTag, displayTag)
+}
+
+func clientReleaseDisplayTag(r updateRelease) string {
+	if strings.HasPrefix(r.Name, "client-v") || strings.HasPrefix(r.Name, "fd0-v") {
+		return r.Name
+	}
+	if strings.HasPrefix(r.TagName, "client-v") || strings.HasPrefix(r.TagName, "fd0-v") {
+		return r.TagName
+	}
+	return ""
+}
+
+func updateTargetFromTags(downloadTag, displayTag string) (updateTarget, error) {
+	version := releaseVersionNumber(displayTag)
+	if version == "" {
+		return updateTarget{}, fmt.Errorf("update: release tag %q is not a client semver tag", displayTag)
+	}
+	return updateTarget{DownloadTag: downloadTag, DisplayTag: displayTag, Version: version}, nil
+}
+
+func explicitDownloadTag(v string) string {
+	v = strings.TrimSpace(v)
+	if strings.HasPrefix(v, "client-v") {
+		return "v" + strings.TrimPrefix(v, "client-v")
+	}
+	if strings.HasPrefix(v, "fd0-v") {
+		return "v" + strings.TrimPrefix(v, "fd0-v")
+	}
+	if strings.HasPrefix(v, "v") {
+		return v
+	}
+	return "v" + v
 }
 
 func canonicalClientReleaseTag(v string) string {
