@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -42,6 +43,7 @@ type rootCLI struct {
 	Talos    talosCmd    `cmd:"" help:"Manage Talos Linux contexts + secrets.yaml DR bundles."`
 	Kube     kubeCmd     `cmd:"" help:"Manage Kubernetes kubeconfig clusters (Talos, EKS, GKE, AKS, …)."`
 	Version  versionCmd  `cmd:"" help:"Print version and exit."`
+	Update   updateCmd   `cmd:"" help:"Update fd0 and fd0-agent from the latest client release."`
 }
 
 // ───── key ────────────────────────────────────────────────────────────
@@ -558,6 +560,14 @@ type authRemoveCmd struct {
 	Yes bool   `name:"yes" short:"y" help:"Do not prompt before removing."`
 }
 type versionCmd struct{}
+type updateCmd struct {
+	Check    bool   `name:"check" help:"Check for an update without installing. Exits 10 when an update is available."`
+	Yes      bool   `name:"yes" short:"y" help:"Do not prompt before installing or downgrading."`
+	Version  string `name:"version" help:"Release tag or semver to install. Default: latest client release." env:"FD0_VERSION"`
+	Prefix   string `name:"prefix" help:"Install into this directory. Default: directory of the running fd0 binary."`
+	System   bool   `name:"system" help:"Install into /usr/local/bin."`
+	NoVerify bool   `name:"no-verify" help:"Skip cosign signature verification. SHA256 manifest checks still run."`
+}
 
 func main() {
 	// Hidden helper: the `fd0 copy` command spawns a detached child of itself
@@ -583,6 +593,9 @@ func main() {
 		os.Exit(1)
 	}
 	if err := dispatch(ctx, &c); err != nil {
+		if errors.Is(err, cli.ErrUpdateAvailable) {
+			os.Exit(10)
+		}
 		fmt.Fprintln(os.Stderr, "✗ "+err.Error())
 		os.Exit(1)
 	}
@@ -760,6 +773,16 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 	case "version":
 		fmt.Printf("fd0 %s\n", version)
 		return nil
+	case "update":
+		return cli.RunUpdate(ctx, cli.UpdateOptions{
+			CurrentVersion: version,
+			Version:        c.Update.Version,
+			Prefix:         c.Update.Prefix,
+			System:         c.Update.System,
+			CheckOnly:      c.Update.Check,
+			Yes:            c.Update.Yes,
+			NoVerify:       c.Update.NoVerify,
+		})
 
 	// ─── key ──────────────────────────────────────────────────────────
 	case "key add <name>":

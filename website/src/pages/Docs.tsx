@@ -243,6 +243,15 @@ $ fd0 version`}</Box>
       <Code>fd0-agent</Code> to <Code>~/.local/bin</Code>. Use{" "}
       <Code>--system</Code> to install into <Code>/usr/local/bin</Code>.
     </P>
+    <H2>Update the client</H2>
+    <Box>{`$ fd0 update --check
+$ fd0 update`}</Box>
+    <P>
+      <Code>fd0 update</Code> updates <Code>fd0</Code> and{" "}
+      <Code>fd0-agent</Code> from the latest client release. It verifies the
+      archive checksum and uses cosign when available. If the agent is running,
+      restart it after the update with <Code>fd0 lock && fd0 unlock</Code>.
+    </P>
     <Note>
       Windows is not supported yet. The binaries cross-compile, but the agent
       socket path has not been validated on Windows.
