@@ -184,6 +184,10 @@ func RunUnlock(ctx context.Context, agentBin, method string) error {
 		}
 		fmt.Fprintln(os.Stderr, "✓ agent started")
 	}
+	if st, err := c.Status(); err == nil && st.Unlocked {
+		fmt.Fprintln(os.Stderr, "✓ vault already unlocked")
+		return nil
+	}
 
 	var cred agent.UnlockCredential
 	switch chosen.MethodType {
@@ -207,7 +211,7 @@ func RunUnlock(ctx context.Context, agentBin, method string) error {
 	}
 	ur, err := c.Unlock(paths.Vault, paths.UserChain, chosen.MethodType, cred)
 	if err != nil {
-		return err
+		return friendlyUnlockError(err)
 	}
 	fmt.Fprintf(os.Stderr, "✓ vault unlocked (%s)\n", chosen.MethodType)
 	if shouldHintInteractiveFirstSync(paths.Config, ur) {
@@ -220,6 +224,18 @@ func RunUnlock(ctx context.Context, agentBin, method string) error {
 		}
 	}
 	return nil
+}
+
+func friendlyUnlockError(err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "message authentication failed") ||
+		strings.Contains(msg, "no matching auth method or wrong credential") {
+		return errors.New("unlock failed: wrong passphrase or unlock method; if this worked before, the vault or auth chain may be inconsistent")
+	}
+	return err
 }
 
 func shouldHintInteractiveFirstSync(configPath string, ur *agent.UnlockResp) bool {

@@ -44,6 +44,31 @@ func TestInteractiveVaultCommandAutoUnlocks(t *testing.T) {
 	}
 }
 
+func TestUnlockAlreadyUnlockedDoesNotPrompt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("simtest builds binaries + spawns agents; skipped in -short")
+	}
+	h := New(t, 1)
+	alice := h.AddClient("alice")
+	status, err := alice.run("status")
+	if err != nil {
+		t.Fatalf("status: %v\n%s", err, status)
+	}
+	if !strings.Contains(status, "unlocked") {
+		t.Fatalf("fixture should start unlocked:\n%s", status)
+	}
+	out, err := runTTYNoInput(alice, "unlock")
+	if err != nil {
+		t.Fatalf("unlock while already unlocked should be a no-op: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "Passphrase:") {
+		t.Fatalf("already-unlocked fd0 unlock prompted:\n%s", out)
+	}
+	if !strings.Contains(out, "already unlocked") {
+		t.Fatalf("already-unlocked fd0 unlock should explain no-op:\n%s", out)
+	}
+}
+
 func TestNonInteractiveVaultCommandDoesNotAutoUnlock(t *testing.T) {
 	if testing.Short() {
 		t.Skip("simtest builds binaries + spawns agents; skipped in -short")
@@ -121,6 +146,34 @@ func TestInteractiveRemovePromptsAndCanAbort(t *testing.T) {
 
 func runTTY(c *Client, stdin string, args ...string) (string, error) {
 	return runTTYAfter(c, "Passphrase:", stdin, args...)
+}
+
+func runTTYNoInput(c *Client, args ...string) (string, error) {
+	c.h.t.Helper()
+	c.h.mu.Lock()
+	defer c.h.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, c.h.fd0Bin, args...)
+	cmd.Env = c.env()
+	ptmx, err := pty.Start(cmd)
+	if err != nil {
+		return "", err
+	}
+	var buf bytes.Buffer
+	done := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(&buf, ptmx)
+		close(done)
+	}()
+	err = cmd.Wait()
+	_ = ptmx.Close()
+	<-done
+	if ctx.Err() != nil {
+		return buf.String(), ctx.Err()
+	}
+	return buf.String(), err
 }
 
 func runTTYAfter(c *Client, prompt, stdin string, args ...string) (string, error) {

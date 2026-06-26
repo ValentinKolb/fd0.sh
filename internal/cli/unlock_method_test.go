@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -151,5 +152,19 @@ func TestDistinctMethodTypes(t *testing.T) {
 				t.Fatalf("got %d distinct, want %d (got %v)", len(got), c.want, got)
 			}
 		})
+	}
+}
+
+func TestFriendlyUnlockErrorHidesAEADDetails(t *testing.T) {
+	t.Parallel()
+	err := friendlyUnlockError(errors.New("agent: vault: AEAD-open wrap am_123: cipher: message authentication failed"))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), "AEAD") || strings.Contains(err.Error(), "cipher") || strings.Contains(err.Error(), "am_123") {
+		t.Fatalf("error leaked internals: %s", err)
+	}
+	if !strings.Contains(err.Error(), "wrong passphrase") {
+		t.Fatalf("error should explain likely cause: %s", err)
 	}
 }
