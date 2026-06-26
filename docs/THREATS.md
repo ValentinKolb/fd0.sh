@@ -107,7 +107,6 @@ Status legend:
   shows a strength estimate but does not enforce a minimum).
 - **Code**: `vault/resolver.go` PassphraseResolver, `crypto.DeriveKey`.
 - **Spec ref**: `PROTOCOL.md` §6.1.
-
 #### T03 — Coerced unlock
 - **Adversary**: A6.
 - **Mitigation** 📋: out of cryptographic scope. Threat is
@@ -734,7 +733,6 @@ What v1 explicitly does NOT promise:
 - **Metadata side channels** (T52) — membership graph, online time,
   event sizes are visible to the server by design.
 - **Server storage growth** (T53) — unbounded, operator-bounded.
-
 ---
 
 ## 6. User-ceremony properties

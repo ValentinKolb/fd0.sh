@@ -44,8 +44,8 @@ type Config struct {
 
 // Server is the running agent. Construct with Listen.
 type Server struct {
-	cfg     Config
-	paths   fdhome.Paths
+	cfg       Config
+	paths     fdhome.Paths
 	listener  net.Listener
 	scheduler *Scheduler
 	log       *slog.Logger
@@ -304,6 +304,9 @@ func (s *Server) handleUnlock(u *UnlockReq) *Response {
 			return errResp(vault.ErrYubikeyNotConfigured.Error())
 		}
 		resolver = s.cfg.NewYubikeyResolver(u.YubikeyPIN)
+		if resolver == nil {
+			return errResp(vault.ErrYubikeyNotConfigured.Error())
+		}
 	default:
 		return errResp(fmt.Sprintf("unsupported method_type %q", u.MethodType))
 	}
@@ -317,6 +320,17 @@ func (s *Server) handleUnlock(u *UnlockReq) *Response {
 		return errResp(err.Error())
 	}
 	body := res.Body
+	if len(body.SuperPriv) != ed25519.PrivateKeySize {
+		crypto.Wipe(res.UnlockKey)
+		crypto.Wipe(res.PayloadKey)
+		return errResp("vault body super_priv: bad length")
+	}
+	derivedPub := ed25519.PrivateKey(body.SuperPriv).Public().(ed25519.PublicKey)
+	if !bytes.Equal(derivedPub, v.UserSuperPub) {
+		crypto.Wipe(res.UnlockKey)
+		crypto.Wipe(res.PayloadKey)
+		return errResp("vault: super_priv pub != user_super_pub")
+	}
 
 	// SECURITY: rollback-detection (codex audit 🔴). The vault file
 	// is mutable storage; the user.cbor chain is append-only and
@@ -362,26 +376,25 @@ func (s *Server) handleUnlock(u *UnlockReq) *Response {
 			))
 		}
 		if liveSeq != body.AuthTip.Seq || !bytes.Equal(liveHash, body.AuthTip.Hash) {
-			crypto.Wipe(res.UnlockKey)
-			crypto.Wipe(res.PayloadKey)
-			return errResp(fmt.Sprintf(
-				"vault: ROLLBACK DETECTED — vault auth_tip (seq=%d) does not match user chain tip (seq=%d); refusing to unlock with potentially revoked credentials",
-				body.AuthTip.Seq, liveSeq,
-			))
+			if st == nil || st.TipSeq <= body.AuthTip.Seq {
+				crypto.Wipe(res.UnlockKey)
+				crypto.Wipe(res.PayloadKey)
+				return errResp(fmt.Sprintf(
+					"vault: ROLLBACK DETECTED — vault auth_tip (seq=%d) does not match user chain tip (seq=%d); refusing to unlock with potentially revoked credentials",
+					body.AuthTip.Seq, liveSeq,
+				))
+			}
+			if err := verifyChainAheadUnlock(st, v.UserSuperPub, body.SuperPriv, res.UsedWrap, res.UnlockKey); err != nil {
+				crypto.Wipe(res.UnlockKey)
+				crypto.Wipe(res.PayloadKey)
+				return errResp(fmt.Sprintf(
+					"vault: ROLLBACK DETECTED — vault auth_tip (seq=%d) is behind user chain tip (seq=%d) and used auth method is not live: %v",
+					body.AuthTip.Seq, liveSeq, err,
+				))
+			}
 		}
 	}
 
-	if len(body.SuperPriv) != ed25519.PrivateKeySize {
-		crypto.Wipe(res.UnlockKey)
-		crypto.Wipe(res.PayloadKey)
-		return errResp("vault body super_priv: bad length")
-	}
-	derivedPub := ed25519.PrivateKey(body.SuperPriv).Public().(ed25519.PublicKey)
-	if !bytes.Equal(derivedPub, v.UserSuperPub) {
-		crypto.Wipe(res.UnlockKey)
-		crypto.Wipe(res.PayloadKey)
-		return errResp("vault: super_priv pub != user_super_pub")
-	}
 	x, err := crypto.EdPrivToX25519(body.SuperPriv)
 	if err != nil {
 		crypto.Wipe(res.UnlockKey)
@@ -529,12 +542,12 @@ func (s *Server) unredact(redactedBody []byte) (*proto.VaultBody, error) {
 // SECURITY NOTE. The redacted body still contains every OEK the user holds
 // (one per subscribed scope, per OEK version). Same-UID-Code-Execution
 // attackers can read these. This is acceptable in v1 because:
-//   1. Same-UID attackers can equally call Sign/OpenSeal to recover OEKs by
-//      simulating member.change replay.
-//   2. THREATS.md §2 lists same-UID compromise as an acknowledged limit.
-//   3. The agent's value-add is keeping super_priv (the master key) sealed;
-//      OEK lifecycle is shorter (rotates on every member.change) and recovery
-//      after compromise of an OEK era is supported by the protocol.
+//  1. Same-UID attackers can equally call Sign/OpenSeal to recover OEKs by
+//     simulating member.change replay.
+//  2. THREATS.md §2 lists same-UID compromise as an acknowledged limit.
+//  3. The agent's value-add is keeping super_priv (the master key) sealed;
+//     OEK lifecycle is shorter (rotates on every member.change) and recovery
+//     after compromise of an OEK era is supported by the protocol.
 func (s *Server) handleGetBody() *Response {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -689,6 +702,36 @@ func (s *Server) lock() {
 	s.unlockPP = nil
 	s.userSuperPub = nil
 	s.unlockedAt = time.Time{}
+}
+
+func verifyChainAheadUnlock(st *chain.UserState, userSuperPub, superPriv []byte, used *proto.WrappedKey, unlockKey []byte) error {
+	if st == nil || st.LatestAuthSet == nil {
+		return errors.New("missing latest auth.set")
+	}
+	if used == nil {
+		return errors.New("missing used wrap")
+	}
+	for _, m := range st.LatestAuthSet.Payload.Active {
+		if m.MethodID != used.MethodID {
+			continue
+		}
+		if m.MethodType != used.MethodType {
+			return fmt.Errorf("method_type changed from %q to %q", used.MethodType, m.MethodType)
+		}
+		if !bytes.Equal(m.PublicParams, used.PublicParams) {
+			return errors.New("public_params changed")
+		}
+		plain, err := vault.DecryptSuperPriv(m.EncryptedSuperPriv, userSuperPub, m.MethodID, unlockKey)
+		if err != nil {
+			return fmt.Errorf("encrypted_super_priv does not open under used K_unlock: %w", err)
+		}
+		defer crypto.Wipe(plain)
+		if !bytes.Equal(plain, superPriv) {
+			return errors.New("encrypted_super_priv opens to different super_priv")
+		}
+		return nil
+	}
+	return fmt.Errorf("method_id %q is no longer active", used.MethodID)
 }
 
 func errResp(msg string) *Response { return &Response{Err: msg} }

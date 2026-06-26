@@ -164,4 +164,3 @@ func DecryptSuperPriv(blob, userSuperPub []byte, methodID string, unlockKey []by
 	aad = append(aad, methodID...)
 	return crypto.AEADOpen(unlockKey, blob[:12], blob[12:], aad)
 }
-

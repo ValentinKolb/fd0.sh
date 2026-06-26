@@ -167,14 +167,14 @@ signature      = Ed25519(super_priv, signed_input)
 prev_hash[N+1] = SHA-256(cbor(UserEvent[N] without signature))
 
 K_unlock derivation:
-    passphrase : Argon2id(passphrase, salt = public_params[0:16], params = public_params[16:])
-    yubikey    : K_unlock = crypto_box_seal_open(YubikeyPublicParams.sealed_k_unlock,
-                                                  on-card_x25519_priv,
-                                                  YubikeyPublicParams.x25519_pub)
-                 The sealed_k_unlock is opened on-card via X25519 ECDH against the
-                 slot's private key; nothing leaves the card. Raw 32-byte K_unlock
-                 is recovered host-side and consumed exactly like a passphrase-
-                 derived K_unlock.
+    passphrase     : Argon2id(passphrase, salt = public_params[0:16], params = public_params[16:])
+    yubikey        : K_unlock = crypto_box_seal_open(YubikeyPublicParams.sealed_k_unlock,
+                                                      on-card_x25519_priv,
+                                                      YubikeyPublicParams.x25519_pub)
+                     The sealed_k_unlock is opened on-card via X25519 ECDH against the
+                     slot's private key; nothing leaves the card. Raw 32-byte K_unlock
+                     is recovered host-side and consumed exactly like a passphrase-
+                     derived K_unlock.
 
 encrypted_super_priv = AEAD(
     key   = K_unlock,

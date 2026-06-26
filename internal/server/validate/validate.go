@@ -85,7 +85,8 @@ func UserEvent(ev *proto.UserEvent, prior *UserMeta, priorTipHash []byte, priorT
 // Returns the post-mutation ScopeMeta the caller should write back.
 //
 // THREAT: T26 (forged member.change unsigned author),
-//         T30 (no-op membership change as poison vehicle).
+//
+//	T30 (no-op membership change as poison vehicle).
 func ScopeEvent(ev *proto.ScopeEvent, prior *ScopeMeta, priorTipHash []byte, priorTipSeq uint64) (*ScopeMeta, error) {
 	sp := &ev.SignedPrefix
 	// Author == signer.

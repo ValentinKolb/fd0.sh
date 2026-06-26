@@ -6,7 +6,8 @@
 // one domain MUST be invalid under any other (PROTOCOL.md §1.1).
 //
 // THREAT: T13 (cross-protocol signature reuse),
-//         T14 (cross-context AEAD ciphertext reuse).
+//
+//	T14 (cross-context AEAD ciphertext reuse).
 package proto
 
 // Domain separators. See PROTOCOL.md §1.1.

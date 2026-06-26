@@ -43,15 +43,15 @@ const (
 // Request is the client→agent envelope. Exactly one of the typed fields is
 // populated, identified by Op.
 type Request struct {
-	Op                 uint8                   `cbor:"op"`
-	Unlock             *UnlockReq              `cbor:"unlock,omitempty"`
-	Sign               *SignReq                `cbor:"sign,omitempty"`
-	OpenSeal           *OpenSealReq            `cbor:"open_seal,omitempty"`
-	ReSeal             *ReSealReq              `cbor:"re_seal,omitempty"`
-	RecoveryExport     *RecoveryExportReq      `cbor:"recovery_export,omitempty"`
-	EncryptSuperPriv   *EncryptSuperPrivReq    `cbor:"encrypt_super_priv,omitempty"`
-	AddWrap            *AddWrapReq             `cbor:"add_wrap,omitempty"`
-	RemoveWrap         *RemoveWrapReq          `cbor:"remove_wrap,omitempty"`
+	Op               uint8                `cbor:"op"`
+	Unlock           *UnlockReq           `cbor:"unlock,omitempty"`
+	Sign             *SignReq             `cbor:"sign,omitempty"`
+	OpenSeal         *OpenSealReq         `cbor:"open_seal,omitempty"`
+	ReSeal           *ReSealReq           `cbor:"re_seal,omitempty"`
+	RecoveryExport   *RecoveryExportReq   `cbor:"recovery_export,omitempty"`
+	EncryptSuperPriv *EncryptSuperPrivReq `cbor:"encrypt_super_priv,omitempty"`
+	AddWrap          *AddWrapReq          `cbor:"add_wrap,omitempty"`
+	RemoveWrap       *RemoveWrapReq       `cbor:"remove_wrap,omitempty"`
 }
 
 // EncryptSuperPrivReq asks the agent to AEAD-encrypt super_priv under

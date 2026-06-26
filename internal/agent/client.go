@@ -11,6 +11,10 @@ import (
 	"github.com/valentinkolb/fd0.sh/internal/vault"
 )
 
+const (
+	agentRPCTimeout = 15 * time.Second
+)
+
 // Client is a thin RPC wrapper over the agent socket. One Client per fd0
 // CLI invocation; a fresh net.Conn is dialed per call (frames are tiny).
 type Client struct {
@@ -66,7 +70,7 @@ func (c *Client) Status() (*StatusResp, error) {
 
 // UnlockCredential carries the per-method secret(s) Client.Unlock needs.
 // Exactly one of Passphrase / YubikeyPIN should be populated for the
-// chosen MethodType; the agent ignores the irrelevant fields.
+// chosen credential-backed MethodType.
 type UnlockCredential struct {
 	Passphrase []byte
 	// YubikeyPIN is the PIV PIN required for SharedSecret operations
@@ -85,13 +89,14 @@ type UnlockCredential struct {
 // with -tags=yubikey") — the helpful CLI message lives downstream of
 // errors.Is.
 func (c *Client) Unlock(vaultPath, userChainPath, methodType string, cred UnlockCredential) (*UnlockResp, error) {
-	r, err := c.do(&Request{Op: OpUnlock, Unlock: &UnlockReq{
+	req := &Request{Op: OpUnlock, Unlock: &UnlockReq{
 		VaultPath:     vaultPath,
 		UserChainPath: userChainPath,
 		MethodType:    methodType,
 		Passphrase:    cred.Passphrase,
 		YubikeyPIN:    cred.YubikeyPIN,
-	}})
+	}}
+	r, err := c.doWithTimeout(req, agentRPCTimeout)
 	if err != nil {
 		if strings.Contains(err.Error(), vault.ErrYubikeyNotConfigured.Error()) {
 			return nil, fmt.Errorf("%w", vault.ErrYubikeyNotConfigured)
@@ -202,12 +207,16 @@ func (c *Client) RemoveWrap(vaultPath, methodID string) error {
 
 // do is one round-trip.
 func (c *Client) do(req *Request) (*Response, error) {
+	return c.doWithTimeout(req, agentRPCTimeout)
+}
+
+func (c *Client) doWithTimeout(req *Request, timeout time.Duration) (*Response, error) {
 	conn, err := dialUnix(c.sock)
 	if err != nil {
 		return nil, fmt.Errorf("agent: dial %s: %w", c.sock, err)
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
+	_ = conn.SetDeadline(time.Now().Add(timeout))
 	if err := WriteFrame(conn, req); err != nil {
 		return nil, err
 	}
@@ -220,4 +229,3 @@ func (c *Client) do(req *Request) (*Response, error) {
 	}
 	return &resp, nil
 }
-

@@ -55,7 +55,7 @@ type AuthMethod struct {
 // AEAD key over WrappedKey.Wrapped (same shape as the passphrase path,
 // just with a different K_unlock derivation).
 type YubikeyPublicParams struct {
-	X25519Pub     []byte `cbor:"x25519_pub"`     // 32-byte slot pubkey
+	X25519Pub     []byte `cbor:"x25519_pub"`      // 32-byte slot pubkey
 	SealedKUnlock []byte `cbor:"sealed_k_unlock"` // sealed-box(K_unlock, X25519Pub)
 	Slot          uint8  `cbor:"slot"`            // PIV slot id (default 0x9d)
 }
@@ -437,13 +437,13 @@ type PinnedIdentity struct {
 
 // RecoveryFile is the offline-stored super_priv backup.
 type RecoveryFile struct {
-	Magic              string        `cbor:"magic"`
-	Version            uint8         `cbor:"version"`
-	UserSuperPub       []byte        `cbor:"user_super_pub"`
-	Salt               []byte        `cbor:"salt"`
-	Argon2Params       Argon2Params  `cbor:"argon2_params"`
-	Nonce              []byte        `cbor:"nonce"`
-	EncryptedSuperPriv []byte        `cbor:"encrypted_super_priv"`
+	Magic              string       `cbor:"magic"`
+	Version            uint8        `cbor:"version"`
+	UserSuperPub       []byte       `cbor:"user_super_pub"`
+	Salt               []byte       `cbor:"salt"`
+	Argon2Params       Argon2Params `cbor:"argon2_params"`
+	Nonce              []byte       `cbor:"nonce"`
+	EncryptedSuperPriv []byte       `cbor:"encrypted_super_priv"`
 }
 
 // Argon2Params are the cost parameters used for passphrase-derived keys.

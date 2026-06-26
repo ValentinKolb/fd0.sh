@@ -132,8 +132,9 @@ func RunInit(ctx context.Context) error {
 // For passphrase methods we prompt "Passphrase: ". For YubiKey methods
 // we prompt "YubiKey PIN (empty for touch-only): "; an empty input
 // surfaces as a touch-only unlock (the agent passes "" through to
-// yubikey.Open which skips VerifyPIN). Either prompt reads from
-// non-TTY stdin when piped, so shell tests can drive it.
+// yubikey.Open which skips VerifyPIN). Platform-local unlock sends no
+// credential bytes; the agent invokes its configured provider. Prompts read
+// from non-TTY stdin when piped, so shell tests can drive them.
 func RunUnlock(ctx context.Context, agentBin, method string) error {
 	paths, err := fdhome.Resolve()
 	if err != nil {
