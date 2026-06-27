@@ -10,6 +10,7 @@ type PageOptions = {
   canonical?: string;
   ogImage?: string;
   ogType?: "website" | "article";
+  structuredData?: unknown[];
 };
 
 const SITE_NAME = "fd0";
@@ -18,6 +19,252 @@ const SITE_DESCRIPTION =
   "fd0 — a zero-knowledge secrets manager you run yourself or use hosted at fd0.sh. " +
   "Ciphertext-only server, hardware-backed identity via YubiKey-PIV, " +
   "end-to-end transparency log with independent witness verification.";
+const SITE_LASTMOD = process.env.FD0_WEBSITE_LASTMOD ?? "2026-06-28";
+
+type SeoRoute = {
+  key: string;
+  path: string;
+  title: string;
+  description: string;
+  section?: "docs" | "spec";
+  lastmod?: string;
+};
+
+export const canonicalUrl = (path: string) =>
+  `${SITE_URL}${path === "/" ? "/" : path}`;
+
+export const SEO_ROUTE = {
+  home: {
+    key: "home",
+    path: "/",
+    title: "fd0 — zero-knowledge secrets manager",
+    description:
+      "fd0 is a zero-knowledge secrets manager for passwords, SSH keys, host inventory, Kubernetes and Talos credentials.",
+  },
+  docs: {
+    key: "docs",
+    path: "/docs",
+    title: "fd0 documentation",
+    description:
+      "Learn how to install fd0, unlock your vault, store secrets, share scopes, sync devices, and use SSH, Talos, and Kubernetes integrations.",
+    section: "docs",
+  },
+  docsConcepts: {
+    key: "docsConcepts",
+    path: "/docs/concepts",
+    title: "fd0 concepts and architecture",
+    description:
+      "Understand fd0 identities, scopes, object encryption keys, cards, the local agent, sync server, and transparency witness.",
+    section: "docs",
+  },
+  docsInstall: {
+    key: "docsInstall",
+    path: "/docs/install",
+    title: "Install fd0 CLI and agent",
+    description:
+      "Install the fd0 CLI and agent, initialize a vault, unlock it, and choose the hosted fd0.sh backend or a self-hosted server.",
+    section: "docs",
+  },
+  docsCli: {
+    key: "docsCli",
+    path: "/docs/cli",
+    title: "fd0 CLI daily use",
+    description:
+      "Daily fd0 CLI commands for storing secrets, copying values, sharing scopes, syncing devices, checking health, and managing the agent.",
+    section: "docs",
+  },
+  docsSsh: {
+    key: "docsSsh",
+    path: "/docs/ssh",
+    title: "fd0 SSH keys and host inventory",
+    description:
+      "Use fd0 for encrypted SSH keys and scope-shared host aliases through fd0-agent and native OpenSSH configuration.",
+    section: "docs",
+  },
+  docsTalos: {
+    key: "docsTalos",
+    path: "/docs/talos",
+    title: "fd0 Talos and Kubernetes credentials",
+    description:
+      "Store, render, merge, and share Talos contexts, Kubernetes kubeconfigs, and day-0 Talos recovery credentials with fd0.",
+    section: "docs",
+  },
+  docsSync: {
+    key: "docsSync",
+    path: "/docs/sync",
+    title: "fd0 sync and scope discovery",
+    description:
+      "How fd0 sync pushes signed local events, pulls server history, discovers shared scopes, and refreshes enabled local projections.",
+    section: "docs",
+  },
+  docsServer: {
+    key: "docsServer",
+    path: "/docs/server",
+    title: "Self-host fd0 server",
+    description:
+      "Run the fd0 server yourself with the compose example, a TLS reverse proxy, backups, metrics, and an optional transparency witness.",
+    section: "docs",
+  },
+  docsYubikey: {
+    key: "docsYubikey",
+    path: "/docs/yubikey",
+    title: "fd0 YubiKey unlock",
+    description:
+      "Add a YubiKey PIV unlock method to fd0, use PIN plus touch to unlock locally, and keep recovery available for device loss.",
+    section: "docs",
+  },
+  docsRecovery: {
+    key: "docsRecovery",
+    path: "/docs/recovery",
+    title: "fd0 recovery and backup",
+    description:
+      "Export and restore fd0 recovery material so a lost device or passphrase method does not permanently lock you out.",
+    section: "docs",
+  },
+  docsTroubleshooting: {
+    key: "docsTroubleshooting",
+    path: "/docs/troubleshooting",
+    title: "fd0 troubleshooting",
+    description:
+      "Diagnose fd0 vault, sync, SSH socket, missing host, and local config refresh problems with doctor and agent commands.",
+    section: "docs",
+  },
+  spec: {
+    key: "spec",
+    path: "/spec",
+    title: "fd0 protocol specification",
+    description:
+      "Read the fd0 protocol overview covering deterministic wire formats, cryptography, storage, sync, transparency, and threat model.",
+    section: "spec",
+  },
+  specWire: {
+    key: "specWire",
+    path: "/spec/wire",
+    title: "fd0 wire format specification",
+    description:
+      "fd0 wire-format reference for deterministic CBOR, domain-separated signatures, IDs, timestamps, and binary encodings.",
+    section: "spec",
+  },
+  specCrypto: {
+    key: "specCrypto",
+    path: "/spec/crypto",
+    title: "fd0 cryptography specification",
+    description:
+      "fd0 cryptography reference for Ed25519, X25519, XChaCha20-Poly1305, OEK rotation, passphrase, and YubiKey unlocks.",
+    section: "spec",
+  },
+  specStorage: {
+    key: "specStorage",
+    path: "/spec/storage",
+    title: "fd0 storage format specification",
+    description:
+      "fd0 storage reference for the encrypted vault, append-only user and scope chains, event bodies, tombstones, and compaction.",
+    section: "spec",
+  },
+  specSync: {
+    key: "specSync",
+    path: "/spec/sync",
+    title: "fd0 sync protocol specification",
+    description:
+      "fd0 sync protocol reference for optimistic concurrency, signed pushes, paginated pulls, replay, discovery, and conflict handling.",
+    section: "spec",
+  },
+  specTranslog: {
+    key: "specTranslog",
+    path: "/spec/translog",
+    title: "fd0 transparency log specification",
+    description:
+      "fd0 transparency-log reference for RFC 6962 Merkle trees, signed tree heads, witness cosigning, and fork detection.",
+    section: "spec",
+  },
+  specThreats: {
+    key: "specThreats",
+    path: "/spec/threats",
+    title: "fd0 threat model",
+    description:
+      "fd0 threat model for server compromise, client compromise, replay, equivocation, metadata exposure, and operational limits.",
+    section: "spec",
+  },
+  witness: {
+    key: "witness",
+    path: "/witness",
+    title: "fd0 public transparency witness",
+    description:
+      "Live state of the official fd0 transparency-log witness: pubkey, observed chains, cosignatures, and equivocation status.",
+  },
+  impressum: {
+    key: "impressum",
+    path: "/impressum",
+    title: "fd0 legal notice",
+    description: "Legal provider information for fd0.sh.",
+  },
+} satisfies Record<string, SeoRoute>;
+
+export type SeoRouteKey = keyof typeof SEO_ROUTE;
+
+export const SEO_ROUTES = [
+  SEO_ROUTE.home,
+  SEO_ROUTE.docs,
+  SEO_ROUTE.docsConcepts,
+  SEO_ROUTE.docsInstall,
+  SEO_ROUTE.docsCli,
+  SEO_ROUTE.docsSsh,
+  SEO_ROUTE.docsTalos,
+  SEO_ROUTE.docsSync,
+  SEO_ROUTE.docsServer,
+  SEO_ROUTE.docsYubikey,
+  SEO_ROUTE.docsRecovery,
+  SEO_ROUTE.docsTroubleshooting,
+  SEO_ROUTE.spec,
+  SEO_ROUTE.specWire,
+  SEO_ROUTE.specCrypto,
+  SEO_ROUTE.specStorage,
+  SEO_ROUTE.specSync,
+  SEO_ROUTE.specTranslog,
+  SEO_ROUTE.specThreats,
+  SEO_ROUTE.witness,
+  SEO_ROUTE.impressum,
+] as const;
+
+export const sitemapLastmod = (route: SeoRoute) =>
+  route.lastmod ?? SITE_LASTMOD;
+
+const breadcrumbStructuredData = (route: SeoRoute) => {
+  if (route.path === "/") return undefined;
+
+  const items = [{ name: SITE_NAME, path: "/" }];
+  if (route.section === "docs") items.push({ name: "Docs", path: "/docs" });
+  if (route.section === "spec") items.push({ name: "Spec", path: "/spec" });
+  if (items[items.length - 1].path !== route.path) {
+    items.push({
+      name: route.title.replace(/^fd0\s+—\s+/, ""),
+      path: route.path,
+    });
+  }
+
+  return {
+    "@type": "BreadcrumbList",
+    itemListElement: items.map((item, i) => ({
+      "@type": "ListItem",
+      position: i + 1,
+      name: item.name,
+      item: canonicalUrl(item.path),
+    })),
+  };
+};
+
+export const setPageSeo = (
+  c: { get: (key: "page") => PageOptions },
+  key: SeoRouteKey,
+) => {
+  const route = SEO_ROUTE[key];
+  const page = c.get("page");
+  page.title = route.title;
+  page.description = route.description;
+  page.canonical = canonicalUrl(route.path);
+  const breadcrumb = breadcrumbStructuredData(route);
+  page.structuredData = breadcrumb ? [breadcrumb] : undefined;
+};
 
 // @font-face declarations live in the HTML head as an inline <style>
 // block — keeps bun's CSS bundler from trying to resolve the woff2
@@ -61,11 +308,24 @@ const ORG_JSONLD = {
 export const { config, plugin, html } = createConfig<PageOptions>({
   dev: process.env.NODE_ENV === "development",
   rootDir: import.meta.dir,
-  template: ({ body, scripts, title, description, canonical, ogImage, ogType }) => {
+  template: ({
+    body,
+    scripts,
+    title,
+    description,
+    canonical,
+    ogImage,
+    ogType,
+    structuredData,
+  }) => {
     const t = title ?? "fd0 — zero-knowledge secrets manager";
     const d = description ?? SITE_DESCRIPTION;
     const img = ogImage ?? `${SITE_URL}/public/og-card.png`;
     const url = canonical ?? SITE_URL;
+    const jsonLd = {
+      ...ORG_JSONLD,
+      "@graph": [...ORG_JSONLD["@graph"], ...(structuredData ?? [])],
+    };
     return `<!doctype html>
 <html lang="en">
   <head>
@@ -102,7 +362,7 @@ export const { config, plugin, html } = createConfig<PageOptions>({
     <style>${FONT_FACE_CSS}</style>
     <link rel="stylesheet" href="/public/styles.css">
 
-    <script type="application/ld+json">${JSON.stringify(ORG_JSONLD)}</script>
+    <script type="application/ld+json">${JSON.stringify(jsonLd)}</script>
   </head>
   <body>${body}${scripts}</body>
 </html>`;
@@ -110,4 +370,4 @@ export const { config, plugin, html } = createConfig<PageOptions>({
 });
 
 export const ssr = createSSRHandler(html);
-export { routes, SITE_URL };
+export { routes, SITE_URL, SITE_LASTMOD };

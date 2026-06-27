@@ -2,7 +2,14 @@ import { Hono } from "hono";
 import { logger } from "hono/logger";
 import { serveStatic } from "hono/bun";
 import { timingSafeEqual } from "crypto";
-import { config, routes, SITE_URL } from "../config";
+import {
+  canonicalUrl,
+  config,
+  routes,
+  SEO_ROUTES,
+  sitemapLastmod,
+  SITE_URL,
+} from "../config";
 import { ErrorPage, errorPresets } from "./lib/error";
 import { html as renderHTML } from "../config";
 import {
@@ -97,6 +104,61 @@ const checkBearer = (auth: string | undefined, expected: string): boolean => {
   return timingSafeEqual(Buffer.from(got), Buffer.from(want));
 };
 
+const xmlEscape = (s: string): string =>
+  s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+
+const renderSitemap = (): string =>
+  '<?xml version="1.0" encoding="UTF-8"?>\n' +
+  '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' +
+  SEO_ROUTES.map(
+    (route) =>
+      `  <url><loc>${xmlEscape(canonicalUrl(route.path))}</loc>` +
+      `<lastmod>${xmlEscape(sitemapLastmod(route))}</lastmod></url>`,
+  ).join("\n") +
+  "\n</urlset>\n";
+
+const renderLlmsTxt = (): string =>
+  [
+    "# fd0",
+    "",
+    "> fd0 is a zero-knowledge secrets manager for passwords, SSH keys, " +
+      "host inventory, Kubernetes and Talos credentials.",
+    "",
+    "Use fd0 when you need client-side encryption, scope-based sharing, " +
+      "local agent unlock, SSH-agent integration, and a transparency-log-backed sync server.",
+    "",
+    "## Primary pages",
+    ...SEO_ROUTES.filter(
+      (route) => route.path === "/" || route.path.startsWith("/docs"),
+    ).map(
+      (route) =>
+        `- [${route.title}](${canonicalUrl(route.path)}): ${route.description}`,
+    ),
+    "",
+    "## Protocol and trust model",
+    ...SEO_ROUTES.filter(
+      (route) => route.path.startsWith("/spec") || route.path === "/witness",
+    ).map(
+      (route) =>
+        `- [${route.title}](${canonicalUrl(route.path)}): ${route.description}`,
+    ),
+    "",
+    "## Source",
+    "- [GitHub repository](https://github.com/ValentinKolb/fd0.sh): client, server, witness, website, protocol docs, and release workflows.",
+    "",
+  ].join("\n");
+
+const withoutTrailingSlash = (url: string): string | undefined => {
+  const u = new URL(url);
+  if (u.pathname === "/" || !u.pathname.endsWith("/")) return undefined;
+  u.pathname = u.pathname.replace(/\/+$/, "");
+  return `${u.pathname}${u.search}`;
+};
+
 // ─── Hono app ──────────────────────────────────────────────────────
 const app = new Hono()
   .use(logger())
@@ -111,6 +173,11 @@ const app = new Hono()
         [c.req.method, opLabel(c.req.path), statusClass(c.res.status)].join("|"),
       );
     }
+  })
+  .use(async (c, next) => {
+    const target = withoutTrailingSlash(c.req.url);
+    if (target) return c.redirect(target, 308);
+    await next();
   })
   // Operational endpoints — version-neutral, never under /v1/.
   .get("/health", (c) =>
@@ -168,37 +235,14 @@ const app = new Hono()
     ),
   )
   .get("/sitemap.xml", (c) => {
-    const urls = [
-      "/",
-      "/docs",
-      "/docs/concepts",
-      "/docs/install",
-      "/docs/cli",
-      "/docs/ssh",
-      "/docs/talos",
-      "/docs/sync",
-      "/docs/server",
-      "/docs/yubikey",
-      "/docs/recovery",
-      "/docs/troubleshooting",
-      "/spec",
-      "/spec/wire",
-      "/spec/crypto",
-      "/spec/storage",
-      "/spec/sync",
-      "/spec/translog",
-      "/spec/threats",
-      "/witness",
-      "/impressum",
-    ].map(
-      (p) => `${SITE_URL}${p}`,
-    );
-    const body =
-      '<?xml version="1.0" encoding="UTF-8"?>\n' +
-      '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' +
-      urls.map((u) => `  <url><loc>${u}</loc></url>`).join("\n") +
-      "\n</urlset>\n";
-    return c.body(body, 200, { "Content-Type": "application/xml; charset=utf-8" });
+    return c.body(renderSitemap(), 200, {
+      "Content-Type": "application/xml; charset=utf-8",
+    });
+  })
+  .get("/llms.txt", (c) => {
+    return c.body(renderLlmsTxt(), 200, {
+      "Content-Type": "text/plain; charset=utf-8",
+    });
   })
   // Install-script aliases: redirect to the GitHub raw URL so the
   // README + spoken-word command stay short. curl -fsSL follows

@@ -7,7 +7,7 @@
  * a "→ normative spec on GitHub" link to the matching markdown source.
  */
 
-import { ssr } from "../../config";
+import { setPageSeo, ssr } from "../../config";
 import { Shell } from "../lib/shell";
 import { C, FONT_MONO, SpecLayout, SPEC_NAV } from "../lib/chrome";
 
@@ -556,7 +556,7 @@ const ThreatsBody = () => (
 /* ─── route exports ────────────────────────────────────────────── */
 
 export const SpecOverview = ssr(async (c) => {
-  c.get("page").title = "fd0 — Specification";
+  setPageSeo(c, "spec");
   return () => (
     <SpecLayout current="overview" title="Protocol.">
       <OverviewBody />
@@ -565,7 +565,7 @@ export const SpecOverview = ssr(async (c) => {
 });
 
 export const SpecWire = ssr(async (c) => {
-  c.get("page").title = "fd0 — Wire format";
+  setPageSeo(c, "specWire");
   return () => (
     <SpecLayout current="wire" title="Deterministic CBOR. Domain-separated signatures.">
       <WireBody />
@@ -574,7 +574,7 @@ export const SpecWire = ssr(async (c) => {
 });
 
 export const SpecCrypto = ssr(async (c) => {
-  c.get("page").title = "fd0 — Cryptography";
+  setPageSeo(c, "specCrypto");
   return () => (
     <SpecLayout current="crypto" title="Three primitives. One curve family.">
       <CryptoBody />
@@ -583,7 +583,7 @@ export const SpecCrypto = ssr(async (c) => {
 });
 
 export const SpecStorage = ssr(async (c) => {
-  c.get("page").title = "fd0 — Storage";
+  setPageSeo(c, "specStorage");
   return () => (
     <SpecLayout current="storage" title="One vault. One chain per scope.">
       <StorageBody />
@@ -592,7 +592,7 @@ export const SpecStorage = ssr(async (c) => {
 });
 
 export const SpecSync = ssr(async (c) => {
-  c.get("page").title = "fd0 — Sync protocol";
+  setPageSeo(c, "specSync");
   return () => (
     <SpecLayout current="sync" title="One endpoint. Optimistic concurrency.">
       <SyncProtoBody />
@@ -601,7 +601,7 @@ export const SpecSync = ssr(async (c) => {
 });
 
 export const SpecTranslog = ssr(async (c) => {
-  c.get("page").title = "fd0 — Transparency log";
+  setPageSeo(c, "specTranslog");
   return () => (
     <SpecLayout current="translog" title="RFC 6962 Merkle tree. Witness-cosigned.">
       <TranslogBody />
@@ -610,7 +610,7 @@ export const SpecTranslog = ssr(async (c) => {
 });
 
 export const SpecThreats = ssr(async (c) => {
-  c.get("page").title = "fd0 — Threat model";
+  setPageSeo(c, "specThreats");
   return () => (
     <SpecLayout current="threats" title="What fd0 defends. What it leaves to you.">
       <ThreatsBody />

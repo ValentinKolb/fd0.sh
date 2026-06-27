@@ -5,7 +5,7 @@
  * pages explain how to use fd0 on fd0.sh or against a self-hosted primary.
  */
 
-import { ssr } from "../../config";
+import { setPageSeo, ssr } from "../../config";
 import { Shell } from "../lib/shell";
 import { C, FONT_MONO, DocsLayout } from "../lib/chrome";
 
@@ -630,7 +630,7 @@ $ fd0 sync`}</Box>
 );
 
 export const DocsOverview = ssr(async (c) => {
-  c.get("page").title = "fd0 docs";
+  setPageSeo(c, "docs");
   return () => (
     <DocsLayout current="overview" title="Documentation" kicker="Use fd0">
       <OverviewBody />
@@ -639,7 +639,7 @@ export const DocsOverview = ssr(async (c) => {
 });
 
 export const DocsConcepts = ssr(async (c) => {
-  c.get("page").title = "fd0 concepts";
+  setPageSeo(c, "docsConcepts");
   return () => (
     <DocsLayout current="concepts" title="Concepts" kicker="Mental model">
       <ConceptsBody />
@@ -648,7 +648,7 @@ export const DocsConcepts = ssr(async (c) => {
 });
 
 export const DocsInstall = ssr(async (c) => {
-  c.get("page").title = "Install fd0";
+  setPageSeo(c, "docsInstall");
   return () => (
     <DocsLayout current="install" title="Install and start" kicker="First run">
       <InstallBody />
@@ -657,7 +657,7 @@ export const DocsInstall = ssr(async (c) => {
 });
 
 export const DocsCli = ssr(async (c) => {
-  c.get("page").title = "fd0 daily use";
+  setPageSeo(c, "docsCli");
   return () => (
     <DocsLayout current="cli" title="Daily use" kicker="CLI">
       <CliBody />
@@ -666,7 +666,7 @@ export const DocsCli = ssr(async (c) => {
 });
 
 export const DocsSsh = ssr(async (c) => {
-  c.get("page").title = "fd0 SSH";
+  setPageSeo(c, "docsSsh");
   return () => (
     <DocsLayout current="ssh" title="SSH keys and hosts" kicker="Integration">
       <SshBody />
@@ -675,7 +675,7 @@ export const DocsSsh = ssr(async (c) => {
 });
 
 export const DocsTalos = ssr(async (c) => {
-  c.get("page").title = "fd0 Talos and Kube";
+  setPageSeo(c, "docsTalos");
   return () => (
     <DocsLayout current="talos" title="Talos and Kube" kicker="Integration">
       <TalosKubeBody />
@@ -684,7 +684,7 @@ export const DocsTalos = ssr(async (c) => {
 });
 
 export const DocsSync = ssr(async (c) => {
-  c.get("page").title = "fd0 sync";
+  setPageSeo(c, "docsSync");
   return () => (
     <DocsLayout current="sync" title="Sync" kicker="State exchange">
       <SyncBody />
@@ -693,7 +693,7 @@ export const DocsSync = ssr(async (c) => {
 });
 
 export const DocsServer = ssr(async (c) => {
-  c.get("page").title = "Self-host fd0";
+  setPageSeo(c, "docsServer");
   return () => (
     <DocsLayout current="server" title="Hosted or self-hosted" kicker="Backend">
       <ServerBody />
@@ -702,7 +702,7 @@ export const DocsServer = ssr(async (c) => {
 });
 
 export const DocsYubikey = ssr(async (c) => {
-  c.get("page").title = "fd0 YubiKey unlock";
+  setPageSeo(c, "docsYubikey");
   return () => (
     <DocsLayout current="yubikey" title="YubiKey unlock" kicker="Hardware">
       <YubikeyBody />
@@ -711,7 +711,7 @@ export const DocsYubikey = ssr(async (c) => {
 });
 
 export const DocsRecovery = ssr(async (c) => {
-  c.get("page").title = "fd0 recovery";
+  setPageSeo(c, "docsRecovery");
   return () => (
     <DocsLayout current="recovery" title="Recovery" kicker="Backup identity">
       <RecoveryBody />
@@ -720,7 +720,7 @@ export const DocsRecovery = ssr(async (c) => {
 });
 
 export const DocsTroubleshooting = ssr(async (c) => {
-  c.get("page").title = "fd0 troubleshooting";
+  setPageSeo(c, "docsTroubleshooting");
   return () => (
     <DocsLayout current="troubleshooting" title="Troubleshooting" kicker="Fix common states">
       <TroubleshootingBody />

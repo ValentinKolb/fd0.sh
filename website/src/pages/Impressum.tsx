@@ -16,7 +16,7 @@
  * users see and click a normal `mailto:` link.
  */
 
-import { ssr } from "../../config";
+import { setPageSeo, ssr } from "../../config";
 
 // ─── shared section label (mirrors the homepage's NAME/DESCRIPTION style) ──
 
@@ -203,9 +203,6 @@ const Impressum = () => (
 );
 
 export default ssr(async (c) => {
-  const page = c.get("page");
-  page.title = "fd0 — Impressum";
-  page.description =
-    "Anbieterkennzeichnung nach § 5 DDG für fd0.sh.";
+  setPageSeo(c, "impressum");
   return () => <Impressum />;
 });

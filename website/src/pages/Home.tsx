@@ -17,7 +17,7 @@
  *   docs CTA.
  */
 
-import { ssr } from "../../config";
+import { setPageSeo, ssr } from "../../config";
 import { Shell } from "../lib/shell";
 import { C, FONT_SANS, FONT_MONO, Nav, Footer } from "../lib/chrome";
 
@@ -733,6 +733,6 @@ $ fd0 sync`}</Shell>
 );
 
 export default ssr(async (c) => {
-  c.get("page").title = "fd0 — secrets you keep, not secrets you trust";
+  setPageSeo(c, "home");
   return () => <Home />;
 });

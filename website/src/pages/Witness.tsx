@@ -16,7 +16,7 @@
  * as stale, so the page never goes blank.
  */
 
-import { ssr } from "../../config";
+import { setPageSeo, ssr } from "../../config";
 import { Shell } from "../lib/shell";
 import { C, FONT_SANS, FONT_MONO, Nav, Footer } from "../lib/chrome";
 import {
@@ -328,10 +328,7 @@ const Row = (p: { k: string; children: any }) => (
 );
 
 export default ssr(async (c) => {
-  const page = c.get("page");
-  page.title = "fd0 — Public Witness";
-  page.description =
-    "Live state of the official fd0 transparency-log witness. Pubkey, observed chains, equivocation status.";
+  setPageSeo(c, "witness");
   const snap = await getWitnessSnapshot(WITNESS_URL, SERVER_URL);
   return () => <WitnessPage snap={snap} />;
 });
