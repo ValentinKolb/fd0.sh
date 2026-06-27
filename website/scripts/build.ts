@@ -10,16 +10,16 @@
  *                                    src/styles.css via bun-plugin-tailwind,
  *                                    minified.
  *
- * Run with: `bun run build` (sets NODE_ENV=production via the package
- * script). Start the result with `bun run start`.
+ * Run with: `bun run build`. Start the result with `bun run start`.
  */
 
 process.env.NODE_ENV = "production";
 
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from "fs";
 import tailwindPlugin from "bun-plugin-tailwind";
-import { plugin as ssrPlugin } from "../config";
 import { copyFonts } from "./copy-fonts";
+
+const { plugin: ssrPlugin } = await import("../config");
 
 const DIST = "dist";
 const DIST_PUBLIC = `${DIST}/public`;
@@ -34,6 +34,9 @@ const serverBuild = await Bun.build({
   outdir: DIST,
   target: "bun",
   minify: true,
+  define: {
+    "process.env.NODE_ENV": JSON.stringify("production"),
+  },
   plugins: [ssrPlugin()],
 });
 if (!serverBuild.success) {
@@ -122,6 +125,28 @@ if (!existsSync(`${DIST_PUBLIC}/files/compose.yml`)) {
 {
   const { count, bytes } = await copyFonts(DIST_PUBLIC);
   console.log(`✓ fonts:  ${count} file(s), ${(bytes / 1024).toFixed(1)} KB → ${DIST_PUBLIC}/fonts/`);
+}
+
+// ─── production SSR sanity check ───────────────────────────────────
+//
+// The config module reads NODE_ENV at import time. Keep this check close to
+// the build so a bad import order cannot ship the dev live-reload overlay.
+{
+  const server = await import(`../${DIST}/server.js?verify=${Date.now()}`);
+  const res = await server.default.fetch(new Request("http://fd0.local/"));
+  const html = await res.text();
+  const forbidden = [
+    "Dev mode live-reload client",
+    "[ssr]",
+    "__SSR_CONFIG",
+    "/_reload",
+  ];
+  const found = forbidden.filter((needle) => html.includes(needle));
+  if (found.length > 0) {
+    console.error(`production SSR HTML contains dev marker(s): ${found.join(", ")}`);
+    process.exit(1);
+  }
+  console.log("✓ ssr:    production HTML has no dev client");
 }
 
 // ─── done ──────────────────────────────────────────────────────────
