@@ -16,6 +16,31 @@ fd0 version
 which fd0
 ```
 
+`fd0 version` prints the release flavor:
+
+```bash
+fd0 0.11.0 standard
+fd0 0.11.0 yubikey
+```
+
+The default flavor is `standard`. It is the pure-Go client and does not include YubiKey/PIV support.
+
+Install the official YubiKey/PIV flavor when the user wants `fd0 auth add --yubikey` or `fd0 unlock --method=yubikey`:
+
+```bash
+curl -fsSL https://fd0.sh/install | sh -s -- --yubikey
+fd0 doctor
+```
+
+Switch an existing install deliberately:
+
+```bash
+fd0 update --flavor=yubikey
+fd0 agent restart
+```
+
+Normal `fd0 update` preserves the installed flavor. A `yubikey` install stays on the `yubikey` archive; a `standard` install stays standard.
+
 If `fd0` is not on PATH, the install script prints a one-line fix for the user's shell rc — read it back to them, do not invent your own.
 
 Windows: not yet built by the release pipeline. The binaries cross-compile but the agent's AF_UNIX socket is unvalidated. Track at https://github.com/ValentinKolb/fd0.sh/issues.
@@ -56,10 +81,10 @@ Both the CLI and the skill are version-tracked separately under the project's sc
 
 ```bash
 # Update the CLI
-curl -fsSL https://fd0.sh/install | sh
+fd0 update
 
 # Update the skill (re-run the install)
 bunx skills add ValentinKolb/fd0.sh
 ```
 
-The CLI installer is idempotent — running it when the latest is already installed is a no-op.
+The CLI installer is still idempotent for fresh machines and script bootstrap. For machines that already have fd0, prefer `fd0 update` because it preserves the installed release flavor.

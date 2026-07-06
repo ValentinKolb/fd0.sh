@@ -14,6 +14,7 @@ import (
 	"github.com/awnumar/memguard"
 
 	"github.com/valentinkolb/fd0.sh/internal/agent"
+	"github.com/valentinkolb/fd0.sh/internal/buildinfo"
 	"github.com/valentinkolb/fd0.sh/internal/cli"
 	"github.com/valentinkolb/fd0.sh/internal/fdhome"
 )
@@ -36,7 +37,7 @@ type rootCLI struct {
 	Sync     syncCmd     `cmd:"" help:"Sync with the fd0 server."`
 	Card     cardCmd     `cmd:"" help:"Identity card (export your super_pub for invites)."`
 	Recovery recoveryCmd `cmd:"" help:"Offline backup of super_priv (for new devices or disaster recovery)."`
-	Auth     authCmd     `cmd:"" help:"Manage unlock methods (passphrases, future yubikeys)."`
+	Auth     authCmd     `cmd:"" help:"Manage unlock methods (passphrases, YubiKeys)."`
 	Doctor   doctorCmd   `cmd:"" help:"Diagnose vault, chain, and tip-binding consistency."`
 	Key      keyCmd      `cmd:"" help:"Manage cryptographic keys (top-level; SSH and future consumers use them)."`
 	Ssh      sshCmd      `cmd:"" help:"Manage SSH hosts + connect. Without args opens a fuzzy picker."`
@@ -562,7 +563,7 @@ type authCmd struct {
 }
 type authListCmd struct{}
 type authAddCmd struct {
-	Yubikey bool   `name:"yubikey" help:"Enroll a YubiKey instead of a passphrase."`
+	Yubikey bool   `name:"yubikey" help:"Enroll a YubiKey instead of a passphrase. Requires the yubikey release flavor."`
 	Touch   string `name:"touch" help:"YubiKey touch policy: 'always' (default, secure), 'never' (no touch), 'cached' (15s cache after first touch)."`
 	Force   bool   `name:"force" help:"Overwrite an existing key on slot 9d without prompting (DESTRUCTIVE: invalidates any prior YubiKey enrollment binding to the same card)."`
 }
@@ -575,6 +576,7 @@ type updateCmd struct {
 	Check    bool   `name:"check" help:"Check for an update without installing. Exits 10 when an update is available."`
 	Yes      bool   `name:"yes" short:"y" help:"Do not prompt before installing or downgrading."`
 	Version  string `name:"version" help:"Release tag or semver to install. Default: latest client release." env:"FD0_VERSION"`
+	Flavor   string `name:"flavor" help:"Release flavor: auto, standard, or yubikey. Default: preserve the installed flavor." default:"auto"`
 	Prefix   string `name:"prefix" help:"Install into this directory. Default: directory of the running fd0 binary."`
 	System   bool   `name:"system" help:"Install into /usr/local/bin."`
 	NoVerify bool   `name:"no-verify" help:"Skip cosign signature verification. SHA256 manifest checks still run."`
@@ -596,7 +598,7 @@ func main() {
 	var c rootCLI
 	ctx := kong.Parse(&c,
 		kong.Name("fd0"),
-		kong.Description("zero-knowledge secret store · v"+version),
+		kong.Description("zero-knowledge secret store · v"+version+" "+buildinfo.Flavor),
 		kong.UsageOnError(),
 	)
 	if err := maybeAutoUnlock(ctx, &c); err != nil {
@@ -788,12 +790,14 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 	case "auth rm <id>":
 		return cli.RunAuthRemove(ctx, c.Auth.Remove.ID, c.Auth.Remove.Yes)
 	case "version":
-		fmt.Printf("fd0 %s\n", version)
+		fmt.Printf("fd0 %s %s\n", version, buildinfo.Flavor)
 		return nil
 	case "update":
 		return cli.RunUpdate(ctx, cli.UpdateOptions{
 			CurrentVersion: version,
+			CurrentFlavor:  buildinfo.Flavor,
 			Version:        c.Update.Version,
+			Flavor:         c.Update.Flavor,
 			Prefix:         c.Update.Prefix,
 			System:         c.Update.System,
 			CheckOnly:      c.Update.Check,

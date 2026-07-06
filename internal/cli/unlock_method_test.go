@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/valentinkolb/fd0.sh/internal/proto"
+	"github.com/valentinkolb/fd0.sh/internal/vault"
 )
 
 // pickUnlockMethod is the policy for choosing which auth method gets
@@ -166,5 +167,16 @@ func TestFriendlyUnlockErrorHidesAEADDetails(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "wrong passphrase") {
 		t.Fatalf("error should explain likely cause: %s", err)
+	}
+}
+
+func TestFriendlyUnlockErrorExplainsYubikeyAgentFlavor(t *testing.T) {
+	t.Parallel()
+	err := friendlyUnlockError(vault.ErrYubikeyNotConfigured)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "fd0-agent") || !strings.Contains(err.Error(), "yubikey flavor") {
+		t.Fatalf("error should explain agent flavor mismatch: %s", err)
 	}
 }

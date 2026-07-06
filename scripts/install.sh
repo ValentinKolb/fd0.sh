@@ -2,6 +2,7 @@
 # fd0 — client installer / updater (workstation, laptop).
 #
 #   curl -fsSL https://fd0.sh/install | sh
+#   curl -fsSL https://fd0.sh/install | sh -s -- --yubikey
 #   curl -fsSL https://fd0.sh/install | sh -s -- --system
 #   FD0_VERSION=v1.0.0 curl -fsSL https://fd0.sh/install | sh
 #
@@ -39,12 +40,15 @@ VERSION="${FD0_VERSION:-latest}"
 VERIFY=1
 ASSUME_YES=0
 BINARIES="fd0 fd0-agent"
+FLAVOR="${FD0_FLAVOR:-auto}"
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --system)       SYSTEM=1; PREFIX="/usr/local/bin"; shift ;;
         --prefix=*)     PREFIX="${1#--prefix=}"; shift ;;
         --version=*)    VERSION="${1#--version=}"; shift ;;
+        --flavor=*)     FLAVOR="${1#--flavor=}"; shift ;;
+        --yubikey)      FLAVOR="yubikey"; shift ;;
         --no-verify)    VERIFY=0; shift ;;
         -y|--yes)       ASSUME_YES=1; shift ;;
         -h|--help)
@@ -56,12 +60,15 @@ Installs or upgrades the fd0 client (fd0, fd0-agent).
   --system            install into /usr/local/bin (needs sudo)
   --prefix=DIR        install into DIR (default: ~/.local/bin)
   --version=vX.Y.Z    install a specific release tag (default: latest)
+  --flavor=FLAVOR     install flavor: auto, standard, or yubikey (default: auto)
+  --yubikey           shortcut for --flavor=yubikey
   --no-verify         skip cosign verification of the release manifest
   -y, --yes           assume yes for the upgrade prompt
   -h, --help          show this help
 
 Environment:
   FD0_VERSION         same as --version
+  FD0_FLAVOR          same as --flavor
   FD0_RELEASE_BASE    override the release-download base URL (for testing)
   FD0_API_BASE        override the GitHub API base URL (for testing)
 EOF
@@ -135,13 +142,25 @@ VERSION_NUM=$(printf '%s' "$VERSION" | sed -E 's/^([a-z]+-)?v//')
 
 # ─── detect existing install at the target prefix ────────────────────────
 CURRENT=""
+CURRENT_FLAVOR=""
 if [ -x "$PREFIX/fd0" ]; then
-    CURRENT=$("$PREFIX/fd0" version 2>/dev/null | awk 'NR==1 {print $2}' || true)
+    CURRENT_OUT=$("$PREFIX/fd0" version 2>/dev/null || true)
+    CURRENT=$(printf '%s\n' "$CURRENT_OUT" | awk 'NR==1 {print $2}' || true)
+    CURRENT_FLAVOR=$(printf '%s\n' "$CURRENT_OUT" | awk 'NR==1 {print $3}' || true)
 fi
+case "$CURRENT_FLAVOR" in
+    yubikey|standard) ;;
+    *) CURRENT_FLAVOR="standard" ;;
+esac
+case "$FLAVOR" in
+    auto) TARGET_FLAVOR="$CURRENT_FLAVOR"; [ -n "$TARGET_FLAVOR" ] || TARGET_FLAVOR="standard" ;;
+    standard|yubikey) TARGET_FLAVOR="$FLAVOR" ;;
+    *) die "unknown flavor: $FLAVOR (use auto, standard, or yubikey)" ;;
+esac
 
 # Same version already there → idempotent no-op. Don't even prompt.
-if [ -n "$CURRENT" ] && [ "$CURRENT" = "$VERSION_NUM" ]; then
-    printf 'fd0 %s already installed at %s\n' "$VERSION" "$PREFIX"
+if [ -n "$CURRENT" ] && [ "$CURRENT" = "$VERSION_NUM" ] && [ "$CURRENT_FLAVOR" = "$TARGET_FLAVOR" ]; then
+    printf 'fd0 %s %s already installed at %s\n' "$VERSION" "$TARGET_FLAVOR" "$PREFIX"
     exit 0
 fi
 
@@ -149,11 +168,14 @@ fi
 printf '\nfd0 client installer\n'
 printf '  target:  %s\n' "$PREFIX"
 if [ -n "$CURRENT" ]; then
-    printf '  current: %s\n' "$CURRENT"
-    printf '  new:     %s\n' "$VERSION_NUM"
+    printf '  current: %s %s\n' "$CURRENT" "$CURRENT_FLAVOR"
+    printf '  new:     %s %s\n' "$VERSION_NUM" "$TARGET_FLAVOR"
     action="upgrade"
+    if [ "$CURRENT" = "$VERSION_NUM" ] && [ "$CURRENT_FLAVOR" != "$TARGET_FLAVOR" ]; then
+        action="switch flavor"
+    fi
 else
-    printf '  version: %s\n' "$VERSION_NUM"
+    printf '  version: %s %s\n' "$VERSION_NUM" "$TARGET_FLAVOR"
     action="install"
 fi
 if [ "$VERIFY" = "1" ] && have cosign; then
@@ -171,7 +193,11 @@ confirm "proceed with ${action}?" || { printf 'aborted.\n'; exit 1; }
 have curl || die "curl required"
 have tar  || die "tar required"
 
-TARBALL="fd0_${OS}_${ARCH}.tar.gz"
+if [ "$TARGET_FLAVOR" = "yubikey" ]; then
+    TARBALL="fd0_yubikey_${OS}_${ARCH}.tar.gz"
+else
+    TARBALL="fd0_${OS}_${ARCH}.tar.gz"
+fi
 DL="${RELEASE_BASE}/download/${VERSION}"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -253,7 +279,7 @@ case ":$PATH:" in
         ;;
 esac
 
-printf '\n✓ fd0 %s ' "$VERSION_NUM"
+printf '\n✓ fd0 %s %s ' "$VERSION_NUM" "$TARGET_FLAVOR"
 if [ -n "$CURRENT" ]; then
     printf 'upgraded\n'
 else

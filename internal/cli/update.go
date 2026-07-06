@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/valentinkolb/fd0.sh/internal/agent"
+	"github.com/valentinkolb/fd0.sh/internal/buildinfo"
 	"github.com/valentinkolb/fd0.sh/internal/fdhome"
 )
 
@@ -36,7 +37,9 @@ var ErrUpdateAvailable = errors.New("fd0 update available")
 
 type UpdateOptions struct {
 	CurrentVersion string
+	CurrentFlavor  string
 	Version        string
+	Flavor         string
 	Prefix         string
 	System         bool
 	CheckOnly      bool
@@ -64,6 +67,11 @@ type updateTarget struct {
 	DownloadTag string
 	DisplayTag  string
 	Version     string
+}
+
+type installedClient struct {
+	Version string
+	Flavor  string
 }
 
 type semver struct {
@@ -98,6 +106,9 @@ func RunUpdate(ctx context.Context, opts UpdateOptions) error {
 	if opts.Version == "" {
 		opts.Version = "latest"
 	}
+	if opts.Flavor == "" {
+		opts.Flavor = "auto"
+	}
 	if opts.GOOS == "" {
 		opts.GOOS = runtime.GOOS
 	}
@@ -112,7 +123,11 @@ func RunUpdate(ctx context.Context, opts UpdateOptions) error {
 	if err != nil {
 		return err
 	}
-	current, err := detectInstalledFD0Version(ctx, prefix, opts.CurrentVersion)
+	current, err := detectInstalledFD0(ctx, prefix, opts.CurrentVersion, opts.CurrentFlavor)
+	if err != nil {
+		return err
+	}
+	targetFlavor, err := resolveUpdateFlavor(opts.Flavor, current.Flavor, opts.CurrentFlavor)
 	if err != nil {
 		return err
 	}
@@ -128,34 +143,38 @@ func RunUpdate(ctx context.Context, opts UpdateOptions) error {
 			return err
 		}
 	}
-	relation, comparable := compareVersionStrings(current, target.Version)
+	archiveName := updateArchiveName(targetFlavor, platform)
+	relation, comparable := compareVersionStrings(current.Version, target.Version)
+	sameFlavor := current.Flavor == targetFlavor
 	if opts.CheckOnly {
-		printUpdatePlan(opts.Stdout, prefix, current, target.Version, target.DisplayTag, "check", false, false)
-		if comparable && relation >= 0 {
+		printUpdatePlan(opts.Stdout, prefix, current.Version, current.Flavor, target.Version, targetFlavor, target.DisplayTag, archiveName, "check", false, false)
+		if comparable && relation >= 0 && sameFlavor {
 			fmt.Fprintln(opts.Stdout, "fd0 is up to date")
 			return nil
 		}
-		fmt.Fprintf(opts.Stdout, "fd0 %s is available\n", target.Version)
+		fmt.Fprintf(opts.Stdout, "fd0 %s %s is available\n", target.Version, targetFlavor)
 		return ErrUpdateAvailable
 	}
-	if comparable && relation == 0 {
-		fmt.Fprintf(opts.Stdout, "fd0 %s already installed at %s\n", target.Version, prefix)
+	if comparable && relation == 0 && sameFlavor {
+		fmt.Fprintf(opts.Stdout, "fd0 %s %s already installed at %s\n", target.Version, targetFlavor, prefix)
 		return nil
 	}
 	action := "update"
-	if current == "" {
+	if current.Version == "" {
 		action = "install"
 	} else if comparable && relation > 0 {
 		action = "downgrade"
+	} else if comparable && relation == 0 && !sameFlavor {
+		action = "switch flavor"
 	}
 	cosignEnabled := !opts.NoVerify && commandExists("cosign")
-	printUpdatePlan(opts.Stdout, prefix, current, target.Version, target.DisplayTag, action, cosignEnabled, !opts.NoVerify)
+	printUpdatePlan(opts.Stdout, prefix, current.Version, current.Flavor, target.Version, targetFlavor, target.DisplayTag, archiveName, action, cosignEnabled, !opts.NoVerify)
 	if action == "downgrade" && !opts.Yes {
-		if err := confirmUpdate(false, fmt.Sprintf("Downgrade fd0 from %s to %s?", current, target.Version)); err != nil {
+		if err := confirmUpdate(false, fmt.Sprintf("Downgrade fd0 from %s %s to %s %s?", current.Version, current.Flavor, target.Version, targetFlavor)); err != nil {
 			return err
 		}
 	} else if !opts.Yes {
-		if err := confirmUpdate(false, fmt.Sprintf("Proceed with fd0 %s to %s?", action, target.Version)); err != nil {
+		if err := confirmUpdate(false, fmt.Sprintf("Proceed with fd0 %s to %s %s?", action, target.Version, targetFlavor)); err != nil {
 			return err
 		}
 	}
@@ -165,7 +184,6 @@ func RunUpdate(ctx context.Context, opts UpdateOptions) error {
 		return fmt.Errorf("update: create temp dir: %w", err)
 	}
 	defer os.RemoveAll(tmp)
-	archiveName := "fd0_" + platform + ".tar.gz"
 	base := strings.TrimRight(opts.ReleaseBase, "/") + "/download/" + target.DownloadTag
 	archivePath := filepath.Join(tmp, archiveName)
 	fmt.Fprintf(opts.Stderr, "fetch %s\n", base+"/"+archiveName)
@@ -207,9 +225,9 @@ func RunUpdate(ctx context.Context, opts UpdateOptions) error {
 		return err
 	}
 	if action == "install" {
-		fmt.Fprintf(opts.Stdout, "installed fd0 %s\n", target.Version)
+		fmt.Fprintf(opts.Stdout, "installed fd0 %s %s\n", target.Version, targetFlavor)
 	} else {
-		fmt.Fprintf(opts.Stdout, "updated fd0 to %s\n", target.Version)
+		fmt.Fprintf(opts.Stdout, "updated fd0 to %s %s\n", target.Version, targetFlavor)
 	}
 	if updateAgentAppearsRunning() {
 		fmt.Fprintln(opts.Stdout, "restart the agent to use the new fd0-agent: fd0 agent restart")
@@ -256,7 +274,7 @@ func resolveUpdatePrefix(opts UpdateOptions) (string, error) {
 	return filepath.Dir(exe), nil
 }
 
-func detectInstalledFD0Version(ctx context.Context, prefix, fallback string) (string, error) {
+func detectInstalledFD0(ctx context.Context, prefix, fallbackVersion, fallbackFlavor string) (installedClient, error) {
 	path := filepath.Join(prefix, "fd0")
 	if st, err := os.Stat(path); err == nil && st.Mode().IsRegular() && st.Mode()&0o111 != 0 {
 		cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
@@ -266,18 +284,52 @@ func detectInstalledFD0Version(ctx context.Context, prefix, fallback string) (st
 			return parseFD0VersionOutput(string(out)), nil
 		}
 	}
-	if fallback == "dev" {
-		return "", nil
+	if fallbackVersion == "dev" {
+		return installedClient{Flavor: buildinfo.NormalizeFlavor(fallbackFlavor)}, nil
 	}
-	return normalizeVersionNumber(fallback), nil
+	return installedClient{
+		Version: normalizeVersionNumber(fallbackVersion),
+		Flavor:  buildinfo.NormalizeFlavor(fallbackFlavor),
+	}, nil
 }
 
-func parseFD0VersionOutput(out string) string {
+func parseFD0VersionOutput(out string) installedClient {
 	fields := strings.Fields(out)
 	if len(fields) >= 2 && fields[0] == "fd0" {
-		return normalizeVersionNumber(fields[1])
+		flavor := buildinfo.FlavorStandard
+		if len(fields) >= 3 {
+			flavor = buildinfo.NormalizeFlavor(fields[2])
+		}
+		return installedClient{
+			Version: normalizeVersionNumber(fields[1]),
+			Flavor:  flavor,
+		}
 	}
-	return ""
+	return installedClient{Flavor: buildinfo.FlavorStandard}
+}
+
+func resolveUpdateFlavor(requested, installed, fallback string) (string, error) {
+	switch requested {
+	case "", "auto":
+		if installed != "" {
+			return buildinfo.NormalizeFlavor(installed), nil
+		}
+		if fallback != "" {
+			return buildinfo.NormalizeFlavor(fallback), nil
+		}
+		return buildinfo.FlavorStandard, nil
+	case buildinfo.FlavorStandard, buildinfo.FlavorYubikey:
+		return requested, nil
+	default:
+		return "", fmt.Errorf("update: unknown flavor %q (use auto, standard, or yubikey)", requested)
+	}
+}
+
+func updateArchiveName(flavor, platform string) string {
+	if flavor == buildinfo.FlavorYubikey {
+		return "fd0_yubikey_" + platform + ".tar.gz"
+	}
+	return "fd0_" + platform + ".tar.gz"
 }
 
 func latestClientReleaseTarget(ctx context.Context, hc *http.Client, apiBase string) (updateTarget, error) {
@@ -419,13 +471,14 @@ func compareInt(a, b int) int {
 	return 0
 }
 
-func printUpdatePlan(w io.Writer, prefix, current, targetVersion, targetTag, action string, cosignEnabled, cosignWanted bool) {
+func printUpdatePlan(w io.Writer, prefix, currentVersion, currentFlavor, targetVersion, targetFlavor, targetTag, archiveName, action string, cosignEnabled, cosignWanted bool) {
 	fmt.Fprintln(w, "fd0 update")
 	fmt.Fprintf(w, "  target:  %s\n", prefix)
-	if current != "" {
-		fmt.Fprintf(w, "  current: %s\n", current)
+	if currentVersion != "" {
+		fmt.Fprintf(w, "  current: %s %s\n", currentVersion, currentFlavor)
 	}
-	fmt.Fprintf(w, "  new:     %s (%s)\n", targetVersion, targetTag)
+	fmt.Fprintf(w, "  new:     %s %s (%s)\n", targetVersion, targetFlavor, targetTag)
+	fmt.Fprintf(w, "  archive: %s\n", archiveName)
 	fmt.Fprintf(w, "  action:  %s\n", action)
 	switch {
 	case action == "check":

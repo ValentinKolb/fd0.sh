@@ -43,6 +43,18 @@ func TestUpdateVersionHelpers(t *testing.T) {
 	if cmp, ok := compareVersionStrings("0.8.0", "0.9.0"); !ok || cmp >= 0 {
 		t.Fatalf("compare 0.8.0 vs 0.9.0 = %d %v, want less", cmp, ok)
 	}
+	if got := parseFD0VersionOutput("fd0 0.9.0\n"); got.Version != "0.9.0" || got.Flavor != "standard" {
+		t.Fatalf("old version parse=%+v, want 0.9.0 standard", got)
+	}
+	if got := parseFD0VersionOutput("fd0 0.9.0 yubikey\n"); got.Version != "0.9.0" || got.Flavor != "yubikey" {
+		t.Fatalf("new version parse=%+v, want 0.9.0 yubikey", got)
+	}
+	if got := updateArchiveName("standard", "linux_amd64"); got != "fd0_linux_amd64.tar.gz" {
+		t.Fatalf("standard archive=%q", got)
+	}
+	if got := updateArchiveName("yubikey", "linux_amd64"); got != "fd0_yubikey_linux_amd64.tar.gz" {
+		t.Fatalf("yubikey archive=%q", got)
+	}
 }
 
 func TestRunUpdateCheckUsesLatestClientRelease(t *testing.T) {
@@ -73,7 +85,7 @@ func TestRunUpdateCheckUsesLatestClientRelease(t *testing.T) {
 	if !errors.Is(err, ErrUpdateAvailable) {
 		t.Fatalf("RunUpdate error=%v, want ErrUpdateAvailable", err)
 	}
-	if !strings.Contains(out.String(), "fd0 0.9.0 is available") {
+	if !strings.Contains(out.String(), "fd0 0.9.0 standard is available") {
 		t.Fatalf("unexpected output:\n%s", out.String())
 	}
 	if !strings.Contains(out.String(), "client-v0.9.0") {
@@ -88,7 +100,9 @@ func TestRunUpdateInstallsVerifiedArchive(t *testing.T) {
 	})
 	sum := sha256.Sum256(archive)
 	prefix := t.TempDir()
-	srv := updateFixtureServer(t, archive, hex.EncodeToString(sum[:]))
+	srv := updateFixtureServer(t, map[string]updateFixtureArchive{
+		"fd0_linux_amd64.tar.gz": {Body: archive, Sum: hex.EncodeToString(sum[:])},
+	})
 	var out, stderr bytes.Buffer
 	err := RunUpdate(context.Background(), UpdateOptions{
 		CurrentVersion: "0.8.0",
@@ -117,8 +131,82 @@ func TestRunUpdateInstallsVerifiedArchive(t *testing.T) {
 			t.Fatalf("%s is not executable: %v", name, st.Mode())
 		}
 	}
-	if !strings.Contains(out.String(), "updated fd0 to 0.9.0") {
+	if !strings.Contains(out.String(), "updated fd0 to 0.9.0 standard") {
 		t.Fatalf("unexpected output:\n%s", out.String())
+	}
+}
+
+func TestRunUpdatePreservesYubikeyFlavor(t *testing.T) {
+	archive := makeUpdateArchive(t, map[string]string{
+		"fd0":       "#!/bin/sh\necho fd0 0.9.0 yubikey\n",
+		"fd0-agent": "#!/bin/sh\necho fd0-agent 0.9.0 yubikey\n",
+	})
+	sum := sha256.Sum256(archive)
+	prefix := t.TempDir()
+	if err := os.WriteFile(filepath.Join(prefix, "fd0"), []byte("#!/bin/sh\necho fd0 0.8.0 yubikey\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	srv := updateFixtureServer(t, map[string]updateFixtureArchive{
+		"fd0_yubikey_linux_amd64.tar.gz": {Body: archive, Sum: hex.EncodeToString(sum[:])},
+	})
+	var out, stderr bytes.Buffer
+	err := RunUpdate(context.Background(), UpdateOptions{
+		Version:     "0.9.0",
+		Prefix:      prefix,
+		Yes:         true,
+		NoVerify:    true,
+		APIBase:     srv.URL,
+		ReleaseBase: srv.URL,
+		HTTPClient:  srv.Client(),
+		Stdout:      &out,
+		Stderr:      &stderr,
+		GOOS:        "linux",
+		GOARCH:      "amd64",
+	})
+	if err != nil {
+		t.Fatalf("RunUpdate: %v\nstdout:\n%s\nstderr:\n%s", err, out.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "fd0_yubikey_linux_amd64.tar.gz") {
+		t.Fatalf("update did not fetch yubikey archive:\n%s", stderr.String())
+	}
+	if !strings.Contains(out.String(), "updated fd0 to 0.9.0 yubikey") {
+		t.Fatalf("unexpected output:\n%s", out.String())
+	}
+}
+
+func TestRunUpdateExplicitFlavorSwitchAtSameVersion(t *testing.T) {
+	archive := makeUpdateArchive(t, map[string]string{
+		"fd0":       "#!/bin/sh\necho fd0 0.9.0 yubikey\n",
+		"fd0-agent": "#!/bin/sh\necho fd0-agent 0.9.0 yubikey\n",
+	})
+	sum := sha256.Sum256(archive)
+	prefix := t.TempDir()
+	if err := os.WriteFile(filepath.Join(prefix, "fd0"), []byte("#!/bin/sh\necho fd0 0.9.0 standard\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	srv := updateFixtureServer(t, map[string]updateFixtureArchive{
+		"fd0_yubikey_linux_amd64.tar.gz": {Body: archive, Sum: hex.EncodeToString(sum[:])},
+	})
+	var out bytes.Buffer
+	err := RunUpdate(context.Background(), UpdateOptions{
+		Version:     "0.9.0",
+		Flavor:      "yubikey",
+		Prefix:      prefix,
+		Yes:         true,
+		NoVerify:    true,
+		APIBase:     srv.URL,
+		ReleaseBase: srv.URL,
+		HTTPClient:  srv.Client(),
+		Stdout:      &out,
+		Stderr:      ioDiscard{},
+		GOOS:        "linux",
+		GOARCH:      "amd64",
+	})
+	if err != nil {
+		t.Fatalf("RunUpdate: %v\nstdout:\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "action:  switch flavor") {
+		t.Fatalf("expected switch flavor action:\n%s", out.String())
 	}
 }
 
@@ -128,7 +216,9 @@ func TestRunUpdateRejectsChecksumMismatch(t *testing.T) {
 		"fd0-agent": "#!/bin/sh\necho fd0-agent 0.9.0\n",
 	})
 	prefix := t.TempDir()
-	srv := updateFixtureServer(t, archive, strings.Repeat("0", sha256.Size*2))
+	srv := updateFixtureServer(t, map[string]updateFixtureArchive{
+		"fd0_linux_amd64.tar.gz": {Body: archive, Sum: strings.Repeat("0", sha256.Size*2)},
+	})
 	err := RunUpdate(context.Background(), UpdateOptions{
 		CurrentVersion: "0.8.0",
 		Version:        "client-v0.9.0",
@@ -171,17 +261,32 @@ func makeUpdateArchive(t *testing.T, files map[string]string) []byte {
 	return buf.Bytes()
 }
 
-func updateFixtureServer(t *testing.T, archive []byte, checksum string) *httptest.Server {
+type updateFixtureArchive struct {
+	Body []byte
+	Sum  string
+}
+
+func updateFixtureServer(t *testing.T, archives map[string]updateFixtureArchive) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/download/v0.9.0/fd0_linux_amd64.tar.gz":
-			_, _ = w.Write(archive)
-		case "/download/v0.9.0/checksums.txt":
-			fmt.Fprintf(w, "%s  fd0_linux_amd64.tar.gz\n", checksum)
-		default:
+		prefix := "/download/v0.9.0/"
+		if !strings.HasPrefix(r.URL.Path, prefix) {
 			http.NotFound(w, r)
+			return
 		}
+		name := strings.TrimPrefix(r.URL.Path, prefix)
+		if name == "checksums.txt" {
+			for archiveName, archive := range archives {
+				fmt.Fprintf(w, "%s  %s\n", archive.Sum, archiveName)
+			}
+			return
+		}
+		archive, ok := archives[name]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write(archive.Body)
 	}))
 }
 

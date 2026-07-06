@@ -78,3 +78,107 @@ jobs:
           # Surface the original scoped tag so the release-name template
           # can use it verbatim.
           ORIGINAL_TAG: ${{ github.ref_name }}
+
+  yubikey-assets:
+    name: yubikey assets (${{ matrix.name }})
+    needs: goreleaser
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-amd64
+            runner: ubuntu-latest
+            goos: linux
+            goarch: amd64
+          - name: linux-arm64
+            runner: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+          - name: darwin-amd64
+            runner: macos-15-intel
+            goos: darwin
+            goarch: amd64
+          - name: darwin-arm64
+            runner: macos-14
+            goos: darwin
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: install PCSC headers
+        if: matrix.goos == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y libpcsclite-dev
+
+      - name: build yubikey client binaries
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "1"
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          semver="${tag#*-v}"
+          semver="${semver#v}"
+          mkdir -p "dist/yubikey-${GOOS}-${GOARCH}"
+          ldflags="-s -w -X main.version=${semver}"
+          go build -tags=netgo,yubikey -ldflags "$ldflags" -o "dist/yubikey-${GOOS}-${GOARCH}/fd0" ./cmd/fd0
+          go build -tags=netgo,yubikey -ldflags "$ldflags" -o "dist/yubikey-${GOOS}-${GOARCH}/fd0-agent" ./cmd/fd0-agent
+          cp README.md LICENSE "dist/yubikey-${GOOS}-${GOARCH}/"
+          archive="fd0_yubikey_${GOOS}_${GOARCH}.tar.gz"
+          tar -C "dist/yubikey-${GOOS}-${GOARCH}" -czf "dist/${archive}" .
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "dist/${archive}" | awk '{print $1 "  " $2}' | sed 's#dist/##' > "dist/${archive}.sha256"
+          else
+            shasum -a 256 "dist/${archive}" | awk '{print $1 "  " $2}' | sed 's#dist/##' > "dist/${archive}.sha256"
+          fi
+
+      - name: upload yubikey archive to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          semver="${GITHUB_REF_NAME#*-v}"
+          semver="${semver#v}"
+          gh release upload "v${semver}" dist/fd0_yubikey_${{ matrix.goos }}_${{ matrix.goarch }}.tar.gz --clobber
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yubikey-checksum-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*.sha256
+
+  yubikey-checksums:
+    name: append yubikey checksums
+    needs: yubikey-assets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: yubikey-checksum-*
+          path: yubikey-checksums
+          merge-multiple: true
+
+      - uses: sigstore/cosign-installer@v3
+
+      - name: merge checksums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          semver="${GITHUB_REF_NAME#*-v}"
+          semver="${semver#v}"
+          gh release download "v${semver}" --pattern checksums.txt --output checksums.txt
+          cat yubikey-checksums/*.sha256 >> checksums.txt
+          sort -k2,2 checksums.txt -o checksums.txt
+          cosign sign-blob --yes \
+            --output-signature checksums.txt.sig \
+            --output-certificate checksums.txt.pem \
+            checksums.txt
+          gh release upload "v${semver}" checksums.txt checksums.txt.sig checksums.txt.pem --clobber

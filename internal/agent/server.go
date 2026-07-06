@@ -26,9 +26,12 @@ import (
 
 // Config tunes the agent.
 type Config struct {
-	IdleTimeout time.Duration // default 5m
-	MaxLifetime time.Duration // default 8h
-	Logger      *slog.Logger
+	IdleTimeout    time.Duration // default 5m
+	MaxLifetime    time.Duration // default 8h
+	Logger         *slog.Logger
+	Version        string
+	Flavor         string
+	YubikeyEnabled bool
 	// Scheduler is optional. When set, the agent runs auto-sync per its
 	// configuration and triggers an immediate sync after every unlock.
 	Scheduler *Scheduler
@@ -256,7 +259,12 @@ func (s *Server) dispatch(ctx context.Context, req *Request) *Response {
 func (s *Server) handleStatus() *Response {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	st := &StatusResp{Unlocked: s.superPriv != nil}
+	st := &StatusResp{
+		Unlocked:       s.superPriv != nil,
+		Version:        s.cfg.Version,
+		Flavor:         s.cfg.Flavor,
+		YubikeyEnabled: s.cfg.YubikeyEnabled,
+	}
 	if st.Unlocked {
 		st.SinceUnix = s.unlockedAt.Unix()
 		st.UserSuperPub = append([]byte(nil), s.userSuperPub...)

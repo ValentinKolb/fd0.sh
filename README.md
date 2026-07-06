@@ -34,7 +34,7 @@ and engineering references.
 go install ./...
 ```
 
-YubiKey PIV unlock is behind the `yubikey` build tag:
+Developer builds can enable YubiKey PIV unlock with the `yubikey` build tag:
 
 ```sh
 go install -tags=yubikey ./cmd/fd0 ./cmd/fd0-agent
@@ -100,6 +100,31 @@ Component tags use separate namespaces:
 - `witness-vX.Y.Z` for `fd0-witness`
 - `website-vX.Y.Z` for `fd0-website`
 - `fd0-vX.Y.Z` for coordinated wire-protocol bumps
+
+Client releases publish two install flavors:
+
+| Flavor | Archive | Purpose |
+| --- | --- | --- |
+| `standard` | `fd0_<os>_<arch>.tar.gz` | Default pure-Go client without YubiKey/PIV support. |
+| `yubikey` | `fd0_yubikey_<os>_<arch>.tar.gz` | Client with PIV support in both `fd0` and `fd0-agent`. |
+
+Install the default client:
+
+```sh
+curl -fsSL https://fd0.sh/install | sh
+fd0 version   # fd0 X.Y.Z standard
+```
+
+Install the YubiKey flavor:
+
+```sh
+curl -fsSL https://fd0.sh/install | sh -s -- --yubikey
+fd0 version   # fd0 X.Y.Z yubikey
+```
+
+`fd0 update` preserves the installed flavor. Use
+`fd0 update --flavor=yubikey` or `fd0 update --flavor=standard` only when
+switching deliberately.
 
 See [CHANGELOG.md](./CHANGELOG.md) for release history.
 

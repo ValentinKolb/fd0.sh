@@ -37,6 +37,9 @@ Map the user's intent to the right command before typing anything:
 | Revoke access | `fd0 scope remove-member LABEL --scope LABEL` (rotates the per-scope key — they lose access on next sync) |
 | Pull / push to server | `fd0 sync` |
 | Confirm vault state | `fd0 doctor` (read-only check) |
+| Check installed client flavor | `fd0 version` (`standard` or `yubikey`) |
+| Install YubiKey-capable client | `curl -fsSL https://fd0.sh/install \| sh -s -- --yubikey` |
+| Switch an existing install to YubiKey flavor | `fd0 update --flavor=yubikey` then `fd0 agent restart` |
 | End the session | `fd0 lock` |
 | Generate an SSH key (ed25519, in-vault) | `fd0 key add NAME [--scope LABEL]` — prints the authorized_keys line |
 | Import an existing SSH key | `fd0 key add NAME --import PATH` (encrypted RSA/ECDSA are refused — decrypt first) |
@@ -219,9 +222,32 @@ When something looks off, run **`fd0 doctor`** first. It is read-only and report
 - Replay of the user chain and every scope chain
 - `auth_tip` and per-scope `chain_tip` against the on-disk events
 - Auth methods vs vault wraps (no orphans either way)
+- fd0/fd0-agent release flavor and YubiKey/PIV capability
 - Witness cross-check policy if configured
 
 A `doctor` failure points at a specific check; treat its message as the entry point to the problem rather than guessing.
+
+## YubiKey unlock
+
+YubiKey/PIV unlock is supported by the official `yubikey` client flavor. Do **not** tell normal users to build from the repo unless they are explicitly doing development work.
+
+Check the installed flavor first:
+
+```
+fd0 version          # fd0 X.Y.Z standard OR fd0 X.Y.Z yubikey
+fd0 doctor           # reports fd0/fd0-agent capability and mismatches
+```
+
+Install or switch to the YubiKey flavor:
+
+```
+curl -fsSL https://fd0.sh/install | sh -s -- --yubikey
+# or, for an existing install:
+fd0 update --flavor=yubikey
+fd0 agent restart
+```
+
+Both `fd0` and `fd0-agent` must be the `yubikey` flavor. If `fd0 doctor` reports a mismatch after update, restart the agent before retrying enrollment or unlock.
 
 ## Security rules
 
@@ -242,6 +268,8 @@ These are not negotiable. The skill is useless and dangerous without them.
 | `not unlocked` / `agent not running` | No active agent | `fd0 unlock` |
 | `another fd0 instance holds the lock` | The agent's background auto-sync (or another fd0) holds the flock; the client already waits ~5s before failing | Usually transient — just retry. If it persists, make sure no other fd0 is running: `ps aux \| grep fd0-agent`, kill a stale PID, then retry |
 | `fd0 SSH agent socket unavailable` / `Connection refused` from `ssh-add -L` | fd0-agent is running but its SSH-agent listener is stale or was started with the wrong socket path | Run `fd0 agent restart`. |
+| `standard flavor (YubiKey/PIV disabled)` while enrolling YubiKey | Installed client is the standard release flavor | Run `fd0 update --flavor=yubikey`, then `fd0 agent restart` |
+| YubiKey unlock says running agent lacks support | `fd0` was updated but old `fd0-agent` is still running | Run `fd0 agent restart`; then check `fd0 doctor` |
 | `429 Too Many Requests` on register | Per-IP rate limit | Retry after the `retry-after` seconds; do not loop |
 | `pinned-key-mismatch` on sync | Server's translog key rotated, or MITM | STOP. Verify the new fingerprint out-of-band BEFORE re-pinning. `~/.fd0/config.toml` does not need editing — fd0 walks through the ceremony |
 | `witness cross-check failed` | Witness disagrees with server | STOP. Possible equivocation. Open an issue with the server operator |

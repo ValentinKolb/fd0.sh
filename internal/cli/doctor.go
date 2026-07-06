@@ -4,9 +4,13 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"sort"
 
+	"github.com/valentinkolb/fd0.sh/internal/agent"
+	"github.com/valentinkolb/fd0.sh/internal/buildinfo"
 	"github.com/valentinkolb/fd0.sh/internal/chain"
+	"github.com/valentinkolb/fd0.sh/internal/crypto/yubikey"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
 	"github.com/valentinkolb/fd0.sh/internal/vault"
 )
@@ -45,6 +49,13 @@ func RunDoctor(ctx context.Context) error {
 
 	fmt.Fprintln(os.Stderr, "agent")
 	pr("OK", "running, unlocked")
+	agentStatus, statusErr := s.Agent.Status()
+	if statusErr != nil {
+		pr("WARN", "status metadata unavailable: "+statusErr.Error())
+	}
+
+	fmt.Fprintln(os.Stderr, "capabilities")
+	printYubikeyCapability(pr, s, agentStatus)
 
 	fmt.Fprintln(os.Stderr, "user chain")
 	if s.UserState == nil {
@@ -266,4 +277,82 @@ func RunDoctor(ctx context.Context) error {
 
 func hasSuffix(s, suf string) bool {
 	return len(s) >= len(suf) && s[len(s)-len(suf):] == suf
+}
+
+func printYubikeyCapability(pr func(level, msg string), s *Session, st *agent.StatusResp) {
+	activeYubikey := countActiveYubikeyMethods(s)
+	if buildinfo.YubikeyEnabled {
+		pr("OK", "fd0: yubikey flavor (YubiKey/PIV enabled)")
+	} else {
+		level := "OK"
+		if activeYubikey > 0 {
+			level = "ERR"
+		}
+		pr(level, "fd0: standard flavor (YubiKey/PIV disabled)")
+	}
+
+	if st == nil || st.Flavor == "" {
+		level := "WARN"
+		if activeYubikey > 0 {
+			level = "ERR"
+		}
+		pr(level, "fd0-agent: capability metadata unavailable (restart or update fd0-agent)")
+	} else {
+		agentFlavor := buildinfo.NormalizeFlavor(st.Flavor)
+		if st.YubikeyEnabled {
+			pr("OK", fmt.Sprintf("fd0-agent: %s flavor (YubiKey/PIV enabled)", agentFlavor))
+		} else {
+			level := "OK"
+			if activeYubikey > 0 {
+				level = "ERR"
+			}
+			pr(level, fmt.Sprintf("fd0-agent: %s flavor (YubiKey/PIV disabled)", agentFlavor))
+		}
+		if agentFlavor != buildinfo.Flavor {
+			level := "WARN"
+			if activeYubikey > 0 {
+				level = "ERR"
+			}
+			pr(level, fmt.Sprintf("fd0/fd0-agent flavor mismatch: fd0=%s fd0-agent=%s — run `fd0 agent restart` after updating", buildinfo.Flavor, agentFlavor))
+		}
+	}
+
+	if _, err := exec.LookPath("ykman"); err != nil {
+		pr("OK", "ykman: not found (optional; install YubiKey Manager for deeper hardware diagnostics)")
+	} else {
+		pr("OK", "ykman: found")
+	}
+
+	if activeYubikey == 0 {
+		pr("OK", "YubiKey auth methods: none enrolled")
+		return
+	}
+	pr("OK", fmt.Sprintf("YubiKey auth methods: %d enrolled", activeYubikey))
+	if !buildinfo.YubikeyEnabled {
+		pr("ERR", "YubiKey auth is enrolled but this fd0 binary cannot use it; install the yubikey flavor")
+		return
+	}
+	cards, err := yubikey.List()
+	if err != nil {
+		pr("WARN", "YubiKey card probe failed: "+err.Error())
+		return
+	}
+	if len(cards) == 0 {
+		pr("WARN", "YubiKey card probe: no smartcard detected")
+		return
+	}
+	pr("OK", fmt.Sprintf("YubiKey card probe: %s", cards[0]))
+}
+
+func countActiveYubikeyMethods(s *Session) int {
+	if s == nil || s.UserState == nil || s.UserState.LatestAuthSet == nil {
+		return 0
+	}
+	n := 0
+	for _, m := range s.UserState.LatestAuthSet.Payload.Active {
+		if m.MethodType == proto.AuthYubikey {
+			n++
+		}
+	}
+	return n
 }

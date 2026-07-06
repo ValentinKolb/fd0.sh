@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/oklog/ulid/v2"
 
+	"github.com/valentinkolb/fd0.sh/internal/buildinfo"
 	"github.com/valentinkolb/fd0.sh/internal/chain"
 	"github.com/valentinkolb/fd0.sh/internal/crypto"
 	"github.com/valentinkolb/fd0.sh/internal/crypto/yubikey"
@@ -37,10 +39,16 @@ import (
 // because that is irreversible (any vault wrap that depends on the
 // old slot-pub is permanently locked out).
 func RunAuthAddYubikey(ctx context.Context, touchPolicy string, force bool) error {
+	if !buildinfo.YubikeyEnabled {
+		return yubikeyUnavailableError()
+	}
 	// Detect a YubiKey early. List() is cheap and gives a friendlier error
 	// than letting Enroll fail downstream.
 	cards, err := yubikey.List()
 	if err != nil {
+		if errors.Is(err, yubikey.ErrNotEnabled) {
+			return yubikeyUnavailableError()
+		}
 		return fmt.Errorf("yubikey: %w", err)
 	}
 	if len(cards) == 0 {
@@ -171,6 +179,27 @@ func RunAuthAddYubikey(ctx context.Context, touchPolicy string, force bool) erro
 		fmt.Fprintln(os.Stderr, "  Three wrong PINs lock the slot — only the YubiKey PUK can recover it.")
 	}
 	return nil
+}
+
+func yubikeyUnavailableError() error {
+	fd0Path, _ := os.Executable()
+	agentPath, _ := exec.LookPath("fd0-agent")
+	if agentPath == "" {
+		agentPath = "(fd0-agent not found in PATH)"
+	}
+	return fmt.Errorf(`this fd0 binary was installed as the standard flavor, without YubiKey/PIV support
+
+Install the YubiKey flavor:
+  fd0 update --flavor=yubikey
+
+Or install it fresh:
+  curl -fsSL https://fd0.sh/install | sh -s -- --yubikey
+
+Both fd0 and fd0-agent must use the yubikey flavor.
+Current fd0 path: %s
+Current fd0-agent path: %s
+After installing, run:
+  fd0 agent restart`, fd0Path, agentPath)
 }
 
 func touchPolicySuffix(tp yubikey.TouchPolicy) string {

@@ -236,21 +236,35 @@ const InstallBody = () => (
 
     <H2>Install the client</H2>
     <Box>{`$ curl -fsSL https://fd0.sh/install | sh
-$ fd0 version`}</Box>
+$ fd0 version
+fd0 0.11.0 standard`}</Box>
     <P>
       The installer picks Linux or macOS, amd64 or arm64, verifies the release
       manifest with cosign when available, and writes <Code>fd0</Code> plus{" "}
       <Code>fd0-agent</Code> to <Code>~/.local/bin</Code>. Use{" "}
       <Code>--system</Code> to install into <Code>/usr/local/bin</Code>.
     </P>
+    <H2>Install the YubiKey flavor</H2>
+    <Box>{`$ curl -fsSL https://fd0.sh/install | sh -s -- --yubikey
+$ fd0 version
+fd0 0.11.0 yubikey`}</Box>
+    <P>
+      The YubiKey flavor includes PIV support in both <Code>fd0</Code> and{" "}
+      <Code>fd0-agent</Code>. Use it on machines that should enroll or unlock
+      with a YubiKey.
+    </P>
     <H2>Update the client</H2>
     <Box>{`$ fd0 update --check
-$ fd0 update`}</Box>
+$ fd0 update
+$ fd0 update --flavor=yubikey`}</Box>
     <P>
       <Code>fd0 update</Code> updates <Code>fd0</Code> and{" "}
       <Code>fd0-agent</Code> from the latest client release. It verifies the
-      archive checksum and uses cosign when available. If the agent is running,
-      restart it after the update with <Code>fd0 agent restart</Code>.
+      archive checksum and uses cosign when available. It keeps the installed
+      flavor by default: <Code>standard</Code> stays standard,{" "}
+      <Code>yubikey</Code> stays yubikey. Use <Code>--flavor</Code> only to
+      switch deliberately. If the agent is running, restart it after the update
+      with <Code>fd0 agent restart</Code>.
     </P>
     <Note>
       Windows is not supported yet. The binaries cross-compile, but the agent
@@ -321,7 +335,7 @@ $ fd0 ls`}</Box>
 
     <H2>Local health</H2>
     <Cmd signature="fd0 status" body="Show whether the agent is running and whether the vault is unlocked." />
-    <Cmd signature="fd0 doctor" body="Replay local chains, check vault tips, auth wraps, scope keys, orphan chain files, and SSH socket health." />
+    <Cmd signature="fd0 doctor" body="Replay local chains, check vault tips, auth wraps, scope keys, YubiKey flavor state, orphan chain files, and SSH socket health." />
     <Cmd signature="fd0 lock" body="Lock the vault in the running agent and zeroize in-memory keys." />
     <Cmd signature="fd0 agent status" body="Show fd0-agent process, vault, agent socket, and SSH socket state." />
     <Cmd signature="fd0 agent restart" body="Replace fd0-agent with the current binary and repair stale agent sockets." />
@@ -531,13 +545,34 @@ const YubikeyBody = () => (
   <>
     <P>
       fd0 can use a YubiKey PIV slot as an unlock method. The slot private key
-      stays on the device. Build fd0 with <Code>-tags=yubikey</Code>.
+      stays on the device. Install the <Code>yubikey</Code> client flavor so
+      both <Code>fd0</Code> and <Code>fd0-agent</Code> include PIV support.
     </P>
+
+    <H2>Install</H2>
+    <Box>{`$ curl -fsSL https://fd0.sh/install | sh -s -- --yubikey
+$ fd0 version
+fd0 0.11.0 yubikey
+$ fd0 doctor`}</Box>
 
     <H2>Enroll</H2>
     <Box>{`$ fd0 auth add --yubikey
 $ fd0 lock
 $ fd0 unlock --method=yubikey`}</Box>
+    <P>
+      <Code>fd0 doctor</Code> reports whether the CLI and running agent are
+      both the YubiKey flavor. After an update, run{" "}
+      <Code>fd0 agent restart</Code> before testing unlock.
+    </P>
+
+    <H2>Update</H2>
+    <Box>{`$ fd0 update
+$ fd0 update --flavor=standard   # switch away deliberately`}</Box>
+    <P>
+      A YubiKey install stays on the YubiKey release flavor during normal{" "}
+      <Code>fd0 update</Code>. Switching back to the standard flavor is
+      explicit.
+    </P>
 
     <H2>Multiple readers</H2>
     <P>

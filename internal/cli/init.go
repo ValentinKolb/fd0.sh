@@ -230,6 +230,9 @@ func friendlyUnlockError(err error) error {
 	if err == nil {
 		return nil
 	}
+	if errors.Is(err, vault.ErrYubikeyNotConfigured) {
+		return errors.New("YubiKey unlock is enrolled, but the running fd0-agent was built without YubiKey/PIV support; install the yubikey flavor and run `fd0 agent restart`")
+	}
 	msg := err.Error()
 	if strings.Contains(msg, "message authentication failed") ||
 		strings.Contains(msg, "no matching auth method or wrong credential") {

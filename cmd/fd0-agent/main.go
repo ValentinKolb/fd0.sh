@@ -16,6 +16,7 @@ import (
 	"github.com/awnumar/memguard"
 
 	"github.com/valentinkolb/fd0.sh/internal/agent"
+	"github.com/valentinkolb/fd0.sh/internal/buildinfo"
 	fd0cli "github.com/valentinkolb/fd0.sh/internal/cli"
 	"github.com/valentinkolb/fd0.sh/internal/fdhome"
 	"github.com/valentinkolb/fd0.sh/internal/sshagent"
@@ -47,7 +48,7 @@ func main() {
 	var c cli
 	kong.Parse(&c, kong.Name("fd0-agent"))
 	if c.Version {
-		fmt.Printf("fd0-agent %s\n", version)
+		fmt.Printf("fd0-agent %s %s\n", version, buildinfo.Flavor)
 		return
 	}
 	level := slog.LevelInfo
@@ -118,6 +119,9 @@ func main() {
 		Logger:             log,
 		Scheduler:          sched,
 		NewYubikeyResolver: newYubikeyResolverFactory(),
+		Version:            version,
+		Flavor:             buildinfo.Flavor,
+		YubikeyEnabled:     buildinfo.YubikeyEnabled,
 	})
 	if err != nil {
 		log.Error("listen", "err", err)

@@ -34,6 +34,9 @@ func RunAgentStatus(ctx context.Context) error {
 	} else {
 		fmt.Println("agent: running, locked")
 	}
+	if st.Version != "" || st.Flavor != "" {
+		fmt.Printf("version: %s %s\n", emptyAsUnknown(st.Version), emptyAsUnknown(st.Flavor))
+	}
 	fmt.Printf("pid file: %s\n", paths.AgentPID)
 	fmt.Printf("agent socket: ok (%s)\n", paths.AgentSock)
 	printSSHSocketState()
@@ -166,6 +169,13 @@ func printSocketState(label, path string) {
 		return
 	}
 	fmt.Printf("%s: stale (%s)\n", label, path)
+}
+
+func emptyAsUnknown(s string) string {
+	if s == "" {
+		return "unknown"
+	}
+	return s
 }
 
 func printSSHSocketState() {
