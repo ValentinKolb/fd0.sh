@@ -58,6 +58,8 @@ type YubikeyPublicParams struct {
 	X25519Pub     []byte `cbor:"x25519_pub"`      // 32-byte slot pubkey
 	SealedKUnlock []byte `cbor:"sealed_k_unlock"` // sealed-box(K_unlock, X25519Pub)
 	Slot          uint8  `cbor:"slot"`            // PIV slot id (default 0x9d)
+	PinPolicy     string `cbor:"pin_policy,omitempty"`
+	TouchPolicy   string `cbor:"touch_policy,omitempty"`
 }
 
 // SignedInput returns "fd0-user-event-v1" || cbor(UserEvent without signature).

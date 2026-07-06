@@ -119,6 +119,8 @@ func RunAuthAddYubikey(ctx context.Context, touchPolicy string, force bool) erro
 		X25519Pub:     slotPub,
 		SealedKUnlock: sealed,
 		Slot:          uint8(yubikey.SlotKeyManagement),
+		PinPolicy:     yubikeyPinPolicyName(pin),
+		TouchPolicy:   yubikeyTouchPolicyName(tp),
 	})
 	if err != nil {
 		return err
@@ -212,6 +214,24 @@ func touchPolicySuffix(tp yubikey.TouchPolicy) string {
 		return ""
 	default:
 		return "touch"
+	}
+}
+
+func yubikeyPinPolicyName(pin []byte) string {
+	if len(pin) == 0 {
+		return "never"
+	}
+	return "once"
+}
+
+func yubikeyTouchPolicyName(tp yubikey.TouchPolicy) string {
+	switch tp {
+	case yubikey.TouchNever:
+		return "never"
+	case yubikey.TouchCached:
+		return "cached"
+	default:
+		return "always"
 	}
 }
 

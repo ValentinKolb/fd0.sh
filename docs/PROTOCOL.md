@@ -160,6 +160,8 @@ YubikeyPublicParams = {                         ; cbor-encoded into AuthMethod.p
     sealed_k_unlock : bstr,                     ; libsodium crypto_box_seal of K_unlock
                                                 ; to x25519_pub (≥ 80 B for a 32-B K_unlock)
     slot            : uint .size 1,             ; PIV slot id (v1 = 0x9d Key Management only)
+    pin_policy      : "never" / "once",         ; optional; absent = legacy optional PIN prompt
+    touch_policy    : "always" / "cached" / "never", ; optional; recorded enrollment policy
 }
 
 signed_input   = "fd0-user-event-v1" || cbor(UserEvent without signature)

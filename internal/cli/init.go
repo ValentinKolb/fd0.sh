@@ -130,11 +130,11 @@ func RunInit(ctx context.Context) error {
 //     method_id) — deterministic so scripts can rely on the choice.
 //
 // For passphrase methods we prompt "Passphrase: ". For YubiKey methods
-// we prompt "YubiKey PIN (empty for touch-only): "; an empty input
-// surfaces as a touch-only unlock (the agent passes "" through to
-// yubikey.Open which skips VerifyPIN). Platform-local unlock sends no
-// credential bytes; the agent invokes its configured provider. Prompts read
-// from non-TTY stdin when piped, so shell tests can drive them.
+// we inspect public_params.pin_policy: touch-only methods skip the PIN
+// prompt, PIN-protected methods prompt for "YubiKey PIV PIN", and legacy
+// methods without policy metadata keep the optional prompt. Platform-local
+// unlock sends no credential bytes; the agent invokes its configured provider.
+// Prompts read from non-TTY stdin when piped, so shell tests can drive them.
 func RunUnlock(ctx context.Context, agentBin, method string) error {
 	paths, err := fdhome.Resolve()
 	if err != nil {
@@ -199,12 +199,14 @@ func RunUnlock(ctx context.Context, agentBin, method string) error {
 		cred.Passphrase = pass
 		defer crypto.Wipe(cred.Passphrase)
 	case proto.AuthYubikey:
-		pin, err := ReadOptionalPIN("YubiKey PIN (empty for touch-only): ")
+		pin, err := readYubikeyUnlockPIN(chosen, ReadOptionalPIN)
 		if err != nil {
 			return err
 		}
-		cred.YubikeyPIN = pin
-		defer crypto.Wipe(cred.YubikeyPIN)
+		if len(pin) > 0 {
+			cred.YubikeyPIN = pin
+			defer crypto.Wipe(cred.YubikeyPIN)
+		}
 		fmt.Fprintln(os.Stderr, "Touch your YubiKey if it blinks…")
 	default:
 		return fmt.Errorf("unknown method type %q on user chain", chosen.MethodType)
@@ -234,11 +236,61 @@ func friendlyUnlockError(err error) error {
 		return errors.New("YubiKey unlock is enrolled, but the running fd0-agent was built without YubiKey/PIV support; install the yubikey flavor and run `fd0 agent restart`")
 	}
 	msg := err.Error()
+	if strings.Contains(msg, "pin longer than 8 bytes") ||
+		strings.Contains(msg, "yubikey PIN: must be at most 8 characters") {
+		return errors.New("YubiKey PIV PINs are 6-8 ASCII characters; if this key was enrolled as touch-only, press Enter instead of entering your fd0 passphrase")
+	}
 	if strings.Contains(msg, "message authentication failed") ||
 		strings.Contains(msg, "no matching auth method or wrong credential") {
 		return errors.New("unlock failed: wrong passphrase or unlock method; if this worked before, the vault or auth chain may be inconsistent")
 	}
 	return err
+}
+
+type readPINFunc func(prompt string) ([]byte, error)
+
+func readYubikeyUnlockPIN(m proto.AuthMethod, readPIN readPINFunc) ([]byte, error) {
+	switch yubikeyPINPromptMode(m) {
+	case yubikeyPINPromptNever:
+		// Touch-only methods were enrolled with PINPolicyNever. Do not
+		// prompt for unrelated credentials; the agent receives an empty
+		// PIN and the card enforces touch policy.
+		return nil, nil
+	case yubikeyPINPromptRequired:
+		pin, err := readPIN("YubiKey PIV PIN: ")
+		if err != nil {
+			return nil, err
+		}
+		if len(pin) == 0 {
+			return nil, errors.New("YubiKey PIV PIN cannot be empty for this auth method")
+		}
+		return pin, nil
+	default:
+		return readPIN("YubiKey PIV PIN (press Enter for touch-only legacy methods): ")
+	}
+}
+
+type yubikeyPINPrompt int
+
+const (
+	yubikeyPINPromptOptional yubikeyPINPrompt = iota
+	yubikeyPINPromptNever
+	yubikeyPINPromptRequired
+)
+
+func yubikeyPINPromptMode(m proto.AuthMethod) yubikeyPINPrompt {
+	var pp proto.YubikeyPublicParams
+	if err := proto.Unmarshal(m.PublicParams, &pp); err != nil {
+		return yubikeyPINPromptOptional
+	}
+	switch strings.ToLower(strings.TrimSpace(pp.PinPolicy)) {
+	case "never":
+		return yubikeyPINPromptNever
+	case "once", "always":
+		return yubikeyPINPromptRequired
+	default:
+		return yubikeyPINPromptOptional
+	}
 }
 
 func shouldHintInteractiveFirstSync(configPath string, ur *agent.UnlockResp) bool {

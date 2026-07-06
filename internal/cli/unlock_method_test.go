@@ -180,3 +180,203 @@ func TestFriendlyUnlockErrorExplainsYubikeyAgentFlavor(t *testing.T) {
 		t.Fatalf("error should explain agent flavor mismatch: %s", err)
 	}
 }
+
+func TestFriendlyUnlockErrorExplainsLongYubikeyPIN(t *testing.T) {
+	t.Parallel()
+	err := friendlyUnlockError(errors.New("agent: yubikey unlock: open card: yubikey: verify PIN: pin longer than 8 bytes"))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	msg := err.Error()
+	for _, want := range []string{"YubiKey PIV PINs", "6-8 ASCII", "touch-only", "fd0 passphrase"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("error %q missing %q", msg, want)
+		}
+	}
+}
+
+func TestYubikeyPINPromptMode(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		pp   proto.YubikeyPublicParams
+		want yubikeyPINPrompt
+	}{
+		{
+			name: "touch-only skips prompt",
+			pp: proto.YubikeyPublicParams{
+				X25519Pub:     bytesOf('a', 32),
+				SealedKUnlock: []byte("sealed"),
+				Slot:          0x9d,
+				PinPolicy:     "never",
+				TouchPolicy:   "always",
+			},
+			want: yubikeyPINPromptNever,
+		},
+		{
+			name: "pin once prompts",
+			pp: proto.YubikeyPublicParams{
+				X25519Pub:     bytesOf('b', 32),
+				SealedKUnlock: []byte("sealed"),
+				Slot:          0x9d,
+				PinPolicy:     "once",
+				TouchPolicy:   "always",
+			},
+			want: yubikeyPINPromptRequired,
+		},
+		{
+			name: "legacy missing pin policy keeps optional prompt",
+			pp: proto.YubikeyPublicParams{
+				X25519Pub:     bytesOf('c', 32),
+				SealedKUnlock: []byte("sealed"),
+				Slot:          0x9d,
+			},
+			want: yubikeyPINPromptOptional,
+		},
+		{
+			name: "future unknown pin policy keeps optional prompt",
+			pp: proto.YubikeyPublicParams{
+				X25519Pub:     bytesOf('d', 32),
+				SealedKUnlock: []byte("sealed"),
+				Slot:          0x9d,
+				PinPolicy:     "future",
+			},
+			want: yubikeyPINPromptOptional,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			pp, err := proto.Marshal(c.pp)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := yubikeyPINPromptMode(proto.AuthMethod{
+				MethodID:     "am_test",
+				MethodType:   proto.AuthYubikey,
+				PublicParams: pp,
+			})
+			if got != c.want {
+				t.Fatalf("got prompt mode %d, want %d", got, c.want)
+			}
+		})
+	}
+}
+
+func TestYubikeyPINPromptModeMalformedParamsAreLegacyOptional(t *testing.T) {
+	t.Parallel()
+	got := yubikeyPINPromptMode(proto.AuthMethod{
+		MethodID:     "am_bad",
+		MethodType:   proto.AuthYubikey,
+		PublicParams: []byte{0xff},
+	})
+	if got != yubikeyPINPromptOptional {
+		t.Fatalf("got prompt mode %d, want optional fallback", got)
+	}
+}
+
+func TestReadYubikeyUnlockPINPromptPath(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		pinPolicy  string
+		readPIN    []byte
+		wantPIN    []byte
+		wantPrompt string
+		wantCalls  int
+		wantErr    string
+	}{
+		{
+			name:      "touch-only does not prompt",
+			pinPolicy: "never",
+			wantCalls: 0,
+		},
+		{
+			name:       "pin-protected prompts clearly",
+			pinPolicy:  "once",
+			readPIN:    []byte("123456"),
+			wantPIN:    []byte("123456"),
+			wantPrompt: "YubiKey PIV PIN: ",
+			wantCalls:  1,
+		},
+		{
+			name:       "pin-protected rejects empty",
+			pinPolicy:  "once",
+			wantPrompt: "YubiKey PIV PIN: ",
+			wantCalls:  1,
+			wantErr:    "cannot be empty",
+		},
+		{
+			name:       "legacy keeps optional prompt",
+			pinPolicy:  "",
+			wantPrompt: "YubiKey PIV PIN (press Enter for touch-only legacy methods): ",
+			wantCalls:  1,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			method := yubikeyAuthMethodForTest(t, c.pinPolicy)
+			var prompts []string
+			got, err := readYubikeyUnlockPIN(method, func(prompt string) ([]byte, error) {
+				prompts = append(prompts, prompt)
+				return append([]byte(nil), c.readPIN...), nil
+			})
+			if c.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), c.wantErr) {
+					t.Fatalf("error=%v, want containing %q", err, c.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("readYubikeyUnlockPIN: %v", err)
+			}
+			if string(got) != string(c.wantPIN) {
+				t.Fatalf("PIN=%q, want %q", got, c.wantPIN)
+			}
+			if len(prompts) != c.wantCalls {
+				t.Fatalf("prompt calls=%d, want %d (%v)", len(prompts), c.wantCalls, prompts)
+			}
+			if c.wantCalls > 0 && prompts[0] != c.wantPrompt {
+				t.Fatalf("prompt=%q, want %q", prompts[0], c.wantPrompt)
+			}
+		})
+	}
+}
+
+func TestYubikeyPolicyNamesForEnrollment(t *testing.T) {
+	t.Parallel()
+	if got := yubikeyPinPolicyName(nil); got != "never" {
+		t.Fatalf("empty PIN policy = %q, want never", got)
+	}
+	if got := yubikeyPinPolicyName([]byte("123456")); got != "once" {
+		t.Fatalf("non-empty PIN policy = %q, want once", got)
+	}
+	if got := yubikeyTouchPolicyName(0); got != "always" {
+		t.Fatalf("default touch policy = %q, want always", got)
+	}
+}
+
+func yubikeyAuthMethodForTest(t *testing.T, pinPolicy string) proto.AuthMethod {
+	t.Helper()
+	pp := proto.YubikeyPublicParams{
+		X25519Pub:     bytesOf('y', 32),
+		SealedKUnlock: []byte("sealed"),
+		Slot:          0x9d,
+		PinPolicy:     pinPolicy,
+		TouchPolicy:   "always",
+	}
+	ppBytes, err := proto.Marshal(pp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return proto.AuthMethod{MethodID: "am_test", MethodType: proto.AuthYubikey, PublicParams: ppBytes}
+}
+
+func bytesOf(b byte, n int) []byte {
+	out := make([]byte, n)
+	for i := range out {
+		out[i] = b
+	}
+	return out
+}
