@@ -1,7 +1,7 @@
 ---
 name: fd0
 description: >-
-  Use this skill whenever the user — or an agent acting on the user's behalf — needs to store, fetch, share, or organize secrets with the fd0 CLI (`fd0 init`, `fd0 set`, `fd0 get`, `fd0 sync`, `fd0 scope ...`, `fd0 card ...`), manage SSH keys and hosts (`fd0 key ...`, `fd0 ssh ...`), or manage Talos Linux / Kubernetes credentials (`fd0 talos ...`, `fd0 kube ...`). Trigger on any of these phrasings even when the user does not name fd0 explicitly — "store a deploy key", "save this API token", "fetch my DB password", "share a credential with bob", "add bob to the work scope", "rotate access", "set up my passphrase", "vault locked", "lock failed", "sync errored", "generate an ssh key", "share ssh access with the team", "connect to the prod box", "store the talosconfig", "share the kubeconfig", "bootstrap a talos cluster". Also trigger when an agent in the middle of another task needs to inject a credential into a script or deploy step — `fd0 get NAME` is the canonical retrieval path. Do NOT trigger for hosting or operating the fd0-server; that is a separate concern documented in this project's docs/HOSTING.md.
+  Use this skill whenever the user — or an agent acting on the user's behalf — needs to store, fetch, share, or organize secrets with the fd0 CLI (`fd0 init`, `fd0 set`, `fd0 get`, `fd0 sync`, `fd0 scope ...`, `fd0 card ...`), use fd0 as a password manager (`fd0 pass ...`), manage SSH keys and hosts (`fd0 key ...`, `fd0 ssh ...`), or manage Talos Linux / Kubernetes credentials (`fd0 talos ...`, `fd0 kube ...`). Trigger on any of these phrasings even when the user does not name fd0 explicitly — "store a deploy key", "save this API token", "fetch my DB password", "share a credential with bob", "add bob to the work scope", "rotate access", "set up my passphrase", "vault locked", "lock failed", "sync errored", "open my password manager", "store a login", "copy my GitHub password", "add a TOTP code", "attach a recovery key file", "generate an ssh key", "share ssh access with the team", "connect to the prod box", "store the talosconfig", "share the kubeconfig", "bootstrap a talos cluster". Also trigger when an agent in the middle of another task needs to inject a credential into a script or deploy step — `fd0 get NAME` or `fd0 pass field get ITEM FIELD --raw` is the canonical retrieval path. Do NOT trigger for hosting or operating the fd0-server; that is a separate concern documented in this project's docs/HOSTING.md.
 ---
 
 # fd0 — Zero-knowledge secrets CLI
@@ -22,6 +22,16 @@ Map the user's intent to the right command before typing anything:
 | Retrieve to clipboard, auto-clear | `fd0 copy NAME [--clear-after=30s]` |
 | List secrets | `fd0 ls` |
 | Forget a credential | `fd0 rm NAME` (tombstone, vanishes on compaction) |
+| Open the password-manager UI | `fd0 pass` (or `fd0 pass QUERY`) |
+| Create a login item | `fd0 pass add NAME --url URL [--scope LABEL]` |
+| Add username/password fields | `fd0 pass field set NAME username VALUE`; `fd0 pass field set NAME password --secret --generate` |
+| Copy a password-manager field | `fd0 pass copy NAME [FIELD] [--clear-after=30s]` |
+| Generate a password without storing | `fd0 pass generate [--length 32]` |
+| Show a pass item safely | `fd0 pass show NAME` (masked by default; `--reveal` only when explicitly needed) |
+| Store a passkey field | `fd0 pass field set NAME passkey VALUE --type passkey` |
+| Add or print TOTP | `fd0 pass totp add NAME 'otpauth://...'`; `fd0 pass totp code NAME` |
+| Attach a small key/recovery file | `fd0 pass file add NAME PATH [FIELD]` (32 KiB max per file) |
+| Export an attached file | `fd0 pass file export NAME FIELD --out PATH` |
 | Organize related secrets | `fd0 scope create --label LABEL` |
 | Share a scope with a person | They run `fd0 card export`, you `fd0 card import URL --label THEIR_NAME --yes`, then `fd0 scope add-member THEIR_NAME --scope LABEL` |
 | Revoke access | `fd0 scope remove-member LABEL --scope LABEL` (rotates the per-scope key — they lose access on next sync) |
@@ -43,9 +53,9 @@ Map the user's intent to the right command before typing anything:
 | Fetch a fresh kubeconfig from Talos | `fd0 talos kubeconfig CTX` (needs `talosctl`) |
 | Render + merge kubeconfig | `fd0 kube sync --merge` |
 
-Every command except `fd0 sync` is local. `sync` is the only one that touches the network. The `key`/`ssh`/`talos`/`kube` families all store their material as ordinary scope-shared secrets, so sharing an SSH key or a talosconfig with a teammate is the same `scope add-member` flow as sharing a password.
+Every command except `fd0 sync` is local. `sync` is the only one that touches the network. The `pass`/`key`/`ssh`/`talos`/`kube` families all store their material as ordinary scope-shared secrets, so sharing a password item, SSH key, host alias, or talosconfig with a teammate is the same `scope add-member` flow.
 
-`add`, `new`, and `move` across all four families refuse to overwrite an existing name by default — pass `--force` to overwrite knowingly.
+`add`, `new`, and `move` across feature families refuse to overwrite an existing name by default — pass `--force` to overwrite knowingly.
 
 ## Mental model
 
@@ -90,6 +100,57 @@ fd0 sync                                     # push the new event(s)
 Without `--scope`, fd0 looks up the secret across all scopes. If the name exists in exactly one scope it succeeds; if it is ambiguous it errors.
 
 When fetching for a non-interactive context (e.g. CI script substitution, automation), prefer `fd0 get NAME --raw` — `--raw` strips trailing newlines that would otherwise pollute environment-variable assignments.
+
+## Password manager
+
+`fd0 pass` is the structured password-manager surface. It stores each item as a typed, scope-shared secret (`fd0.pass.item`) with:
+
+- item title and URL matchers
+- fields of type `text`, `secret`, `totp`, `passkey`, `file`, or `section`
+- recursive sections by slash path, up to four levels deep
+- per-item metadata for future GUI/autofill use
+- small encrypted file attachments, capped at 32 KiB per file and 60 KiB per item
+
+Bare `fd0 pass` opens the interactive terminal browser. `fd0 pass QUERY` opens the same browser with an initial search. In the browser, secrets are masked by default; use the visible shortcuts for copy/reveal. `q` and `esc` quit/back out.
+
+Common interactive flow:
+
+```
+fd0 pass                          # browse all pass items
+fd0 pass github                   # browse with initial query
+fd0 pass --scope work             # browse one scope
+```
+
+Common scriptable flow:
+
+```
+fd0 pass add github --url https://github.com --scope work
+fd0 pass field set github username valentin@example.com --scope work
+fd0 pass field set github password --secret --generate --length 32 --scope work
+fd0 pass field set github passkey '{"credential_id":"..."}' --type passkey --scope work
+fd0 pass totp add github 'otpauth://totp/GitHub:valentin@example.com?secret=...' --scope work
+fd0 pass section add github Recovery --scope work
+fd0 pass field set github Recovery/code-1 "1234-5678" --secret --scope work
+fd0 pass file add github ~/.ssh/recovery-key.pem SSH/recovery-key.pem --scope work
+fd0 sync
+```
+
+Read and copy:
+
+```
+fd0 pass list --scope work
+fd0 pass find github
+fd0 pass find --url https://github.com/login
+fd0 pass show github                  # masked by default
+fd0 pass show github --reveal         # only when the user explicitly asks
+fd0 pass copy github                  # copies preferred secret field: password/pass
+fd0 pass copy github username
+fd0 pass totp code github
+fd0 pass field get github username --raw
+fd0 pass file export github SSH/recovery-key.pem --out ./recovery-key.pem
+```
+
+Use `fd0 pass field set NAME PATH - --secret` for values that should not appear in shell history. A pass item is shared by sharing its scope; there is no separate per-item ACL. For browser/autofill-style lookup, use `fd0 pass find --url URL --json` and then retrieve the needed field explicitly.
 
 ## Sharing a scope
 
@@ -170,8 +231,9 @@ These are not negotiable. The skill is useless and dangerous without them.
 2. **Never** set `FD0_AUTO_PIN=1` without the user's explicit consent. The TOFU prompt exists so a MITM cannot silently pin its own key.
 3. **Never** dump `~/.fd0/vault.enc` or `~/.fd0/chains/` to a remote location for "debugging" — they contain ciphertext but their existence + size + chain tip is metadata.
 4. When `fd0 copy` runs, mention the auto-clear time (`--clear-after`) so the user does not assume the clipboard is permanent.
-5. Confirm before `fd0 rm`, `fd0 scope leave`, `fd0 auth rm`, and `fd0 recovery import` — each one is destructive or irreversible without a backup.
-6. When the user has not run `fd0 recovery export`, prompt them to do it before any operation that could lose `super_priv` (re-init, device migration, `auth rm` of the last method).
+5. Prefer `fd0 pass copy` over `fd0 pass show --reveal` for passwords/TOTP/secrets. Use `--reveal`, `pass field get`, or `pass file export` only when plaintext output is explicitly needed and keep it out of logs.
+6. Confirm before `fd0 rm`, `fd0 pass rm`, `fd0 pass field rm`, `fd0 scope leave`, `fd0 auth rm`, and `fd0 recovery import` — each one is destructive or irreversible without a backup.
+7. When the user has not run `fd0 recovery export`, prompt them to do it before any operation that could lose `super_priv` (re-init, device migration, `auth rm` of the last method).
 
 ## Troubleshooting
 
