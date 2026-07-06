@@ -174,11 +174,11 @@ jobs:
           set -euo pipefail
           semver="${GITHUB_REF_NAME#*-v}"
           semver="${semver#v}"
-          gh release download "v${semver}" --pattern checksums.txt --output checksums.txt
+          gh release download "v${semver}" --repo "${GITHUB_REPOSITORY}" --pattern checksums.txt --output checksums.txt
           cat yubikey-checksums/*.sha256 >> checksums.txt
           sort -k2,2 checksums.txt -o checksums.txt
           cosign sign-blob --yes \
             --output-signature checksums.txt.sig \
             --output-certificate checksums.txt.pem \
             checksums.txt
-          gh release upload "v${semver}" checksums.txt checksums.txt.sig checksums.txt.pem --clobber
+          gh release upload "v${semver}" checksums.txt checksums.txt.sig checksums.txt.pem --repo "${GITHUB_REPOSITORY}" --clobber
