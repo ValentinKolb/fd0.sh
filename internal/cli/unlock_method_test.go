@@ -39,6 +39,21 @@ func TestPickUnlockMethod_ExplicitRequest_Match(t *testing.T) {
 	}
 }
 
+func TestPickUnlockMethod_ExplicitRequest_MethodIDMatch(t *testing.T) {
+	t.Parallel()
+	active := []proto.AuthMethod{
+		{MethodID: "am_b", MethodType: proto.AuthYubikey},
+		{MethodID: "am_a", MethodType: proto.AuthPassphrase},
+	}
+	got, err := pickUnlockMethod(active, "am_a")
+	if err != nil {
+		t.Fatalf("pickUnlockMethod: %v", err)
+	}
+	if got.MethodID != "am_a" || got.MethodType != proto.AuthPassphrase {
+		t.Fatalf("got method_id=%s type=%s, want am_a/passphrase", got.MethodID, got.MethodType)
+	}
+}
+
 func TestPickUnlockMethod_ExplicitRequest_NoMatch(t *testing.T) {
 	t.Parallel()
 	active := []proto.AuthMethod{
@@ -53,6 +68,9 @@ func TestPickUnlockMethod_ExplicitRequest_NoMatch(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "passphrase") {
 		t.Fatalf("error should list available methods, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "am_a") {
+		t.Fatalf("error should list available method ids, got: %v", err)
 	}
 }
 

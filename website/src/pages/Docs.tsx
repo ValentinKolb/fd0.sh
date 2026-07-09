@@ -333,6 +333,17 @@ $ fd0 ls`}</Box>
     <Cmd signature="fd0 scope add-member <label> --scope <scope>" body="Grant a pinned card access to the scope." />
     <Cmd signature="fd0 scope remove-member <label> --scope <scope>" body="Remove access and rotate the scope key." />
 
+    <H2>Unlock methods</H2>
+    <P>
+      Auth methods are stored in the vault. The default unlock method is a
+      local device preference in <Code>~/.fd0/config.toml</Code>; it is not
+      synced to other machines.
+    </P>
+    <Cmd signature="fd0 auth ls" body="List enrolled unlock methods. The current session is marked with *, and the local default is marked with default." />
+    <Cmd signature="fd0 auth default" body="Show the default unlock method for this device." />
+    <Cmd signature="fd0 auth default yubikey" body="Use YubiKey unlock by default on this device. Use passphrase or a method_id instead when needed." />
+    <Cmd signature="fd0 auth default --clear" body="Clear the local default and return to fd0's deterministic fallback selection." />
+
     <H2>Local health</H2>
     <Cmd signature="fd0 status" body="Show whether the agent is running and whether the vault is unlocked." />
     <Cmd signature="fd0 doctor" body="Replay local chains, check vault tips, auth wraps, scope keys, YubiKey flavor state, orphan chain files, and SSH socket health." />
@@ -557,11 +568,15 @@ $ fd0 doctor`}</Box>
 
     <H2>Enroll</H2>
     <Box>{`$ fd0 auth add --yubikey
+$ fd0 auth default yubikey
 $ fd0 lock
 $ fd0 unlock --method=yubikey`}</Box>
     <P>
-      <Code>fd0 doctor</Code> reports whether the CLI and running agent are
-      both the YubiKey flavor. After an update, run{" "}
+      <Code>fd0 auth default yubikey</Code> stores a device-local preference
+      in <Code>~/.fd0/config.toml</Code>, so plain <Code>fd0 unlock</Code>{" "}
+      uses the YubiKey on this machine. <Code>fd0 doctor</Code> reports
+      whether the CLI and running agent are both the YubiKey flavor. After an
+      update, run{" "}
       <Code>fd0 agent restart</Code> before testing unlock.
     </P>
 

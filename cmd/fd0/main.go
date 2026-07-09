@@ -449,7 +449,7 @@ type kubeSyncCmd struct {
 type initCmd struct{}
 type unlockCmd struct {
 	AgentBin string `name:"agent-bin" help:"Path to fd0-agent binary." env:"FD0_AGENT_BIN"`
-	Method   string `name:"method" help:"Auth method to use ('passphrase' or 'yubikey'). Default: pick the only enrolled method, or first by method_id when multiple."`
+	Method   string `name:"method" help:"Auth method type or method_id to use ('passphrase', 'yubikey', or am_...). Overrides [auth].default_method."`
 }
 type lockCmd struct{}
 type statusCmd struct{}
@@ -557,11 +557,16 @@ type syncCmd struct {
 type doctorCmd struct{}
 
 type authCmd struct {
-	List   authListCmd   `cmd:"" aliases:"ls" help:"List active auth methods."`
-	Add    authAddCmd    `cmd:"" help:"Add a new passphrase or YubiKey as an additional auth method."`
-	Remove authRemoveCmd `cmd:"" name:"rm" help:"Remove an auth method by id."`
+	List    authListCmd    `cmd:"" aliases:"ls" help:"List active auth methods."`
+	Default authDefaultCmd `cmd:"" help:"Show or set the device-local default unlock method."`
+	Add     authAddCmd     `cmd:"" help:"Add a new passphrase or YubiKey as an additional auth method."`
+	Remove  authRemoveCmd  `cmd:"" name:"rm" help:"Remove an auth method by id."`
 }
 type authListCmd struct{}
+type authDefaultCmd struct {
+	Method string `arg:"" optional:"" help:"Auth method type or method_id ('passphrase', 'yubikey', or am_...). Empty shows current default."`
+	Clear  bool   `name:"clear" help:"Clear the device-local default unlock method."`
+}
 type authAddCmd struct {
 	Yubikey bool   `name:"yubikey" help:"Enroll a YubiKey instead of a passphrase. Requires the yubikey release flavor."`
 	Touch   string `name:"touch" help:"YubiKey touch policy: 'always' (default, secure), 'never' (no touch), 'cached' (15s cache after first touch)."`
@@ -782,6 +787,8 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 		return cli.RunDoctor(ctx)
 	case "auth list", "auth ls":
 		return cli.RunAuthList(ctx)
+	case "auth default", "auth default <method>":
+		return cli.RunAuthDefault(ctx, c.Auth.Default.Method, c.Auth.Default.Clear)
 	case "auth add":
 		if c.Auth.Add.Yubikey {
 			return cli.RunAuthAddYubikey(ctx, c.Auth.Add.Touch, c.Auth.Add.Force)

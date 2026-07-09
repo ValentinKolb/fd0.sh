@@ -4,6 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -16,11 +19,21 @@ type Config struct {
 	Sync      SyncConfig       `toml:"sync"`
 	Client    ClientConfig     `toml:"client"`
 	Agent     AgentConfig      `toml:"agent"`
+	Auth      AuthConfig       `toml:"auth"`
 	Clipboard ClipboardConfig  `toml:"clipboard"`
 	Kube      ProjectionConfig `toml:"kube"`
 	Talos     ProjectionConfig `toml:"talos"`
 	Witnesses []WitnessConfig  `toml:"witness"`        // [[witness]] entries
 	WitnessP  WitnessPolicy    `toml:"witness_policy"` // global cross-check policy
+}
+
+// AuthConfig collects device-local unlock preferences. It is not synced and
+// does not change the enrolled auth methods.
+type AuthConfig struct {
+	// DefaultMethod is either an auth method type ("passphrase", "yubikey") or
+	// a concrete method_id ("am_..."). Empty keeps the built-in deterministic
+	// selection.
+	DefaultMethod string `toml:"default_method"`
 }
 
 // WitnessConfig is one configured witness the client trusts. Per
@@ -149,6 +162,95 @@ func LoadConfig(path string) (Config, error) {
 		return c, err
 	}
 	return c, nil
+}
+
+// SetAuthDefaultMethod updates only [auth].default_method in config.toml. It
+// intentionally avoids re-encoding the full Config struct so user comments and
+// unrelated formatting survive.
+func SetAuthDefaultMethod(path, value string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return err
+		}
+		if value == "" {
+			return nil
+		}
+		return os.WriteFile(path, []byte("[auth]\ndefault_method = "+strconv.Quote(value)+"\n"), 0o600)
+	}
+	out := updateAuthDefaultMethodText(string(data), value)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(out), 0o600)
+}
+
+func updateAuthDefaultMethodText(in, value string) string {
+	lines := strings.SplitAfter(in, "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		if value == "" {
+			return ""
+		}
+		return "[auth]\ndefault_method = " + strconv.Quote(value) + "\n"
+	}
+
+	authStart := -1
+	defaultLine := -1
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if isTOMLTableHeader(trimmed) {
+			if authStart >= 0 && i > authStart {
+				break
+			}
+			if trimmed == "[auth]" {
+				authStart = i
+			}
+			continue
+		}
+		if authStart >= 0 && defaultLine < 0 && isTOMLKey(trimmed, "default_method") {
+			defaultLine = i
+		}
+	}
+
+	defaultText := "default_method = " + strconv.Quote(value) + "\n"
+	if authStart >= 0 {
+		switch {
+		case defaultLine >= 0 && value == "":
+			lines = append(lines[:defaultLine], lines[defaultLine+1:]...)
+		case defaultLine >= 0:
+			lines[defaultLine] = defaultText
+		case value != "":
+			insertAt := authStart + 1
+			lines = append(lines[:insertAt], append([]string{defaultText}, lines[insertAt:]...)...)
+		}
+		return strings.Join(lines, "")
+	}
+
+	if value == "" {
+		return in
+	}
+	if !strings.HasSuffix(in, "\n") {
+		in += "\n"
+	}
+	if strings.TrimSpace(in) != "" {
+		in += "\n"
+	}
+	return in + "[auth]\n" + defaultText
+}
+
+func isTOMLTableHeader(trimmed string) bool {
+	return strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]")
+}
+
+func isTOMLKey(trimmed, key string) bool {
+	if strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, ";") {
+		return false
+	}
+	left, _, ok := strings.Cut(trimmed, "=")
+	return ok && strings.TrimSpace(left) == key
 }
 
 // SyncIntervalDuration parses Sync.Interval; "" / parse-failure / zero return

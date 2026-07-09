@@ -151,16 +151,36 @@ func RunUnlock(ctx context.Context, agentBin, method string) error {
 	if uctx == nil || uctx.LatestAuthSet == nil {
 		return errors.New("no auth methods on user chain — run `fd0 init` first")
 	}
-	chosen, err := pickUnlockMethod(uctx.LatestAuthSet.Payload.Active, method)
-	if err != nil {
-		return err
+	activeMethods := uctx.LatestAuthSet.Payload.Active
+	chosen := proto.AuthMethod{}
+	usedConfiguredDefault := false
+	if method == "" {
+		if cfg, err := fdhome.LoadConfig(paths.Config); err == nil {
+			if strings.TrimSpace(cfg.Auth.DefaultMethod) != "" {
+				if picked, err := pickUnlockMethod(activeMethods, cfg.Auth.DefaultMethod); err == nil {
+					chosen = picked
+					usedConfiguredDefault = true
+				} else {
+					fmt.Fprintf(os.Stderr, "warn: auth default %q no longer matches an enrolled method; falling back (use `fd0 auth default --clear` or set a new default)\n", cfg.Auth.DefaultMethod)
+				}
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "warn: load config: %v; ignoring auth default\n", err)
+		}
+	}
+	if chosen.MethodID == "" && chosen.MethodType == "" {
+		var err error
+		chosen, err = pickUnlockMethod(activeMethods, method)
+		if err != nil {
+			return err
+		}
 	}
 	// When more than one method type is available and the user did
 	// NOT pass --method, surface the auto-pick on stderr so they can
 	// see which method was used. Silent picking is a footgun: a user
 	// who wants the YubiKey path could end up unlocked via passphrase
 	// and not realise.
-	if method == "" && len(distinctMethodTypes(uctx.LatestAuthSet.Payload.Active)) > 1 {
+	if method == "" && !usedConfiguredDefault && len(distinctMethodTypes(activeMethods)) > 1 {
 		fmt.Fprintf(os.Stderr, "ℹ multiple unlock methods available — picked %q (override with --method=...)\n", chosen.MethodType)
 	}
 
@@ -316,13 +336,19 @@ func pickUnlockMethod(active []proto.AuthMethod, requested string) (proto.AuthMe
 		return proto.AuthMethod{}, errors.New("no active auth methods")
 	}
 	if requested != "" {
+		requested = strings.TrimSpace(requested)
+		for _, m := range active {
+			if m.MethodID == requested {
+				return m, nil
+			}
+		}
 		for _, m := range active {
 			if m.MethodType == requested {
 				return m, nil
 			}
 		}
 		return proto.AuthMethod{}, fmt.Errorf("--method=%q: no enrolled method matches; have %s",
-			requested, summariseMethodTypes(active))
+			requested, summariseMethodSelectors(active))
 	}
 	// No request: pick the FIRST method by method_id. We do NOT pick
 	// "the only type" because deterministic ordering matters more than
@@ -362,6 +388,23 @@ func summariseMethodTypes(active []proto.AuthMethod) string {
 		out = append(out, m.MethodType)
 	}
 	return strings.Join(out, ", ")
+}
+
+func summariseMethodSelectors(active []proto.AuthMethod) string {
+	types := summariseMethodTypes(active)
+	ids := make([]string, 0, len(active))
+	for _, m := range active {
+		if m.MethodID != "" {
+			ids = append(ids, m.MethodID)
+		}
+	}
+	if len(ids) == 0 {
+		return types
+	}
+	if types == "" {
+		return strings.Join(ids, ", ")
+	}
+	return types + " (method ids: " + strings.Join(ids, ", ") + ")"
 }
 
 // RunLock asks the running agent to forget vault secrets.

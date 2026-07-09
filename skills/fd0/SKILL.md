@@ -40,6 +40,7 @@ Map the user's intent to the right command before typing anything:
 | Check installed client flavor | `fd0 version` (`standard` or `yubikey`) |
 | Install YubiKey-capable client | `curl -fsSL https://fd0.sh/install \| sh -s -- --yubikey` |
 | Switch an existing install to YubiKey flavor | `fd0 update --flavor=yubikey` then `fd0 agent restart` |
+| Set this device's default unlock method | `fd0 auth default yubikey` or `fd0 auth default passphrase` |
 | End the session | `fd0 lock` |
 | Generate an SSH key (ed25519, in-vault) | `fd0 key add NAME [--scope LABEL]` — prints the authorized_keys line |
 | Import an existing SSH key | `fd0 key add NAME --import PATH` (encrypted RSA/ECDSA are refused — decrypt first) |
@@ -86,6 +87,19 @@ server = "https://your-server.example"
 ```
 
 The first sync triggers a TOFU pin: fd0 prints a 12-group fingerprint, the user verifies it out of band, and types `y`. Subsequent syncs short-circuit. **Never bypass this** unattended with `FD0_AUTO_PIN=1` unless the user has explicitly accepted the risk for a scripted context.
+
+## Default unlock method
+
+Use `fd0 auth default METHOD` when a device should prefer one unlock method without a shell alias:
+
+```
+fd0 auth ls
+fd0 auth default yubikey      # or passphrase, or a method_id from auth ls
+fd0 auth default              # show the current device default
+fd0 auth default --clear      # return to fd0's built-in selection
+```
+
+The setting is local to the current device in `~/.fd0/config.toml` under `[auth].default_method`. It is not synced, does not add or remove auth methods, and does not change vault wraps. `fd0 unlock --method=...` still overrides the local default for that invocation.
 
 ## Storing and fetching
 
@@ -248,6 +262,8 @@ fd0 agent restart
 ```
 
 Both `fd0` and `fd0-agent` must be the `yubikey` flavor. If `fd0 doctor` reports a mismatch after update, restart the agent before retrying enrollment or unlock.
+
+After enrolling a YubiKey, suggest `fd0 auth default yubikey` only if the user wants plain `fd0 unlock` on that device to use the YubiKey. Keep passphrase unlock enrolled as recovery unless the user has a tested recovery export and explicitly accepts the risk.
 
 ## Security rules
 

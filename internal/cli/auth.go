@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 
 	"github.com/oklog/ulid/v2"
 
 	"github.com/valentinkolb/fd0.sh/internal/chain"
 	"github.com/valentinkolb/fd0.sh/internal/crypto"
+	"github.com/valentinkolb/fd0.sh/internal/fdhome"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
 	"github.com/valentinkolb/fd0.sh/internal/vault"
 )
@@ -35,6 +37,12 @@ func RunAuthList(ctx context.Context) error {
 	if st != nil {
 		active = st.ActiveMethodID
 	}
+	defaultMethodID := ""
+	if cfg, err := fdhome.LoadConfig(s.Paths.Config); err == nil && strings.TrimSpace(cfg.Auth.DefaultMethod) != "" {
+		if m, err := pickUnlockMethod(uctx.LatestAuthSet.Payload.Active, cfg.Auth.DefaultMethod); err == nil {
+			defaultMethodID = m.MethodID
+		}
+	}
 	methods := append([]proto.AuthMethod{}, uctx.LatestAuthSet.Payload.Active...)
 	sort.Slice(methods, func(i, j int) bool { return methods[i].MethodID < methods[j].MethodID })
 	for _, m := range methods {
@@ -42,8 +50,67 @@ func RunAuthList(ctx context.Context) error {
 		if m.MethodID == active {
 			marker = "* "
 		}
-		fmt.Printf("%s%s  type=%s\n", marker, m.MethodID, m.MethodType)
+		suffix := ""
+		if m.MethodID == defaultMethodID {
+			suffix = " default"
+		}
+		fmt.Printf("%s%s  type=%s%s\n", marker, m.MethodID, m.MethodType, suffix)
 	}
+	return nil
+}
+
+// RunAuthDefault shows, sets, or clears the device-local default unlock
+// method. The setting lives in ~/.fd0/config.toml and is never synced.
+func RunAuthDefault(ctx context.Context, method string, clear bool) error {
+	_ = ctx
+	method = strings.TrimSpace(method)
+	if clear && method != "" {
+		return errors.New("pass either a method or --clear, not both")
+	}
+	paths, err := fdhome.Resolve()
+	if err != nil {
+		return err
+	}
+	uctx, err := chain.ReplayUser(paths.UserChain)
+	if err != nil {
+		return fmt.Errorf("replay user chain: %w", err)
+	}
+	if uctx == nil || uctx.LatestAuthSet == nil {
+		return errors.New("no auth methods on user chain — run `fd0 init` first")
+	}
+	active := uctx.LatestAuthSet.Payload.Active
+	if clear {
+		if err := fdhome.SetAuthDefaultMethod(paths.Config, ""); err != nil {
+			return err
+		}
+		fmt.Fprintln(os.Stderr, "✓ cleared default auth method")
+		return nil
+	}
+	if method == "" {
+		cfg, err := fdhome.LoadConfig(paths.Config)
+		if err != nil {
+			return err
+		}
+		current := strings.TrimSpace(cfg.Auth.DefaultMethod)
+		if current == "" {
+			fmt.Println("auth default: none")
+			return nil
+		}
+		if m, err := pickUnlockMethod(active, current); err == nil {
+			fmt.Printf("auth default: %s (type=%s, method_id=%s)\n", current, m.MethodType, m.MethodID)
+		} else {
+			fmt.Printf("auth default: %s (not enrolled)\n", current)
+		}
+		return nil
+	}
+	m, err := pickUnlockMethod(active, method)
+	if err != nil {
+		return fmt.Errorf("auth default %q: no enrolled method matches; use a type or method_id from `fd0 auth ls` (have %s)", method, summariseMethodSelectors(active))
+	}
+	if err := fdhome.SetAuthDefaultMethod(paths.Config, method); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "✓ default auth method set to %s (type=%s, method_id=%s)\n", method, m.MethodType, m.MethodID)
 	return nil
 }
 

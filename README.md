@@ -65,6 +65,21 @@ go test ./internal/wirecompat -run TestWireCompatV1Verify
 cd website && bun run build
 ```
 
+## Runtime config
+
+The client reads local configuration from `~/.fd0/config.toml` or from
+`$FD0_HOME/config.toml` in tests. Runtime preferences are device-local and are
+not synced.
+
+```toml
+[auth]
+default_method = "yubikey" # or "passphrase", or an auth method_id
+```
+
+Users should normally set this through `fd0 auth default METHOD` instead of
+editing the file by hand. `fd0 unlock --method=...` overrides the local default
+for one invocation.
+
 ## Repository layout
 
 | Path | Contents |
