@@ -21,7 +21,7 @@ The server's operator can withhold service (denial), trigger replay-by-restore, 
 Every user holds an ed25519 `super_keypair`. The private half (`super_priv`) lives:
 
 1. **On disk** wrapped under the unlock passphrase (or YubiKey-PIV X25519 key), in `~/.fd0/vault.enc`.
-2. **In memory** mlocked inside `fd0-agent` after `fd0 unlock` runs. The agent zeroes it on `fd0 lock`, on the configured idle timeout, or on max-lifetime.
+2. **In memory** mlocked inside `fd0-agent` after `fd0 unlock` runs. The agent zeroes it on `fd0 lock`, on the configured idle timeout, or on max-lifetime. Status checks and rejected IPC requests do not extend the idle deadline; only successful protected operations do. Max-lifetime is absolute.
 3. **Optionally on a paper QR** or other off-host medium, via `fd0 recovery export`. The export is itself encrypted under a separate recovery passphrase.
 
 `super_priv` is the root of identity. Loss without a recovery export means the user cannot decrypt anything they wrote.

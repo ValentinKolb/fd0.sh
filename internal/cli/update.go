@@ -36,15 +36,16 @@ const (
 var ErrUpdateAvailable = errors.New("fd0 update available")
 
 type UpdateOptions struct {
-	CurrentVersion string
-	CurrentFlavor  string
-	Version        string
-	Flavor         string
-	Prefix         string
-	System         bool
-	CheckOnly      bool
-	Yes            bool
-	NoVerify       bool
+	CurrentVersion   string
+	CurrentFlavor    string
+	ManagedByDesktop bool
+	Version          string
+	Flavor           string
+	Prefix           string
+	System           bool
+	CheckOnly        bool
+	Yes              bool
+	NoVerify         bool
 
 	APIBase     string
 	ReleaseBase string
@@ -93,6 +94,11 @@ func RunUpdate(ctx context.Context, opts UpdateOptions) error {
 	}
 	if opts.Stderr == nil {
 		opts.Stderr = os.Stderr
+	}
+	if opts.ManagedByDesktop || os.Getenv("FD0_DESKTOP_MANAGED") == "1" {
+		fmt.Fprintln(opts.Stdout, "fd0 is managed by fd0 Desktop.")
+		fmt.Fprintln(opts.Stdout, "Open fd0 Desktop > Support > Check now to update the app, CLI, and agent together.")
+		return nil
 	}
 	if opts.HTTPClient == nil {
 		opts.HTTPClient = &http.Client{Timeout: 30 * time.Second}

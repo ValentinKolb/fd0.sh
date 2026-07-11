@@ -21,6 +21,14 @@ const cardURLPrefix = "fd0://card/"
 // Default expiry for an exported card.
 const cardDefaultLifetime = 24 * time.Hour
 
+type IdentityCardInfo struct {
+	URL          string
+	ShortID      string
+	SuperPub     []byte
+	SafetyNumber string
+	ExpiresAt    time.Time
+}
+
 // shortIDFromPub returns a shortId stand-in derived from super_pub. v1 has no
 // server-assigned shortId until first sync; we use the first 8 base32-lower
 // chars of the super_pub for determinism. Spec §2.2 calls shortId
@@ -34,12 +42,10 @@ func shortIDFromPub(pub []byte) string {
 	return enc
 }
 
-// RunCardExport prints a signed IdentityCard URL. Replaces the v0 raw-pubkey
-// shortcut: from now on, members are added by card URL.
-func RunCardExport(ctx context.Context) error {
+func ExportIdentityCard(ctx context.Context) (*IdentityCardInfo, error) {
 	s, err := Open(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer s.Close()
 	now := time.Now()
@@ -52,22 +58,56 @@ func RunCardExport(ctx context.Context) error {
 	}
 	si, err := card.SignedInput()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	sig, err := s.Agent.Sign(si)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	card.Signature = sig
+	return identityCardInfo(card)
+}
+
+func InspectIdentityCard(input string) (*IdentityCardInfo, error) {
+	card, err := parseCardURL(input)
+	if err != nil {
+		return nil, err
+	}
+	if err := verifyCard(card); err != nil {
+		return nil, err
+	}
+	return identityCardInfo(card)
+}
+
+func identityCardInfo(card *proto.IdentityCard) (*IdentityCardInfo, error) {
 	cb, err := proto.Marshal(card)
+	if err != nil {
+		return nil, err
+	}
+	safetyNumber, err := SafetyNumber(card.ShortID, card.SuperPub)
+	if err != nil {
+		return nil, err
+	}
+	return &IdentityCardInfo{
+		URL:          cardURLPrefix + base64.RawURLEncoding.EncodeToString(cb),
+		ShortID:      card.ShortID,
+		SuperPub:     append([]byte(nil), card.SuperPub...),
+		SafetyNumber: safetyNumber,
+		ExpiresAt:    time.Unix(int64(card.ExpiresAt), 0),
+	}, nil
+}
+
+// RunCardExport prints a signed IdentityCard URL. Replaces the v0 raw-pubkey
+// shortcut: from now on, members are added by card URL.
+func RunCardExport(ctx context.Context) error {
+	info, err := ExportIdentityCard(ctx)
 	if err != nil {
 		return err
 	}
-	fmt.Println(cardURLPrefix + base64.RawURLEncoding.EncodeToString(cb))
+	fmt.Println(info.URL)
 	// Hint with safety number on stderr so the holder can recite it OOB.
-	sn, _ := SafetyNumber(card.ShortID, card.SuperPub)
-	fmt.Fprintf(os.Stderr, "\nSafety number (verify out-of-band):\n%s\n", indent(sn, "  "))
-	fmt.Fprintf(os.Stderr, "Expires: %s\n", time.Unix(int64(card.ExpiresAt), 0).Format(time.RFC3339))
+	fmt.Fprintf(os.Stderr, "\nSafety number (verify out-of-band):\n%s\n", indent(info.SafetyNumber, "  "))
+	fmt.Fprintf(os.Stderr, "Expires: %s\n", info.ExpiresAt.Format(time.RFC3339))
 	return nil
 }
 
@@ -75,11 +115,8 @@ func RunCardExport(ctx context.Context) error {
 // displays the safety number, and on user confirmation pins the (super_pub,
 // label) into vault.PinnedIdentities.
 func RunCardImport(ctx context.Context, cardInput, label string, yes bool) error {
-	card, err := parseCardURL(cardInput)
+	info, err := InspectIdentityCard(cardInput)
 	if err != nil {
-		return err
-	}
-	if err := verifyCard(card); err != nil {
 		return err
 	}
 	s, err := Open(ctx)
@@ -88,22 +125,21 @@ func RunCardImport(ctx context.Context, cardInput, label string, yes bool) error
 	}
 	defer s.Close()
 	if label == "" {
-		label = card.ShortID
+		label = info.ShortID
 	}
 	// Refuse to silently rebind: error if label points to a different pub.
 	if existing, ok := s.Body.PinnedIdentities[label]; ok {
-		if !bytesEq(existing.SuperPub, card.SuperPub) {
+		if !bytesEq(existing.SuperPub, info.SuperPub) {
 			return fmt.Errorf("label %q already pins a different identity (%s…)", label, b64sub(existing.SuperPub))
 		}
 		fmt.Fprintf(os.Stderr, "✓ %s already pinned (no-op)\n", label)
 		return nil
 	}
-	sn, _ := SafetyNumber(card.ShortID, card.SuperPub)
 	fmt.Fprintf(os.Stderr, "Importing identity card:\n")
-	fmt.Fprintf(os.Stderr, "  shortId : %s\n", card.ShortID)
-	fmt.Fprintf(os.Stderr, "  pub     : %s…\n", b64sub(card.SuperPub))
-	fmt.Fprintf(os.Stderr, "  expires : %s\n", time.Unix(int64(card.ExpiresAt), 0).Format(time.RFC3339))
-	fmt.Fprintf(os.Stderr, "\nSafety number (compare out-of-band):\n%s\n\n", indent(sn, "  "))
+	fmt.Fprintf(os.Stderr, "  shortId : %s\n", info.ShortID)
+	fmt.Fprintf(os.Stderr, "  pub     : %s…\n", b64sub(info.SuperPub))
+	fmt.Fprintf(os.Stderr, "  expires : %s\n", info.ExpiresAt.Format(time.RFC3339))
+	fmt.Fprintf(os.Stderr, "\nSafety number (compare out-of-band):\n%s\n\n", indent(info.SafetyNumber, "  "))
 	if !yes {
 		if !IsTTY(os.Stdin) {
 			return errors.New("non-interactive: pass --yes to confirm")
@@ -119,7 +155,7 @@ func RunCardImport(ctx context.Context, cardInput, label string, yes bool) error
 		s.Body.PinnedIdentities = map[string]proto.PinnedIdentity{}
 	}
 	s.Body.PinnedIdentities[label] = proto.PinnedIdentity{
-		SuperPub: append([]byte(nil), card.SuperPub...),
+		SuperPub: append([]byte(nil), info.SuperPub...),
 		Label:    label,
 	}
 	if err := s.ReSeal(); err != nil {
@@ -221,14 +257,11 @@ func verifyCard(card *proto.IdentityCard) error {
 func (s *Session) resolveMember(input string) ([]byte, error) {
 	input = strings.TrimSpace(input)
 	if strings.HasPrefix(input, cardURLPrefix) {
-		card, err := parseCardURL(input)
+		info, err := InspectIdentityCard(input)
 		if err != nil {
 			return nil, err
 		}
-		if err := verifyCard(card); err != nil {
-			return nil, err
-		}
-		return card.SuperPub, nil
+		return info.SuperPub, nil
 	}
 	if p, ok := s.Body.PinnedIdentities[input]; ok {
 		return append([]byte(nil), p.SuperPub...), nil

@@ -1,6 +1,6 @@
-# Installing the fd0 client and this skill
+# Installing fd0 and this skill
 
-Two separate installs: the **fd0 CLI** itself (binaries on the user's machine), and the **skill** (these files, so an agent can use the CLI correctly).
+The fd0 product and this agent skill are installed separately. Install either the CLI-only product or the Desktop bundle; install the skill so an agent can operate fd0 correctly.
 
 ## The fd0 CLI
 
@@ -45,6 +45,20 @@ If `fd0` is not on PATH, the install script prints a one-line fix for the user's
 
 Windows: not yet built by the release pipeline. The binaries cross-compile but the agent's AF_UNIX socket is unvalidated. Track at https://github.com/ValentinKolb/fd0.sh/issues.
 
+## fd0 Desktop
+
+```bash
+curl -fsSL https://fd0.sh/install | sh -s -- --desktop
+```
+
+Desktop is one versioned bundle containing the app, YubiKey-capable CLI, and agent. Its installer creates `fd0` and `fd0-agent` wrappers in `~/.local/bin` or `/usr/local/bin`; do not install a second CLI release on top. Desktop updates the app, CLI, and agent together from **Support**. A bundled `fd0 update` prints that handoff instead of modifying the signed app.
+
+Uninstall the app and its marked wrappers without deleting `~/.fd0`:
+
+```bash
+curl -fsSL https://fd0.sh/install-desktop | sh -s -- --uninstall
+```
+
 ## This skill
 
 This skill lives at `skills/fd0/` inside the `ValentinKolb/fd0.sh` repository. The expected install path on the user's machine is `~/.claude/skills/fd0/` (or whatever skill directory their agent runtime reads from).
@@ -77,14 +91,17 @@ After install, the agent should recognise prompts like "save my deploy key" or "
 
 ## Updating
 
-Both the CLI and the skill are version-tracked separately under the project's scoped tag scheme (`client-vX.Y.Z` for the CLI; the skill ships alongside the repo and updates when the repo does).
+The CLI-only release, Desktop release, and skill use separate update channels: `client-vX.Y.Z`, `desktop-vX.Y.Z`, and the repository version containing the skill.
 
 ```bash
-# Update the CLI
+# Update a CLI-only installation
 fd0 update
+
+# Update a Desktop installation in the app
+# fd0 Desktop > Support > Check now
 
 # Update the skill (re-run the install)
 bunx skills add ValentinKolb/fd0.sh
 ```
 
-The CLI installer is still idempotent for fresh machines and script bootstrap. For machines that already have fd0, prefer `fd0 update` because it preserves the installed release flavor.
+Both product installers are idempotent. Use `fd0 update` only for CLI-only installations; Desktop-managed commands hand off to the app updater.

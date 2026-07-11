@@ -260,6 +260,18 @@ const app = new Hono()
       302,
     ),
   )
+  .get("/install-desktop", (c) =>
+    c.redirect(
+      "https://raw.githubusercontent.com/ValentinKolb/fd0.sh/main/scripts/install-desktop.sh",
+      302,
+    ),
+  )
+  .get("/install-desktop.sh", (c) =>
+    c.redirect(
+      "https://raw.githubusercontent.com/ValentinKolb/fd0.sh/main/scripts/install-desktop.sh",
+      302,
+    ),
+  )
   // Pages
   .get("/", ...Home)
   .get("/docs", ...DocsOverview)

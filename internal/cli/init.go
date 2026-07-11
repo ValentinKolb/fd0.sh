@@ -22,28 +22,58 @@ import (
 // RunInit performs first-time setup: generate identity, ask for passphrase,
 // build a passphrase auth.set genesis, write user.cbor and vault.enc.
 func RunInit(ctx context.Context) error {
-	paths, err := fdhome.Resolve()
-	if err != nil {
-		return err
-	}
-	if err := paths.EnsureDirs(); err != nil {
-		return err
-	}
-	if VaultExists(paths) {
-		return fmt.Errorf("vault already exists at %s; refuse to overwrite", paths.Vault)
-	}
-	if _, err := os.Stat(paths.UserChain); err == nil {
-		return fmt.Errorf("user chain already exists at %s; refuse to overwrite", paths.UserChain)
-	}
 	pass, err := ReadPassphraseConfirm("Choose a passphrase: ", "Confirm passphrase: ")
 	if err != nil {
 		return err
 	}
 	defer crypto.Wipe(pass)
+	result, err := InitWithPassphrase(ctx, pass)
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(os.Stderr, "✓ identity created (%s…)\n", b64sub(result.UserSuperPub))
+	fmt.Fprintf(os.Stderr, "✓ vault written to %s\n", result.VaultPath)
+	fmt.Fprintln(os.Stderr, "Run `fd0 unlock` to start the agent.")
+	return nil
+}
+
+// InitResult describes the identity and vault created by InitWithPassphrase.
+// It intentionally contains no private key material.
+type InitResult struct {
+	UserSuperPub []byte
+	VaultPath    string
+}
+
+// InitWithPassphrase performs the non-interactive core of RunInit. The caller
+// owns and must wipe pass. Accepting bytes keeps credentials out of process
+// arguments and environment variables for structured frontends.
+func InitWithPassphrase(ctx context.Context, pass []byte) (*InitResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if len(pass) == 0 {
+		return nil, errors.New("passphrase cannot be empty")
+	}
+	paths, err := fdhome.Resolve()
+	if err != nil {
+		return nil, err
+	}
+	if err := paths.EnsureDirs(); err != nil {
+		return nil, err
+	}
+	if VaultExists(paths) {
+		return nil, fmt.Errorf("vault already exists at %s; refuse to overwrite", paths.Vault)
+	}
+	if _, err := os.Stat(paths.UserChain); err == nil {
+		return nil, fmt.Errorf("user chain already exists at %s; refuse to overwrite", paths.UserChain)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
 
 	pub, priv, err := crypto.GenerateIdentity()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// Wave C-3': pub/priv are typed. Wire-format APIs (vault
 	// wraps, proto VaultBody, chain.LocalSigner) consume []byte;
@@ -57,22 +87,22 @@ func RunInit(ctx context.Context) error {
 
 	salt, err := crypto.RandomBytes(16)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	pp, err := vault.NewPassphraseParams(salt, crypto.DefaultArgon2)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	unlockKey, err := crypto.DeriveKey(pass, salt, crypto.DefaultArgon2)
 	if err != nil {
-		return fmt.Errorf("derive K_unlock: %w", err)
+		return nil, fmt.Errorf("derive K_unlock: %w", err)
 	}
 	defer crypto.Wipe(unlockKey)
 
 	methodID := "am_" + ulid.Make().String()
 	encSP, err := vault.EncryptSuperPriv(privBytes, pubBytes, methodID, unlockKey)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Genesis auth.set. LocalSigner now holds the typed priv so
@@ -86,15 +116,22 @@ func RunInit(ctx context.Context) error {
 		EncryptedSuperPriv: encSP,
 	}})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := chain.AppendUser(paths.UserChain, g); err != nil {
-		return err
+		return nil, err
 	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = os.Remove(paths.UserChain)
+			_ = os.Remove(paths.Vault)
+		}
+	}()
 	// Compute auth_tip.
 	prefix, err := g.PrevHashInput()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	authTipHash := proto.HashPrefix(prefix)
 
@@ -111,13 +148,14 @@ func RunInit(ctx context.Context) error {
 		PublicParams: pp,
 		UnlockKey:    unlockKey,
 	}}); err != nil {
-		return err
+		return nil, err
 	}
+	committed = true
 
-	fmt.Fprintf(os.Stderr, "✓ identity created (%s…)\n", b64sub(pubBytes))
-	fmt.Fprintf(os.Stderr, "✓ vault written to %s\n", paths.Vault)
-	fmt.Fprintf(os.Stderr, "Run `fd0 unlock` to start the agent.\n")
-	return nil
+	return &InitResult{
+		UserSuperPub: append([]byte(nil), pubBytes...),
+		VaultPath:    paths.Vault,
+	}, nil
 }
 
 // RunUnlock starts the agent if necessary, then sends the credential

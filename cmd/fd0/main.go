@@ -22,6 +22,9 @@ import (
 // version is overwritten by goreleaser via `-ldflags="-X main.version=..."`.
 var version = "dev"
 
+// distribution is set to "desktop" for the CLI embedded in fd0 Desktop.
+var distribution = "standalone"
+
 type rootCLI struct {
 	Init     initCmd     `cmd:"" help:"Create a new identity and vault."`
 	Unlock   unlockCmd   `cmd:"" help:"Start the agent and unlock the vault."`
@@ -801,15 +804,16 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 		return nil
 	case "update":
 		return cli.RunUpdate(ctx, cli.UpdateOptions{
-			CurrentVersion: version,
-			CurrentFlavor:  buildinfo.Flavor,
-			Version:        c.Update.Version,
-			Flavor:         c.Update.Flavor,
-			Prefix:         c.Update.Prefix,
-			System:         c.Update.System,
-			CheckOnly:      c.Update.Check,
-			Yes:            c.Update.Yes,
-			NoVerify:       c.Update.NoVerify,
+			CurrentVersion:   version,
+			CurrentFlavor:    buildinfo.Flavor,
+			ManagedByDesktop: distribution == "desktop",
+			Version:          c.Update.Version,
+			Flavor:           c.Update.Flavor,
+			Prefix:           c.Update.Prefix,
+			System:           c.Update.System,
+			CheckOnly:        c.Update.Check,
+			Yes:              c.Update.Yes,
+			NoVerify:         c.Update.NoVerify,
 		})
 
 	// ─── key ──────────────────────────────────────────────────────────

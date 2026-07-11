@@ -145,7 +145,9 @@ Status legend:
 - **Mitigation** 🛡️: `mlock` on super_priv buffer (memguard);
   zeroization (`crypto.Wipe` with `runtime.KeepAlive` safeguard);
   agent runs as a separate process so CLI memory never holds the
-  raw priv.
+  raw priv. Lifecycle deadlines are checked before every IPC
+  operation. Status and rejected requests cannot extend idle time;
+  max-lifetime cannot be extended by activity.
 - **Code**: `internal/agent/server.go` mlocked buffers,
   `internal/crypto/wipe.go`, `internal/crypto/keys.go`
   `Ed25519Priv.Wipe`.

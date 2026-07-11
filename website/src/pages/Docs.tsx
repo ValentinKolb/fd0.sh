@@ -237,17 +237,28 @@ const InstallBody = () => (
     <H2>Install the client</H2>
     <Box>{`$ curl -fsSL https://fd0.sh/install | sh
 $ fd0 version
-fd0 0.11.0 standard`}</Box>
+fd0 <version> standard`}</Box>
     <P>
-      The installer picks Linux or macOS, amd64 or arm64, verifies the release
-      manifest with cosign when available, and writes <Code>fd0</Code> plus{" "}
+      The installer picks Linux or macOS, amd64 or arm64, verifies SHA-256,
+      verifies the release manifest with cosign when available, and writes <Code>fd0</Code> plus{" "}
       <Code>fd0-agent</Code> to <Code>~/.local/bin</Code>. Use{" "}
       <Code>--system</Code> to install into <Code>/usr/local/bin</Code>.
     </P>
+    <H2>Install fd0 Desktop</H2>
+    <Box>{`$ curl -fsSL https://fd0.sh/install | sh -s -- --desktop`}</Box>
+    <P>
+      This installs one versioned bundle containing fd0 Desktop, the CLI, and
+      the agent. The <Code>fd0</Code> and <Code>fd0-agent</Code> commands point
+      into that bundle, so an app update updates all three together. Desktop
+      manages passwords, general secrets, SSH hosts and keys, kubeconfigs, and
+      Talos contexts through the same local agent.
+    </P>
+    <Box>{`$ curl -fsSL https://fd0.sh/install-desktop | sh -s -- --uninstall`}</Box>
+    <P>Uninstall removes the app and its managed command wrappers. It does not remove <Code>~/.fd0</Code> or your vault data.</P>
     <H2>Install the YubiKey flavor</H2>
     <Box>{`$ curl -fsSL https://fd0.sh/install | sh -s -- --yubikey
 $ fd0 version
-fd0 0.11.0 yubikey`}</Box>
+fd0 <version> yubikey`}</Box>
     <P>
       The YubiKey flavor includes PIV support in both <Code>fd0</Code> and{" "}
       <Code>fd0-agent</Code>. Use it on machines that should enroll or unlock
@@ -266,6 +277,11 @@ $ fd0 update --flavor=yubikey`}</Box>
       switch deliberately. If the agent is running, restart it after the update
       with <Code>fd0 agent restart</Code>.
     </P>
+    <Note>
+      Desktop-managed installations update from fd0 Desktop under Support. In
+      that installation, <Code>fd0 update</Code> points to the app updater
+      instead of modifying files inside the signed bundle.
+    </Note>
     <Note>
       Windows is not supported yet. The binaries cross-compile, but the agent
       socket path has not been validated on Windows.

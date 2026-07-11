@@ -57,6 +57,21 @@ func TestUpdateVersionHelpers(t *testing.T) {
 	}
 }
 
+func TestRunUpdateHandsDesktopManagedInstallToDesktop(t *testing.T) {
+	var out bytes.Buffer
+	err := RunUpdate(context.Background(), UpdateOptions{
+		ManagedByDesktop: true,
+		Stdout:           &out,
+		Stderr:           ioDiscard{},
+	})
+	if err != nil {
+		t.Fatalf("RunUpdate: %v", err)
+	}
+	if !strings.Contains(out.String(), "managed by fd0 Desktop") || !strings.Contains(out.String(), "Support > Check now") {
+		t.Fatalf("unexpected output:\n%s", out.String())
+	}
+}
+
 func TestRunUpdateCheckUsesLatestClientRelease(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/releases" {

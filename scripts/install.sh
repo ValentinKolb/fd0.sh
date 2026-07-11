@@ -3,6 +3,7 @@
 #
 #   curl -fsSL https://fd0.sh/install | sh
 #   curl -fsSL https://fd0.sh/install | sh -s -- --yubikey
+#   curl -fsSL https://fd0.sh/install | sh -s -- --desktop
 #   curl -fsSL https://fd0.sh/install | sh -s -- --system
 #   FD0_VERSION=v1.0.0 curl -fsSL https://fd0.sh/install | sh
 #
@@ -41,14 +42,17 @@ VERIFY=1
 ASSUME_YES=0
 BINARIES="fd0 fd0-agent"
 FLAVOR="${FD0_FLAVOR:-auto}"
+DESKTOP=0
+CUSTOM_PREFIX=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --system)       SYSTEM=1; PREFIX="/usr/local/bin"; shift ;;
-        --prefix=*)     PREFIX="${1#--prefix=}"; shift ;;
+        --prefix=*)     PREFIX="${1#--prefix=}"; CUSTOM_PREFIX=1; shift ;;
         --version=*)    VERSION="${1#--version=}"; shift ;;
         --flavor=*)     FLAVOR="${1#--flavor=}"; shift ;;
         --yubikey)      FLAVOR="yubikey"; shift ;;
+        --desktop)      DESKTOP=1; shift ;;
         --no-verify)    VERIFY=0; shift ;;
         -y|--yes)       ASSUME_YES=1; shift ;;
         -h|--help)
@@ -62,7 +66,8 @@ Installs or upgrades the fd0 client (fd0, fd0-agent).
   --version=vX.Y.Z    install a specific release tag (default: latest)
   --flavor=FLAVOR     install flavor: auto, standard, or yubikey (default: auto)
   --yubikey           shortcut for --flavor=yubikey
-  --no-verify         skip cosign verification of the release manifest
+  --desktop           install the signed desktop bundle, including its managed CLI and agent
+  --no-verify         skip Cosign verification; SHA-256 is still required
   -y, --yes           assume yes for the upgrade prompt
   -h, --help          show this help
 
@@ -81,6 +86,33 @@ done
 # ─── small helpers ───────────────────────────────────────────────────────
 die() { printf 'fd0: %s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
+
+install_desktop() {
+    desktop_yes="$1"
+    desktop_installer_url="${FD0_DESKTOP_INSTALL_URL:-https://fd0.sh/install-desktop}"
+    desktop_version="$VERSION"
+    case "$desktop_version" in
+        latest|desktop-v*) ;;
+        client-v*) desktop_version="desktop-v${desktop_version#client-v}" ;;
+        fd0-v*)    desktop_version="desktop-v${desktop_version#fd0-v}" ;;
+        v*)        desktop_version="desktop-v${desktop_version#v}" ;;
+        [0-9]*)    desktop_version="desktop-v${desktop_version}" ;;
+        *) die "invalid desktop version: $desktop_version" ;;
+    esac
+    have curl || die "curl required for fd0 Desktop"
+    curl -fsSL "$desktop_installer_url" | \
+        FD0_DESKTOP_SYSTEM="$SYSTEM" \
+        FD0_DESKTOP_VERIFY="$VERIFY" \
+        FD0_DESKTOP_ASSUME_YES="$desktop_yes" \
+        FD0_DESKTOP_VERSION="$desktop_version" \
+        sh
+}
+
+if [ "$DESKTOP" = "1" ]; then
+    [ "$CUSTOM_PREFIX" = "0" ] || die "--prefix cannot be combined with --desktop; use --system for a system install"
+    install_desktop "$ASSUME_YES"
+    exit 0
+fi
 
 # Prompt unless stdin isn't a tty or -y was passed. Default Y; only `n` or
 # `N` aborts. Reads from /dev/tty so the prompt survives `curl … | sh`.
@@ -179,12 +211,11 @@ else
     action="install"
 fi
 if [ "$VERIFY" = "1" ] && have cosign; then
-    printf '  verify:  cosign (keyless, github actions)\n'
+    printf '  verify:  sha256 + cosign (keyless, github actions)\n'
 elif [ "$VERIFY" = "1" ]; then
-    printf '  verify:  skipped — cosign not installed (pass --no-verify to silence)\n'
-    VERIFY=0
+    printf '  verify:  sha256; cosign unavailable\n'
 else
-    printf '  verify:  disabled (--no-verify)\n'
+    printf '  verify:  sha256; cosign disabled\n'
 fi
 printf '\n'
 confirm "proceed with ${action}?" || { printf 'aborted.\n'; exit 1; }
@@ -206,12 +237,12 @@ printf '→ fetching %s/%s\n' "$DL" "$TARBALL"
 curl -fsSL "$DL/${TARBALL}" -o "$TMP/${TARBALL}" \
     || die "could not download tarball — bad version (${VERSION}) or no asset for ${OS}/${ARCH}?"
 
-if [ "$VERIFY" = "1" ]; then
-    printf '→ fetching checksum manifest + cosign signature\n'
-    curl -fsSL "$DL/checksums.txt"     -o "$TMP/checksums.txt"     || die "missing checksums.txt"
+printf '→ fetching checksum manifest\n'
+curl -fsSL "$DL/checksums.txt" -o "$TMP/checksums.txt" || die "missing checksums.txt"
+if [ "$VERIFY" = "1" ] && have cosign; then
+    printf '→ fetching and verifying cosign signature\n'
     curl -fsSL "$DL/checksums.txt.sig" -o "$TMP/checksums.txt.sig" || die "missing checksums.txt.sig"
     curl -fsSL "$DL/checksums.txt.pem" -o "$TMP/checksums.txt.pem" || die "missing checksums.txt.pem"
-    printf '→ verifying cosign signature on checksums.txt\n'
     cosign verify-blob \
         --certificate            "$TMP/checksums.txt.pem" \
         --signature              "$TMP/checksums.txt.sig" \
@@ -219,18 +250,18 @@ if [ "$VERIFY" = "1" ]; then
         --certificate-oidc-issuer https://token.actions.githubusercontent.com \
         "$TMP/checksums.txt" >/dev/null 2>&1 \
         || die "cosign verification failed — refusing to install"
-    printf '→ verifying tarball sha256 against manifest\n'
-    expected=$(awk -v t="$TARBALL" '$2 == t || $2 == "*"t {print $1}' "$TMP/checksums.txt")
-    [ -n "$expected" ] || die "tarball not listed in checksums.txt"
-    if have sha256sum; then
-        actual=$(sha256sum "$TMP/${TARBALL}" | awk '{print $1}')
-    elif have shasum; then
-        actual=$(shasum -a 256 "$TMP/${TARBALL}" | awk '{print $1}')
-    else
-        die "need sha256sum or shasum to verify"
-    fi
-    [ "$actual" = "$expected" ] || die "sha256 mismatch — tarball does not match signed manifest"
 fi
+printf '→ verifying tarball sha256 against manifest\n'
+expected=$(awk -v t="$TARBALL" '$2 == t || $2 == "*"t {print $1}' "$TMP/checksums.txt")
+[ -n "$expected" ] || die "tarball not listed in checksums.txt"
+if have sha256sum; then
+    actual=$(sha256sum "$TMP/${TARBALL}" | awk '{print $1}')
+elif have shasum; then
+    actual=$(shasum -a 256 "$TMP/${TARBALL}" | awk '{print $1}')
+else
+    die "need sha256sum or shasum to verify"
+fi
+[ "$actual" = "$expected" ] || die "sha256 mismatch — tarball does not match manifest"
 
 tar -xzf "$TMP/${TARBALL}" -C "$TMP" || die "could not extract tarball"
 

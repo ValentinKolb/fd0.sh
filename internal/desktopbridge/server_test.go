@@ -1,0 +1,481 @@
+package desktopbridge
+
+import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/valentinkolb/fd0.sh/internal/agent"
+	"github.com/valentinkolb/fd0.sh/internal/chain"
+	"github.com/valentinkolb/fd0.sh/internal/cli"
+	"github.com/valentinkolb/fd0.sh/internal/crypto"
+	"github.com/valentinkolb/fd0.sh/internal/fdhome"
+	"github.com/valentinkolb/fd0.sh/internal/proto"
+)
+
+type handlerFunc func(context.Context, string, json.RawMessage) (any, error)
+
+func (f handlerFunc) Handle(ctx context.Context, method string, params json.RawMessage) (any, error) {
+	return f(ctx, method, params)
+}
+
+func TestServerRoundTrip(t *testing.T) {
+	server := Server{Handler: handlerFunc(func(_ context.Context, method string, params json.RawMessage) (any, error) {
+		if method != "bridge.handshake" {
+			t.Fatalf("method=%q", method)
+		}
+		return map[string]int{"protocol": ProtocolVersion}, nil
+	})}
+	input := strings.NewReader(`{"version":1,"id":"request-1","method":"bridge.handshake","params":{}}` + "\n")
+	var output bytes.Buffer
+	if err := server.Serve(context.Background(), input, &output); err != nil {
+		t.Fatal(err)
+	}
+	var response Response
+	if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.ID != "request-1" || response.Error != nil {
+		t.Fatalf("response=%+v", response)
+	}
+}
+
+func TestServerRejectsUnknownEnvelopeFieldsWithoutEchoingSecrets(t *testing.T) {
+	server := Server{Handler: handlerFunc(func(context.Context, string, json.RawMessage) (any, error) {
+		t.Fatal("handler must not run")
+		return nil, nil
+	})}
+	secret := "must-not-be-echoed"
+	input := strings.NewReader(`{"version":1,"id":"x","method":"vault.unlock","unexpected":"` + secret + `"}` + "\n")
+	var output bytes.Buffer
+	if err := server.Serve(context.Background(), input, &output); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), secret) {
+		t.Fatal("response echoed request secret")
+	}
+	if !strings.Contains(output.String(), `"code":"bad_request"`) {
+		t.Fatalf("output=%s", output.String())
+	}
+}
+
+func TestServerRejectsMultipleJSONValues(t *testing.T) {
+	server := Server{Handler: handlerFunc(func(context.Context, string, json.RawMessage) (any, error) {
+		t.Fatal("handler must not run")
+		return nil, nil
+	})}
+	input := strings.NewReader(`{"version":1,"id":"x","method":"bridge.handshake","params":{}} {"second":true}` + "\n")
+	var output bytes.Buffer
+	if err := server.Serve(context.Background(), input, &output); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), `"code":"bad_request"`) {
+		t.Fatalf("output=%s", output.String())
+	}
+}
+
+func TestWriteIsolatedMarkerRefusesDefaultHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := WriteIsolatedMarker(filepath.Join(home, ".fd0")); err == nil {
+		t.Fatal("expected production-home refusal")
+	}
+	if _, err := os.Stat(filepath.Join(home, ".fd0")); !os.IsNotExist(err) {
+		t.Fatalf("production home was touched: %v", err)
+	}
+	isolated := filepath.Join(home, "fd0 Desktop Dev")
+	if err := WriteIsolatedMarker(isolated); err != nil {
+		t.Fatal(err)
+	}
+	marker, err := os.ReadFile(filepath.Join(isolated, ".desktop-isolated"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(marker) != isolatedMarker {
+		t.Fatalf("marker=%q", marker)
+	}
+	linked := filepath.Join(home, "linked desktop")
+	if err := os.Symlink(isolated, linked); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteIsolatedMarker(linked); err == nil || !strings.Contains(err.Error(), "must not be a symlink") {
+		t.Fatalf("symlink err=%v", err)
+	}
+}
+
+func TestNewServiceFromEnvIsolatedMode(t *testing.T) {
+	userHome := filepath.Join(t.TempDir(), "user")
+	if err := os.MkdirAll(userHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", userHome)
+	home := filepath.Join(t.TempDir(), "desktop")
+	if err := WriteIsolatedMarker(home); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FD0_HOME", home)
+	t.Setenv("FD0_DESKTOP_MODE", "isolated")
+	t.Setenv("FD0_AGENT_BIN", filepath.Join(t.TempDir(), "fd0-agent"))
+	t.Setenv("FD0_SSH_SOCK", filepath.Join(t.TempDir(), "ssh.sock"))
+	t.Setenv("FD0_AGENT_SYNC_DISABLED", "1")
+
+	service, err := NewServiceFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if service.Home != home || service.Mode != "isolated" {
+		t.Fatalf("service=%+v", service)
+	}
+}
+
+func TestNewServiceFromEnvIsolatedModeFailsClosed(t *testing.T) {
+	userHome := filepath.Join(t.TempDir(), "user")
+	if err := os.MkdirAll(userHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", userHome)
+	agentBin := filepath.Join(t.TempDir(), "fd0-agent")
+	sshSock := filepath.Join(t.TempDir(), "ssh.sock")
+
+	tests := []struct {
+		name        string
+		home        func() string
+		marker      bool
+		sshSock     string
+		syncDisable string
+		want        string
+	}{
+		{
+			name:        "production home",
+			home:        func() string { return filepath.Join(userHome, ".fd0") },
+			marker:      true,
+			sshSock:     sshSock,
+			syncDisable: "1",
+			want:        "refuses the production fd0 home",
+		},
+		{
+			name:        "missing marker",
+			home:        func() string { return filepath.Join(t.TempDir(), "desktop") },
+			sshSock:     sshSock,
+			syncDisable: "1",
+			want:        "isolated home marker",
+		},
+		{
+			name:        "relative ssh socket",
+			home:        func() string { return filepath.Join(t.TempDir(), "desktop") },
+			marker:      true,
+			sshSock:     "ssh.sock",
+			syncDisable: "1",
+			want:        "must be absolute",
+		},
+		{
+			name:        "sync not disabled",
+			home:        func() string { return filepath.Join(t.TempDir(), "desktop") },
+			marker:      true,
+			sshSock:     sshSock,
+			syncDisable: "",
+			want:        "requires FD0_AGENT_SYNC_DISABLED=1",
+		},
+		{
+			name:        "production ssh socket",
+			home:        func() string { return filepath.Join(t.TempDir(), "desktop") },
+			marker:      true,
+			sshSock:     productionSSHSocketPath(),
+			syncDisable: "1",
+			want:        "refuses the production SSH agent socket",
+		},
+		{
+			name:        "ssh socket inside production home",
+			home:        func() string { return filepath.Join(t.TempDir(), "desktop") },
+			marker:      true,
+			sshSock:     filepath.Join(userHome, ".fd0", "ssh.sock"),
+			syncDisable: "1",
+			want:        "refuses the production SSH agent socket",
+		},
+		{
+			name:        "agent socket reused for ssh",
+			home:        func() string { return filepath.Join(t.TempDir(), "desktop") },
+			marker:      true,
+			sshSock:     "$AGENT_SOCK",
+			syncDisable: "1",
+			want:        "must differ from the fd0 agent socket",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := tt.home()
+			if err := os.MkdirAll(home, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if tt.marker {
+				if err := os.WriteFile(filepath.Join(home, ".desktop-isolated"), []byte(isolatedMarker), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Setenv("FD0_HOME", home)
+			t.Setenv("FD0_DESKTOP_MODE", "isolated")
+			t.Setenv("FD0_AGENT_BIN", agentBin)
+			sshSock := tt.sshSock
+			if sshSock == "$AGENT_SOCK" {
+				sshSock = filepath.Join(home, "agent.sock")
+			}
+			t.Setenv("FD0_SSH_SOCK", sshSock)
+			t.Setenv("FD0_AGENT_SYNC_DISABLED", tt.syncDisable)
+			_, err := NewServiceFromEnv()
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("err=%v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestNewServiceFromEnvRejectsSymlinkMarker(t *testing.T) {
+	userHome := filepath.Join(t.TempDir(), "user")
+	if err := os.MkdirAll(userHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", userHome)
+	home := filepath.Join(t.TempDir(), "desktop")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "marker")
+	if err := os.WriteFile(target, []byte(isolatedMarker), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(home, ".desktop-isolated")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FD0_HOME", home)
+	t.Setenv("FD0_DESKTOP_MODE", "isolated")
+	t.Setenv("FD0_AGENT_BIN", filepath.Join(t.TempDir(), "fd0-agent"))
+	t.Setenv("FD0_SSH_SOCK", filepath.Join(t.TempDir(), "ssh.sock"))
+	t.Setenv("FD0_AGENT_SYNC_DISABLED", "1")
+	_, err := NewServiceFromEnv()
+	if err == nil || !strings.Contains(err.Error(), "marker must not be a symlink") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestDecodeParamsRejectsMultipleJSONValues(t *testing.T) {
+	var params struct {
+		Value string `json:"value"`
+	}
+	if err := decodeParams(json.RawMessage(`{"value":"first"} {"value":"second"}`), &params); err == nil {
+		t.Fatal("expected multiple-value rejection")
+	}
+}
+
+func TestTrustedContactsAreSortedAndMarkExistingMembers(t *testing.T) {
+	alice := bytes.Repeat([]byte{1}, 32)
+	benny := bytes.Repeat([]byte{2}, 32)
+	contacts := trustedContacts(map[string]proto.PinnedIdentity{
+		"Benny":   {SuperPub: benny, Label: "Benny"},
+		"alice":   {SuperPub: alice, Label: "alice"},
+		"invalid": {SuperPub: []byte("short"), Label: "invalid"},
+	}, [][]byte{benny})
+	if len(contacts) != 2 {
+		t.Fatalf("contacts=%+v", contacts)
+	}
+	if contacts[0].Label != "alice" || contacts[0].Shared {
+		t.Fatalf("first contact=%+v", contacts[0])
+	}
+	if contacts[1].Label != "Benny" || !contacts[1].Shared {
+		t.Fatalf("second contact=%+v", contacts[1])
+	}
+}
+
+func TestScopeMembersIncludeSelfTrustedAndUnknown(t *testing.T) {
+	self := bytes.Repeat([]byte{1}, 32)
+	benny := bytes.Repeat([]byte{2}, 32)
+	unknown := bytes.Repeat([]byte{3}, 32)
+	members := scopeMembers(map[string]proto.PinnedIdentity{
+		"Benny": {SuperPub: benny, Label: "Benny"},
+	}, [][]byte{unknown, benny, self}, self)
+	if len(members) != 3 {
+		t.Fatalf("members=%+v", members)
+	}
+	if !members[0].Self || members[0].Label != "You" {
+		t.Fatalf("self=%+v", members[0])
+	}
+	if members[1].Label != "Benny" || !members[1].Trusted || members[1].Self {
+		t.Fatalf("trusted=%+v", members[1])
+	}
+	if members[2].Label != "Unknown member" || members[2].Trusted || members[2].Self {
+		t.Fatalf("unknown=%+v", members[2])
+	}
+	if decoded, err := base64.RawURLEncoding.DecodeString(members[2].ID); err != nil || !bytes.Equal(decoded, unknown) {
+		t.Fatalf("member id=%q err=%v", members[2].ID, err)
+	}
+}
+
+func TestAuthMethodSummariesAndSelection(t *testing.T) {
+	home := t.TempDir()
+	paths := fdhome.Paths{
+		Home:      home,
+		Config:    filepath.Join(home, "config.toml"),
+		Chains:    filepath.Join(home, "chains"),
+		UserChain: filepath.Join(home, "chains", "user.cbor"),
+	}
+	if err := os.MkdirAll(paths.Chains, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	pub, priv, err := crypto.GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer priv.Wipe()
+	yubikeyParams, err := proto.Marshal(proto.YubikeyPublicParams{
+		PinPolicy:   "never",
+		TouchPolicy: "always",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	methods := []proto.AuthMethod{
+		{MethodID: "am_z", MethodType: proto.AuthYubikey, PublicParams: yubikeyParams},
+		{MethodID: "am_a", MethodType: proto.AuthPassphrase},
+	}
+	event, err := chain.BuildUserAuthSet(chain.LocalSigner{Priv: priv}, pub.Bytes(), 0, nil, methods)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chain.AppendUser(paths.UserChain, event); err != nil {
+		t.Fatal(err)
+	}
+	if err := fdhome.SetAuthDefaultMethod(paths.Config, "am_z"); err != nil {
+		t.Fatal(err)
+	}
+
+	summaries, err := authMethodSummaries(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summaries) != 2 || summaries[0].ID != "am_a" || summaries[0].Label != "Passphrase" {
+		t.Fatalf("summaries=%+v", summaries)
+	}
+	if summaries[1].ID != "am_z" || summaries[1].Label != "YubiKey" || summaries[1].PINMode != "none" || summaries[1].TouchPolicy != "always" || !summaries[1].Default {
+		t.Fatalf("yubikey summary=%+v", summaries[1])
+	}
+
+	selected, err := selectAuthMethod(paths, methods, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected.MethodID != "am_z" {
+		t.Fatalf("default selected=%q", selected.MethodID)
+	}
+	selected, err = selectAuthMethod(paths, methods, proto.AuthPassphrase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected.MethodID != "am_a" {
+		t.Fatalf("type selected=%q", selected.MethodID)
+	}
+	if _, err := selectAuthMethod(paths, methods, "am_missing"); err == nil {
+		t.Fatal("expected missing-method error")
+	}
+}
+
+func TestYubikeyPINMode(t *testing.T) {
+	tests := []struct {
+		name   string
+		params []byte
+		want   string
+	}{
+		{name: "legacy", want: "optional"},
+		{name: "invalid", params: []byte("not-cbor"), want: "optional"},
+		{name: "touch only", params: mustYubikeyParams(t, "never"), want: "none"},
+		{name: "pin once", params: mustYubikeyParams(t, "once"), want: "required"},
+		{name: "pin always", params: mustYubikeyParams(t, "always"), want: "required"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := yubikeyPINMode(proto.AuthMethod{MethodType: proto.AuthYubikey, PublicParams: tt.params})
+			if got != tt.want {
+				t.Fatalf("got=%q want=%q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAgentCompatibility(t *testing.T) {
+	service := &Service{ExpectedVersion: "1.2.3", ExpectedFlavor: "yubikey"}
+	tests := []struct {
+		name   string
+		status *agent.StatusResp
+		want   bool
+	}{
+		{name: "matching", status: &agent.StatusResp{Version: "1.2.3", Flavor: "yubikey"}, want: true},
+		{name: "different version", status: &agent.StatusResp{Version: "1.2.2", Flavor: "yubikey"}},
+		{name: "different flavor", status: &agent.StatusResp{Version: "1.2.3", Flavor: "standard"}},
+		{name: "legacy metadata", status: &agent.StatusResp{}, want: true},
+		{name: "missing status"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := service.agentCompatible(tt.status); got != tt.want {
+				t.Fatalf("agentCompatible()=%v want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStopDesktopAgentCleansStaleFiles(t *testing.T) {
+	root := t.TempDir()
+	paths := fdhome.Paths{
+		AgentPID:  filepath.Join(root, "agent.pid"),
+		AgentSock: filepath.Join(root, "agent.sock"),
+	}
+	sshSock := filepath.Join(root, "ssh.sock")
+	t.Setenv("FD0_SSH_SOCK", sshSock)
+	for _, path := range []string{paths.AgentPID, paths.AgentSock, sshSock} {
+		if err := os.WriteFile(path, []byte("stale"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := stopDesktopAgent(paths); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{paths.AgentPID, paths.AgentSock, cli.SSHSocketPathForRender()} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("stale path still exists: %s", path)
+		}
+	}
+}
+
+func mustYubikeyParams(t *testing.T, pinPolicy string) []byte {
+	t.Helper()
+	data, err := proto.Marshal(proto.YubikeyPublicParams{PinPolicy: pinPolicy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func TestServerWipesAttachmentResult(t *testing.T) {
+	result := &FieldAttachmentResult{Name: "key.pem", Data: []byte("secret-key")}
+	server := Server{Handler: handlerFunc(func(context.Context, string, json.RawMessage) (any, error) {
+		return result, nil
+	})}
+	input := strings.NewReader(`{"version":1,"id":"request-1","method":"file.value","params":{}}` + "\n")
+	var output bytes.Buffer
+	if err := server.Serve(context.Background(), input, &output); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), `"data":"c2VjcmV0LWtleQ=="`) {
+		t.Fatalf("output=%s", output.String())
+	}
+	for i, value := range result.Data {
+		if value != 0 {
+			t.Fatalf("result byte %d was not wiped", i)
+		}
+	}
+}

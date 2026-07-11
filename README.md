@@ -24,6 +24,7 @@ and engineering references.
 | --- | --- |
 | `fd0` | CLI for vault, scopes, secrets, cards, SSH, Talos, Kube, sync, and recovery. |
 | `fd0-agent` | Local Unix-socket daemon. Holds unlocked identity material in memory and serves signing/decrypt/ssh-agent requests. |
+| `fd0 Desktop` | Electron/Solid desktop client. Uses a hardened preload boundary and a versioned Go bridge to the same local agent. |
 | `fd0-server` | HTTP API and SQLite store for signed encrypted event chains. |
 | `fd0-witness` | Passive transparency-log observer. Archives signed tree heads and detects equivocation. |
 | `fd0-website` | The hosted documentation and product site at `fd0.sh`. |
@@ -46,6 +47,16 @@ Build the website separately:
 cd website
 bun install
 bun run build
+```
+
+Build and test the desktop app separately:
+
+```sh
+cd desktop
+bun install
+bun run typecheck
+bun test
+bun run test:e2e
 ```
 
 ## Test and lint
@@ -91,6 +102,7 @@ for one invocation.
 | `tests/` | Multi-user integration shell suite. |
 | `tools/` | Threat coverage and Semgrep guardrails. |
 | `website/` | fd0.sh site and user-facing documentation. |
+| `desktop/` | Hardened Electron shell, Solid renderer, packaging, and desktop tests. |
 | `skills/` | Agent skill for safe fd0 CLI use. |
 
 ## Technical references
@@ -114,6 +126,7 @@ Component tags use separate namespaces:
 - `server-vX.Y.Z` for `fd0-server`
 - `witness-vX.Y.Z` for `fd0-witness`
 - `website-vX.Y.Z` for `fd0-website`
+- `desktop-vX.Y.Z` for the signed desktop bundle, managed CLI, and agent
 - `fd0-vX.Y.Z` for coordinated wire-protocol bumps
 
 Client releases publish two install flavors:
@@ -140,6 +153,15 @@ fd0 version   # fd0 X.Y.Z yubikey
 `fd0 update` preserves the installed flavor. Use
 `fd0 update --flavor=yubikey` or `fd0 update --flavor=standard` only when
 switching deliberately.
+
+Install the Desktop bundle, including its version-matched CLI and agent:
+
+```sh
+curl -fsSL https://fd0.sh/install | sh -s -- --desktop
+```
+
+Desktop-managed commands update from the app under **Support**, not through the
+CLI-only release channel.
 
 See [CHANGELOG.md](./CHANGELOG.md) for release history.
 

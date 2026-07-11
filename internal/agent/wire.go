@@ -153,13 +153,15 @@ type UnlockResp struct {
 
 // StatusResp reports current state. SuperPub is empty when locked.
 type StatusResp struct {
-	Unlocked       bool   `cbor:"unlocked"`
-	SinceUnix      int64  `cbor:"since,omitempty"`
-	UserSuperPub   []byte `cbor:"user_super_pub,omitempty"`
-	ActiveMethodID string `cbor:"active_method_id,omitempty"`
-	Version        string `cbor:"version,omitempty"`
-	Flavor         string `cbor:"flavor,omitempty"`
-	YubikeyEnabled bool   `cbor:"yubikey_enabled,omitempty"`
+	Unlocked          bool   `cbor:"unlocked"`
+	SinceUnix         int64  `cbor:"since,omitempty"`
+	UserSuperPub      []byte `cbor:"user_super_pub,omitempty"`
+	ActiveMethodID    string `cbor:"active_method_id,omitempty"`
+	Version           string `cbor:"version,omitempty"`
+	Flavor            string `cbor:"flavor,omitempty"`
+	YubikeyEnabled    bool   `cbor:"yubikey_enabled,omitempty"`
+	IdleTimeoutMillis int64  `cbor:"idle_timeout_ms,omitempty"`
+	MaxLifetimeMillis int64  `cbor:"max_lifetime_ms,omitempty"`
 }
 
 // SignReq asks for an Ed25519 signature over Payload (caller already prefixed
