@@ -33,13 +33,15 @@ export FD0_AUTO_PIN=1
 set -uo pipefail
 
 SERVER_PORT=14999
-SERVER_DB=/tmp/fd0-e2e-server.db
-SERVER_LOG=/tmp/fd0-e2e-server.log
-WITNESS_DB=/tmp/fd0-e2e-witness.db
-WITNESS_CFG=/tmp/fd0-e2e-witness.toml
-WITNESS_LOG=/tmp/fd0-e2e-witness.log
-RECOVERY_AL=/tmp/fd0-e2e-rec-alice
-RECOVERY_BL=/tmp/fd0-e2e-rec-bob
+BASE="$FD0_TEST_ROOT/e2e"
+mkdir -p "$BASE"
+SERVER_DB="$BASE/server.db"
+SERVER_LOG="$BASE/server.log"
+WITNESS_DB="$BASE/witness.db"
+WITNESS_KEY="$BASE/witness.key"
+WITNESS_LOG="$BASE/witness.log"
+RECOVERY_AL="$BASE/recovery-alice"
+RECOVERY_BL="$BASE/recovery-bob"
 
 HOME_AL=$HOME/.fd0-e2e-al   # Alice laptop  (recovery owner)
 HOME_AD=$HOME/.fd0-e2e-ad   # Alice desktop
@@ -53,6 +55,8 @@ FD0=${FD0:-$HOME/go/bin/fd0}
 FD0_AGENT=${FD0_AGENT:-$HOME/go/bin/fd0-agent}
 FD0_SERVER_BIN=${FD0_SERVER:-$HOME/go/bin/fd0-server}
 FD0_WITNESS_BIN=${FD0_WITNESS:-$HOME/go/bin/fd0-witness}
+SERVER_PID=
+WITNESS_PID=
 
 PASS=0
 FAIL=0
@@ -65,17 +69,22 @@ expect_eq() {
 expect_ge() {
     if [ "$1" -ge "$2" ] 2>/dev/null; then ok "$3"; else no "$3 (got '$1' want >= '$2')"; fi
 }
-norm_members() { sed -e 's/^[* ] //' | sort; }
+norm_members() {
+    sed -e 's/^[* ]*//' -e 's/^.*(\([^)]*\))$/\1/' | sort
+}
 
 cleanup() {
+    local code=$?
     fd0_test_stop_matching -f fd0-witness 2>/dev/null || true
     fd0_test_stop_matching -f fd0-agent  2>/dev/null || true
-    kill $SERVER_PID $WITNESS_PID 2>/dev/null || true
-    rm -rf "$HOME_AL" "$HOME_AD" "$HOME_AP" "$HOME_BL" "$HOME_BD" "$HOME_CL" "$HOME_EL"
-    rm -f  "$SERVER_DB" "$SERVER_DB-wal" "$SERVER_DB-shm" \
-           "$SERVER_DB.snapshot" "$SERVER_DB.snapshot-wal" "$SERVER_DB.snapshot-shm" \
-           "$SERVER_LOG" "$WITNESS_DB" "$WITNESS_CFG" "$WITNESS_LOG" \
-           "$RECOVERY_AL" "$RECOVERY_BL"
+    [ -z "$SERVER_PID" ] || kill "$SERVER_PID" 2>/dev/null || true
+    [ -z "$WITNESS_PID" ] || kill "$WITNESS_PID" 2>/dev/null || true
+    if [ "$code" -eq 0 ]; then
+        rm -rf "$HOME_AL" "$HOME_AD" "$HOME_AP" "$HOME_BL" "$HOME_BD" "$HOME_CL" "$HOME_EL" "$BASE"
+    else
+        printf '  preserving E2E failure artifacts at %s\n' "$BASE" >&2
+    fi
+    return "$code"
 }
 trap cleanup EXIT
 
@@ -99,6 +108,14 @@ BL() { env FD0_HOME="$HOME_BL" FD0_SSH_SOCK="$HOME_BL/ssh.sock" "$FD0" "$@"; }
 BD() { env FD0_HOME="$HOME_BD" FD0_SSH_SOCK="$HOME_BD/ssh.sock" "$FD0" "$@"; }
 CL() { env FD0_HOME="$HOME_CL" FD0_SSH_SOCK="$HOME_CL/ssh.sock" "$FD0" "$@"; }
 EL() { env FD0_HOME="$HOME_EL" FD0_SSH_SOCK="$HOME_EL/ssh.sock" "$FD0" "$@"; }
+WITNESS() {
+    "$FD0_WITNESS_BIN" \
+        --db="$WITNESS_DB" --key="$WITNESS_KEY" --bind="" \
+        --server-url="http://127.0.0.1:${SERVER_PORT}" \
+        --server-pub="$PUB_HEX" \
+        --poll-interval="1s" --auto-discover=false --chain="$SCOPE_TEAM" \
+        "$@"
+}
 
 # Sync helpers — ignore exit code, capture errors via separate doctor checks.
 sync_team() {
@@ -151,17 +168,32 @@ fd0_test_stop_matching -f fd0-agent  2>/dev/null || true
 fd0_test_stop_matching -f fd0-witness 2>/dev/null || true
 sleep 0.3
 rm -rf "$HOME_AL" "$HOME_AD" "$HOME_AP" "$HOME_BL" "$HOME_BD" "$HOME_CL" "$HOME_EL"
-rm -f  "$SERVER_DB" "$SERVER_DB-wal" "$SERVER_DB-shm" \
-       "$SERVER_LOG" "$WITNESS_DB" "$WITNESS_CFG" "$WITNESS_LOG" \
-       "$RECOVERY_AL" "$RECOVERY_BL"
+rm -rf "$BASE"
+mkdir -p "$BASE"
 
 "$FD0_SERVER_BIN" --bind=":${SERVER_PORT}" --db="$SERVER_DB" --no-ratelimit > "$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
-sleep 0.3
 SERVER_KEYFILE=$(dirname "$SERVER_DB")/server-translog.key
+SERVER_READY=0
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    if curl -fs "http://127.0.0.1:${SERVER_PORT}/health" >/dev/null 2>&1 &&
+       [ -s "$SERVER_KEYFILE" ]; then
+        SERVER_READY=1
+        break
+    fi
+    sleep 0.25
+done
+if [ "$SERVER_READY" -ne 1 ]; then
+    no "fd0-server failed to become ready"
+    exit 1
+fi
 ok "fd0-server up on :${SERVER_PORT}"
 
 PUB_HEX=$(xxd -p -c 64 "$SERVER_KEYFILE" | head -1 | cut -c65-)
+if [ "${#PUB_HEX}" -ne 64 ]; then
+    no "fd0-server translog key is malformed"
+    exit 1
+fi
 
 mkfd0 "$HOME_AL"; mkfd0 "$HOME_AD"; mkfd0 "$HOME_AP"
 mkfd0 "$HOME_BL"; mkfd0 "$HOME_BD"
@@ -211,16 +243,6 @@ EL card import "$AC" --label alice --yes >/dev/null
 EL card import "$BC" --label bob   --yes >/dev/null
 ok "card exchange complete (all primary pairs)"
 
-# Witness config — placeholder chain id, rewritten after team scope creation.
-cat > "$WITNESS_CFG" <<EOF
-[[target]]
-server_url    = "http://127.0.0.1:${SERVER_PORT}"
-server_pub    = "${PUB_HEX}"
-chains        = ["__placeholder__"]
-poll_interval = "1s"
-EOF
-ok "witness config drafted"
-
 phase "Phase 2 — Baseline: scope create + cross-device sync + LastSTH"
 
 AL scope create --label team >/dev/null
@@ -230,9 +252,8 @@ sleep 0.3
 SCOPE_TEAM=$(chain_id_of_scope)
 [ -n "$SCOPE_TEAM" ] && ok "team scope created (chain=$SCOPE_TEAM)" || no "no scope chain on server"
 
-# Now restart witness with the real chain id.
-sed -i.bak "s|__placeholder__|${SCOPE_TEAM}|" "$WITNESS_CFG" && rm -f "$WITNESS_CFG.bak"
-"$FD0_WITNESS_BIN" --config="$WITNESS_CFG" --db="$WITNESS_DB" -v run > "$WITNESS_LOG" 2>&1 &
+# Start the single-target witness with the real chain ID and explicit server pin.
+WITNESS -v run > "$WITNESS_LOG" 2>&1 &
 WITNESS_PID=$!
 sleep 2
 
@@ -460,8 +481,8 @@ phase "Phase 8 — Server DB rollback (LastSTH out-of-range hard-fail)"
 # WAL into the main DB, then snapshotting. Without WAL checkpoint,
 # the snapshot misses recent writes and the test scenario doesn't
 # reflect reality.
-kill $SERVER_PID 2>/dev/null
-wait $SERVER_PID 2>/dev/null || true
+kill "$SERVER_PID" 2>/dev/null
+wait "$SERVER_PID" 2>/dev/null || true
 sqlite3 "$SERVER_DB" "PRAGMA wal_checkpoint(TRUNCATE);" >/dev/null 2>&1 || true
 cp "$SERVER_DB" "${SERVER_DB}.snapshot"
 "$FD0_SERVER_BIN" --bind=":${SERVER_PORT}" --db="$SERVER_DB" --no-ratelimit > "$SERVER_LOG" 2>&1 &
@@ -488,8 +509,8 @@ expect_ge "$WT_BEFORE_ROLLBACK" "$SVR_SIZE_AFTER" "witness archived the post-wri
 
 # Stop server, restore the snapshot (and clean WAL/SHM so SQLite
 # doesn't replay pending pages on top), restart.
-kill $SERVER_PID 2>/dev/null
-wait $SERVER_PID 2>/dev/null || true
+kill "$SERVER_PID" 2>/dev/null
+wait "$SERVER_PID" 2>/dev/null || true
 rm -f "$SERVER_DB" "$SERVER_DB-wal" "$SERVER_DB-shm"
 mv "${SERVER_DB}.snapshot" "$SERVER_DB"
 "$FD0_SERVER_BIN" --bind=":${SERVER_PORT}" --db="$SERVER_DB" --no-ratelimit > "$SERVER_LOG" 2>&1 &
@@ -530,16 +551,16 @@ expect_ge "$WTSIZE_FINAL" "1" "witness final archive non-empty"
 
 # Witness saw the higher tree size BEFORE rollback, and may have
 # seen the smaller one AFTER. Either way > 0.
-kill $WITNESS_PID 2>/dev/null
-wait $WITNESS_PID 2>/dev/null || true
+kill "$WITNESS_PID" 2>/dev/null
+wait "$WITNESS_PID" 2>/dev/null || true
 
-VERIFY_OUT=$("$FD0_WITNESS_BIN" --config="$WITNESS_CFG" --db="$WITNESS_DB" verify 2>&1)
+VERIFY_OUT=$(WITNESS verify 2>&1)
 case "$VERIFY_OUT" in
     *"0 signature error"*) ok "witness verify: 0 signature errors" ;;
     *) no "witness verify reported errors: $VERIFY_OUT" ;;
 esac
 
-STATUS_OUT=$("$FD0_WITNESS_BIN" --config="$WITNESS_CFG" --db="$WITNESS_DB" status 2>&1)
+STATUS_OUT=$(WITNESS status 2>&1)
 case "$STATUS_OUT" in
     *"Witness archive:"*"STHs"*) ok "witness status prints summary" ;;
     *) no "witness status output unexpected: $STATUS_OUT" ;;

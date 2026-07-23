@@ -27,7 +27,6 @@ set -uo pipefail
 
 SERVER_PORT=14930
 WITNESS_PORT=14931
-WITNESS_PORT2=14932
 BASE="$FD0_TEST_ROOT/cosign"
 mkdir -p "$BASE"
 SERVER_DB="$BASE/server.db"
@@ -44,6 +43,8 @@ FD0=${FD0:-$HOME/go/bin/fd0}
 FD0_AGENT=${FD0_AGENT:-$HOME/go/bin/fd0-agent}
 FD0_SERVER_BIN=${FD0_SERVER:-$HOME/go/bin/fd0-server}
 FD0_WITNESS_BIN=${FD0_WITNESS:-$HOME/go/bin/fd0-witness}
+SERVER_PID=
+WITNESS_PID=
 
 PASS=0
 FAIL=0
@@ -54,10 +55,9 @@ no()   { FAIL=$((FAIL+1)); printf "  \033[31m✗\033[0m %s\n" "$*"; }
 cleanup() {
     local code=$?
     fd0_test_stop_matching -f "fd0-witness.*${WITNESS_PORT}"  2>/dev/null || true
-    fd0_test_stop_matching -f "fd0-witness.*${WITNESS_PORT2}" 2>/dev/null || true
     fd0_test_stop_matching -f fd0-witness  2>/dev/null || true
     fd0_test_stop_matching -f fd0-agent    2>/dev/null || true
-    kill $SERVER_PID 2>/dev/null || true
+    [ -z "$SERVER_PID" ] || kill "$SERVER_PID" 2>/dev/null || true
     if [ "$code" -eq 0 ]; then
         rm -rf "$HOME_AL" "$BASE"
     else
@@ -280,7 +280,7 @@ step "Equivocation: inject a cosigned-but-different-root row"
 #   5. Verifies the next AL sync FAILS with "equivocation".
 #
 # Stop the witness so it doesn't poll over our injection.
-kill $WITNESS_PID 2>/dev/null || true
+kill "$WITNESS_PID" 2>/dev/null || true
 sleep 0.3
 
 # Helper lives at cmd/fd0-test-equiv-inject (must be inside the
@@ -386,7 +386,7 @@ step "Client cross-check: lagging witness → reject (no soft-tolerance knob)"
 # one — both fail the absolute MinCosigns floor. Demonstrated by
 # stopping the witness and writing fresh keys: the next sync
 # cannot find a valid cosign at the new tree_size and refuses.
-kill $WITNESS_PID 2>/dev/null || true
+kill "$WITNESS_PID" 2>/dev/null || true
 sleep 0.3
 AL set k3 v3 --scope work >/dev/null
 SYNC_OUT=$(AL sync 2>&1 || true)
