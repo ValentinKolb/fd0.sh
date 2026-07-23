@@ -1,7 +1,8 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { logger } from "hono/logger";
 import { serveStatic } from "hono/bun";
 import { timingSafeEqual } from "crypto";
+import { join } from "node:path";
 import {
   canonicalUrl,
   config,
@@ -40,6 +41,25 @@ import Witness from "./pages/Witness";
 
 const VERSION = process.env.FD0_WEBSITE_VERSION ?? "dev";
 const METRICS_TOKEN = (process.env.FD0_WEBSITE_METRICS_TOKEN ?? "").trim();
+const installScriptPath = (name: "install.sh" | "install-desktop.sh"): string =>
+  process.env.NODE_ENV === "production"
+    ? join(import.meta.dir, "public", name)
+    : join(import.meta.dir, "..", "..", "scripts", name);
+
+const serveInstallScript = async (
+  c: Context,
+  name: "install.sh" | "install-desktop.sh",
+) => {
+  const file = Bun.file(installScriptPath(name));
+  if (!(await file.exists())) return c.notFound();
+  return new Response(file, {
+    headers: {
+      "Content-Type": "text/x-shellscript; charset=utf-8",
+      "Cache-Control": "public, max-age=300",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+};
 
 // ─── tiny in-process metrics ───────────────────────────────────────
 //
@@ -244,34 +264,11 @@ const app = new Hono()
       "Content-Type": "text/plain; charset=utf-8",
     });
   })
-  // Install-script aliases: redirect to the GitHub raw URL so the
-  // README + spoken-word command stay short. curl -fsSL follows
-  // 302 by default, so `curl -fsSL https://fd0.sh/install | sh`
-  // ends up fetching the latest scripts/install.sh from main.
-  .get("/install", (c) =>
-    c.redirect(
-      "https://raw.githubusercontent.com/ValentinKolb/fd0.sh/main/scripts/install.sh",
-      302,
-    ),
-  )
-  .get("/install.sh", (c) =>
-    c.redirect(
-      "https://raw.githubusercontent.com/ValentinKolb/fd0.sh/main/scripts/install.sh",
-      302,
-    ),
-  )
-  .get("/install-desktop", (c) =>
-    c.redirect(
-      "https://raw.githubusercontent.com/ValentinKolb/fd0.sh/main/scripts/install-desktop.sh",
-      302,
-    ),
-  )
-  .get("/install-desktop.sh", (c) =>
-    c.redirect(
-      "https://raw.githubusercontent.com/ValentinKolb/fd0.sh/main/scripts/install-desktop.sh",
-      302,
-    ),
-  )
+  // Install aliases serve the scripts embedded in this website build.
+  .get("/install", (c) => serveInstallScript(c, "install.sh"))
+  .get("/install.sh", (c) => serveInstallScript(c, "install.sh"))
+  .get("/install-desktop", (c) => serveInstallScript(c, "install-desktop.sh"))
+  .get("/install-desktop.sh", (c) => serveInstallScript(c, "install-desktop.sh"))
   // Pages
   .get("/", ...Home)
   .get("/docs", ...DocsOverview)
@@ -295,17 +292,17 @@ const app = new Hono()
   .get("/witness", ...Witness)
   .get("/impressum", ...Impressum)
   // Error handlers — designed pages instead of plaintext.
-  .notFound((c) => {
-    const res = renderHTML(() => <ErrorPage content={errorPresets[404]} />);
+  .notFound(async (c) => {
+    const res = await renderHTML(() => <ErrorPage content={errorPresets[404]} />);
     return new Response(res.body, { status: 404, headers: res.headers });
   })
-  .onError((err, c) => {
+  .onError(async (err, c) => {
     console.error("[fd0-site] handler error:", err);
     const detail =
       process.env.NODE_ENV === "development"
         ? String(err.stack ?? err.message ?? err)
         : undefined;
-    const res = renderHTML(() => (
+    const res = await renderHTML(() => (
       <ErrorPage content={errorPresets[500]} detail={detail} />
     ));
     return new Response(res.body, { status: 500, headers: res.headers });

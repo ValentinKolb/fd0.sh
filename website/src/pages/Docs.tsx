@@ -234,13 +234,23 @@ const InstallBody = () => (
       the same binary with a different <Code>[sync].server</Code>.
     </P>
 
+    <H2>Install Cosign</H2>
+    <Box>{`$ brew install cosign   # macOS or Linuxbrew
+$ cosign version`}</Box>
+    <P>
+      fd0 requires <Link href="https://docs.sigstore.dev/cosign/system_config/installation/">Cosign</Link>{" "}
+      to authenticate release manifests. The installer refuses to continue
+      without it. On Linux, use the package for your distribution or another
+      installation method from the official Cosign documentation.
+    </P>
     <H2>Install the client</H2>
     <Box>{`$ curl -fsSL https://fd0.sh/install | sh
 $ fd0 version
 fd0 <version> standard`}</Box>
     <P>
       The installer picks Linux or macOS, amd64 or arm64, verifies SHA-256,
-      verifies the release manifest with cosign when available, and writes <Code>fd0</Code> plus{" "}
+      authenticates the manifest against the exact fd0 release workflow and
+      tag with Cosign, and writes <Code>fd0</Code> plus{" "}
       <Code>fd0-agent</Code> to <Code>~/.local/bin</Code>. Use{" "}
       <Code>--system</Code> to install into <Code>/usr/local/bin</Code>.
     </P>
@@ -271,11 +281,16 @@ $ fd0 update --flavor=yubikey`}</Box>
     <P>
       <Code>fd0 update</Code> updates <Code>fd0</Code> and{" "}
       <Code>fd0-agent</Code> from the latest client release. It verifies the
-      archive checksum and uses cosign when available. It keeps the installed
+      archive checksum and requires Cosign authentication. It keeps the installed
       flavor by default: <Code>standard</Code> stays standard,{" "}
       <Code>yubikey</Code> stays yubikey. Use <Code>--flavor</Code> only to
       switch deliberately. If the agent is running, restart it after the update
       with <Code>fd0 agent restart</Code>.
+    </P>
+    <P>
+      Automatic update resolution never downgrades. Installing an explicitly
+      selected older release requires <Code>--allow-downgrade</Code> in
+      addition to the version.
     </P>
     <Note>
       Desktop-managed installations update from fd0 Desktop under Support. In

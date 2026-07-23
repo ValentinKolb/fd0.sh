@@ -39,7 +39,10 @@ Navigation, shared shell layout, docs sidebar, and spec sidebar live in
 2. Compiles `src/styles.css` into `dist/public/styles.css` through
    `bun-plugin-tailwind`.
 3. Copies committed `public/` assets and local fonts into `dist/public/`.
-4. Fails if `public/files/compose.yml` is missing, because the self-host docs
+4. Embeds the repository's `scripts/install.sh` and
+   `scripts/install-desktop.sh`; `/install*` serves these immutable build
+   inputs instead of redirecting to a mutable branch.
+5. Fails if `public/files/compose.yml` is missing, because the self-host docs
    link to it directly.
 
 `bun run start` changes into `dist/` before running `server.js`, so

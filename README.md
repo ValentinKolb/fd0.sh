@@ -136,6 +136,11 @@ Client releases publish two install flavors:
 | `standard` | `fd0_<os>_<arch>.tar.gz` | Default pure-Go client without YubiKey/PIV support. |
 | `yubikey` | `fd0_yubikey_<os>_<arch>.tar.gz` | Client with PIV support in both `fd0` and `fd0-agent`. |
 
+The CLI and Desktop installers require
+[Cosign](https://docs.sigstore.dev/cosign/system_config/installation/) on
+`PATH`. They verify the release manifest against the exact fd0 release
+workflow and tag before installing an artifact.
+
 Install the default client:
 
 ```sh
@@ -152,7 +157,8 @@ fd0 version   # fd0 X.Y.Z yubikey
 
 `fd0 update` preserves the installed flavor. Use
 `fd0 update --flavor=yubikey` or `fd0 update --flavor=standard` only when
-switching deliberately.
+switching deliberately. An explicit older version also requires
+`--allow-downgrade`; resolving the latest release never permits a downgrade.
 
 Install the Desktop bundle, including its version-matched CLI and agent:
 

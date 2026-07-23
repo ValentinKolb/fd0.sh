@@ -581,13 +581,13 @@ type authRemoveCmd struct {
 }
 type versionCmd struct{}
 type updateCmd struct {
-	Check    bool   `name:"check" help:"Check for an update without installing. Exits 10 when an update is available."`
-	Yes      bool   `name:"yes" short:"y" help:"Do not prompt before installing or downgrading."`
-	Version  string `name:"version" help:"Release tag or semver to install. Default: latest client release." env:"FD0_VERSION"`
-	Flavor   string `name:"flavor" help:"Release flavor: auto, standard, or yubikey. Default: preserve the installed flavor." default:"auto"`
-	Prefix   string `name:"prefix" help:"Install into this directory. Default: directory of the running fd0 binary."`
-	System   bool   `name:"system" help:"Install into /usr/local/bin."`
-	NoVerify bool   `name:"no-verify" help:"Skip cosign signature verification. SHA256 manifest checks still run."`
+	Check          bool   `name:"check" help:"Check for an update without installing. Exits 10 when an update is available."`
+	Yes            bool   `name:"yes" short:"y" help:"Do not prompt before installing."`
+	Version        string `name:"version" help:"Release tag or semver to install. Default: latest client release." env:"FD0_VERSION"`
+	Flavor         string `name:"flavor" help:"Release flavor: auto, standard, or yubikey. Default: preserve the installed flavor." default:"auto"`
+	Prefix         string `name:"prefix" help:"Install into this directory. Default: directory of the running fd0 binary."`
+	System         bool   `name:"system" help:"Install into /usr/local/bin."`
+	AllowDowngrade bool   `name:"allow-downgrade" help:"Permit an explicitly selected older release. Never applies to latest-release resolution."`
 }
 
 func main() {
@@ -813,7 +813,7 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 			System:           c.Update.System,
 			CheckOnly:        c.Update.Check,
 			Yes:              c.Update.Yes,
-			NoVerify:         c.Update.NoVerify,
+			AllowDowngrade:   c.Update.AllowDowngrade,
 		})
 
 	// ─── key ──────────────────────────────────────────────────────────

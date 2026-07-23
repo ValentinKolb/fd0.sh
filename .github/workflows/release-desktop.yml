@@ -42,7 +42,7 @@ jobs:
           bun run test:e2e
 
       - name: test desktop installer
-        run: bash tests/integration_desktop_installer.sh
+        run: bash tests/run_isolated_integration.sh tests/integration_desktop_installer.sh
 
   macos:
     needs: verify

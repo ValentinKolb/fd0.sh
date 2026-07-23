@@ -1,9 +1,10 @@
 import { basename, extname, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
-import { chmod, readFile, stat, writeFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import {
   app,
   BrowserWindow,
@@ -28,6 +29,13 @@ import { DesktopAutoLock, type SecurityLockReason } from "./auto-lock";
 import { ManagedClipboard } from "./managed-clipboard";
 import { supportLink, trustedItemURL, type SupportLinkTarget } from "./external-links";
 import { OperationGrants, type OperationGrantKind } from "./operation-grants";
+import {
+  checksumForAsset,
+  compareSemver,
+  desktopReleaseIdentity,
+  selectDesktopRelease,
+  type DesktopRelease,
+} from "./release-verification";
 import type {
   DesktopCommand,
   FieldRef,
@@ -53,6 +61,7 @@ let tray: Tray | null = null;
 let updateTimer: NodeJS.Timeout | null = null;
 let installingUpdate = false;
 let updateState: UpdateStatus = { state: app.isPackaged ? "idle" : "unsupported" };
+let selectedUpdateRelease: DesktopRelease | null = null;
 let autoLock: DesktopAutoLock | null = null;
 let disposeAutoLockEvents: (() => void) | null = null;
 let securityStatusTimer: NodeJS.Timeout | null = null;
@@ -167,9 +176,17 @@ function showAppMessageBox(options: MessageBoxOptions) {
 
 async function checkForUpdates(): Promise<UpdateStatus> {
   if (!app.isPackaged) return updateState;
+  selectedUpdateRelease = null;
   publishUpdate({ state: "checking" });
   try {
-    autoUpdater.setFeedURL({ provider: "generic", url: await resolveDesktopUpdateFeed() });
+    const release = await resolveDesktopUpdateRelease();
+    if (compareSemver(release.version, app.getVersion()) <= 0) {
+      selectedUpdateRelease = null;
+      publishUpdate({ state: "current", version: app.getVersion() });
+      return updateState;
+    }
+    selectedUpdateRelease = release;
+    autoUpdater.setFeedURL({ provider: "generic", url: release.feedURL });
     await autoUpdater.checkForUpdates();
   } catch (error) {
     console.error("fd0 update check failed", error);
@@ -178,7 +195,7 @@ async function checkForUpdates(): Promise<UpdateStatus> {
   return updateState;
 }
 
-async function resolveDesktopUpdateFeed(): Promise<string> {
+async function resolveDesktopUpdateRelease(): Promise<DesktopRelease> {
   const response = await net.fetch("https://api.github.com/repos/ValentinKolb/fd0.sh/releases?per_page=30", {
     headers: {
       Accept: "application/vnd.github+json",
@@ -188,18 +205,109 @@ async function resolveDesktopUpdateFeed(): Promise<string> {
   });
   if (!response.ok) throw new Error(`GitHub release lookup failed with HTTP ${response.status}`);
   const payload = await response.json() as unknown;
-  if (!Array.isArray(payload)) throw new Error("GitHub release lookup returned invalid data");
   const allowPrerelease = app.getVersion().includes("-");
-  const release = payload.find((candidate): candidate is { tag_name: string; draft: boolean; prerelease: boolean } => {
-    if (!candidate || typeof candidate !== "object") return false;
-    const value = candidate as Record<string, unknown>;
-    return typeof value.tag_name === "string"
-      && /^desktop-v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(value.tag_name)
-      && value.draft === false
-      && (allowPrerelease || value.prerelease === false);
-  });
+  const release = selectDesktopRelease(payload, allowPrerelease);
   if (!release) throw new Error("No fd0 Desktop release is available");
-  return `https://github.com/ValentinKolb/fd0.sh/releases/download/${encodeURIComponent(release.tag_name)}/`;
+  return release;
+}
+
+async function fetchReleaseFile(release: DesktopRelease, name: string, maxBytes = 4 << 20): Promise<Uint8Array> {
+  const response = await net.fetch(new URL(name, release.feedURL).toString());
+  if (!response.ok) throw new Error(`Could not fetch ${name}: HTTP ${response.status}`);
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) throw new Error(`${name} exceeds the update metadata limit`);
+  const body = new Uint8Array(await response.arrayBuffer());
+  if (body.byteLength > maxBytes) throw new Error(`${name} exceeds the update metadata limit`);
+  return body;
+}
+
+async function verifyDownloadedDesktopUpdate(version: string, downloadedFile: string): Promise<void> {
+  if (process.platform !== "linux") return;
+  const release = selectedUpdateRelease;
+  if (!release || release.version !== version || compareSemver(version, app.getVersion()) <= 0) {
+    throw new Error("Downloaded update does not match the selected newer release");
+  }
+  const assetArch = process.arch === "x64" ? "x64" : process.arch === "arm64" ? "arm64" : "";
+  if (!assetArch) throw new Error(`Unsupported update architecture: ${process.arch}`);
+  const assetName = `fd0-desktop_${version}_linux_${assetArch}.AppImage`;
+  const [manifestBytes, signature, certificate, actual] = await Promise.all([
+    fetchReleaseFile(release, "checksums.txt"),
+    fetchReleaseFile(release, "checksums.txt.sig"),
+    fetchReleaseFile(release, "checksums.txt.pem"),
+    sha256Path(downloadedFile),
+  ]);
+  const manifest = new TextDecoder().decode(manifestBytes);
+  const expected = checksumForAsset(manifest, assetName);
+  if (actual !== expected) throw new Error("Downloaded update does not match the authenticated release manifest");
+
+  const root = await mkdtemp(join(tmpdir(), "fd0-update-"));
+  try {
+    const manifestPath = join(root, "checksums.txt");
+    const signaturePath = join(root, "checksums.txt.sig");
+    const certificatePath = join(root, "checksums.txt.pem");
+    await Promise.all([
+      writeFile(manifestPath, manifestBytes, { mode: 0o600 }),
+      writeFile(signaturePath, signature, { mode: 0o600 }),
+      writeFile(certificatePath, certificate, { mode: 0o600 }),
+    ]);
+    const cosign = process.env.FD0_COSIGN_BIN?.trim() || "cosign";
+    const verification = spawnSync(cosign, [
+      "verify-blob",
+      "--certificate", certificatePath,
+      "--signature", signaturePath,
+      "--certificate-identity-regexp", desktopReleaseIdentity(release.tag),
+      "--certificate-oidc-issuer", "https://token.actions.githubusercontent.com",
+      manifestPath,
+    ], {
+      env: runtimeEnvironment(),
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    if (verification.error) {
+      if ((verification.error as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new Error("Cosign is required to authenticate Linux desktop updates");
+      }
+      throw verification.error;
+    }
+    if (verification.status !== 0) throw new Error("Cosign rejected the fd0 Desktop release signature");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+async function sha256Path(path: string): Promise<string> {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  return hash.digest("hex");
+}
+
+function isExpectedUpdateVersion(version: string): boolean {
+  try {
+    return selectedUpdateRelease?.version === version && compareSemver(version, app.getVersion()) > 0;
+  } catch {
+    return false;
+  }
+}
+
+function announceDownloadedUpdate(version: string): void {
+  publishUpdate({ state: "ready", version, progress: 100 });
+  void showAppMessageBox({
+    type: "info",
+    buttons: ["Restart fd0", "Later"],
+    defaultId: 0,
+    cancelId: 1,
+    title: "fd0 is ready to update",
+    message: `fd0 ${version} has been downloaded.`,
+    detail: "Restart now to install it. fd0 will stop the current agent so the app, CLI, and agent stay on one version.",
+    noLink: true,
+  }).then((answer) => {
+    if (answer.response === 0) {
+      void installReadyUpdate().catch((error) => {
+        console.error("fd0 update install failed", error);
+        publishUpdate({ state: "error", message: "Could not prepare fd0 for the update." });
+      });
+    }
+  });
 }
 
 function configureUpdater(): void {
@@ -208,9 +316,14 @@ function configureUpdater(): void {
   autoUpdater.autoInstallOnAppQuit = false;
   autoUpdater.allowPrerelease = app.getVersion().includes("-");
   if (process.platform === "darwin") autoUpdater.channel = process.arch;
+  autoUpdater.allowDowngrade = false;
   autoUpdater.on("checking-for-update", () => publishUpdate({ state: "checking" }));
   autoUpdater.on("update-not-available", () => publishUpdate({ state: "current", version: app.getVersion() }));
   autoUpdater.on("update-available", (info) => {
+    if (!isExpectedUpdateVersion(info.version)) {
+      publishUpdate({ state: "error", message: "The update feed returned an unexpected release." });
+      return;
+    }
     publishUpdate({ state: "available", version: info.version });
     void showAppMessageBox({
       type: "info",
@@ -234,24 +347,15 @@ function configureUpdater(): void {
     publishUpdate({ state: "downloading", version: updateState.version, progress: Math.max(0, Math.min(100, progress.percent)) });
   });
   autoUpdater.on("update-downloaded", (info) => {
-    publishUpdate({ state: "ready", version: info.version, progress: 100 });
-    void showAppMessageBox({
-      type: "info",
-      buttons: ["Restart fd0", "Later"],
-      defaultId: 0,
-      cancelId: 1,
-      title: "fd0 is ready to update",
-      message: `fd0 ${info.version} has been downloaded.`,
-      detail: "Restart now to install it. fd0 will stop the current agent so the app, CLI, and agent stay on one version.",
-      noLink: true,
-    }).then((answer) => {
-      if (answer.response === 0) {
-        void installReadyUpdate().catch((error) => {
-          console.error("fd0 update install failed", error);
-          publishUpdate({ state: "error", message: "Could not prepare fd0 for the update." });
+    void verifyDownloadedDesktopUpdate(info.version, info.downloadedFile)
+      .then(() => announceDownloadedUpdate(info.version))
+      .catch((error) => {
+        console.error("fd0 update authentication failed", error);
+        publishUpdate({
+          state: "error",
+          message: error instanceof Error ? error.message : "Could not authenticate the downloaded update.",
         });
-      }
-    });
+      });
   });
   autoUpdater.on("error", (error) => {
     console.error("fd0 updater error", error);

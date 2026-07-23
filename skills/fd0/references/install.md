@@ -5,10 +5,11 @@ The fd0 product and this agent skill are installed separately. Install either th
 ## The fd0 CLI
 
 ```bash
+brew install cosign
 curl -fsSL https://fd0.sh/install | sh
 ```
 
-Supported platforms: Linux and macOS on amd64 and arm64. Installs `fd0` + `fd0-agent` to `~/.local/bin` (or `/usr/local/bin` with `--system`). Cosign-verifies the release manifest when cosign is available.
+Supported platforms: Linux and macOS on amd64 and arm64. Installs `fd0` + `fd0-agent` to `~/.local/bin` (or `/usr/local/bin` with `--system`). Cosign is required. On Linux, use the distribution package or the [official Cosign installation instructions](https://docs.sigstore.dev/cosign/system_config/installation/). The installer authenticates the manifest against the exact fd0 release workflow and tag before writing binaries.
 
 Verify:
 ```bash
@@ -41,6 +42,8 @@ fd0 agent restart
 
 Normal `fd0 update` preserves the installed flavor. A `yubikey` install stays on the `yubikey` archive; a `standard` install stays standard.
 
+`fd0 update --yes` never authorizes a rollback. An older release must be selected explicitly and also requires `--allow-downgrade`; `latest` resolution cannot downgrade.
+
 If `fd0` is not on PATH, the install script prints a one-line fix for the user's shell rc — read it back to them, do not invent your own.
 
 Windows: not yet built by the release pipeline. The binaries cross-compile but the agent's AF_UNIX socket is unvalidated. Track at https://github.com/ValentinKolb/fd0.sh/issues.
@@ -51,7 +54,7 @@ Windows: not yet built by the release pipeline. The binaries cross-compile but t
 curl -fsSL https://fd0.sh/install | sh -s -- --desktop
 ```
 
-Desktop is one versioned bundle containing the app, YubiKey-capable CLI, and agent. Its installer creates `fd0` and `fd0-agent` wrappers in `~/.local/bin` or `/usr/local/bin`; do not install a second CLI release on top. Desktop updates the app, CLI, and agent together from **Support**. A bundled `fd0 update` prints that handoff instead of modifying the signed app.
+Desktop is one versioned bundle containing the app, YubiKey-capable CLI, and agent. Its installer requires Cosign, then creates `fd0` and `fd0-agent` wrappers in `~/.local/bin` or `/usr/local/bin`; do not install a second CLI release on top. Desktop updates the app, CLI, and agent together from **Support**. Linux in-app updates also require Cosign to authenticate the downloaded AppImage. A bundled `fd0 update` prints that handoff instead of modifying the signed app.
 
 Uninstall the app and its marked wrappers without deleting `~/.fd0`:
 

@@ -22,8 +22,7 @@
 #
 # Doubles as an upgrade script: detects an existing install, prints
 # `current → new`, and asks before touching anything. Verifies the
-# release checksum manifest against the published cosign signature
-# (skip with --no-verify or by not having cosign installed).
+# release checksum manifest against the published cosign signature.
 #
 # For server-side deployments (fd0-server, fd0-witness) use the
 # Docker compose blocks in deploy/ — see docs/HOSTING.md for the
@@ -38,8 +37,8 @@ API_BASE="${FD0_API_BASE:-https://api.github.com/repos/${REPO}}"
 PREFIX="${HOME}/.local/bin"
 SYSTEM=0
 VERSION="${FD0_VERSION:-latest}"
-VERIFY=1
 ASSUME_YES=0
+ALLOW_DOWNGRADE=0
 BINARIES="fd0 fd0-agent"
 FLAVOR="${FD0_FLAVOR:-auto}"
 DESKTOP=0
@@ -53,7 +52,7 @@ while [ $# -gt 0 ]; do
         --flavor=*)     FLAVOR="${1#--flavor=}"; shift ;;
         --yubikey)      FLAVOR="yubikey"; shift ;;
         --desktop)      DESKTOP=1; shift ;;
-        --no-verify)    VERIFY=0; shift ;;
+        --allow-downgrade) ALLOW_DOWNGRADE=1; shift ;;
         -y|--yes)       ASSUME_YES=1; shift ;;
         -h|--help)
             cat <<EOF
@@ -67,7 +66,7 @@ Installs or upgrades the fd0 client (fd0, fd0-agent).
   --flavor=FLAVOR     install flavor: auto, standard, or yubikey (default: auto)
   --yubikey           shortcut for --flavor=yubikey
   --desktop           install the signed desktop bundle, including its managed CLI and agent
-  --no-verify         skip Cosign verification; SHA-256 is still required
+  --allow-downgrade   permit an explicitly selected older release
   -y, --yes           assume yes for the upgrade prompt
   -h, --help          show this help
 
@@ -86,6 +85,56 @@ done
 # ─── small helpers ───────────────────────────────────────────────────────
 die() { printf 'fd0: %s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
+COSIGN="${FD0_COSIGN_BIN:-cosign}"
+
+version_lt() {
+    awk -v left="$1" -v right="$2" '
+        function core(version) {
+            sub(/\+.*/, "", version)
+            sub(/-.*/, "", version)
+            return version
+        }
+        function prerelease(version) {
+            sub(/\+.*/, "", version)
+            if (version !~ /-/) return ""
+            sub(/^[^-]*-/, "", version)
+            return version
+        }
+        BEGIN {
+            left_core = core(left)
+            right_core = core(right)
+            split(left_core, left_parts, ".")
+            split(right_core, right_parts, ".")
+            for (i = 1; i <= 3; i++) {
+                if ((left_parts[i] + 0) < (right_parts[i] + 0)) exit 0
+                if ((left_parts[i] + 0) > (right_parts[i] + 0)) exit 1
+            }
+
+            left_pre = prerelease(left)
+            right_pre = prerelease(right)
+            if (left_pre == right_pre || left_pre == "") exit 1
+            if (right_pre == "") exit 0
+
+            left_count = split(left_pre, left_ids, ".")
+            right_count = split(right_pre, right_ids, ".")
+            count = left_count < right_count ? left_count : right_count
+            for (i = 1; i <= count; i++) {
+                left_numeric = left_ids[i] ~ /^[0-9]+$/
+                right_numeric = right_ids[i] ~ /^[0-9]+$/
+                if (left_numeric && right_numeric) {
+                    if ((left_ids[i] + 0) < (right_ids[i] + 0)) exit 0
+                    if ((left_ids[i] + 0) > (right_ids[i] + 0)) exit 1
+                } else if (left_numeric != right_numeric) {
+                    exit left_numeric ? 0 : 1
+                } else {
+                    if (left_ids[i] < right_ids[i]) exit 0
+                    if (left_ids[i] > right_ids[i]) exit 1
+                }
+            }
+            exit left_count < right_count ? 0 : 1
+        }
+    '
+}
 
 install_desktop() {
     desktop_yes="$1"
@@ -102,7 +151,7 @@ install_desktop() {
     have curl || die "curl required for fd0 Desktop"
     curl -fsSL "$desktop_installer_url" | \
         FD0_DESKTOP_SYSTEM="$SYSTEM" \
-        FD0_DESKTOP_VERIFY="$VERIFY" \
+        FD0_DESKTOP_ALLOW_DOWNGRADE="$ALLOW_DOWNGRADE" \
         FD0_DESKTOP_ASSUME_YES="$desktop_yes" \
         FD0_DESKTOP_VERSION="$desktop_version" \
         sh
@@ -161,16 +210,61 @@ case "$ARCH" in
 esac
 
 # ─── version resolution ──────────────────────────────────────────────────
+REQUESTED_LATEST=0
 if [ "$VERSION" = "latest" ]; then
+    REQUESTED_LATEST=1
     have curl || die "curl required"
-    VERSION=$(curl -fsSL "${API_BASE}/releases/latest" \
-              | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)
-    [ -n "$VERSION" ] || die "could not resolve latest version from ${API_BASE}"
+    CANDIDATES=$(curl -fsSL "${API_BASE}/releases?per_page=50" | awk '
+        /"tag_name":/ {
+            tag = $0
+            sub(/^.*"tag_name": *"/, "", tag)
+            sub(/".*$/, "", tag)
+            next
+        }
+        tag != "" && /"name":/ {
+            name = $0
+            sub(/^.*"name": *"/, "", name)
+            sub(/".*$/, "", name)
+            if (tag ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/ &&
+                name ~ /^(client|fd0)-v[0-9]+\.[0-9]+\.[0-9]+$/) {
+                print tag "|" name
+            }
+            tag = ""
+        }
+    ')
+    [ -n "$CANDIDATES" ] || die "could not resolve latest client version from ${API_BASE}"
+    DOWNLOAD_TAG=""
+    RELEASE_TAG=""
+    BEST_VERSION=""
+    for candidate in $CANDIDATES; do
+        candidate_download=${candidate%%|*}
+        candidate_release=${candidate#*|}
+        candidate_version=${candidate_release#*-v}
+        if [ -z "$BEST_VERSION" ] || version_lt "$BEST_VERSION" "$candidate_version"; then
+            DOWNLOAD_TAG=$candidate_download
+            RELEASE_TAG=$candidate_release
+            BEST_VERSION=$candidate_version
+        fi
+    done
+else
+    case "$VERSION" in
+        client-v*|fd0-v*)
+            RELEASE_TAG=$VERSION
+            DOWNLOAD_TAG="v${VERSION#*-v}"
+            ;;
+        v[0-9]*|[0-9]*)
+            VERSION_NUM_INPUT=${VERSION#v}
+            RELEASE_TAG="client-v${VERSION_NUM_INPUT}"
+            DOWNLOAD_TAG="v${VERSION_NUM_INPUT}"
+            ;;
+        *) die "invalid client release tag: $VERSION" ;;
+    esac
 fi
-# Strip the optional scoped-tag prefix (e.g. `client-v` or `fd0-v`) and
-# the leading `v` so VERSION_NUM is a plain semver like `0.0.5`. VERSION
-# (with prefix) stays as-is and is used verbatim in release-download URLs.
-VERSION_NUM=$(printf '%s' "$VERSION" | sed -E 's/^([a-z]+-)?v//')
+printf '%s\n' "$DOWNLOAD_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z][0-9A-Za-z.-]*)?$' \
+    || die "invalid client download tag: $DOWNLOAD_TAG"
+printf '%s\n' "$RELEASE_TAG" | grep -Eq '^(client|fd0)-v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z][0-9A-Za-z.-]*)?$' \
+    || die "invalid client release identity: $RELEASE_TAG"
+VERSION_NUM=${RELEASE_TAG#*-v}
 
 # ─── detect existing install at the target prefix ────────────────────────
 CURRENT=""
@@ -192,9 +286,16 @@ esac
 
 # Same version already there → idempotent no-op. Don't even prompt.
 if [ -n "$CURRENT" ] && [ "$CURRENT" = "$VERSION_NUM" ] && [ "$CURRENT_FLAVOR" = "$TARGET_FLAVOR" ]; then
-    printf 'fd0 %s %s already installed at %s\n' "$VERSION" "$TARGET_FLAVOR" "$PREFIX"
+    printf 'fd0 %s %s already installed at %s\n' "$RELEASE_TAG" "$TARGET_FLAVOR" "$PREFIX"
     exit 0
 fi
+if printf '%s\n' "$CURRENT" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z][0-9A-Za-z.-]*)?$' \
+    && version_lt "$VERSION_NUM" "$CURRENT"; then
+    if [ "$REQUESTED_LATEST" = "1" ] || [ "$ALLOW_DOWNGRADE" != "1" ]; then
+        die "refusing downgrade from $CURRENT to $VERSION_NUM; select an explicit version and pass --allow-downgrade"
+    fi
+fi
+have "$COSIGN" || die "cosign is required to authenticate fd0 releases; install cosign and retry"
 
 # ─── confirm install or upgrade ──────────────────────────────────────────
 printf '\nfd0 client installer\n'
@@ -203,6 +304,9 @@ if [ -n "$CURRENT" ]; then
     printf '  current: %s %s\n' "$CURRENT" "$CURRENT_FLAVOR"
     printf '  new:     %s %s\n' "$VERSION_NUM" "$TARGET_FLAVOR"
     action="upgrade"
+    if version_lt "$VERSION_NUM" "$CURRENT"; then
+        action="downgrade"
+    fi
     if [ "$CURRENT" = "$VERSION_NUM" ] && [ "$CURRENT_FLAVOR" != "$TARGET_FLAVOR" ]; then
         action="switch flavor"
     fi
@@ -210,13 +314,7 @@ else
     printf '  version: %s %s\n' "$VERSION_NUM" "$TARGET_FLAVOR"
     action="install"
 fi
-if [ "$VERIFY" = "1" ] && have cosign; then
-    printf '  verify:  sha256 + cosign (keyless, github actions)\n'
-elif [ "$VERIFY" = "1" ]; then
-    printf '  verify:  sha256; cosign unavailable\n'
-else
-    printf '  verify:  sha256; cosign disabled\n'
-fi
+printf '  verify:  sha256 + cosign (exact release workflow)\n'
 printf '\n'
 confirm "proceed with ${action}?" || { printf 'aborted.\n'; exit 1; }
 
@@ -229,28 +327,27 @@ if [ "$TARGET_FLAVOR" = "yubikey" ]; then
 else
     TARBALL="fd0_${OS}_${ARCH}.tar.gz"
 fi
-DL="${RELEASE_BASE}/download/${VERSION}"
+DL="${RELEASE_BASE}/download/${DOWNLOAD_TAG}"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
 printf '→ fetching %s/%s\n' "$DL" "$TARBALL"
 curl -fsSL "$DL/${TARBALL}" -o "$TMP/${TARBALL}" \
-    || die "could not download tarball — bad version (${VERSION}) or no asset for ${OS}/${ARCH}?"
+    || die "could not download tarball — bad version (${RELEASE_TAG}) or no asset for ${OS}/${ARCH}?"
 
 printf '→ fetching checksum manifest\n'
 curl -fsSL "$DL/checksums.txt" -o "$TMP/checksums.txt" || die "missing checksums.txt"
-if [ "$VERIFY" = "1" ] && have cosign; then
-    printf '→ fetching and verifying cosign signature\n'
-    curl -fsSL "$DL/checksums.txt.sig" -o "$TMP/checksums.txt.sig" || die "missing checksums.txt.sig"
-    curl -fsSL "$DL/checksums.txt.pem" -o "$TMP/checksums.txt.pem" || die "missing checksums.txt.pem"
-    cosign verify-blob \
-        --certificate            "$TMP/checksums.txt.pem" \
-        --signature              "$TMP/checksums.txt.sig" \
-        --certificate-identity-regexp "^https://github.com/${REPO}/" \
-        --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-        "$TMP/checksums.txt" >/dev/null 2>&1 \
-        || die "cosign verification failed — refusing to install"
-fi
+printf '→ fetching and verifying cosign signature\n'
+curl -fsSL "$DL/checksums.txt.sig" -o "$TMP/checksums.txt.sig" || die "missing checksums.txt.sig"
+curl -fsSL "$DL/checksums.txt.pem" -o "$TMP/checksums.txt.pem" || die "missing checksums.txt.pem"
+IDENTITY_TAG=$(printf '%s' "$RELEASE_TAG" | sed 's/\./\\./g')
+"$COSIGN" verify-blob \
+    --certificate            "$TMP/checksums.txt.pem" \
+    --signature              "$TMP/checksums.txt.sig" \
+    --certificate-identity-regexp "^https://github\\.com/ValentinKolb/fd0\\.sh/\\.github/workflows/release\\.yml@refs/tags/${IDENTITY_TAG}$" \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+    "$TMP/checksums.txt" >/dev/null 2>&1 \
+    || die "cosign verification failed — refusing to install"
 printf '→ verifying tarball sha256 against manifest\n'
 expected=$(awk -v t="$TARBALL" '$2 == t || $2 == "*"t {print $1}' "$TMP/checksums.txt")
 [ -n "$expected" ] || die "tarball not listed in checksums.txt"

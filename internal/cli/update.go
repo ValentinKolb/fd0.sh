@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -45,7 +46,7 @@ type UpdateOptions struct {
 	System           bool
 	CheckOnly        bool
 	Yes              bool
-	NoVerify         bool
+	AllowDowngrade   bool
 
 	APIBase     string
 	ReleaseBase string
@@ -55,6 +56,7 @@ type UpdateOptions struct {
 	GOOS        string
 	GOARCH      string
 	Executable  string
+	cosignPath  string
 }
 
 type updateRelease struct {
@@ -76,10 +78,13 @@ type installedClient struct {
 }
 
 type semver struct {
-	major int
-	minor int
-	patch int
+	major      int
+	minor      int
+	patch      int
+	prerelease []string
 }
+
+var semverPattern = regexp.MustCompile(`^([0-9]+)\.([0-9]+)\.([0-9]+)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$`)
 
 type stagedUpdateBinary struct {
 	name   string
@@ -152,8 +157,15 @@ func RunUpdate(ctx context.Context, opts UpdateOptions) error {
 	archiveName := updateArchiveName(targetFlavor, platform)
 	relation, comparable := compareVersionStrings(current.Version, target.Version)
 	sameFlavor := current.Flavor == targetFlavor
+	if comparable && relation > 0 && (opts.Version == "latest" || !opts.AllowDowngrade) {
+		return fmt.Errorf(
+			"update: refusing downgrade from %s to %s; select an explicit version and pass --allow-downgrade",
+			current.Version,
+			target.Version,
+		)
+	}
 	if opts.CheckOnly {
-		printUpdatePlan(opts.Stdout, prefix, current.Version, current.Flavor, target.Version, targetFlavor, target.DisplayTag, archiveName, "check", false, false)
+		printUpdatePlan(opts.Stdout, prefix, current.Version, current.Flavor, target.Version, targetFlavor, target.DisplayTag, archiveName, "check")
 		if comparable && relation >= 0 && sameFlavor {
 			fmt.Fprintln(opts.Stdout, "fd0 is up to date")
 			return nil
@@ -173,13 +185,17 @@ func RunUpdate(ctx context.Context, opts UpdateOptions) error {
 	} else if comparable && relation == 0 && !sameFlavor {
 		action = "switch flavor"
 	}
-	cosignEnabled := !opts.NoVerify && commandExists("cosign")
-	printUpdatePlan(opts.Stdout, prefix, current.Version, current.Flavor, target.Version, targetFlavor, target.DisplayTag, archiveName, action, cosignEnabled, !opts.NoVerify)
-	if action == "downgrade" && !opts.Yes {
-		if err := confirmUpdate(false, fmt.Sprintf("Downgrade fd0 from %s %s to %s %s?", current.Version, current.Flavor, target.Version, targetFlavor)); err != nil {
-			return err
-		}
-	} else if !opts.Yes {
+	cosignPath := opts.cosignPath
+	if cosignPath == "" {
+		cosignPath, err = exec.LookPath("cosign")
+	} else {
+		cosignPath, err = exec.LookPath(cosignPath)
+	}
+	if err != nil {
+		return errors.New("update: cosign is required to authenticate fd0 releases; install cosign and retry")
+	}
+	printUpdatePlan(opts.Stdout, prefix, current.Version, current.Flavor, target.Version, targetFlavor, target.DisplayTag, archiveName, action)
+	if !opts.Yes {
 		if err := confirmUpdate(false, fmt.Sprintf("Proceed with fd0 %s to %s %s?", action, target.Version, targetFlavor)); err != nil {
 			return err
 		}
@@ -212,14 +228,10 @@ func RunUpdate(ctx context.Context, opts UpdateOptions) error {
 		return fmt.Errorf("update: sha256 mismatch for %s", archiveName)
 	}
 	fmt.Fprintln(opts.Stderr, "verified sha256 manifest")
-	if cosignEnabled {
-		if err := verifyChecksumsWithCosign(ctx, opts.HTTPClient, base, tmp, checksums); err != nil {
-			return err
-		}
-		fmt.Fprintln(opts.Stderr, "verified cosign signature")
-	} else if !opts.NoVerify {
-		fmt.Fprintln(opts.Stderr, "warn: cosign not installed; verified sha256 manifest only")
+	if err := verifyChecksumsWithCosign(ctx, opts.HTTPClient, base, tmp, checksums, cosignPath, target.DisplayTag); err != nil {
+		return err
 	}
+	fmt.Fprintln(opts.Stderr, "verified cosign signature")
 	extractDir := filepath.Join(tmp, "extract")
 	if err := os.Mkdir(extractDir, 0o700); err != nil {
 		return err
@@ -347,6 +359,7 @@ func latestClientReleaseTarget(ctx context.Context, hc *http.Client, apiBase str
 	if err := json.Unmarshal(body, &releases); err != nil {
 		return updateTarget{}, fmt.Errorf("update: parse releases API: %w", err)
 	}
+	best := updateTarget{}
 	for _, r := range releases {
 		if r.Draft || r.Prerelease {
 			continue
@@ -359,9 +372,18 @@ func latestClientReleaseTarget(ctx context.Context, hc *http.Client, apiBase str
 		if err != nil {
 			return updateTarget{}, err
 		}
-		return target, nil
+		if best.Version == "" {
+			best = target
+			continue
+		}
+		if relation, comparable := compareVersionStrings(target.Version, best.Version); comparable && relation > 0 {
+			best = target
+		}
 	}
-	return updateTarget{}, errors.New("update: no client release found")
+	if best.Version == "" {
+		return updateTarget{}, errors.New("update: no client release found")
+	}
+	return best, nil
 }
 
 func explicitUpdateTarget(v string) (updateTarget, error) {
@@ -413,13 +435,18 @@ func canonicalClientReleaseTag(v string) string {
 
 func releaseVersionNumber(tag string) string {
 	tag = strings.TrimSpace(tag)
+	version := ""
 	if strings.HasPrefix(tag, "client-v") {
-		return normalizeVersionNumber(strings.TrimPrefix(tag, "client-v"))
+		version = strings.TrimPrefix(tag, "client-v")
+	} else if strings.HasPrefix(tag, "fd0-v") {
+		version = strings.TrimPrefix(tag, "fd0-v")
+	} else {
+		version = strings.TrimPrefix(tag, "v")
 	}
-	if strings.HasPrefix(tag, "fd0-v") {
-		return normalizeVersionNumber(strings.TrimPrefix(tag, "fd0-v"))
+	if _, ok := parseSemver(version); !ok {
+		return ""
 	}
-	return normalizeVersionNumber(strings.TrimPrefix(tag, "v"))
+	return version
 }
 
 func normalizeVersionNumber(v string) string {
@@ -446,25 +473,86 @@ func compareVersionStrings(a, b string) (int, bool) {
 		return compareInt(av.minor, bv.minor), true
 	case av.patch != bv.patch:
 		return compareInt(av.patch, bv.patch), true
-	default:
+	case len(av.prerelease) == 0 && len(bv.prerelease) == 0:
 		return 0, true
+	case len(av.prerelease) == 0:
+		return 1, true
+	case len(bv.prerelease) == 0:
+		return -1, true
 	}
+	count := min(len(av.prerelease), len(bv.prerelease))
+	for i := range count {
+		aID, bID := av.prerelease[i], bv.prerelease[i]
+		if aID == bID {
+			continue
+		}
+		aNumeric := isNumericIdentifier(aID)
+		bNumeric := isNumericIdentifier(bID)
+		switch {
+		case aNumeric && bNumeric:
+			return compareNumericIdentifier(aID, bID), true
+		case aNumeric:
+			return -1, true
+		case bNumeric:
+			return 1, true
+		case aID < bID:
+			return -1, true
+		default:
+			return 1, true
+		}
+	}
+	return compareInt(len(av.prerelease), len(bv.prerelease)), true
 }
 
 func parseSemver(v string) (semver, bool) {
-	parts := strings.Split(v, ".")
-	if len(parts) != 3 {
+	match := semverPattern.FindStringSubmatch(v)
+	if match == nil {
 		return semver{}, false
 	}
 	nums := [3]int{}
-	for i, p := range parts {
+	for i, p := range match[1:4] {
 		n, err := strconv.Atoi(p)
 		if err != nil || n < 0 {
 			return semver{}, false
 		}
 		nums[i] = n
 	}
-	return semver{major: nums[0], minor: nums[1], patch: nums[2]}, true
+	var prerelease []string
+	if match[4] != "" {
+		prerelease = strings.Split(match[4], ".")
+	}
+	return semver{major: nums[0], minor: nums[1], patch: nums[2], prerelease: prerelease}, true
+}
+
+func isNumericIdentifier(value string) bool {
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return value != ""
+}
+
+func compareNumericIdentifier(a, b string) int {
+	a = strings.TrimLeft(a, "0")
+	b = strings.TrimLeft(b, "0")
+	if a == "" {
+		a = "0"
+	}
+	if b == "" {
+		b = "0"
+	}
+	if len(a) != len(b) {
+		return compareInt(len(a), len(b))
+	}
+	switch {
+	case a < b:
+		return -1
+	case a > b:
+		return 1
+	default:
+		return 0
+	}
 }
 
 func compareInt(a, b int) int {
@@ -477,7 +565,7 @@ func compareInt(a, b int) int {
 	return 0
 }
 
-func printUpdatePlan(w io.Writer, prefix, currentVersion, currentFlavor, targetVersion, targetFlavor, targetTag, archiveName, action string, cosignEnabled, cosignWanted bool) {
+func printUpdatePlan(w io.Writer, prefix, currentVersion, currentFlavor, targetVersion, targetFlavor, targetTag, archiveName, action string) {
 	fmt.Fprintln(w, "fd0 update")
 	fmt.Fprintf(w, "  target:  %s\n", prefix)
 	if currentVersion != "" {
@@ -486,15 +574,10 @@ func printUpdatePlan(w io.Writer, prefix, currentVersion, currentFlavor, targetV
 	fmt.Fprintf(w, "  new:     %s %s (%s)\n", targetVersion, targetFlavor, targetTag)
 	fmt.Fprintf(w, "  archive: %s\n", archiveName)
 	fmt.Fprintf(w, "  action:  %s\n", action)
-	switch {
-	case action == "check":
+	if action == "check" {
 		fmt.Fprintln(w, "  verify:  not used in --check")
-	case cosignEnabled:
+	} else {
 		fmt.Fprintln(w, "  verify:  sha256 + cosign")
-	case cosignWanted:
-		fmt.Fprintln(w, "  verify:  sha256; cosign unavailable")
-	default:
-		fmt.Fprintln(w, "  verify:  sha256 only (--no-verify)")
 	}
 }
 
@@ -604,7 +687,7 @@ func sha256File(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func verifyChecksumsWithCosign(ctx context.Context, hc *http.Client, base, tmp string, checksums []byte) error {
+func verifyChecksumsWithCosign(ctx context.Context, hc *http.Client, base, tmp string, checksums []byte, cosignPath, releaseTag string) error {
 	checksumPath := filepath.Join(tmp, "checksums.txt")
 	if err := os.WriteFile(checksumPath, checksums, 0o600); err != nil {
 		return err
@@ -619,10 +702,12 @@ func verifyChecksumsWithCosign(ctx context.Context, hc *http.Client, base, tmp s
 	}
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(cctx, "cosign", "verify-blob",
+	cmd := exec.CommandContext(cctx, cosignPath, "verify-blob",
 		"--certificate", pemPath,
 		"--signature", sigPath,
-		"--certificate-identity-regexp", "^https://github.com/"+defaultUpdateRepo+"/",
+		"--certificate-identity-regexp", "^"+regexp.QuoteMeta(
+			"https://github.com/"+defaultUpdateRepo+"/.github/workflows/release.yml@refs/tags/"+releaseTag,
+		)+"$",
 		"--certificate-oidc-issuer", "https://token.actions.githubusercontent.com",
 		checksumPath,
 	)
@@ -630,11 +715,6 @@ func verifyChecksumsWithCosign(ctx context.Context, hc *http.Client, base, tmp s
 		return fmt.Errorf("update: cosign verification failed: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
-}
-
-func commandExists(name string) bool {
-	_, err := exec.LookPath(name)
-	return err == nil
 }
 
 func extractClientBinaries(archivePath, dst string) error {

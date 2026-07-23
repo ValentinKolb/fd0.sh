@@ -404,8 +404,9 @@ ghp_xxxxxxxxxxxxxxxxxxxx`}</Shell>
             Installs <span style={`color:${C.acc};`}>fd0</span> and{" "}
             <span style={`color:${C.acc};`}>fd0-agent</span> to{" "}
             <span style={`color:${C.acc};`}>~/.local/bin</span>.
-            Always verifies SHA-256 and verifies the release manifest when{" "}
-            <span style={`color:${C.acc};`}>cosign</span> is installed. Add{" "}
+            Requires <span style={`color:${C.acc};`}>cosign</span> and
+            authenticates the SHA-256 manifest against the exact release
+            workflow and tag. Add{" "}
             <span style={`color:${C.acc};`}>--desktop</span> for one signed app bundle that also owns the CLI and agent.
           </div>
         </div>

@@ -6,6 +6,9 @@
 bin/
 dist/
 build/
+**/node_modules/
+**/dist/
+desktop/out/
 *.db
 README.md
 *_test.go

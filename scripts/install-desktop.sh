@@ -8,15 +8,15 @@ RELEASE_BASE="${FD0_RELEASE_BASE:-https://github.com/${REPO}/releases}"
 API_BASE="${FD0_API_BASE:-https://api.github.com/repos/${REPO}}"
 VERSION="${FD0_DESKTOP_VERSION:-latest}"
 SYSTEM="${FD0_DESKTOP_SYSTEM:-0}"
-VERIFY="${FD0_DESKTOP_VERIFY:-1}"
 ASSUME_YES="${FD0_DESKTOP_ASSUME_YES:-0}"
+ALLOW_DOWNGRADE="${FD0_DESKTOP_ALLOW_DOWNGRADE:-0}"
 UNINSTALL=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --system)       SYSTEM=1; shift ;;
         --version=*)    VERSION="${1#--version=}"; shift ;;
-        --no-verify)    VERIFY=0; shift ;;
+        --allow-downgrade) ALLOW_DOWNGRADE=1; shift ;;
         --uninstall)    UNINSTALL=1; shift ;;
         -y|--yes)       ASSUME_YES=1; shift ;;
         -h|--help)
@@ -27,7 +27,7 @@ Installs or upgrades fd0 Desktop.
 
   --system            install for every user (macOS: /Applications, Linux: /usr/local/bin)
   --version=TAG       install a desktop-vX.Y.Z release (default: latest desktop release)
-  --no-verify         skip Cosign verification; SHA-256 is still required
+  --allow-downgrade   permit an explicitly selected older release
   --uninstall         remove the app and desktop-managed CLI wrappers; keep vault data
   -y, --yes           do not prompt
   -h, --help          show this help
@@ -39,6 +39,56 @@ done
 
 die() { printf 'fd0 Desktop: %s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
+COSIGN="${FD0_COSIGN_BIN:-cosign}"
+
+version_lt() {
+    awk -v left="$1" -v right="$2" '
+        function core(version) {
+            sub(/\+.*/, "", version)
+            sub(/-.*/, "", version)
+            return version
+        }
+        function prerelease(version) {
+            sub(/\+.*/, "", version)
+            if (version !~ /-/) return ""
+            sub(/^[^-]*-/, "", version)
+            return version
+        }
+        BEGIN {
+            left_core = core(left)
+            right_core = core(right)
+            split(left_core, left_parts, ".")
+            split(right_core, right_parts, ".")
+            for (i = 1; i <= 3; i++) {
+                if ((left_parts[i] + 0) < (right_parts[i] + 0)) exit 0
+                if ((left_parts[i] + 0) > (right_parts[i] + 0)) exit 1
+            }
+
+            left_pre = prerelease(left)
+            right_pre = prerelease(right)
+            if (left_pre == right_pre || left_pre == "") exit 1
+            if (right_pre == "") exit 0
+
+            left_count = split(left_pre, left_ids, ".")
+            right_count = split(right_pre, right_ids, ".")
+            count = left_count < right_count ? left_count : right_count
+            for (i = 1; i <= count; i++) {
+                left_numeric = left_ids[i] ~ /^[0-9]+$/
+                right_numeric = right_ids[i] ~ /^[0-9]+$/
+                if (left_numeric && right_numeric) {
+                    if ((left_ids[i] + 0) < (right_ids[i] + 0)) exit 0
+                    if ((left_ids[i] + 0) > (right_ids[i] + 0)) exit 1
+                } else if (left_numeric != right_numeric) {
+                    exit left_numeric ? 0 : 1
+                } else {
+                    if (left_ids[i] < right_ids[i]) exit 0
+                    if (left_ids[i] > right_ids[i]) exit 1
+                }
+            }
+            exit left_count < right_count ? 0 : 1
+        }
+    '
+}
 
 install_executable() {
     src=$1
@@ -128,7 +178,9 @@ if [ "$UNINSTALL" = "1" ]; then
 fi
 
 have curl || die "curl is required"
+REQUESTED_LATEST=0
 if [ "$VERSION" = "latest" ]; then
+    REQUESTED_LATEST=1
     VERSION=$(curl -fsSL "${API_BASE}/releases?per_page=30" \
         | sed -n 's/.*"tag_name": *"\(desktop-v[^"]*\)".*/\1/p' \
         | head -n1)
@@ -143,6 +195,20 @@ printf '%s\n' "$VERSION" | grep -Eq '^desktop-v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-
     || die "invalid desktop release tag: $VERSION"
 VERSION_NUM=${VERSION#desktop-v}
 
+CURRENT=""
+if [ "$OS" = "darwin" ] && [ -x "$TARGET/Contents/Resources/bin/fd0" ]; then
+    CURRENT=$("$TARGET/Contents/Resources/bin/fd0" version 2>/dev/null | awk 'NR == 1 {print $2}' || true)
+elif [ "$OS" = "linux" ] && [ -x "$TARGET" ]; then
+    CURRENT=$(APPIMAGE_EXTRACT_AND_RUN=1 "$TARGET" --fd0-cli-relay version 2>/dev/null | awk 'NR == 1 {print $2}' || true)
+fi
+if printf '%s\n' "$CURRENT" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z][0-9A-Za-z.-]*)?$' \
+    && version_lt "$VERSION_NUM" "$CURRENT"; then
+    if [ "$REQUESTED_LATEST" = "1" ] || [ "$ALLOW_DOWNGRADE" != "1" ]; then
+        die "refusing downgrade from $CURRENT to $VERSION_NUM; select an explicit version and pass --allow-downgrade"
+    fi
+fi
+have "$COSIGN" || die "cosign is required to authenticate fd0 Desktop releases; install cosign and retry"
+
 if [ "$OS" = "darwin" ]; then
     ASSET="fd0-desktop_${VERSION_NUM}_${ASSET_OS}_${ASSET_ARCH}.dmg"
 else
@@ -152,7 +218,9 @@ fi
 printf '\nfd0 Desktop installer\n'
 printf '  release: %s\n' "$VERSION"
 printf '  target:  %s\n' "$TARGET"
-printf '  asset:   %s\n\n' "$ASSET"
+if [ -n "$CURRENT" ]; then printf '  current: %s\n' "$CURRENT"; fi
+printf '  asset:   %s\n' "$ASSET"
+printf '  verify:  sha256 + cosign (exact release workflow)\n\n'
 confirm "install fd0 Desktop?" || { printf 'aborted.\n'; exit 1; }
 
 TMP=$(mktemp -d)
@@ -177,19 +245,16 @@ else
 fi
 [ "$actual" = "$expected" ] || die "SHA-256 mismatch; refusing to install"
 
-if [ "$VERIFY" = "1" ] && have cosign; then
-    curl -fsSL "$DL/checksums.txt.sig" -o "$TMP/checksums.txt.sig" || die "missing checksums.txt.sig"
-    curl -fsSL "$DL/checksums.txt.pem" -o "$TMP/checksums.txt.pem" || die "missing checksums.txt.pem"
-    cosign verify-blob \
-        --certificate "$TMP/checksums.txt.pem" \
-        --signature "$TMP/checksums.txt.sig" \
-        --certificate-identity-regexp "^https://github.com/${REPO}/" \
-        --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-        "$TMP/checksums.txt" >/dev/null 2>&1 || die "Cosign verification failed"
-    printf '✓ verified release manifest with Cosign\n'
-elif [ "$VERIFY" = "1" ]; then
-    printf '! cosign not installed; SHA-256 verified, manifest identity not verified\n' >&2
-fi
+curl -fsSL "$DL/checksums.txt.sig" -o "$TMP/checksums.txt.sig" || die "missing checksums.txt.sig"
+curl -fsSL "$DL/checksums.txt.pem" -o "$TMP/checksums.txt.pem" || die "missing checksums.txt.pem"
+IDENTITY_TAG=$(printf '%s' "$VERSION" | sed 's/\./\\./g')
+"$COSIGN" verify-blob \
+    --certificate "$TMP/checksums.txt.pem" \
+    --signature "$TMP/checksums.txt.sig" \
+    --certificate-identity-regexp "^https://github\\.com/ValentinKolb/fd0\\.sh/\\.github/workflows/release-desktop\\.yml@refs/tags/${IDENTITY_TAG}$" \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+    "$TMP/checksums.txt" >/dev/null 2>&1 || die "Cosign verification failed"
+printf '✓ verified release manifest with Cosign\n'
 
 if [ "$OS" = "darwin" ]; then
     MOUNT="$TMP/mount"
