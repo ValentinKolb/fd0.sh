@@ -135,3 +135,25 @@ func TestAgentRoundtrip(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestWipeOpenResultClearsRejectedUnlockMaterial(t *testing.T) {
+	res := vault.OpenResult{
+		Body: &proto.VaultBody{
+			SuperPriv: []byte{1, 2, 3, 4},
+		},
+		UnlockKey:  []byte{5, 6, 7, 8},
+		PayloadKey: []byte{9, 10, 11, 12},
+	}
+	wipeOpenResult(&res)
+	for name, secret := range map[string][]byte{
+		"super private key": res.Body.SuperPriv,
+		"unlock key":        res.UnlockKey,
+		"payload key":       res.PayloadKey,
+	} {
+		for i, b := range secret {
+			if b != 0 {
+				t.Fatalf("%s byte %d was not wiped: %d", name, i, b)
+			}
+		}
+	}
+}

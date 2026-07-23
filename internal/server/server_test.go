@@ -83,6 +83,42 @@ func TestClientIPRequiresTrustedProxy(t *testing.T) {
 	}
 }
 
+func TestPrunePeersRevokesOnlyUnconfiguredPeers(t *testing.T) {
+	srv, _ := newTestServer(t)
+	ctx := context.Background()
+	keepURL := "https://keep.example"
+	removeURL := "https://remove.example"
+	if err := srv.store.UpsertPeer(ctx, keepURL, bytes.Repeat([]byte{1}, 32), "keep"); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.UpsertPeer(ctx, removeURL, bytes.Repeat([]byte{2}, 32), "remove"); err != nil {
+		t.Fatal(err)
+	}
+	srv.cfg.Peers = []string{keepURL}
+
+	if err := srv.prunePeers(ctx); err != nil {
+		t.Fatal(err)
+	}
+	peers, err := srv.store.ListPeers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(peers) != 1 || peers[0].URL != keepURL {
+		t.Fatalf("peers after prune = %+v, want only %s", peers, keepURL)
+	}
+}
+
+func TestPrunePeersFailsClosedOnStoreError(t *testing.T) {
+	srv, ts := newTestServer(t)
+	ts.Close()
+	if err := srv.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.prunePeers(context.Background()); err == nil {
+		t.Fatal("prunePeers succeeded with an unavailable authorization store")
+	}
+}
+
 func TestClientIPAcceptsSingleAddressFromTrustedProxy(t *testing.T) {
 	_, network, err := net.ParseCIDR("10.0.0.0/24")
 	if err != nil {

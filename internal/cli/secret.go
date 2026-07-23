@@ -115,6 +115,7 @@ func RunScopeList(ctx context.Context) error {
 		if label == "" {
 			label = "(unnamed)"
 		}
+		label = terminalSafe(label)
 		fmt.Printf("%-20s  %-12s  oek=v%d  tip=%d\n", label, shortScopeID(id), sd.OEKs[len(sd.OEKs)-1].Version, sd.ChainTip.Seq)
 	}
 	return nil
@@ -367,7 +368,7 @@ func CollectAllSecrets(ctx context.Context) ([]SecretEntry, *Session, error) {
 				continue
 			}
 			out = append(out, SecretEntry{
-				ScopeID: scopeID, ScopeLabel: sd.Label, ID: id,
+				ScopeID: scopeID, ScopeLabel: terminalSafe(sd.Label), ID: id,
 				Name: cur.Record.Name, Type: cur.Record.Type, Tags: cur.Record.Tags,
 			})
 		}
@@ -460,7 +461,7 @@ func RunSecretList(ctx context.Context) error {
 // scopeDisplay returns the scope label or a shortened scope_id.
 func scopeDisplay(e SecretEntry) string {
 	if e.ScopeLabel != "" {
-		return e.ScopeLabel
+		return terminalSafe(e.ScopeLabel)
 	}
 	return shortScopeID(e.ScopeID)
 }
@@ -470,7 +471,7 @@ func scopeDisplay(e SecretEntry) string {
 func scopeName(s *Session, scopeID string) string {
 	if s != nil {
 		if sd, ok := s.Body.Scopes[scopeID]; ok && sd.Label != "" {
-			return fmt.Sprintf("%s (%s)", sd.Label, shortScopeID(scopeID))
+			return fmt.Sprintf("%s (%s)", terminalSafe(sd.Label), shortScopeID(scopeID))
 		}
 	}
 	return shortScopeID(scopeID)
@@ -558,7 +559,7 @@ func (s *Session) promptScopePicker() (string, error) {
 		if label == "" {
 			label = "(unnamed)"
 		}
-		items = append(items, tuiPickerItem{ID: id, Label: label, Hint: id})
+		items = append(items, tuiPickerItem{ID: id, Label: terminalSafe(label), Hint: id})
 	}
 	res, err := runPicker("Scope?", items)
 	if err != nil {

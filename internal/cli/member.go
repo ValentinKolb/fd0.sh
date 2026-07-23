@@ -260,9 +260,10 @@ func RunScopeRename(ctx context.Context, scopeOrLabel, newLabel string) error {
 		return err
 	}
 	if old == "" {
-		fmt.Fprintf(os.Stderr, "✓ scope %s labeled '%s'\n", shortScopeID(scopeID), newLabel)
+		fmt.Fprintf(os.Stderr, "✓ scope %s labeled '%s'\n", shortScopeID(scopeID), terminalSafe(newLabel))
 	} else {
-		fmt.Fprintf(os.Stderr, "✓ scope renamed: '%s' → '%s' (%s)\n", old, newLabel, shortScopeID(scopeID))
+		fmt.Fprintf(os.Stderr, "✓ scope renamed: '%s' → '%s' (%s)\n",
+			terminalSafe(old), terminalSafe(newLabel), shortScopeID(scopeID))
 	}
 	hintSyncForPeers()
 	return nil

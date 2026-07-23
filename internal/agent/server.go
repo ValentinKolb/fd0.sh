@@ -439,6 +439,7 @@ func (s *Server) handleUnlock(u *UnlockReq) *Response {
 	if err != nil {
 		return errResp(err.Error())
 	}
+	defer wipeOpenResult(&res)
 	body := res.Body
 	if len(body.SuperPriv) != ed25519.PrivateKeySize {
 		crypto.Wipe(res.UnlockKey)
@@ -556,6 +557,17 @@ func (s *Server) handleUnlock(u *UnlockReq) *Response {
 		RedactedBody: rb,
 		UserSuperPub: append([]byte(nil), v.UserSuperPub...),
 	}}
+}
+
+func wipeOpenResult(res *vault.OpenResult) {
+	if res == nil {
+		return
+	}
+	crypto.Wipe(res.UnlockKey)
+	crypto.Wipe(res.PayloadKey)
+	if res.Body != nil {
+		crypto.Wipe(res.Body.SuperPriv)
+	}
 }
 
 func (s *Server) handleSign(sr *SignReq) *Response {

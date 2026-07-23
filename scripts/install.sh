@@ -360,11 +360,13 @@ else
 fi
 [ "$actual" = "$expected" ] || die "sha256 mismatch — tarball does not match manifest"
 
-tar -xzf "$TMP/${TARBALL}" -C "$TMP" || die "could not extract tarball"
-
 # ─── install the client binaries ─────────────────────────────────────────
 for bin in $BINARIES; do
-    [ -f "$TMP/$bin" ] || die "binary $bin missing from release tarball"
+    # Stream only the two exact archive members to caller-chosen files.
+    # No archive member path is ever handed to tar as an extraction target.
+    tar -xOzf "$TMP/${TARBALL}" "$bin" > "$TMP/$bin" \
+        || die "binary $bin missing from release tarball"
+    [ -s "$TMP/$bin" ] || die "binary $bin is empty in release tarball"
 done
 for bin in $BINARIES; do
     INSTALL_BIN "$TMP/$bin" "$PREFIX/$bin"

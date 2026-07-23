@@ -43,12 +43,6 @@ func TestUpdateVersionHelpers(t *testing.T) {
 	if cmp, ok := compareVersionStrings("0.8.0", "0.9.0"); !ok || cmp >= 0 {
 		t.Fatalf("compare 0.8.0 vs 0.9.0 = %d %v, want less", cmp, ok)
 	}
-	if got := parseFD0VersionOutput("fd0 0.9.0\n"); got.Version != "0.9.0" || got.Flavor != "standard" {
-		t.Fatalf("old version parse=%+v, want 0.9.0 standard", got)
-	}
-	if got := parseFD0VersionOutput("fd0 0.9.0 yubikey\n"); got.Version != "0.9.0" || got.Flavor != "yubikey" {
-		t.Fatalf("new version parse=%+v, want 0.9.0 yubikey", got)
-	}
 	if got := updateArchiveName("standard", "linux_amd64"); got != "fd0_linux_amd64.tar.gz" {
 		t.Fatalf("standard archive=%q", got)
 	}
@@ -167,17 +161,20 @@ func TestRunUpdatePreservesYubikeyFlavor(t *testing.T) {
 	})
 	var out, stderr bytes.Buffer
 	err := RunUpdate(context.Background(), UpdateOptions{
-		Version:     "0.9.0",
-		Prefix:      prefix,
-		Yes:         true,
-		APIBase:     srv.URL,
-		ReleaseBase: srv.URL,
-		HTTPClient:  srv.Client(),
-		Stdout:      &out,
-		Stderr:      &stderr,
-		GOOS:        "linux",
-		GOARCH:      "amd64",
-		cosignPath:  fakeCosign(t, true),
+		CurrentVersion: "0.8.0",
+		CurrentFlavor:  "yubikey",
+		Version:        "0.9.0",
+		Prefix:         prefix,
+		Executable:     filepath.Join(prefix, "fd0"),
+		Yes:            true,
+		APIBase:        srv.URL,
+		ReleaseBase:    srv.URL,
+		HTTPClient:     srv.Client(),
+		Stdout:         &out,
+		Stderr:         &stderr,
+		GOOS:           "linux",
+		GOARCH:         "amd64",
+		cosignPath:     fakeCosign(t, true),
 	})
 	if err != nil {
 		t.Fatalf("RunUpdate: %v\nstdout:\n%s\nstderr:\n%s", err, out.String(), stderr.String())
@@ -205,24 +202,47 @@ func TestRunUpdateExplicitFlavorSwitchAtSameVersion(t *testing.T) {
 	})
 	var out bytes.Buffer
 	err := RunUpdate(context.Background(), UpdateOptions{
-		Version:     "0.9.0",
-		Flavor:      "yubikey",
-		Prefix:      prefix,
-		Yes:         true,
-		APIBase:     srv.URL,
-		ReleaseBase: srv.URL,
-		HTTPClient:  srv.Client(),
-		Stdout:      &out,
-		Stderr:      ioDiscard{},
-		GOOS:        "linux",
-		GOARCH:      "amd64",
-		cosignPath:  fakeCosign(t, true),
+		CurrentVersion: "0.9.0",
+		CurrentFlavor:  "standard",
+		Version:        "0.9.0",
+		Flavor:         "yubikey",
+		Prefix:         prefix,
+		Executable:     filepath.Join(prefix, "fd0"),
+		Yes:            true,
+		APIBase:        srv.URL,
+		ReleaseBase:    srv.URL,
+		HTTPClient:     srv.Client(),
+		Stdout:         &out,
+		Stderr:         ioDiscard{},
+		GOOS:           "linux",
+		GOARCH:         "amd64",
+		cosignPath:     fakeCosign(t, true),
 	})
 	if err != nil {
 		t.Fatalf("RunUpdate: %v\nstdout:\n%s", err, out.String())
 	}
 	if !strings.Contains(out.String(), "action:  switch flavor") {
 		t.Fatalf("expected switch flavor action:\n%s", out.String())
+	}
+}
+
+func TestDetectInstalledFD0DoesNotExecuteTarget(t *testing.T) {
+	prefix := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "executed")
+	target := filepath.Join(prefix, "fd0")
+	if err := os.WriteFile(target, []byte("#!/bin/sh\n: > \""+marker+"\"\necho fd0 9.9.9 yubikey\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := detectInstalledFD0(prefix, filepath.Join(t.TempDir(), "running-fd0"), "0.8.0", "standard")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Present || got.Version != "" {
+		t.Fatalf("detected client = %+v, want present with unknown version", got)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("target binary executed before verification: %v", err)
 	}
 }
 

@@ -27,3 +27,12 @@ func TestPromObserverDoesNotCreatePerChainSeries(t *testing.T) {
 		}
 	}
 }
+
+func TestTerminalSafeNeutralizesRemoteStatusText(t *testing.T) {
+	input := "scope:s_safe\x1b]52;c;stolen\a"
+	got := terminalSafe(input)
+	want := "scope:s_safe?]52;c;stolen?"
+	if got != want {
+		t.Fatalf("terminalSafe(%q) = %q, want %q", input, got, want)
+	}
+}

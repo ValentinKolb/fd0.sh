@@ -75,6 +75,7 @@ type updateTarget struct {
 type installedClient struct {
 	Version string
 	Flavor  string
+	Present bool
 }
 
 type semver struct {
@@ -134,7 +135,7 @@ func RunUpdate(ctx context.Context, opts UpdateOptions) error {
 	if err != nil {
 		return err
 	}
-	current, err := detectInstalledFD0(ctx, prefix, opts.CurrentVersion, opts.CurrentFlavor)
+	current, err := detectInstalledFD0(prefix, opts.Executable, opts.CurrentVersion, opts.CurrentFlavor)
 	if err != nil {
 		return err
 	}
@@ -165,7 +166,7 @@ func RunUpdate(ctx context.Context, opts UpdateOptions) error {
 		)
 	}
 	if opts.CheckOnly {
-		printUpdatePlan(opts.Stdout, prefix, current.Version, current.Flavor, target.Version, targetFlavor, target.DisplayTag, archiveName, "check")
+		printUpdatePlan(opts.Stdout, prefix, current, target.Version, targetFlavor, target.DisplayTag, archiveName, "check")
 		if comparable && relation >= 0 && sameFlavor {
 			fmt.Fprintln(opts.Stdout, "fd0 is up to date")
 			return nil
@@ -178,7 +179,7 @@ func RunUpdate(ctx context.Context, opts UpdateOptions) error {
 		return nil
 	}
 	action := "update"
-	if current.Version == "" {
+	if !current.Present {
 		action = "install"
 	} else if comparable && relation > 0 {
 		action = "downgrade"
@@ -194,7 +195,7 @@ func RunUpdate(ctx context.Context, opts UpdateOptions) error {
 	if err != nil {
 		return errors.New("update: cosign is required to authenticate fd0 releases; install cosign and retry")
 	}
-	printUpdatePlan(opts.Stdout, prefix, current.Version, current.Flavor, target.Version, targetFlavor, target.DisplayTag, archiveName, action)
+	printUpdatePlan(opts.Stdout, prefix, current, target.Version, targetFlavor, target.DisplayTag, archiveName, action)
 	if !opts.Yes {
 		if err := confirmUpdate(false, fmt.Sprintf("Proceed with fd0 %s to %s %s?", action, target.Version, targetFlavor)); err != nil {
 			return err
@@ -292,15 +293,28 @@ func resolveUpdatePrefix(opts UpdateOptions) (string, error) {
 	return filepath.Dir(exe), nil
 }
 
-func detectInstalledFD0(ctx context.Context, prefix, fallbackVersion, fallbackFlavor string) (installedClient, error) {
+func detectInstalledFD0(prefix, executable, fallbackVersion, fallbackFlavor string) (installedClient, error) {
 	path := filepath.Join(prefix, "fd0")
 	if st, err := os.Stat(path); err == nil && st.Mode().IsRegular() && st.Mode()&0o111 != 0 {
-		cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		defer cancel()
-		out, err := exec.CommandContext(cctx, path, "version").Output()
-		if err == nil {
-			return parseFD0VersionOutput(string(out)), nil
+		if executable == "" {
+			executable, _ = os.Executable()
 		}
+		if executable != "" {
+			if current, statErr := os.Stat(executable); statErr == nil && os.SameFile(st, current) {
+				return installedClient{
+					Version: normalizeVersionNumber(fallbackVersion),
+					Flavor:  buildinfo.NormalizeFlavor(fallbackFlavor),
+					Present: true,
+				}, nil
+			}
+		}
+		// Do not execute an arbitrary pre-existing target before release
+		// verification. Its exact build is unknown; --flavor can select a
+		// non-default artifact explicitly for custom prefixes.
+		return installedClient{
+			Flavor:  buildinfo.NormalizeFlavor(fallbackFlavor),
+			Present: true,
+		}, nil
 	}
 	if fallbackVersion == "dev" {
 		return installedClient{Flavor: buildinfo.NormalizeFlavor(fallbackFlavor)}, nil
@@ -308,22 +322,8 @@ func detectInstalledFD0(ctx context.Context, prefix, fallbackVersion, fallbackFl
 	return installedClient{
 		Version: normalizeVersionNumber(fallbackVersion),
 		Flavor:  buildinfo.NormalizeFlavor(fallbackFlavor),
+		Present: true,
 	}, nil
-}
-
-func parseFD0VersionOutput(out string) installedClient {
-	fields := strings.Fields(out)
-	if len(fields) >= 2 && fields[0] == "fd0" {
-		flavor := buildinfo.FlavorStandard
-		if len(fields) >= 3 {
-			flavor = buildinfo.NormalizeFlavor(fields[2])
-		}
-		return installedClient{
-			Version: normalizeVersionNumber(fields[1]),
-			Flavor:  flavor,
-		}
-	}
-	return installedClient{Flavor: buildinfo.FlavorStandard}
 }
 
 func resolveUpdateFlavor(requested, installed, fallback string) (string, error) {
@@ -565,11 +565,13 @@ func compareInt(a, b int) int {
 	return 0
 }
 
-func printUpdatePlan(w io.Writer, prefix, currentVersion, currentFlavor, targetVersion, targetFlavor, targetTag, archiveName, action string) {
+func printUpdatePlan(w io.Writer, prefix string, current installedClient, targetVersion, targetFlavor, targetTag, archiveName, action string) {
 	fmt.Fprintln(w, "fd0 update")
 	fmt.Fprintf(w, "  target:  %s\n", prefix)
-	if currentVersion != "" {
-		fmt.Fprintf(w, "  current: %s %s\n", currentVersion, currentFlavor)
+	if current.Version != "" {
+		fmt.Fprintf(w, "  current: %s %s\n", current.Version, current.Flavor)
+	} else if current.Present {
+		fmt.Fprintln(w, "  current: unknown (existing target was not executed)")
 	}
 	fmt.Fprintf(w, "  new:     %s %s (%s)\n", targetVersion, targetFlavor, targetTag)
 	fmt.Fprintf(w, "  archive: %s\n", archiveName)

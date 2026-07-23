@@ -108,7 +108,7 @@ func (s *Session) discoverScope(ctx context.Context, wcc *WitnessCheckClient, se
 	if name == "" {
 		name = shortScopeID(scopeID)
 	} else {
-		name = fmt.Sprintf("'%s' (%s)", name, shortScopeID(scopeID))
+		name = fmt.Sprintf("'%s' (%s)", terminalSafe(name), shortScopeID(scopeID))
 	}
 	fmt.Fprintf(os.Stderr, "  ↳ discovered scope %s (%d secrets)\n", name, visible)
 	return nil

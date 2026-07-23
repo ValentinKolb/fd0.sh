@@ -87,6 +87,44 @@ EOF
 }
 make_client_release 0.1.0
 make_client_release 0.0.9
+
+make_traversal_client_release() {
+  version=0.1.1
+  release="$BASE/releases/download/v$version"
+  staging="$BASE/client-$version"
+  mkdir -p "$release" "$staging"
+  cat > "$staging/fd0" <<'EOF'
+#!/bin/sh
+if [ "${1:-}" = version ]; then printf 'fd0 0.1.1 standard\n'; fi
+EOF
+  cat > "$staging/fd0-agent" <<'EOF'
+#!/bin/sh
+printf 'fd0-agent 0.1.1\n'
+EOF
+  printf 'must not escape\n' > "$staging/archive-escape-marker"
+  chmod +x "$staging/fd0" "$staging/fd0-agent"
+  if tar --version 2>/dev/null | grep -q GNU; then
+    tar -czf "$release/fd0_linux_arm64.tar.gz" \
+      --transform='s,^archive-escape-marker$,../../archive-escape-marker,' \
+      -C "$staging" fd0 fd0-agent archive-escape-marker
+  else
+    tar -czf "$release/fd0_linux_arm64.tar.gz" \
+      -s ',^archive-escape-marker$,../../archive-escape-marker,' \
+      -C "$staging" fd0 fd0-agent archive-escape-marker
+  fi
+  (
+    cd "$release"
+    if command -v sha256sum >/dev/null 2>&1; then
+      sha256sum fd0_linux_arm64.tar.gz
+    else
+      shasum -a 256 fd0_linux_arm64.tar.gz | awk '{print $1 "  " $2}'
+    fi
+  ) > "$release/checksums.txt"
+  printf 'test signature\n' > "$release/checksums.txt.sig"
+  printf 'client-v%s\n' "$version" > "$release/checksums.txt.pem"
+}
+make_traversal_client_release
+
 mkdir -p "$BASE/api"
 cat > "$BASE/api/releases" <<'EOF'
 [
@@ -243,6 +281,17 @@ FD0_RELEASE_BASE="file://$BASE/releases" \
 FD0_COSIGN_BIN="$FAKE_BIN/cosign" \
   sh "$ROOT/scripts/install.sh" --prefix="$LATEST_HOME/bin" --yes >/dev/null
 test "$("$LATEST_HOME/bin/fd0" version)" = "fd0 0.1.0 standard"
+
+TRAVERSAL_HOME="$BASE/traversal-client-home"
+HOME="$TRAVERSAL_HOME" \
+TEST_UNAME_S=Linux \
+TEST_UNAME_M=arm64 \
+PATH="$FAKE_BIN:$PATH" \
+FD0_RELEASE_BASE="file://$BASE/releases" \
+FD0_COSIGN_BIN="$FAKE_BIN/cosign" \
+  sh "$ROOT/scripts/install.sh" --prefix="$TRAVERSAL_HOME/bin" --version=0.1.1 --yes >/dev/null
+test "$("$TRAVERSAL_HOME/bin/fd0" version)" = "fd0 0.1.1 standard"
+test ! -e "$FD0_TEST_ROOT/archive-escape-marker"
 
 if HOME="$CLIENT_HOME" \
   TEST_UNAME_S=Linux \

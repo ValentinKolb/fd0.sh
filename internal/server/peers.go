@@ -64,28 +64,29 @@ func canonicalisePeers(raw []string) ([]string, error) {
 // (store.IsPeerPub), and a TOFU pin survives restarts, so without this an
 // operator could never withdraw a replica's access by editing config.
 // Run once on boot — config changes already require a restart.
-func (s *Server) prunePeers(ctx context.Context) {
+func (s *Server) prunePeers(ctx context.Context) error {
 	configured := map[string]bool{}
-	if canon, err := canonicalisePeers(s.cfg.Peers); err == nil {
-		for _, u := range canon {
-			configured[u] = true
-		}
+	canonical, err := canonicalisePeers(s.cfg.Peers)
+	if err != nil {
+		return fmt.Errorf("canonicalize configured peers: %w", err)
+	}
+	for _, u := range canonical {
+		configured[u] = true
 	}
 	peers, err := s.store.ListPeers(ctx)
 	if err != nil {
-		s.log.Warn("prune peers: list failed", "err", err)
-		return
+		return fmt.Errorf("list peers: %w", err)
 	}
 	for _, p := range peers {
 		if configured[p.URL] {
 			continue
 		}
 		if err := s.store.DeletePeer(ctx, p.URL); err != nil {
-			s.log.Warn("prune peers: delete failed", "url", p.URL, "err", err)
-			continue
+			return fmt.Errorf("delete unconfigured peer %s: %w", p.URL, err)
 		}
 		s.log.Info("revoked replication authorization for unconfigured peer", "url", p.URL)
 	}
+	return nil
 }
 
 // runPeerResolver loops every PeerResolveInterval, fetching each peer's

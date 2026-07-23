@@ -20,8 +20,10 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
+	"unicode"
 
 	"encoding/json"
 	"time"
@@ -318,7 +320,7 @@ func runStatus(w *witness.Witness) {
 				mark = "⚠ EQUIVOCATION"
 			}
 			fmt.Printf("%-40s %-40s %12d %8d  %s\n",
-				truncate(r.ServerURL, 40), truncate(r.ChainID, 40),
+				truncate(terminalSafe(r.ServerURL), 40), truncate(terminalSafe(r.ChainID), 40),
 				r.MaxTreeSize, r.RowCount, mark)
 		}
 		if nextServer == "" {
@@ -351,6 +353,15 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n-1] + "…"
+}
+
+func terminalSafe(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return '?'
+		}
+		return r
+	}, s)
 }
 
 func boolWord(b bool) string {

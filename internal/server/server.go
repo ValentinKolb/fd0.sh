@@ -213,6 +213,13 @@ func New(cfg Config) (*Server, error) {
 		log:            cfg.Logger,
 		trustedProxies: trustedProxies,
 	}
+	// Replication authorization is persistent, so stale peers must be
+	// revoked before any handler or background worker starts. A storage
+	// error fails startup closed instead of leaving an old peer authorized.
+	if err := s.prunePeers(context.Background()); err != nil {
+		_ = st.Close()
+		return nil, fmt.Errorf("revoke stale peers: %w", err)
+	}
 	if !cfg.RateLimitDisabled {
 		var rlCtx context.Context
 		rlCtx, s.rlStop = context.WithCancel(context.Background())
@@ -226,13 +233,6 @@ func New(cfg Config) (*Server, error) {
 	pruneCtx, pruneCancel := context.WithCancel(context.Background())
 	s.pruneStop = pruneCancel
 	go s.noncePruner(pruneCtx)
-	// Revoke replication authorization for peers no longer configured.
-	// Peer-pull auth (verifyPeerSig → IsPeerPub) is granted by a row in
-	// the peers table, and a TOFU pin persists across restarts — so
-	// removing a peer from FD0_PEERS would NOT stop it pulling unless the
-	// stale row is dropped. Authorization must track the CURRENT
-	// configured set, so prune any pinned peer not in cfg.Peers on boot.
-	s.prunePeers(context.Background())
 	// Peer resolver: TOFU-pins each configured peer's pubkey on first
 	// success, refreshes label + last_verified on schedule. No-op when
 	// FD0_PEERS is empty so solo deployments incur zero overhead.
