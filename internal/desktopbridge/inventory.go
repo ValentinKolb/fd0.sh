@@ -25,10 +25,17 @@ type ScopeSummary struct {
 }
 
 type InventoryResult struct {
-	Scopes []ScopeSummary `json:"scopes"`
-	Items  []ItemSummary  `json:"items"`
-	Counts map[string]int `json:"counts"`
+	Scopes    []ScopeSummary `json:"scopes"`
+	Items     []ItemSummary  `json:"items"`
+	Counts    map[string]int `json:"counts"`
+	Truncated bool           `json:"truncated,omitempty"`
 }
+
+const (
+	inventoryResponseBudget = MaxFrameBytes * 3 / 4
+	maxInventoryRecordName  = 512
+	maxInventoryTextRunes   = 256
+)
 
 type ItemSummary struct {
 	ID         string `json:"id"`
@@ -115,15 +122,23 @@ func (s *Service) listInventory(ctx context.Context) (InventoryResult, error) {
 	result := InventoryResult{
 		Counts: map[string]int{"all": 0, "password": 0, "ssh": 0, "kubernetes": 0, "talos": 0, "secret": 0, "favorite": 0},
 	}
+	used := 1024
 	for id, scope := range session.Body.Scopes {
 		if scope.Leaving {
 			continue
 		}
-		label := strings.TrimSpace(scope.Label)
+		label := boundedInventoryText(strings.TrimSpace(scope.Label))
 		if label == "" {
 			label = "Unnamed vault"
 		}
-		result.Scopes = append(result.Scopes, ScopeSummary{ID: id, Label: label})
+		candidate := ScopeSummary{ID: id, Label: label}
+		size := encodedSize(candidate)
+		if used+size > inventoryResponseBudget {
+			result.Truncated = true
+			continue
+		}
+		result.Scopes = append(result.Scopes, candidate)
+		used += size
 	}
 	sort.Slice(result.Scopes, func(i, j int) bool {
 		return strings.ToLower(result.Scopes[i].Label) < strings.ToLower(result.Scopes[j].Label)
@@ -134,16 +149,27 @@ func (s *Service) listInventory(ctx context.Context) (InventoryResult, error) {
 		return InventoryResult{}, mapDomainError(err)
 	}
 	for _, record := range records {
+		if !safeInventoryRecordName(record.Name) {
+			result.Truncated = true
+			continue
+		}
 		summary, err := summarizeRecord(session, record)
 		if err != nil {
 			continue
 		}
-		result.Items = append(result.Items, summary)
 		result.Counts["all"]++
 		result.Counts[summary.Kind]++
 		if summary.Favorite {
 			result.Counts["favorite"]++
 		}
+		summary = boundItemSummary(summary)
+		size := encodedSize(summary)
+		if used+size > inventoryResponseBudget {
+			result.Truncated = true
+			continue
+		}
+		result.Items = append(result.Items, summary)
+		used += size
 	}
 	sort.Slice(result.Items, func(i, j int) bool {
 		left, right := strings.ToLower(result.Items[i].Title), strings.ToLower(result.Items[j].Title)
@@ -153,6 +179,44 @@ func (s *Service) listInventory(ctx context.Context) (InventoryResult, error) {
 		return left < right
 	})
 	return result, nil
+}
+
+func safeInventoryRecordName(name string) bool {
+	if len(name) == 0 || len(name) > maxInventoryRecordName {
+		return false
+	}
+	return !strings.ContainsAny(name, "\r\n\x00")
+}
+
+func boundItemSummary(summary ItemSummary) ItemSummary {
+	summary.Title = boundedInventoryText(summary.Title)
+	summary.Subtitle = boundedInventoryText(summary.Subtitle)
+	summary.Vault = boundedInventoryText(summary.Vault)
+	summary.Badge = boundedInventoryText(summary.Badge)
+	summary.UpdatedAt = boundedInventoryText(summary.UpdatedAt)
+	return summary
+}
+
+func boundedInventoryText(value string) string {
+	value = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, value)
+	runes := []rune(value)
+	if len(runes) > maxInventoryTextRunes {
+		return string(runes[:maxInventoryTextRunes])
+	}
+	return value
+}
+
+func encodedSize(value any) int {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return inventoryResponseBudget
+	}
+	return len(raw)
 }
 
 func summarizeRecord(session *cli.Session, record cli.TypedRecord) (ItemSummary, error) {

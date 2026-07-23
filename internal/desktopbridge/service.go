@@ -852,9 +852,28 @@ func (s *Service) savePass(ctx context.Context, params SavePassParams) (map[stri
 	}
 	defer session.Close()
 	recordKey := "pass:" + params.RecordName
-	if existing, err := session.GetTypedSecret(params.ScopeID, recordKey); err == nil {
-		if params.Create {
+	existing, existingErr := session.GetTypedSecret(params.ScopeID, recordKey)
+	if params.Create {
+		if existingErr == nil {
 			return nil, fail("duplicate", "An item with that title already exists in this vault.", "Choose another title or edit the existing item.", false)
+		}
+		if !errors.Is(existingErr, cli.ErrTypedSecretNotFound) {
+			return nil, mapDomainError(existingErr)
+		}
+		if params.Item.Meta == nil {
+			created := passitem.New(params.Item.Title, params.Item.URLs)
+			created.Fields = params.Item.Fields
+			params.Item = created
+		}
+	} else {
+		if existingErr != nil {
+			if errors.Is(existingErr, cli.ErrTypedSecretNotFound) {
+				return nil, fail("stale_item", "That password item no longer exists.", "Refresh the vault before saving.", false)
+			}
+			return nil, mapDomainError(existingErr)
+		}
+		if existing.Type != passitem.TypePassItem {
+			return nil, fail("type_conflict", "That name belongs to a different item type.", "Refresh the vault and choose another title.", false)
 		}
 		if raw, err := existing.PayloadJSON(); err == nil {
 			if old, err := passitem.Decode(raw); err == nil && params.Item.Meta == nil {
@@ -862,18 +881,18 @@ func (s *Service) savePass(ctx context.Context, params SavePassParams) (map[stri
 			}
 		}
 		params.Item.Touch()
-	} else if !errors.Is(err, cli.ErrTypedSecretNotFound) {
-		return nil, mapDomainError(err)
-	} else if params.Item.Meta == nil {
-		created := passitem.New(params.Item.Title, params.Item.URLs)
-		created.Fields = params.Item.Fields
-		params.Item = created
 	}
 	if err := params.Item.Validate(); err != nil {
 		return nil, fail("validation", err.Error(), "", false)
 	}
-	if err := session.SetTypedSecret(ctx, params.ScopeID, recordKey, passitem.TypePassItem, params.Item.Marshal()); err != nil {
-		return nil, mapDomainError(err)
+	var writeErr error
+	if params.Create {
+		writeErr = session.CreateTypedSecret(ctx, params.ScopeID, recordKey, passitem.TypePassItem, params.Item.Marshal())
+	} else {
+		writeErr = session.UpdateTypedSecret(ctx, params.ScopeID, recordKey, passitem.TypePassItem, passitem.TypePassItem, params.Item.Marshal())
+	}
+	if writeErr != nil {
+		return nil, mapDomainError(writeErr)
 	}
 	return map[string]bool{"ok": true}, nil
 }
@@ -941,7 +960,7 @@ func (s *Service) setPassFavorite(ctx context.Context, ref RecordRef, favorite b
 	if err := item.Validate(); err != nil {
 		return nil, fail("validation", err.Error(), "", false)
 	}
-	if err := session.SetTypedSecret(ctx, ref.ScopeID, ref.Name, passitem.TypePassItem, item.Marshal()); err != nil {
+	if err := session.UpdateTypedSecret(ctx, ref.ScopeID, ref.Name, passitem.TypePassItem, passitem.TypePassItem, item.Marshal()); err != nil {
 		return nil, mapDomainError(err)
 	}
 	return map[string]bool{"ok": true}, nil
@@ -964,13 +983,29 @@ func (s *Service) saveSecret(ctx context.Context, params SaveSecretParams) (map[
 	if err != nil {
 		return nil, mapDomainError(err)
 	}
-	if params.Create || (params.OldName != "" && params.OldName != params.Name) {
-		if _, err := session.GetTypedSecret(params.ScopeID, params.Name); err == nil {
+	if params.Create {
+		if params.OldName != "" {
 			session.Close()
-			return nil, fail("duplicate", "A secret with that name already exists in this vault.", "Choose another name or edit the existing secret.", false)
-		} else if !errors.Is(err, cli.ErrTypedSecretNotFound) {
+			return nil, fail("validation", "A new secret cannot rename another item.", "Refresh the vault and try again.", false)
+		}
+		if err := requireMissingRecord(session, params.ScopeID, params.Name, "A secret with that name already exists in this vault."); err != nil {
 			session.Close()
-			return nil, mapDomainError(err)
+			return nil, err
+		}
+	} else {
+		if strings.TrimSpace(params.OldName) == "" {
+			session.Close()
+			return nil, fail("validation", "The original secret name is required for an edit.", "Refresh the vault and try again.", false)
+		}
+		if _, err := requireRecordType(session, params.ScopeID, params.OldName, "kv.string"); err != nil {
+			session.Close()
+			return nil, err
+		}
+		if params.OldName != params.Name {
+			if err := requireMissingRecord(session, params.ScopeID, params.Name, "A secret with that name already exists in this vault."); err != nil {
+				session.Close()
+				return nil, err
+			}
 		}
 	}
 	session.Close()
@@ -983,7 +1018,7 @@ func (s *Service) saveSecret(ctx context.Context, params SaveSecretParams) (map[
 			return nil, fail("rename_partial", "The secret was saved under its new name, but fd0 could not remove the old copy.", "Review both items before retrying.", false)
 		}
 		defer cleanupSession.Close()
-		if err := cleanupSession.RemoveTypedSecret(ctx, params.ScopeID, params.OldName); err != nil {
+		if err := cleanupSession.RemoveTypedSecretOfType(ctx, params.ScopeID, params.OldName, "kv.string"); err != nil {
 			return nil, fail("rename_partial", "The secret was saved under its new name, but fd0 could not remove the old copy.", "Review both items before retrying.", false)
 		}
 	}
@@ -1032,18 +1067,34 @@ func (s *Service) saveSSHHost(ctx context.Context, params SaveSSHHostParams) (ma
 	}
 	defer session.Close()
 	newName := "host:" + params.Record.Alias
-	if params.OldName == "" || params.OldName != newName {
-		if _, err := session.GetTypedSecret(params.ScopeID, newName); err == nil {
-			return nil, fail("duplicate", "An SSH host with that alias already exists.", "Choose another alias.", false)
-		} else if !errors.Is(err, cli.ErrTypedSecretNotFound) {
-			return nil, mapDomainError(err)
+	if params.OldName == "" {
+		if err := requireMissingRecord(session, params.ScopeID, newName, "An SSH host with that alias already exists."); err != nil {
+			return nil, err
+		}
+	} else {
+		if _, err := requireRecordType(session, params.ScopeID, params.OldName, sshhost.TypeHost); err != nil {
+			return nil, err
+		}
+		if params.OldName != newName {
+			if err := requireMissingRecord(session, params.ScopeID, newName, "An SSH host with that alias already exists."); err != nil {
+				return nil, err
+			}
 		}
 	}
-	if err := session.SetTypedSecret(ctx, params.ScopeID, newName, sshhost.TypeHost, params.Record.Marshal()); err != nil {
-		return nil, mapDomainError(err)
+	var writeErr error
+	switch {
+	case params.OldName == "":
+		writeErr = session.CreateTypedSecret(ctx, params.ScopeID, newName, sshhost.TypeHost, params.Record.Marshal())
+	case params.OldName == newName:
+		writeErr = session.UpdateTypedSecret(ctx, params.ScopeID, newName, sshhost.TypeHost, sshhost.TypeHost, params.Record.Marshal())
+	default:
+		writeErr = session.CreateTypedSecret(ctx, params.ScopeID, newName, sshhost.TypeHost, params.Record.Marshal())
+	}
+	if writeErr != nil {
+		return nil, mapDomainError(writeErr)
 	}
 	if params.OldName != "" && params.OldName != newName {
-		if err := session.RemoveTypedSecret(ctx, params.ScopeID, params.OldName); err != nil {
+		if err := session.RemoveTypedSecretOfType(ctx, params.ScopeID, params.OldName, sshhost.TypeHost); err != nil {
 			return nil, fail("rename_partial", "The SSH host was saved under its new alias, but fd0 could not remove the old copy.", "Review both hosts before retrying.", false)
 		}
 	}
@@ -1079,6 +1130,31 @@ func (s *Service) sshHostEditData(ctx context.Context, ref RecordRef) (SaveSSHHo
 		return SaveSSHHostParams{}, err
 	}
 	return SaveSSHHostParams{ScopeID: ref.ScopeID, OldName: ref.Name, Record: host}, nil
+}
+
+func requireRecordType(session *cli.Session, scopeID, name, expectedType string) (*cli.TypedRecord, error) {
+	record, err := session.GetTypedSecret(scopeID, name)
+	if err != nil {
+		if errors.Is(err, cli.ErrTypedSecretNotFound) {
+			return nil, fail("stale_item", "That item no longer exists.", "Refresh the vault before saving.", false)
+		}
+		return nil, mapDomainError(err)
+	}
+	if record.Type != expectedType {
+		return nil, fail("type_conflict", "That name belongs to a different item type.", "Refresh the vault and choose another name.", false)
+	}
+	return record, nil
+}
+
+func requireMissingRecord(session *cli.Session, scopeID, name, message string) error {
+	_, err := session.GetTypedSecret(scopeID, name)
+	if err == nil {
+		return fail("duplicate", message, "Choose another name or edit the existing item.", false)
+	}
+	if !errors.Is(err, cli.ErrTypedSecretNotFound) {
+		return mapDomainError(err)
+	}
+	return nil
 }
 
 type GenerateSSHKeyParams struct {

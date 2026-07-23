@@ -80,6 +80,42 @@ func TestServerRejectsMultipleJSONValues(t *testing.T) {
 	}
 }
 
+func TestServerBoundsOversizedResponsesAndContinues(t *testing.T) {
+	calls := 0
+	server := Server{Handler: handlerFunc(func(context.Context, string, json.RawMessage) (any, error) {
+		calls++
+		if calls == 1 {
+			return strings.Repeat("x", MaxFrameBytes), nil
+		}
+		return map[string]bool{"ok": true}, nil
+	})}
+	input := strings.NewReader(
+		`{"version":1,"id":"large","method":"inventory.list","params":{}}` + "\n" +
+			`{"version":1,"id":"next","method":"bridge.handshake","params":{}}` + "\n",
+	)
+	var output bytes.Buffer
+	if err := server.Serve(context.Background(), input, &output); err != nil {
+		t.Fatal(err)
+	}
+	lines := bytes.Split(bytes.TrimSpace(output.Bytes()), []byte("\n"))
+	if len(lines) != 2 {
+		t.Fatalf("responses=%d, want 2", len(lines))
+	}
+	var large, next Response
+	if err := json.Unmarshal(lines[0], &large); err != nil {
+		t.Fatal(err)
+	}
+	if large.Error == nil || large.Error.Code != "response_too_large" {
+		t.Fatalf("large response=%+v", large)
+	}
+	if err := json.Unmarshal(lines[1], &next); err != nil {
+		t.Fatal(err)
+	}
+	if next.Error != nil || next.ID != "next" {
+		t.Fatalf("next response=%+v", next)
+	}
+}
+
 func TestWriteIsolatedMarkerRefusesDefaultHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

@@ -168,6 +168,9 @@ function App(): JSX.Element {
       batch(() => {
         if (preferredItem) setSelectedID(preferredItem.id);
         setInventory(nextInventory);
+        if (nextInventory.truncated) {
+          setAppError("Some unusually large or malformed items were omitted from this view. Open Support for details.");
+        }
       });
       return preferredItem;
     } catch (error) {

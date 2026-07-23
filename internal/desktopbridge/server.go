@@ -129,10 +129,20 @@ func writeResponse(out io.Writer, response Response) error {
 	if err != nil {
 		return fmt.Errorf("desktop bridge: encode response: %w", err)
 	}
-	defer crypto.Wipe(frame)
 	if len(frame) > MaxFrameBytes {
-		return fmt.Errorf("desktop bridge: response exceeds %d bytes", MaxFrameBytes)
+		crypto.Wipe(frame)
+		response.Result = nil
+		response.Error = &BridgeError{
+			Code:    "response_too_large",
+			Message: "fd0 could not display that much data at once.",
+			Action:  "Narrow the current view and try again.",
+		}
+		frame, err = json.Marshal(response)
+		if err != nil {
+			return fmt.Errorf("desktop bridge: encode bounded response: %w", err)
+		}
 	}
+	defer crypto.Wipe(frame)
 	frame = append(frame, '\n')
 	_, err = out.Write(frame)
 	return err

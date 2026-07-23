@@ -111,6 +111,7 @@ export type Inventory = {
   scopes: ScopeSummary[];
   items: ItemSummary[];
   counts: Record<string, number>;
+  truncated?: boolean;
 };
 
 export type RecordRef = {
