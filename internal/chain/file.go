@@ -149,7 +149,7 @@ func readRawEvents(path string) ([][]byte, error) {
 }
 
 // WriteAll atomically rewrites path with the concatenation of raws. Used by
-// compaction (STORAGE.md §5).
+// verified sync repair and transaction rollback.
 func WriteAll(path string, raws [][]byte) error {
 	tmp := path + ".tmp"
 	// O_NOFOLLOW on the tmp path: defense in depth against

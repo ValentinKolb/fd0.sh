@@ -345,7 +345,7 @@ const StorageBody = () => (
       <Term>vault.enc.tmp → fsync → rename → fsync(parent)</Term>.
       Chain appends go through the same pattern at file granularity.
       An advisory exclusive lock at <Term>~/.fd0/.lock</Term> serialises
-      appends, compaction, tail-truncation, vault re-seal, scope unlink,
+      appends, verified history repair, tail-truncation, vault re-seal, scope unlink,
       and config writes within a single client.
     </Para>
 

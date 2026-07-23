@@ -11,7 +11,10 @@ import (
 	"github.com/valentinkolb/fd0.sh/internal/proto"
 )
 
-var ErrMalformedMemberKey = errors.New("chain: malformed member public key")
+var (
+	ErrMalformedMemberKey        = errors.New("chain: malformed member public key")
+	ErrScopeHistoryNonContiguous = errors.New("chain: scope history is non-contiguous")
+)
 
 // Opener decrypts a libsodium sealed-box that was sealed to this principal's
 // X25519 public key. Used by ReplayScope to open per-event key_deliveries
@@ -77,13 +80,6 @@ type ScopeSecret struct {
 //     Open call is the only I/O the replay performs, so the rest of the
 //     code path stays testable in isolation.
 //
-// Compacted-chain handling (STORAGE.md §5.4): if the chain has a gap in
-// `seq` between two events, we set `incomplete` for the affected event.
-// While `incomplete` is true, projection-content integrity checks are
-// skipped — the local secret_index is by definition incomplete past a
-// gap, so a content comparison would false-positive. `incomplete` clears
-// on the next member.change that successfully populates secret_index.
-//
 // Pre-admit handling: if a member.change event has no key_delivery
 // addressed to us (we joined later in the chain), we advance MemberSet
 // and OEKVersion only; projection decryption is skipped. Our admit
@@ -108,7 +104,6 @@ func ReplayScope(path string, ownSuperPub, ownX25519Pub []byte, opener Opener) (
 		SecretIndex: make(map[string]ScopeSecret),
 	}
 	var prevHash []byte
-	incomplete := false
 	for i, ev := range events {
 		sp := &ev.SignedPrefix
 		// Envelope checks.
@@ -120,24 +115,11 @@ func ReplayScope(path string, ownSuperPub, ownX25519Pub []byte, opener Opener) (
 			if sp.Scope == nil || *sp.Scope != st.ScopeID.String() {
 				return nil, fmt.Errorf("scope[%d]: scope mismatch", i)
 			}
-			// SECURITY (codex audit 🔴 scope.go:113): forward-only
-			// monotonicity. The previous gap-tolerant code accepted
-			// any sp.Seq != TipSeq+1 (incl. ==TipSeq or <TipSeq) as
-			// "compaction gap" and skipped the prev_hash check. A
-			// tampered local file could re-replay older signed
-			// events out of order, then close with the real
-			// vault-bound tip so CompareScopeTip still passes while
-			// SecretIndex contains stale data. Only sp.Seq > TipSeq+1
-			// is a legitimate compaction-induced forward gap.
-			switch {
-			case sp.Seq <= st.TipSeq:
-				return nil, fmt.Errorf("scope[%d]: non-monotone seq=%d (tip=%d)", i, sp.Seq, st.TipSeq)
-			case sp.Seq == st.TipSeq+1:
-				if !bytes.Equal(sp.PrevHash, prevHash) {
-					return nil, fmt.Errorf("scope[%d]: prev_hash mismatch", i)
-				}
-			default: // sp.Seq > TipSeq+1 — forward gap (compacted prefix)
-				incomplete = true
+			if sp.Seq != st.TipSeq+1 {
+				return nil, fmt.Errorf("%w: scope[%d] seq is %d, want %d", ErrScopeHistoryNonContiguous, i, sp.Seq, st.TipSeq+1)
+			}
+			if !bytes.Equal(sp.PrevHash, prevHash) {
+				return nil, fmt.Errorf("%w: scope[%d] prev_hash mismatch", ErrScopeHistoryNonContiguous, i)
 			}
 			if !memberContains(st.MemberSet, sp.Author) {
 				return nil, fmt.Errorf("scope[%d]: author not in member set", i)
@@ -171,19 +153,12 @@ func ReplayScope(path string, ownSuperPub, ownX25519Pub []byte, opener Opener) (
 				}
 				oekPlain = p
 			}
-			leave, err := applyMemberChange(st, ev, ownSuperPub, oekPlain, incomplete)
+			leave, err := applyMemberChange(st, ev, ownSuperPub, oekPlain)
 			if err != nil {
 				return nil, fmt.Errorf("scope[%d]: %w", i, err)
 			}
 			if leave {
 				st.Left = true
-			}
-			// After a successful projection-populating apply,
-			// secret_index is the authoritative snapshot for the
-			// current OEK era again. Clear incomplete so subsequent
-			// member.changes get full integrity checks.
-			if !leave {
-				incomplete = false
 			}
 		case proto.KindSecretSet:
 			if err := applySecretSet(st, ev); err != nil {
@@ -206,6 +181,69 @@ func ReplayScope(path string, ownSuperPub, ownX25519Pub []byte, opener Opener) (
 		}
 	}
 	return st, nil
+}
+
+// ValidateScopeContinuity verifies the local append-only sequence and hash
+// links without decrypting event bodies. Sync uses it to identify legacy
+// compacted files before replay and repair them from the verified server copy.
+func ValidateScopeContinuity(path string) error {
+	events, err := ReadScopeEvents(path)
+	if err != nil {
+		return err
+	}
+	return validateScopeContinuity(events)
+}
+
+// ScopeFileTip returns the tip committed by the final local event. It does not
+// verify signatures; callers that expose state must still use ReplayScope.
+func ScopeFileTip(path string) (proto.ChainTip, bool, error) {
+	events, err := ReadScopeEvents(path)
+	if err != nil {
+		return proto.ChainTip{}, false, err
+	}
+	if len(events) == 0 {
+		return proto.ChainTip{}, false, nil
+	}
+	last := events[len(events)-1]
+	input, err := last.PrevHashInput()
+	if err != nil {
+		return proto.ChainTip{}, false, err
+	}
+	hash := proto.HashPrefix(input)
+	return proto.ChainTip{
+		Seq:  last.SignedPrefix.Seq,
+		Hash: append([]byte(nil), hash[:]...),
+	}, true, nil
+}
+
+func validateScopeContinuity(events []*proto.ScopeEvent) error {
+	if len(events) == 0 {
+		return nil
+	}
+	if events[0].SignedPrefix.Seq != 0 {
+		return fmt.Errorf("%w: first seq is %d, want 0", ErrScopeHistoryNonContiguous, events[0].SignedPrefix.Seq)
+	}
+	prevInput, err := events[0].PrevHashInput()
+	if err != nil {
+		return err
+	}
+	prevHash := proto.HashPrefix(prevInput)
+	for i := 1; i < len(events); i++ {
+		sp := &events[i].SignedPrefix
+		wantSeq := events[i-1].SignedPrefix.Seq + 1
+		if sp.Seq != wantSeq {
+			return fmt.Errorf("%w: scope[%d] seq is %d, want %d", ErrScopeHistoryNonContiguous, i, sp.Seq, wantSeq)
+		}
+		if !bytes.Equal(sp.PrevHash, prevHash[:]) {
+			return fmt.Errorf("%w: scope[%d] prev_hash mismatch", ErrScopeHistoryNonContiguous, i)
+		}
+		prevInput, err = events[i].PrevHashInput()
+		if err != nil {
+			return err
+		}
+		prevHash = proto.HashPrefix(prevInput)
+	}
+	return nil
 }
 
 // verifyScopeGenesis runs the genesis-only checks of ReplayScope. Pulled
@@ -256,13 +294,9 @@ func findOurKeyDelivery(ev *proto.ScopeEvent, ownX25519Pub []byte) []byte {
 //  3. We have no key_delivery (oekPlain == nil) → pre-admit event during
 //     discovery; advance MemberSet+OEKVersion, skip projection.
 //  4. Full processing: decrypt projection, verify content (unless we're
-//     the new admit or the chain is past a gap), install OEK + new
+//     the new admit), install OEK + new
 //     secret_index.
-//
-// `compacted=true` skips the projection-content integrity check: the
-// local secret_index is incomplete past a chain gap (STORAGE.md §5.4),
-// so projection-vs-index comparison would false-positive.
-func applyMemberChange(st *ScopeState, ev *proto.ScopeEvent, ownSuperPub, oekPlain []byte, compacted bool) (bool, error) {
+func applyMemberChange(st *ScopeState, ev *proto.ScopeEvent, ownSuperPub, oekPlain []byte) (bool, error) {
 	sp := &ev.SignedPrefix
 	pl := &sp.Payload
 	if len(st.MemberSet) > proto.MaxLegacyScopeMembers {
@@ -351,10 +385,9 @@ func applyMemberChange(st *ScopeState, ev *proto.ScopeEvent, ownSuperPub, oekPla
 	// Projection verification (PROTOCOL.md §4.5 steps 3–4): every
 	// non-tombstone in our index must appear byte-identically in the
 	// projection, and the projection must not inject unknown ids.
-	// Skipped for our own admit event (no prior local state) and past
-	// chain gaps (incomplete local state would false-positive).
+	// Skipped only for our own admit event, where no prior local state exists.
 	weAreNewMember := bytes.Equal(pl.Member, ownSuperPub) && pl.Op == proto.OpAdd
-	if !weAreNewMember && !compacted {
+	if !weAreNewMember {
 		projIDs := map[string]*proto.SecretRecord{}
 		for _, sec := range proj.Secrets {
 			projIDs[sec.ID] = sec.Record

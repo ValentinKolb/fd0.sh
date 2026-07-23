@@ -19,7 +19,7 @@ export FD0_AUTO_PIN=1
 #     entire chain including pre-admit secret.set events her OEK
 #     can't decrypt (silent skip per applySecretSet); admit
 #     projection populates current state.
-#   - Compaction shrinks the local chain while server tree grows
+#   - Full local history remains contiguous while server tree grows
 #     monotonically.
 #   - Server DB rollback hard-fails clients via LastSTH out_of_range.
 #   - Witness archive cross-checks server max(tree_size).
@@ -422,7 +422,7 @@ SVRSIZE=$(server_max_tree_size "$SCOPE_TEAM")
 WTSIZE=$(witness_max_tree_size "$SCOPE_TEAM")
 expect_eq "$WTSIZE" "$SVRSIZE" "witness max(tree_size)=$WTSIZE still matches server=$SVRSIZE after late-join"
 
-phase "Phase 7 — Compaction (local chain shrinks, server tree grows)"
+phase "Phase 7 — Full local history retention"
 
 CHAIN_FILE=$(chain_file_path "$HOME_AL" "$SCOPE_TEAM")
 [ -f "$CHAIN_FILE" ] || { no "scope chain file missing: $CHAIN_FILE"; CHAIN_FILE=/dev/null; }
@@ -431,7 +431,7 @@ PRE_SIZE=$([ "$CHAIN_FILE" != /dev/null ] && wc -c < "$CHAIN_FILE" || echo 0)
 PRE_SVR_SIZE=$(server_max_tree_size "$SCOPE_TEAM")
 
 for i in $(seq 1 30); do
-    AL set COMPACT_KEY "version-$i" --scope team >/dev/null
+    AL set HISTORY_KEY "version-$i" --scope team >/dev/null
 done
 AL sync >/dev/null 2>&1
 sleep 1
@@ -443,16 +443,15 @@ GROWTH=$((POST_SVR_SIZE - PRE_SVR_SIZE))
 expect_ge "$GROWTH" "30" "server tree grew by ≥30 after 30 supersedes (got $GROWTH)"
 
 GROWTH_LOCAL=$((POST_SIZE - PRE_SIZE))
-THRESHOLD=$((30 * 800))
-if [ "$GROWTH_LOCAL" -lt "$THRESHOLD" ]; then
-    ok "local chain compacted (grew by $GROWTH_LOCAL bytes; threshold $THRESHOLD)"
+if [ "$GROWTH_LOCAL" -gt 0 ]; then
+    ok "local chain retained the appended history (grew by $GROWTH_LOCAL bytes)"
 else
-    no "local chain did NOT compact (grew by $GROWTH_LOCAL bytes; want < $THRESHOLD)"
+    no "local chain did not retain appended history (growth $GROWTH_LOCAL bytes)"
 fi
 
 double_sync
 for dev in AL AD AP BL BD EL; do
-    expect_eq "$($dev get COMPACT_KEY --scope team --raw 2>/dev/null)" "version-30" "$dev reads latest COMPACT_KEY = version-30"
+    expect_eq "$($dev get HISTORY_KEY --scope team --raw 2>/dev/null)" "version-30" "$dev reads latest HISTORY_KEY = version-30"
 done
 
 phase "Phase 8 — Server DB rollback (LastSTH out-of-range hard-fail)"

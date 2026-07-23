@@ -8,7 +8,7 @@ Companion to `PROTOCOL.md`. Server uses SQLite; client uses append-only CBOR fil
 2. [Server storage (SQLite)](#2-server-storage-sqlite)
 3. [Client storage (CBOR files)](#3-client-storage-cbor-files)
 4. [Replay](#4-replay)
-5. [Compaction and scope-leave](#5-compaction-and-scope-leave)
+5. [History retention and scope-leave](#5-history-retention-and-scope-leave)
 6. [Subscriptions and discovery](#6-subscriptions-and-discovery)
 7. [Read and write paths](#7-read-and-write-paths)
 8. [Backup and restore](#8-backup-and-restore)
@@ -148,13 +148,13 @@ clear_after_seconds = 30
 
 ### 3.4 Concurrency
 
-One advisory exclusive lock at `~/.fd0/.lock` (`flock(LOCK_EX)`) covers append, compaction, tail-truncation on open, vault re-seal, scope unlink, and config writes. v1 assumes one fd0 process per `FD0_HOME`.
+One advisory exclusive lock at `~/.fd0/.lock` (`flock(LOCK_EX)`) covers append, verified history repair, tail-truncation on open, vault re-seal, scope unlink, and config writes. v1 assumes one fd0 process per `FD0_HOME`.
 
 ---
 
 ## 4. Replay
 
-Every chain-processing path (open, sync, compaction, recovery) uses the same `replay_chain(file, vault) → (state, vault_delta, errors)` function.
+Every chain-processing path (open, sync, and recovery) uses the same `replay_chain(file, vault) → (state, vault_delta, errors)` function.
 
 ```
 replay_chain(chain_file, vault):
@@ -257,22 +257,42 @@ Scope-leave (§5.3) and credential rotation are crash-atomic in effect: any part
 
 ---
 
-## 5. Compaction and scope-leave
+## 5. History retention and scope-leave
 
-### 5.1 keep_set
+### 5.1 Full local history
 
-`chains/user.cbor`: the latest `auth.set` event.
+v1 retains every signed event in both user and scope chain files. Replay
+requires:
 
-`chains/<scope_id>.cbor`:
+- genesis at `seq = 0`;
+- each subsequent event at exactly `previous.seq + 1`;
+- each `prev_hash` equal to the hash of the preceding signed prefix.
 
-- The latest `member.change` event.
-- Each `secret.set` whose `body.id` is in the current `secret_index` and whose `event_id` differs from the latest `member.change`'s event.
+The vault-bound final tip alone cannot authenticate which intermediate events
+remain in a shortened file. A file that retains the real final event but omits
+a newer `secret.set` could otherwise replay stale data. `CompactUser` and
+`CompactScope` therefore fail explicitly in v1.
 
-### 5.2 Procedure
+Tombstones update the current state but do not erase historical ciphertext.
+Rotate any credential whose plaintext may have leaked.
 
-Under the lock: read current contents, build keep_set, write `<name>.cbor.tmp`, fsync, rename, fsync parent.
+### 5.2 Legacy non-contiguous file repair
 
-Compaction does not change `event_id`, signature, or hash chain of kept events.
+Older v1 clients could remove superseded scope events. Current clients never
+expose such a file through replay. On `fd0 sync`:
+
+1. Detect a missing sequence, broken `prev_hash` link, empty file, or mismatch
+   between the local final event and the vault-bound tip before normal sync.
+2. Pull the full server chain from `cursor = 0`, with pagination.
+3. Verify the pinned server identity, STH, inclusion proofs, sequence, and tip.
+4. Preserve local-only events by event ID before replacing the file.
+5. Atomically write and replay the complete server history.
+6. Rebuild and push preserved local events in their original order.
+7. Persist the verified final STH and vault tip only after successful replay.
+
+The operation snapshots the original chain and scope vault state. Any failure
+restores both, so unavailable servers and failed retries do not discard local
+writes. A user who is no longer a member follows the normal scope-removal path.
 
 ### 5.3 Scope-leave (`member.change op="remove"` of self)
 
@@ -285,20 +305,6 @@ Compaction does not change `event_id`, signature, or hash chain of kept events.
 ```
 
 A crash between any pair of steps is reconciled by §4.5 on next open.
-
-### 5.4 Hash chain after compaction
-
-Kept events do not form a contiguous prev_hash chain in the local file. Verification on the client relies on:
-
-1. The vault `chain_tip` cross-binding (catches single-file rollback).
-2. Per-event signature and envelope checks.
-3. Server retention of the full chain for audit (re-pull from `cursor=0`).
-
-### 5.5 Compaction timing
-
-Compaction rewrites the single local chain file into the non-contiguous form above (§5.4). That is safe to push only against a server that already holds every event up to the compaction tip — a server still *behind* the tip can no longer fast-forward the gapped chain (the intermediate events it needs have been dropped locally) and is forced into an unrecoverable divergence.
-
-Under the single-primary model (`[sync].server`) the client therefore gates compaction on the primary having accepted the current tip in a sync round. Compaction runs only after that sync succeeded; if the primary is unreachable or behind, compaction is skipped and retried on a later round once the primary holds the tip.
 
 ---
 
@@ -360,8 +366,7 @@ Steps 1–5 as in 7.3, then:
 7. POST /sync; on 409 divergence, refresh tip from response, re-sign, retry.
 8. On accept: append to chains/<scope_id>.cbor; fsync.
 9. Update vault.scopes[scope_id].chain_tip; re-seal vault.
-10. If chain_file_size > 2 × keep_set_size: compact under the same lock.
-11. Zeroize as in 7.3.
+10. Zeroize as in 7.3.
 ```
 
 ### 7.5 Member-change write path
@@ -448,8 +453,8 @@ limit should add their own checks (or open an issue).
 - Server, per scope per year: ~15 MB
 - Server, per user chain per year: ~50 KB
 - Server total (5 users, 3 scopes, 100 years): ~5 GB
-- Client per scope after compaction: ~3 MB
-- Client total: ~30 MB
+- Client, per scope per year: ~15 MB
+- Client total depends linearly on retained scope history
 
 ---
 
@@ -463,7 +468,7 @@ A client MUST:
 - Verify vault tips against chain-file heads on every open and refuse to operate on rollback.
 - Never write decrypted secret material outside `vault.enc`.
 - Apply locality rules in §6.
-- Compact only after applying events to in-memory state.
+- Retain a contiguous local event history; reject gaps and repair them only through verified full sync.
 - Acquire `flock` on `~/.fd0/.lock` for every state-mutating operation.
 
 A server MUST:

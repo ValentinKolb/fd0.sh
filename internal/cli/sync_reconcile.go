@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sort"
 
 	"github.com/valentinkolb/fd0.sh/internal/canon"
 	"github.com/valentinkolb/fd0.sh/internal/chain"
@@ -26,6 +27,54 @@ import (
 	"github.com/valentinkolb/fd0.sh/internal/proto"
 	"github.com/valentinkolb/fd0.sh/internal/translog"
 )
+
+var errScopePullDenied = errors.New("sync: scope pull denied")
+
+// repairNonContiguousScopes upgrades local files produced by the retired v1
+// compactor. Reconcile preserves local-only writes, while fullPullScope
+// authenticates the replacement through the pinned server and transparency
+// log before it becomes visible.
+func (s *Session) repairNonContiguousScopes(ctx context.Context, wcc *WitnessCheckClient, server canon.URL) error {
+	scopeIDs := make([]string, 0, len(s.Body.Scopes))
+	for scopeID := range s.Body.Scopes {
+		scopeIDs = append(scopeIDs, scopeID)
+	}
+	sort.Strings(scopeIDs)
+	for _, scopeID := range scopeIDs {
+		path := s.Paths.ScopeChain(proto.MustParseScopeID(scopeID))
+		continuityErr := chain.ValidateScopeContinuity(path)
+		if continuityErr != nil && !errors.Is(continuityErr, chain.ErrScopeHistoryNonContiguous) {
+			return fmt.Errorf("sync repair %s: inspect local history: %w", shortScopeID(scopeID), continuityErr)
+		}
+		localTip, hasLocalTip, err := chain.ScopeFileTip(path)
+		if err != nil {
+			return fmt.Errorf("sync repair %s: inspect local tip: %w", shortScopeID(scopeID), err)
+		}
+		vaultTip := s.Body.Scopes[scopeID].ChainTip
+		tipMismatch := !hasLocalTip ||
+			localTip.Seq != vaultTip.Seq ||
+			!bytes.Equal(localTip.Hash, vaultTip.Hash)
+		if continuityErr == nil && !tipMismatch {
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "  ↳ repairing legacy scope history %s from verified server copy\n", shortScopeID(scopeID))
+		if err := s.reconcileAndRepush(ctx, wcc, server, scopeID, 3); err != nil {
+			if errors.Is(err, errScopePullDenied) {
+				// The normal sync response removes scopes that no longer
+				// authorize this member.
+				continue
+			}
+			return fmt.Errorf("sync repair %s: %w", shortScopeID(scopeID), err)
+		}
+		if _, stillPresent := s.Body.Scopes[scopeID]; !stillPresent {
+			continue
+		}
+		if err := chain.ValidateScopeContinuity(path); err != nil {
+			return fmt.Errorf("sync repair %s produced invalid history: %w", shortScopeID(scopeID), err)
+		}
+	}
+	return nil
+}
 
 // reconcileAndRepush handles a divergence-on-push by:
 //  1. Fetching the full server chain (cursor=0, inclusive) for scope.
@@ -243,7 +292,7 @@ func (s *Session) fullPullScope(ctx context.Context, wcc *WitnessCheckClient, se
 			return nil, nil, errors.New("server returned no pull entry for scope")
 		}
 		if ps.Denied {
-			return nil, nil, errors.New("denied: not a member")
+			return nil, nil, errScopePullDenied
 		}
 		cursor := pullCursor{Seq: cursorSeq, Hash: cursorHash}
 		if err := validateScopePullPage(scopeID, cursor, ps.Tip.Seq, ps.Tip.Hash, ps.Events); err != nil {

@@ -2,6 +2,7 @@ package chain
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
@@ -21,7 +22,7 @@ import (
 //     + the opener; running it twice yields the byte-identical state.
 //   - Pure: replay does NOT mutate the chain file (file bytes
 //     unchanged across multiple replays).
-//   - Compaction commutes with replay for live secrets.
+//   - Removing any interior event makes replay fail closed.
 //   - LocalOnlyEvents preserves the local-side order.
 //
 // Each property runs N iterations with a fixed seed sequence so a
@@ -115,8 +116,8 @@ func makeChain(t *testing.T, dir string, seed int64, nMembers, nSecrets int) (pa
 		if err != nil {
 			t.Fatalf("seed=%d: replay before secret #%d: %v", seed, i, err)
 		}
-		// Reuse an existing id ~40% of the time so compaction has
-		// something to drop. Tombstone ~15% of those reuses.
+		// Reuse an existing id ~40% of the time to exercise supersedes.
+		// Tombstone ~15% of those reuses.
 		var id string
 		var record *proto.SecretRecord
 		if r.Intn(100) < 40 && len(idPool) > 0 {
@@ -355,87 +356,34 @@ func TestPropertyReplayDoesNotMutateChain(t *testing.T) {
 	}
 }
 
-// TestPropertyCompactionPreservesLiveState: after CompactScope,
-// replaying the chain MUST yield a SecretIndex with the same live
-// (non-tombstone) records as before compaction. Compacted chains
-// have non-contiguous seq/prev_hash, so the replay tolerates gaps —
-// this property catches a regression that would drop live secrets
-// during compaction.
-//
-// Stronger than just count+payload: we compare full SecretRecord
-// (Name, Type, SchemaVersion, Payload, Tags) and EventID. We ALSO
-// require that compaction actually dropped at least one event in
-// total across all iterations; without that guarantee the test
-// would silently pass if CompactScope became a no-op.
-func TestPropertyCompactionPreservesLiveState(t *testing.T) {
-	totalDropped := 0
+func TestPropertyReplayRejectsInteriorEventRemoval(t *testing.T) {
 	for i := 0; i < propIterations; i++ {
 		seed := int64(0x3000 + i)
 		dir := t.TempDir()
-		// Force enough secrets that supersede + tombstone produce
-		// drop candidates; nSecrets=12 with 40% reuse yields several.
 		path, pub, opener := makeChain(t, dir, seed, 1, 12)
 		lo := opener.(LocalOpener)
-
-		stPre, err := ReplayScope(path, pub, lo.Pub, opener)
+		events, err := ReadScopeEvents(path)
 		if err != nil {
-			t.Fatalf("seed=%d: pre-compact replay: %v", seed, err)
+			t.Fatal(err)
 		}
-		_, dropped, err := CompactScope(path, stPre)
-		if err != nil {
-			t.Fatalf("seed=%d: compact: %v", seed, err)
-		}
-		totalDropped += len(dropped)
-		stPost, err := ReplayScope(path, pub, lo.Pub, opener)
-		if err != nil {
-			t.Fatalf("seed=%d: post-compact replay: %v", seed, err)
-		}
-
-		// Live records must agree byte-for-byte. Iterate pre→post
-		// AND post→pre to catch additions in either direction.
-		livePre := map[string]ScopeSecret{}
-		livePost := map[string]ScopeSecret{}
-		for id, e := range stPre.SecretIndex {
-			if e.Record != nil {
-				livePre[id] = e
+		drop := 1 + i%(len(events)-2)
+		kept := make([][]byte, 0, len(events)-1)
+		for index, event := range events {
+			if index == drop {
+				continue
 			}
-		}
-		for id, e := range stPost.SecretIndex {
-			if e.Record != nil {
-				livePost[id] = e
+			raw, err := proto.Marshal(event)
+			if err != nil {
+				t.Fatal(err)
 			}
+			kept = append(kept, raw)
 		}
-		if len(livePre) != len(livePost) {
-			t.Fatalf("seed=%d: live count drift: pre=%d post=%d", seed, len(livePre), len(livePost))
+		if err := WriteAll(path, kept); err != nil {
+			t.Fatal(err)
 		}
-		for id, prev := range livePre {
-			post, ok := livePost[id]
-			if !ok {
-				t.Fatalf("seed=%d: live id %s lost across compaction", seed, id)
-			}
-			if !reflect.DeepEqual(prev.Record, post.Record) {
-				t.Fatalf("seed=%d: id %s record drift across compaction:\n pre=%+v\npost=%+v",
-					seed, id, prev.Record, post.Record)
-			}
-			if prev.EventID != post.EventID {
-				t.Fatalf("seed=%d: id %s EventID drift: pre=%s post=%s", seed, id, prev.EventID, post.EventID)
-			}
+		if _, err := ReplayScope(path, pub, lo.Pub, opener); !errors.Is(err, ErrScopeHistoryNonContiguous) {
+			t.Fatalf("seed=%d drop=%d: expected continuity rejection, got %v", seed, drop, err)
 		}
-		// Member set + OEK + tip semantics survive compaction.
-		if len(stPre.MemberSet) != len(stPost.MemberSet) {
-			t.Fatalf("seed=%d: MemberSet len drift: pre=%d post=%d",
-				seed, len(stPre.MemberSet), len(stPost.MemberSet))
-		}
-		if stPre.CurrentOEKVer != stPost.CurrentOEKVer {
-			t.Fatalf("seed=%d: CurrentOEKVer drift: pre=%d post=%d",
-				seed, stPre.CurrentOEKVer, stPost.CurrentOEKVer)
-		}
-	}
-	// Sanity: across 30 iterations with supersedes + tombstones,
-	// CompactScope MUST have dropped at least one event total. A
-	// no-op compactor would pass every per-iter check above.
-	if totalDropped == 0 {
-		t.Fatalf("CompactScope dropped 0 events across %d iterations — either generator broken or compaction is a no-op", propIterations)
 	}
 }
 

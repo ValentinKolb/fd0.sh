@@ -158,7 +158,7 @@ export const SEO_ROUTE = {
     path: "/spec/storage",
     title: "fd0 storage format specification",
     description:
-      "fd0 storage reference for the encrypted vault, append-only user and scope chains, event bodies, tombstones, and compaction.",
+      "fd0 storage reference for the encrypted vault, append-only user and scope chains, event bodies, tombstones, and verified history repair.",
     section: "spec",
   },
   specSync: {

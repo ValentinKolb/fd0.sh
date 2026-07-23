@@ -82,7 +82,7 @@ When you're using fd0 on behalf of the user:
 - A `pinned-key-mismatch` error is a SECURITY EVENT, not a transient. Stop, surface it, and require the user to verify the new fingerprint out of band before re-pinning. The fd0 prompt walks through this.
 - A `witness cross-check failed` error is also a security event. The server's STH is not what the witness saw. Stop and refer the user to the operator.
 - After `fd0 scope remove-member`, recommend rotating the underlying credentials externally. The cryptographic revocation only applies to FUTURE writes.
-- Removing a credential with `fd0 rm` writes a tombstone. The bytes do not vanish until the next compaction; tell the user to rotate the underlying credential if it was a real leak.
+- Removing a credential with `fd0 rm` writes a tombstone. v1 retains signed history locally and on the server; tell the user to rotate the underlying credential if it was a real leak.
 
 ## Why these guarantees matter
 

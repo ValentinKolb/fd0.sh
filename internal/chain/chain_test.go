@@ -2,6 +2,7 @@ package chain
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -203,139 +204,97 @@ func TestLocalOnlyEventsCompactedLocal(t *testing.T) {
 	}
 }
 
-// TestCompactScopeKeepsLiveAndDropsSuperseded verifies the compaction
-// contract: live secret.sets (referenced by SecretIndex) survive,
-// older sets for the same id are dropped, member.changes are always
-// kept, and the returned `dropped` slice lists what was removed.
-func TestCompactScopeKeepsLiveAndDropsSuperseded(t *testing.T) {
+func TestCompactScopeIsDisabledWithoutWriting(t *testing.T) {
 	pub, priv, _ := crypto.GenerateIdentity()
-	xPub, _ := crypto.EdPubToX25519(pub.Bytes())
-	xPriv, _ := crypto.EdPrivToX25519(priv.Bytes())
 	signer := LocalSigner{Priv: priv}
-	gen, oek, scopeID, _ := BuildScopeGenesis(signer, pub.Bytes())
+	gen, _, scopeID, _ := BuildScopeGenesis(signer, pub.Bytes())
 	dir := t.TempDir()
 	p := filepath.Join(dir, scopeID.String()+".cbor")
 	if err := AppendScope(p, gen); err != nil {
 		t.Fatal(err)
 	}
-	// Three secret.sets for the SAME id. Latest supersedes earlier.
-	body := func(payload string) *proto.SecretBody {
-		return &proto.SecretBody{
-			ID: "s_dupkey",
-			Record: &proto.SecretRecord{
-				Name: "K", Type: "kv.string", SchemaVersion: 1,
-				Payload: payload, Tags: map[string]string{},
-			},
-		}
+	before, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
 	}
+	rewritten, dropped, err := CompactScope(p, nil)
+	if err == nil {
+		t.Fatal("expected disabled compactor to return an error")
+	}
+	if rewritten || len(dropped) != 0 {
+		t.Fatalf("disabled compactor changed state: rewritten=%v dropped=%v", rewritten, dropped)
+	}
+	after, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("disabled compactor modified the chain file")
+	}
+}
+
+func TestReplayScopeRejectsOmittedCurrentSecretWithRealFinalTip(t *testing.T) {
+	pub, priv, _ := crypto.GenerateIdentity()
+	xPub, _ := crypto.EdPubToX25519(pub.Bytes())
+	xPriv, _ := crypto.EdPrivToX25519(priv.Bytes())
+	signer := LocalSigner{Priv: priv}
+	gen, oek, scopeID, _ := BuildScopeGenesis(signer, pub.Bytes())
+	p := filepath.Join(t.TempDir(), scopeID.String()+".cbor")
+	_ = AppendScope(p, gen)
 	st, _ := ReplayScope(p, pub.Bytes(), xPub, LocalOpener{Pub: xPub, Priv: xPriv})
-	for _, v := range []string{"v1", "v2", "v3"} {
-		ev, err := BuildSecretSet(signer, pub.Bytes(), scopeID, st.TipSeq, st.TipHash, oek, st.CurrentOEKVer, body(v))
+	appendSet := func(id, payload string) {
+		t.Helper()
+		ev, err := BuildSecretSet(signer, pub.Bytes(), scopeID, st.TipSeq, st.TipHash, oek, st.CurrentOEKVer,
+			&proto.SecretBody{
+				ID: id,
+				Record: &proto.SecretRecord{
+					Name: id, Type: "kv.string", SchemaVersion: 1,
+					Payload: payload, Tags: map[string]string{},
+				},
+			})
 		if err != nil {
 			t.Fatal(err)
 		}
 		if err := AppendScope(p, ev); err != nil {
 			t.Fatal(err)
 		}
-		st, _ = ReplayScope(p, pub.Bytes(), xPub, LocalOpener{Pub: xPub, Priv: xPriv})
+		st, err = ReplayScope(p, pub.Bytes(), xPub, LocalOpener{Pub: xPub, Priv: xPriv})
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
-	// Sanity: 4 events on disk (genesis + 3 sets), 1 secret in index.
-	all, _ := ReadScopeEvents(p)
-	if len(all) != 4 {
-		t.Fatalf("setup expected 4 events, got %d", len(all))
-	}
-	if len(st.SecretIndex) != 1 {
-		t.Fatalf("setup expected 1 secret in index, got %d", len(st.SecretIndex))
-	}
-	// Compact.
-	rewritten, dropped, err := CompactScope(p, st)
+	appendSet("s_target", "old")
+	appendSet("s_target", "current")
+	appendSet("s_unrelated", "final")
+	fullTip := append([]byte(nil), st.TipHash...)
+
+	events, err := ReadScopeEvents(p)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !rewritten {
-		t.Fatal("expected file to be rewritten")
+	if len(events) != 4 {
+		t.Fatalf("expected 4 events, got %d", len(events))
 	}
-	if len(dropped) != 2 {
-		t.Fatalf("expected 2 dropped events (v1 + v2), got %d: %v", len(dropped), dropped)
+	kept := make([][]byte, 0, 3)
+	for _, index := range []int{0, 1, 3} {
+		raw, err := proto.Marshal(events[index])
+		if err != nil {
+			t.Fatal(err)
+		}
+		kept = append(kept, raw)
 	}
-	// After compaction: genesis (member.change) + the latest secret.set.
-	after, _ := ReadScopeEvents(p)
-	if len(after) != 2 {
-		t.Fatalf("expected 2 events after compact, got %d", len(after))
-	}
-	// Replay still works (compaction-aware) and returns the latest payload.
-	st2, err := ReplayScope(p, pub.Bytes(), xPub, LocalOpener{Pub: xPub, Priv: xPriv})
-	if err != nil {
-		t.Fatalf("replay after compact: %v", err)
-	}
-	got, ok := st2.SecretIndex["s_dupkey"]
-	if !ok || got.Record == nil || got.Record.Payload != "v3" {
-		t.Fatalf("post-compact replay lost the live secret: %+v", got)
-	}
-}
-
-// TestCompactScopeRefusesStaleSnapshot verifies the safety contract:
-// if a live event_id in the snapshot isn't present in the chain file,
-// the function refuses rather than silently dropping data.
-func TestCompactScopeRefusesStaleSnapshot(t *testing.T) {
-	pub, priv, _ := crypto.GenerateIdentity()
-	xPub, _ := crypto.EdPubToX25519(pub.Bytes())
-	xPriv, _ := crypto.EdPrivToX25519(priv.Bytes())
-	signer := LocalSigner{Priv: priv}
-	gen, oek, scopeID, _ := BuildScopeGenesis(signer, pub.Bytes())
-	dir := t.TempDir()
-	p := filepath.Join(dir, scopeID.String()+".cbor")
-	_ = AppendScope(p, gen)
-	st, _ := ReplayScope(p, pub.Bytes(), xPub, LocalOpener{Pub: xPub, Priv: xPriv})
-	ev, _ := BuildSecretSet(signer, pub.Bytes(), scopeID, st.TipSeq, st.TipHash, oek, st.CurrentOEKVer,
-		&proto.SecretBody{
-			ID: "s_x", Record: &proto.SecretRecord{Name: "X", Type: "kv.string", SchemaVersion: 1, Payload: "x", Tags: map[string]string{}},
-		})
-	_ = AppendScope(p, ev)
-	st, _ = ReplayScope(p, pub.Bytes(), xPub, LocalOpener{Pub: xPub, Priv: xPriv})
-	// Forge a stale snapshot: claim a non-existent event_id is "live".
-	st.SecretIndex["s_phantom"] = ScopeSecret{
-		EventID: "e_does_not_exist_in_file",
-		Record:  &proto.SecretRecord{Name: "Y"},
-	}
-	rewritten, dropped, err := CompactScope(p, st)
-	if err == nil {
-		t.Fatalf("expected refusal on stale snapshot, got rewritten=%v dropped=%v", rewritten, dropped)
-	}
-	if rewritten {
-		t.Fatal("file was rewritten despite stale-snapshot refusal")
-	}
-}
-
-// TestCompactScopeNoOpWhenNoSavings verifies that the function leaves
-// the file alone if compaction wouldn't shrink it (= the file already
-// has only live events).
-func TestCompactScopeNoOpWhenAlreadyMinimal(t *testing.T) {
-	pub, priv, _ := crypto.GenerateIdentity()
-	xPub, _ := crypto.EdPubToX25519(pub.Bytes())
-	xPriv, _ := crypto.EdPrivToX25519(priv.Bytes())
-	signer := LocalSigner{Priv: priv}
-	gen, oek, scopeID, _ := BuildScopeGenesis(signer, pub.Bytes())
-	dir := t.TempDir()
-	p := filepath.Join(dir, scopeID.String()+".cbor")
-	_ = AppendScope(p, gen)
-	st, _ := ReplayScope(p, pub.Bytes(), xPub, LocalOpener{Pub: xPub, Priv: xPriv})
-	// Single, never-superseded secret.set — already minimal.
-	ev, _ := BuildSecretSet(signer, pub.Bytes(), scopeID, st.TipSeq, st.TipHash, oek, st.CurrentOEKVer,
-		&proto.SecretBody{
-			ID: "s_only", Record: &proto.SecretRecord{Name: "ONLY", Type: "kv.string", SchemaVersion: 1, Payload: "v", Tags: map[string]string{}},
-		})
-	_ = AppendScope(p, ev)
-	st, _ = ReplayScope(p, pub.Bytes(), xPub, LocalOpener{Pub: xPub, Priv: xPriv})
-	rewritten, dropped, err := CompactScope(p, st)
-	if err != nil {
+	if err := WriteAll(p, kept); err != nil {
 		t.Fatal(err)
 	}
-	if rewritten {
-		t.Fatal("expected no rewrite (already minimal)")
+	fileTip, hasTip, err := ScopeFileTip(p)
+	if err != nil || !hasTip {
+		t.Fatalf("read tampered file tip: present=%v err=%v", hasTip, err)
 	}
-	if len(dropped) != 0 {
-		t.Fatalf("expected no drops, got %v", dropped)
+	if !bytes.Equal(fileTip.Hash, fullTip) {
+		t.Fatal("test no longer retains the real final vault-bound tip")
+	}
+	if _, err := ReplayScope(p, pub.Bytes(), xPub, LocalOpener{Pub: xPub, Priv: xPriv}); !errors.Is(err, ErrScopeHistoryNonContiguous) {
+		t.Fatalf("expected non-contiguous history rejection, got %v", err)
 	}
 }
 

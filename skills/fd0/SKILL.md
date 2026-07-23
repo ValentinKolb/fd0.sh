@@ -21,7 +21,7 @@ Map the user's intent to the right command before typing anything:
 | Retrieve a credential to stdout | `fd0 get NAME [--scope LABEL]` |
 | Retrieve to clipboard, auto-clear | `fd0 copy NAME [--clear-after=30s]` |
 | List secrets | `fd0 ls` |
-| Forget a credential | `fd0 rm NAME` (tombstone, vanishes on compaction) |
+| Forget a credential | `fd0 rm NAME` (writes a tombstone; rotate leaked credentials externally) |
 | Open the password-manager UI | `fd0 pass` (or `fd0 pass QUERY`) |
 | Create a login item | `fd0 pass add NAME --url URL [--scope LABEL]` |
 | Add username/password fields | `fd0 pass field set NAME username VALUE`; `fd0 pass field set NAME password --secret --generate` |

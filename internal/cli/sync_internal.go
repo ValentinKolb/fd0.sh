@@ -96,8 +96,7 @@ func pushItemFor(scope string, ev *proto.ScopeEvent, lastSTHSize uint64) map[str
 }
 
 // validateScopePullPage requires a server response to be the exact suffix
-// requested by cursor. Local replay may legitimately contain compaction gaps,
-// but newly received network history may not skip, duplicate, or swap events.
+// requested by cursor. Network history may not skip, duplicate, or swap events.
 func validateScopePullPage(scopeID string, cursor pullCursor, tipSeq uint64, tipHash []byte, events []proto.ScopeEvent) error {
 	expectedSeq := uint64(0)
 	prevHash := cursor.Hash

@@ -1,9 +1,8 @@
 package cli
 
 // Sync orchestrator. The big workhorse is RunSync: one round-trip
-// covers pull + push + discovery + per-scope translog verification,
-// followed by best-effort compaction. Divergence handling, scope
-// discovery, and shared helpers are split out:
+// covers pull + push + discovery + per-scope translog verification.
+// Divergence handling, scope discovery, and shared helpers are split out:
 //
 //   - sync_internal.go   — buildSyncRequestBody, leafHashAtSeq,
 //                          decryptSecretBody, upsertOEK, fileSize, …
@@ -79,8 +78,8 @@ type syncRunBudget struct {
 // covers every locally-known scope from cursor=local_tip.
 //
 // RunSync targets one server. RunSyncPrimary wraps it with config/env/flag
-// resolution + post-success compaction and is the entry point most callers
-// want; the bare-server entry here is for explicit, single-target
+// resolution and is the entry point most callers want; the bare-server entry
+// here is for explicit, single-target
 // invocations (tests, scripts). Passing "" resolves the primary like
 // RunSyncPrimary does.
 func RunSync(ctx context.Context, server string) error {
@@ -157,6 +156,9 @@ func runSyncRound(ctx context.Context, server string, pushLimit int, budget *syn
 	// Idempotent on subsequent syncs (PinnedServer.Registered cache).
 	if err := s.EnsureUserRegistered(ctx, serverURL); err != nil {
 		return fmt.Errorf("user registration: %w", err)
+	}
+	if err := s.repairNonContiguousScopes(ctx, wcc, serverURL); err != nil {
+		return err
 	}
 
 	// Per-server state key for vault lookups. Each pinned server has
@@ -678,10 +680,6 @@ func runSyncRound(ctx context.Context, server string, pushLimit int, budget *syn
 		}
 		return fmt.Errorf("sync: %d push(es) refused (pushed=%d dup=%d)", failed, pushed, dups)
 	}
-	// Compaction is intentionally NOT run here. It rewrites the local
-	// chain into a non-contiguous form (STORAGE.md §5.4), which is only
-	// safe once the primary has converged to THIS tip. RunSyncPrimary runs
-	// CompactScopes once, after a successful round.
 	if morePushes {
 		return errSyncMorePushes
 	}
@@ -823,48 +821,6 @@ func summarizeReasons(m map[string]int) string {
 		parts = append(parts, fmt.Sprintf("%s×%d", k, m[k]))
 	}
 	return strings.Join(parts, ", ")
-}
-
-// CompactScopes opens a session and runs best-effort compaction across
-// every scope chain. Split out of RunSync so the single-primary entry
-// point (RunSyncPrimary) runs it once, only after the primary has accepted
-// this round — see the comment at the call site above.
-func CompactScopes(ctx context.Context) error {
-	s, err := Open(ctx)
-	if err != nil {
-		return err
-	}
-	defer s.Close()
-	s.compactAfterSync()
-	return nil
-}
-
-// compactAfterSync runs CompactScope on every scope chain file.
-//
-// User-chain compaction is intentionally NOT triggered automatically: the
-// user chain is small (one auth.set per credential rotation) and our current
-// ReplayUser requires events[0].Seq == 0. A future revision can add
-// compacted-mode user-chain replay; until then we keep history.
-func (s *Session) compactAfterSync() {
-	for sid := range s.Body.Scopes {
-		st, err := replayScopeViaAgent(s.Paths.ScopeChain(proto.MustParseScopeID(sid)), s.UserSuperPub, s.UserX25519Pub, s.Agent)
-		if err != nil || st == nil {
-			continue
-		}
-		// chain.CompactScope derives the live event-id set from the
-		// post-replay snapshot (st.SecretIndex). It refuses to compact
-		// if the snapshot is stale relative to the chain file, so a
-		// silent-drop bug here would surface as an error.
-		changed, dropped, err := chain.CompactScope(s.Paths.ScopeChain(proto.MustParseScopeID(sid)), st)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "  ↳ compact %s skipped: %v\n", shortScopeID(sid), err)
-			continue
-		}
-		if changed {
-			fmt.Fprintf(os.Stderr, "  ↳ compacted scope %s (dropped %d superseded set(s))\n",
-				shortScopeID(sid), len(dropped))
-		}
-	}
 }
 
 // syncHTTPClient is the shared client for every fd0-server round-trip

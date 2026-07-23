@@ -25,7 +25,7 @@ func TestApplyMemberChangeRejectsDeliveryOverflowBeforeRecipientWork(t *testing.
 	_, err := applyMemberChange(&ScopeState{
 		MemberSet:     [][]byte{replayMemberKey(0)},
 		CurrentOEKVer: 1,
-	}, ev, replayMemberKey(1), nil, false)
+	}, ev, replayMemberKey(1), nil)
 	if err == nil || !strings.Contains(err.Error(), "too many key_deliveries") {
 		t.Fatalf("expected delivery limit error, got %v", err)
 	}
@@ -45,7 +45,7 @@ func TestApplyMemberChangeRejectsShortRemovalTargetWithoutPanic(t *testing.T) {
 				Member: make([]byte, size),
 			},
 		}}
-		_, err := applyMemberChange(state, ev, replayMemberKey(1), nil, false)
+		_, err := applyMemberChange(state, ev, replayMemberKey(1), nil)
 		if !errors.Is(err, ErrMalformedMemberKey) {
 			t.Fatalf("size %d: expected ErrMalformedMemberKey, got %v", size, err)
 		}
@@ -68,7 +68,7 @@ func TestApplyMemberChangeRejectsAddAtMemberLimit(t *testing.T) {
 	_, err := applyMemberChange(&ScopeState{
 		MemberSet:     members,
 		CurrentOEKVer: 1,
-	}, ev, replayMemberKey(0), nil, false)
+	}, ev, replayMemberKey(0), nil)
 	if err == nil || !strings.Contains(err.Error(), "scope member limit reached") {
 		t.Fatalf("expected member limit error, got %v", err)
 	}
@@ -95,7 +95,7 @@ func TestApplyMemberChangeRemovesValidMember(t *testing.T) {
 		MemberSet:     [][]byte{remaining, removed},
 		CurrentOEKVer: 1,
 	}
-	left, err := applyMemberChange(state, ev, remaining, nil, false)
+	left, err := applyMemberChange(state, ev, remaining, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func TestApplyMemberChangeAllowsLegacyScopeToShrink(t *testing.T) {
 		},
 	}}
 	state := &ScopeState{MemberSet: members, CurrentOEKVer: 1}
-	left, err := applyMemberChange(state, ev, members[0], nil, false)
+	left, err := applyMemberChange(state, ev, members[0], nil)
 	if err != nil {
 		t.Fatalf("legacy removal rejected: %v", err)
 	}

@@ -64,7 +64,7 @@ state.
 ### Notes
 
 - Replay is perfectly linear: ~56 µs per event regardless of chain depth. The per-event cost is dominated by ed25519 signature verify (~30 µs) plus CBOR decode and AAD construction.
-- At 10 000 events per scope, every CLI command spends ~555 ms in replay before doing anything. `STORAGE.md` §5 compaction is the answer; `CompactScope` thresholds should trigger well before this point in production.
+- At 10 000 events per scope, every CLI command spends ~555 ms in replay before doing anything. v1 retains the full local history to preserve rollback integrity. A future optimization needs an authenticated snapshot/checkpoint format; deleting events without such a commitment is unsafe.
 - Allocation cost is steep: 870k allocs for a 10k-event replay (87 allocs/event). Most are CBOR decode buffers. Halving this would halve replay wall-time. Optimisation candidate if replay shows up in user-perceived latency profiling.
 - `AppendScope` is ~6 ms because of the per-event fsync. Group-commit would help integration-test throughput but compromises the crash-consistency story for real users; per-event fsync is correct.
 

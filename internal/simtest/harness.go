@@ -2,7 +2,7 @@
 // the fd0 multi-client / multi-server sync layer.
 //
 // Motivation: every sync bug we have found (foreign-event loss on
-// reconcile, compaction-while-a-replica-is-behind, divergence handling)
+// reconcile, incomplete-history recovery, divergence handling)
 // is an EMERGENT multi-actor state interaction that unit tests and even
 // scripted integration tests miss. This harness drives the REAL stack —
 // real fd0 client binary + real agent + the real server HTTP handler in
@@ -14,7 +14,7 @@
 // so the harness can both inject partitions and inspect authoritative
 // server state directly for invariant checks; clients run as real
 // subprocesses (one long-lived agent each, reused across ops) so the
-// exact production client code — sync, reconcile, compaction — is
+// exact production client code — sync, reconcile, history repair — is
 // exercised, with zero changes to production code.
 //
 // Determinism: the operation schedule and the fault schedule are derived

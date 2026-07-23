@@ -64,7 +64,8 @@ for spec in \
     "fd0-server:./cmd/fd0-server" \
     "fd0-witness:./cmd/fd0-witness" \
     "fd0-test-mitm:./cmd/fd0-test-mitm" \
-    "fd0-test-bad-witness:./cmd/fd0-test-bad-witness"; do
+    "fd0-test-bad-witness:./cmd/fd0-test-bad-witness" \
+    "fd0-test-drop-scope-event:./tests/helpers/drop_scope_event"; do
     name=${spec%%:*}
     package=${spec#*:}
     go build -o "$BUILD_BIN/$name" "$package"

@@ -271,12 +271,17 @@ Status legend:
   "trusted home dir, mode 0700".
 - **Code**: `chain/file.go` appendBytes, `vault/vault.go` Save.
 
-#### T19 — Local audit gap after compaction
-- **Adversary**: not an attacker — operational consequence.
-- **Mitigation** 📋: compacted chain files drop superseded events
-  by design (`STORAGE.md` §5.4); the local prev_hash chain has gaps.
-  Audit-grade verification requires fetching from server with
-  `cursor=0`. Documented limit.
+#### T19 — Omitted events in local scope history
+- **Adversary**: A3.
+- **Mitigation** 🟢: v1 replay requires a contiguous sequence and
+  `prev_hash` chain. A retained real final event cannot hide an omitted
+  current secret. Sync also cross-checks the local final event against the
+  vault-bound tip. `fd0 sync` repairs files created by older compacting
+  clients from the pinned server's transparency-verified full history,
+  preserving local-only writes transactionally.
+- **Code**: `chain.ValidateScopeContinuity`, `chain.ReplayScope`,
+  `cli.repairNonContiguousScopes`; regression and isolated integration
+  tests cover rejection and repair.
 
 #### T20 — Bit-flipping of on-disk chain
 - **Adversary**: A3.
