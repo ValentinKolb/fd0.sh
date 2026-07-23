@@ -132,3 +132,49 @@ func TestFileIntegrityIsValidated(t *testing.T) {
 		t.Fatalf("expected sha256 mismatch, got %v", err)
 	}
 }
+
+func TestSafeFileName(t *testing.T) {
+	for _, name := range []string{"key.pem", ".env", "backup key.txt"} {
+		got, err := SafeFileName(name)
+		if err != nil {
+			t.Fatalf("%q should be valid: %v", name, err)
+		}
+		if got != name {
+			t.Fatalf("SafeFileName(%q) = %q", name, got)
+		}
+	}
+	for _, name := range []string{
+		"",
+		".",
+		"..",
+		"../key.pem",
+		"nested/key.pem",
+		`\..\key.pem`,
+		`nested\key.pem`,
+		"/tmp/key.pem",
+		" key.pem",
+		"key.pem ",
+		"key\n.pem",
+	} {
+		if _, err := SafeFileName(name); err == nil {
+			t.Fatalf("%q should be rejected", name)
+		}
+	}
+}
+
+func TestNewFileFieldStoresOnlySafeBasename(t *testing.T) {
+	field, err := NewFileField("/tmp/key.pem", "", []byte("key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := FileFromField(field)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.Name != "key.pem" {
+		t.Fatalf("stored name = %q, want key.pem", value.Name)
+	}
+	if _, err := NewFileField(`nested\key.pem`, "", []byte("key")); err == nil {
+		t.Fatal("platform-alternate separator should be rejected")
+	}
+}

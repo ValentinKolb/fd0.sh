@@ -261,9 +261,13 @@ func NewFileField(name, mime string, data []byte) (Field, error) {
 	if len(data) > MaxFileBytes {
 		return Field{}, fmt.Errorf("file too large (%d bytes > %d)", len(data), MaxFileBytes)
 	}
+	name, err := SafeFileName(filepath.Base(name))
+	if err != nil {
+		return Field{}, err
+	}
 	sum := sha256.Sum256(data)
 	v := FileValue{
-		Name:   filepath.Base(name),
+		Name:   name,
 		MIME:   mime,
 		Size:   len(data),
 		SHA256: fmt.Sprintf("%x", sum[:]),
@@ -274,6 +278,25 @@ func NewFileField(name, mime string, data []byte) (Field, error) {
 		return Field{}, err
 	}
 	return Field{Type: FieldFile, Value: raw}, nil
+}
+
+// SafeFileName validates synchronized attachment display metadata before it is
+// used as a local filename. Explicit export destinations are validated
+// separately because they are trusted local user input.
+func SafeFileName(name string) (string, error) {
+	if name == "" || name != strings.TrimSpace(name) {
+		return "", errors.New("attachment file name must be a non-empty basename without surrounding whitespace")
+	}
+	if name == "." || name == ".." || filepath.IsAbs(name) ||
+		strings.ContainsAny(name, `/\`) || filepath.Base(name) != name {
+		return "", fmt.Errorf("attachment file name %q must be a basename without path separators", name)
+	}
+	for i, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return "", fmt.Errorf("attachment file name %q contains control char at offset %d", name, i)
+		}
+	}
+	return name, nil
 }
 
 func NewRawJSONField(kind string, raw []byte) (Field, error) {

@@ -2,6 +2,8 @@ package cli
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -93,5 +95,102 @@ func TestNormalizePassNameTrims(t *testing.T) {
 	}
 	if _, err := normalizePassName("   "); err == nil {
 		t.Fatal("empty name should fail")
+	}
+}
+
+func TestPassFileExportPath(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := passFileExportPath("key.pem", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != filepath.Join(cwd, "key.pem") {
+		t.Fatalf("default export = %q", got)
+	}
+
+	for _, out := range []string{
+		filepath.Join("nested", "key.pem"),
+		filepath.Join(t.TempDir(), "key.pem"),
+	} {
+		got, err := passFileExportPath("key.pem", out)
+		if err != nil {
+			t.Fatalf("explicit output %q: %v", out, err)
+		}
+		if got != out {
+			t.Fatalf("explicit output = %q, want %q", got, out)
+		}
+	}
+
+	for _, storedName := range []string{
+		"../key.pem",
+		"nested/key.pem",
+		`nested\key.pem`,
+		"/tmp/key.pem",
+		"..",
+	} {
+		if _, err := passFileExportPath(storedName, filepath.Join(t.TempDir(), "safe.pem")); err == nil {
+			t.Fatalf("unsafe stored name %q should be rejected even with explicit output", storedName)
+		}
+	}
+}
+
+func TestWritePassFileExportUsesSafeCreateAndAtomicForce(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "key.pem")
+	if err := writePassFileExport(path, []byte("first"), false); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %o, want 600", info.Mode().Perm())
+	}
+	if err := writePassFileExport(path, []byte("second"), false); err == nil {
+		t.Fatal("non-force export should reject a collision")
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != "first" {
+		t.Fatalf("collision changed existing file: %q, %v", got, err)
+	}
+	if err := writePassFileExport(path, []byte("second"), true); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != "second" {
+		t.Fatalf("force export = %q, %v", got, err)
+	}
+}
+
+func TestWritePassFileExportDoesNotFollowSymlinks(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	link := filepath.Join(dir, "key.pem")
+	if err := os.WriteFile(target, []byte("target"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := writePassFileExport(link, []byte("blocked"), false); err == nil {
+		t.Fatal("non-force export should reject an existing symlink")
+	}
+	if err := writePassFileExport(link, []byte("replacement"), true); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(target); err != nil || string(got) != "target" {
+		t.Fatalf("symlink target changed: %q, %v", got, err)
+	}
+	info, err := os.Lstat(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("force export should replace the symlink itself")
+	}
+	if got, err := os.ReadFile(link); err != nil || string(got) != "replacement" {
+		t.Fatalf("replacement = %q, %v", got, err)
 	}
 }

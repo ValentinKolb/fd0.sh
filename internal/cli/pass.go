@@ -494,18 +494,69 @@ func RunPassFileExport(ctx context.Context, scopeID, itemName, path, out string,
 	if err != nil {
 		return err
 	}
-	if out == "" {
-		out = file.Name
+	out, err = passFileExportPath(file.Name, out)
+	if err != nil {
+		return err
 	}
-	if !force {
-		if _, err := os.Stat(out); err == nil {
-			return fmt.Errorf("%s exists (pass --force to overwrite)", out)
-		}
-	}
-	if err := os.WriteFile(out, data, 0o600); err != nil {
+	if err := writePassFileExport(out, data, force); err != nil {
 		return err
 	}
 	stderrln("✓ wrote %s (%d bytes)", out, len(data))
+	return nil
+}
+
+func passFileExportPath(storedName, out string) (string, error) {
+	name, err := passitem.SafeFileName(storedName)
+	if err != nil {
+		return "", fmt.Errorf("pass file export: unsafe stored file name: %w", err)
+	}
+	if out != "" {
+		return out, nil
+	}
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("pass file export: current directory: %w", err)
+	}
+	target := filepath.Join(dir, name)
+	rel, err := filepath.Rel(dir, target)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("pass file export: stored file name escapes destination")
+	}
+	return target, nil
+}
+
+func writePassFileExport(path string, data []byte, force bool) error {
+	if force {
+		if err := writeFileAtomic(path, data, 0o600); err != nil {
+			return fmt.Errorf("pass file export %s: %w", path, err)
+		}
+		return nil
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		if os.IsExist(err) {
+			return fmt.Errorf("%s exists (pass --force to overwrite)", path)
+		}
+		return fmt.Errorf("pass file export %s: %w", path, err)
+	}
+	complete := false
+	defer func() {
+		if !complete {
+			_ = os.Remove(path)
+		}
+	}()
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("pass file export %s: %w", path, err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("pass file export %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("pass file export %s: %w", path, err)
+	}
+	complete = true
 	return nil
 }
 

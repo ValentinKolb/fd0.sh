@@ -278,7 +278,7 @@ type passFileAddCmd struct {
 type passFileExportCmd struct {
 	Name  string `arg:"" help:"Item name."`
 	Path  string `arg:"" help:"File field path."`
-	Out   string `name:"out" help:"Output path. Defaults to stored file name."`
+	Out   string `name:"out" help:"Explicit local output path. Defaults to the stored basename in the current directory."`
 	Scope string `name:"scope" help:"Scope label or id."`
 	Force bool   `name:"force" help:"Overwrite an existing output file."`
 }
