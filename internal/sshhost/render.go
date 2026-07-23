@@ -57,7 +57,7 @@ type RenderInput struct {
 // Cross-scope alias collisions emit a `# WARN` comment block at the
 // top so the operator sees them; the FIRST occurrence (by sort order)
 // wins per SSH first-match rules.
-func Render(in RenderInput) []byte {
+func Render(in RenderInput) ([]byte, error) {
 	var b strings.Builder
 	ts := in.Now.UTC().Format(time.RFC3339)
 
@@ -90,6 +90,13 @@ func Render(in RenderInput) []byte {
 	currentScope := ""
 	emittedAliases := map[string]bool{}
 	for _, h := range hosts {
+		if err := h.Validate(); err != nil {
+			return nil, fmt.Errorf("render host %q: %w", h.Alias, err)
+		}
+		options, err := SharedOptions(h.Options)
+		if err != nil {
+			return nil, fmt.Errorf("render host %q: %w", h.Alias, err)
+		}
 		// Suppress duplicate aliases — first wins per SSH semantics.
 		if emittedAliases[h.Alias] {
 			continue
@@ -145,21 +152,13 @@ func Render(in RenderInput) []byte {
 				fmt.Fprintf(&b, "    IdentitiesOnly yes\n")
 			}
 		}
-		// Verbatim user-supplied options, sorted for determinism.
-		if len(h.Options) > 0 {
-			keys := make([]string, 0, len(h.Options))
-			for k := range h.Options {
-				keys = append(keys, k)
-			}
-			sort.Strings(keys)
-			for _, k := range keys {
-				fmt.Fprintf(&b, "    %s %s\n", k, h.Options[k])
-			}
+		for _, option := range options {
+			fmt.Fprintf(&b, "    %s %s\n", option.Name, option.Value)
 		}
 		b.WriteString("\n")
 	}
 
-	return []byte(b.String())
+	return []byte(b.String()), nil
 }
 
 // dupeRow is one entry in the cross-scope collision report.

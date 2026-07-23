@@ -120,7 +120,7 @@ type sshAddCmd struct {
 	Jump        string            `name:"jump" help:"ProxyJump alias."`
 	Tag         []string          `name:"tag" help:"Add a tag (repeat for multiple)."`
 	Description string            `name:"description" help:"Free-form description."`
-	Opt         map[string]string `name:"opt" help:"Verbatim ssh_config option (e.g. --opt ForwardAgent=yes)."`
+	Opt         map[string]string `name:"opt" help:"Safe synchronized ssh_config option (repeatable); command, forwarding, and local-path options are rejected."`
 	Scope       string            `name:"scope" help:"Scope label or id."`
 	Force       bool              `name:"force" help:"Overwrite an existing host with the same alias (and auto-generated key)."`
 }

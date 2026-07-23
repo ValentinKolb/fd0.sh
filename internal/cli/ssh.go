@@ -250,9 +250,12 @@ func RunHostShow(ctx context.Context, scopeID, alias string) error {
 			}
 		}
 	}
-	out := sshhost.Render(sshhost.RenderInput{
+	out, err := sshhost.Render(sshhost.RenderInput{
 		Hosts: []*sshhost.Host{h}, SocketPath: SSHSocketPathForRender(), KnownKeys: keysSet, Now: nowFunc(),
 	})
+	if err != nil {
+		return err
+	}
 	fmt.Println(string(out))
 	return nil
 }
@@ -481,13 +484,16 @@ func renderSSHConfig(s *Session, warnInclude bool) error {
 		return err
 	}
 
-	bytes := sshhost.Render(sshhost.RenderInput{
+	bytes, err := sshhost.Render(sshhost.RenderInput{
 		Hosts:      hosts,
 		SocketPath: SSHSocketPathForRender(),
 		KnownKeys:  known,
 		PubKeyDir:  pubDir,
 		Now:        nowFunc(),
 	})
+	if err != nil {
+		return err
+	}
 	target := SSHConfPath()
 	if err := writeManagedFile(target, bytes, "hosts", len(hosts)); err != nil {
 		return err

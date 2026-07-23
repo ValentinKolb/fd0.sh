@@ -35,8 +35,68 @@ type Host struct {
 	ProxyJump   string            // another fd0 host alias OR raw ssh-style spec
 	Tags        []string          // shared metadata, embedded as comment
 	Description string            // shared metadata, embedded as comment
-	Options     map[string]string // verbatim ssh_config Key Value pairs (ForwardAgent, etc.)
+	Options     map[string]string // synchronized ssh_config options accepted by SharedOptions
 	Scope       string            // SOURCE scope; not part of the JSON value, set by the loader
+}
+
+// Option is one validated, canonically named synchronized ssh_config option.
+type Option struct {
+	Name  string
+	Value string
+}
+
+// sharedOptionNames is deliberately small. Scope members may change shared host
+// records, so synchronized options must not execute commands, load local code,
+// read or write arbitrary local paths, forward credentials, or open tunnels.
+// More dangerous behavior belongs in the user's local ~/.ssh/config, outside
+// fd0 synchronization.
+var sharedOptionNames = map[string]string{
+	"addressfamily":                "AddressFamily",
+	"batchmode":                    "BatchMode",
+	"compression":                  "Compression",
+	"connectionattempts":           "ConnectionAttempts",
+	"connecttimeout":               "ConnectTimeout",
+	"ipqos":                        "IPQoS",
+	"kbdinteractiveauthentication": "KbdInteractiveAuthentication",
+	"loglevel":                     "LogLevel",
+	"passwordauthentication":       "PasswordAuthentication",
+	"preferredauthentications":     "PreferredAuthentications",
+	"pubkeyauthentication":         "PubkeyAuthentication",
+	"requesttty":                   "RequestTTY",
+	"serveralivecountmax":          "ServerAliveCountMax",
+	"serveraliveinterval":          "ServerAliveInterval",
+	"tcpkeepalive":                 "TCPKeepAlive",
+	"verifyhostkeydns":             "VerifyHostKeyDNS",
+	"visualhostkey":                "VisualHostKey",
+}
+
+// SharedOptions validates and canonicalizes synchronized SSH options. SSH
+// directive names are case-insensitive, so aliases that differ only by case
+// are rejected instead of relying on map iteration or OpenSSH first-value
+// semantics.
+func SharedOptions(options map[string]string) ([]Option, error) {
+	out := make([]Option, 0, len(options))
+	seen := make(map[string]bool, len(options))
+	for name, value := range options {
+		if err := rejectControl("option-key", name); err != nil {
+			return nil, err
+		}
+		if err := rejectControl("option-value", value); err != nil {
+			return nil, err
+		}
+		key := strings.ToLower(name)
+		canonical, ok := sharedOptionNames[key]
+		if !ok {
+			return nil, fmt.Errorf("option %q is not allowed in synchronized hosts; configure it locally in ~/.ssh/config", name)
+		}
+		if seen[key] {
+			return nil, fmt.Errorf("option %q is set more than once with different casing", canonical)
+		}
+		seen[key] = true
+		out = append(out, Option{Name: canonical, Value: value})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
 }
 
 // JSON is the on-the-wire shape stored as a fd0 secret value. Keep
@@ -155,16 +215,8 @@ func (h *Host) Validate() error {
 			return fmt.Errorf("sshhost: alias %q %w", h.Alias, err)
 		}
 	}
-	for k, v := range h.Options {
-		if strings.ContainsAny(k, " \t") {
-			return fmt.Errorf("sshhost: option key %q contains whitespace", k)
-		}
-		if err := rejectControl("option-key", k); err != nil {
-			return fmt.Errorf("sshhost: alias %q %w", h.Alias, err)
-		}
-		if err := rejectControl("option-value", v); err != nil {
-			return fmt.Errorf("sshhost: alias %q %w", h.Alias, err)
-		}
+	if _, err := SharedOptions(h.Options); err != nil {
+		return fmt.Errorf("sshhost: alias %q %w", h.Alias, err)
 	}
 	return nil
 }

@@ -46,18 +46,18 @@ func TestValidate(t *testing.T) {
 		}
 	}
 	bad := []*Host{
-		{Alias: "", Hostname: "h"},                                  // empty alias
-		{Alias: "has space", Hostname: "h"},                         // whitespace
-		{Alias: "host", Hostname: ""},                               // empty hostname
-		{Alias: "host", Hostname: "h", Port: 99999},                 // bad port
+		{Alias: "", Hostname: "h"},                                             // empty alias
+		{Alias: "has space", Hostname: "h"},                                    // whitespace
+		{Alias: "host", Hostname: ""},                                          // empty hostname
+		{Alias: "host", Hostname: "h", Port: 99999},                            // bad port
 		{Alias: "host", Hostname: "h", Options: map[string]string{"K V": "x"}}, // option key whitespace
 		// S1: injection guards on render-verbatim fields.
-		{Alias: "host", Hostname: "x\n    ProxyCommand sh -c id"}, // newline in hostname
-		{Alias: "host", Hostname: "x\r\nProxyCommand x"},          // CRLF in hostname
-		{Alias: "host", Hostname: "x", User: "root\nProxyCommand x"},      // newline in user
+		{Alias: "host", Hostname: "x\n    ProxyCommand sh -c id"},            // newline in hostname
+		{Alias: "host", Hostname: "x\r\nProxyCommand x"},                     // CRLF in hostname
+		{Alias: "host", Hostname: "x", User: "root\nProxyCommand x"},         // newline in user
 		{Alias: "host", Hostname: "x", ProxyJump: "bastion\nProxyCommand x"}, // newline in proxy-jump
-		{Alias: "host", Hostname: "host\x00wat"},                  // NUL in hostname
-		{Alias: "host", Hostname: "host\twat"},                    // tab in hostname
+		{Alias: "host", Hostname: "host\x00wat"},                             // NUL in hostname
+		{Alias: "host", Hostname: "host\twat"},                               // tab in hostname
 	}
 	for _, h := range bad {
 		if err := h.Validate(); err == nil {
@@ -76,7 +76,7 @@ func TestRoundTrip(t *testing.T) {
 		ProxyJump:   "bastion",
 		Tags:        []string{"prod", "db"},
 		Description: "Production DB main",
-		Options:     map[string]string{"ForwardAgent": "yes"},
+		Options:     map[string]string{"ServerAliveInterval": "30"},
 		Scope:       "work",
 	}
 	j := orig.Marshal()
@@ -102,6 +102,59 @@ func TestRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSharedOptionsPolicy(t *testing.T) {
+	got, err := SharedOptions(map[string]string{
+		"serveraliveinterval": "30",
+		"Compression":         "yes",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 ||
+		got[0] != (Option{Name: "Compression", Value: "yes"}) ||
+		got[1] != (Option{Name: "ServerAliveInterval", Value: "30"}) {
+		t.Fatalf("unexpected canonical options: %+v", got)
+	}
+
+	for _, name := range []string{
+		"ProxyCommand",
+		"proxycommand",
+		"LocalCommand",
+		"PermitLocalCommand",
+		"KnownHostsCommand",
+		"Match",
+		"ForwardAgent",
+		"IdentityAgent",
+		"IdentityFile",
+		"Include",
+		"RemoteCommand",
+		"PKCS11Provider",
+		"LocalForward",
+		"RemoteForward",
+		"DynamicForward",
+		"ControlPath",
+		"XAuthLocation",
+		"UnknownOption",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := SharedOptions(map[string]string{name: "value"})
+			if err == nil {
+				t.Fatalf("%s should not be allowed in synchronized hosts", name)
+			}
+			if !strings.Contains(err.Error(), "configure it locally") {
+				t.Fatalf("error should explain the local-only path: %v", err)
+			}
+		})
+	}
+
+	if _, err := SharedOptions(map[string]string{
+		"Compression": "yes",
+		"compression": "no",
+	}); err == nil {
+		t.Fatal("case-insensitive duplicate should be rejected")
+	}
+}
+
 func TestRenderBasic(t *testing.T) {
 	hosts := []*Host{
 		{Alias: "bastion", Hostname: "bastion.example.com", User: "ops", Scope: "work", Tags: []string{"prod"}},
@@ -109,7 +162,7 @@ func TestRenderBasic(t *testing.T) {
 			Scope: "work", Tags: []string{"prod", "db"}, Description: "Main DB"},
 		{Alias: "personal-vps", Hostname: "vps.example.com", Scope: "personal"},
 	}
-	out := Render(RenderInput{
+	out := mustRender(t, RenderInput{
 		Hosts:      hosts,
 		SocketPath: "/tmp/fd0/ssh.sock",
 		KnownKeys:  map[string]bool{"deploy": true},
@@ -152,12 +205,16 @@ func TestRenderDeterministic(t *testing.T) {
 	// Same input → same output, regardless of map iteration order.
 	hosts := []*Host{
 		{Alias: "h", Hostname: "x", Scope: "s",
-			Options: map[string]string{"K1": "v1", "K2": "v2", "K3": "v3"}},
+			Options: map[string]string{
+				"ServerAliveInterval": "30",
+				"Compression":         "yes",
+				"ConnectTimeout":      "10",
+			}},
 	}
 	now := time.Date(2026, 6, 8, 12, 0, 0, 0, time.UTC)
-	a := string(Render(RenderInput{Hosts: hosts, Now: now}))
+	a := string(mustRender(t, RenderInput{Hosts: hosts, Now: now}))
 	for i := 0; i < 5; i++ {
-		b := string(Render(RenderInput{Hosts: hosts, Now: now}))
+		b := string(mustRender(t, RenderInput{Hosts: hosts, Now: now}))
 		if a != b {
 			t.Fatalf("non-deterministic render:\n--- a ---\n%s\n--- b ---\n%s", a, b)
 		}
@@ -168,7 +225,7 @@ func TestRenderKeyedHostEmitsIdentityFile(t *testing.T) {
 	hosts := []*Host{
 		{Alias: "prod-db", Hostname: "db", KeyName: "deploy", Scope: "work"},
 	}
-	out := string(Render(RenderInput{
+	out := string(mustRender(t, RenderInput{
 		Hosts:      hosts,
 		SocketPath: "/run/fd0.sock",
 		KnownKeys:  map[string]bool{"deploy": true},
@@ -189,7 +246,7 @@ func TestRenderKeylessHostNoIdentitiesOnly(t *testing.T) {
 	hosts := []*Host{
 		{Alias: "byok", Hostname: "h", Scope: "s"},
 	}
-	out := string(Render(RenderInput{
+	out := string(mustRender(t, RenderInput{
 		Hosts:      hosts,
 		SocketPath: "/run/fd0.sock",
 		PubKeyDir:  "/home/me/.ssh/fd0.d",
@@ -210,7 +267,7 @@ func TestRenderMissingKeyWarning(t *testing.T) {
 	hosts := []*Host{
 		{Alias: "h", Hostname: "x", KeyName: "ghost", Scope: "s"},
 	}
-	out := Render(RenderInput{
+	out := mustRender(t, RenderInput{
 		Hosts:     hosts,
 		KnownKeys: map[string]bool{"deploy": true}, // ghost not in set
 		Now:       time.Now(),
@@ -225,7 +282,7 @@ func TestRenderCrossScopeCollision(t *testing.T) {
 		{Alias: "prod-db", Hostname: "db.a", Scope: "work"},
 		{Alias: "prod-db", Hostname: "db.b", Scope: "old-work"},
 	}
-	out := string(Render(RenderInput{Hosts: hosts, Now: time.Now()}))
+	out := string(mustRender(t, RenderInput{Hosts: hosts, Now: time.Now()}))
 	if !strings.Contains(out, "alias collisions across scopes") {
 		t.Fatalf("collision warning missing:\n%s", out)
 	}
@@ -240,4 +297,31 @@ func TestRenderCrossScopeCollision(t *testing.T) {
 	if !strings.Contains(out, "HostName db.b") {
 		t.Errorf("expected HostName db.b (from old-work, first by sort):\n%s", out)
 	}
+}
+
+func TestRenderRejectsUnvalidatedSharedOptions(t *testing.T) {
+	_, err := Render(RenderInput{
+		Hosts: []*Host{{
+			Alias:    "prod",
+			Hostname: "prod.example.com",
+			Scope:    "work",
+			Options:  map[string]string{"ProxyCommand": "sh -c id"},
+		}},
+		Now: time.Now(),
+	})
+	if err == nil {
+		t.Fatal("renderer must reject unsafe options even when the caller skipped validation")
+	}
+	if !strings.Contains(err.Error(), "ProxyCommand") {
+		t.Fatalf("error should identify the rejected option: %v", err)
+	}
+}
+
+func mustRender(t *testing.T, in RenderInput) []byte {
+	t.Helper()
+	out, err := Render(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
 }

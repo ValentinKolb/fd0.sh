@@ -108,6 +108,7 @@ phase "Host add (referencing key)"
 
 "$FD0" ssh add prod-db app@db.internal --jump bastion --key deploy \
     --tag prod --tag db --description "Main prod DB" --scope work \
+    --opt ServerAliveInterval=30 --opt Compression=yes \
     > "$BASE/ssh-add.log" 2>&1 \
   && ok "ssh add prod-db" || { no "ssh add"; cat "$BASE/ssh-add.log"; }
 
@@ -136,9 +137,29 @@ grep -q "IdentityFile $PUBDIR/prod-db.pub" "$FD0_SSH_CONFIG_PATH" \
 grep -q "IdentitiesOnly yes" "$FD0_SSH_CONFIG_PATH" \
   && ok "fd0.conf has IdentitiesOnly (keyed host)" || no "IdentitiesOnly missing"
 
+grep -q "    Compression yes" "$FD0_SSH_CONFIG_PATH" \
+  && grep -q "    ServerAliveInterval 30" "$FD0_SSH_CONFIG_PATH" \
+  && ok "safe synchronized options rendered canonically" || no "safe options missing"
+
 # Include warning should have fired (we never enabled).
 grep -q "doesn't include" "$BASE/ssh-add.log" \
   && ok "include warning emitted" || no "include warning not visible"
+
+phase "Shared option policy"
+
+for option in ProxyCommand LocalCommand PermitLocalCommand KnownHostsCommand Match ForwardAgent IdentityAgent IdentityFile Include RemoteCommand PKCS11Provider LocalForward RemoteForward DynamicForward ControlPath XAuthLocation; do
+  log="$BASE/reject-$option.log"
+  "$FD0" ssh add reject-option attacker.example --scope work --opt "$option=value" > "$log" 2>&1
+  if [[ $? -ne 0 ]] && grep -q "not allowed in synchronized hosts" "$log"; then
+    ok "reject shared $option"
+  else
+    no "unsafe shared option accepted: $option"
+    cat "$log"
+  fi
+done
+
+! grep -q "Host reject-" "$FD0_SSH_CONFIG_PATH" \
+  && ok "rejected options never reached fd0.conf" || no "unsafe host reached fd0.conf"
 
 # ─────────────────────────────────────────────────────────────
 phase "Host add --with-key (host + new key in one shot)"
