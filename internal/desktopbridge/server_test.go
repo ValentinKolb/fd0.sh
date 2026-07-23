@@ -16,6 +16,7 @@ import (
 	"github.com/valentinkolb/fd0.sh/internal/cli"
 	"github.com/valentinkolb/fd0.sh/internal/crypto"
 	"github.com/valentinkolb/fd0.sh/internal/fdhome"
+	"github.com/valentinkolb/fd0.sh/internal/passitem"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
 )
 
@@ -349,6 +350,22 @@ func TestScopeMembersIncludeSelfTrustedAndUnknown(t *testing.T) {
 	}
 	if decoded, err := base64.RawURLEncoding.DecodeString(members[2].ID); err != nil || !bytes.Equal(decoded, unknown) {
 		t.Fatalf("member id=%q err=%v", members[2].ID, err)
+	}
+}
+
+func TestPassFieldViewsDoNotExposeTOTPCode(t *testing.T) {
+	field, err := passitem.NewTOTPField(passitem.TOTPValue{Secret: "JBSWY3DPEHPK3PXP"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	field.Name = "one-time password"
+	fields := []passitem.Field{field}
+	views := passFieldViews(fields, "", "Login")
+	if len(views) != 1 {
+		t.Fatalf("views=%+v", views)
+	}
+	if views[0].Value != "" || !views[0].Sensitive || !views[0].Copyable {
+		t.Fatalf("TOTP detail leaks code or lacks protection: %+v", views[0])
 	}
 }
 

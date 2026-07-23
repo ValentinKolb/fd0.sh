@@ -58,6 +58,7 @@ export type ScopeMember = {
 };
 
 export type ScopeShareInfo = {
+  scopeLabel: string;
   contacts: TrustedContact[];
   members: ScopeMember[];
 };
@@ -144,6 +145,7 @@ export type SavePassInput = {
   recordName: string;
   item: PassItemData;
   create?: boolean;
+  authorization?: string;
 };
 
 export type AttachmentValue = {
@@ -160,11 +162,13 @@ export type SaveSecretInput = {
   value: string;
   oldName?: string;
   create?: boolean;
+  authorization?: string;
 };
 
 export type SaveSSHHostInput = {
   scopeId: string;
   oldName?: string;
+  authorization?: string;
   host: {
     Alias: string;
     Hostname: string;
@@ -216,17 +220,17 @@ export type DesktopAPI = {
   setDefaultAuthMethod(method: string): Promise<VaultStatus>;
   inventory(): Promise<Inventory>;
   itemDetail(ref: RecordRef): Promise<ItemDetail>;
-  reveal(ref: FieldRef): Promise<{ value: string; remaining?: number }>;
+  reveal(ref: FieldRef): Promise<{ value: string; remaining?: number } | null>;
   copy(ref: FieldRef): Promise<{ clearAfterSeconds: number }>;
   copyText(value: string): Promise<{ clearAfterSeconds: number }>;
   savePass(input: SavePassInput): Promise<{ ok: boolean }>;
-  editPass(ref: RecordRef): Promise<SavePassInput>;
+  editPass(ref: RecordRef): Promise<SavePassInput | null>;
   setFavorite(ref: RecordRef, favorite: boolean): Promise<{ ok: boolean }>;
   pickAttachment(): Promise<AttachmentValue | null>;
   saveSecret(input: SaveSecretInput): Promise<{ ok: boolean }>;
-  editSecret(ref: RecordRef): Promise<SaveSecretInput>;
+  editSecret(ref: RecordRef): Promise<SaveSecretInput | null>;
   saveSSHHost(input: SaveSSHHostInput): Promise<{ ok: boolean }>;
-  editSSHHost(ref: RecordRef): Promise<SaveSSHHostInput>;
+  editSSHHost(ref: RecordRef): Promise<SaveSSHHostInput | null>;
   generateSSHKey(input: GenerateSSHKeyInput): Promise<{ ok: boolean }>;
   importConfig(kind: "kubernetes" | "talos", scopeId: string): Promise<ImportConfigResult | null>;
   saveAttachment(ref: FieldRef): Promise<{ saved: boolean }>;
@@ -234,14 +238,15 @@ export type DesktopAPI = {
   createScope(label: string): Promise<{ ok: boolean }>;
   scopeShareInfo(scopeId: string): Promise<ScopeShareInfo>;
   addScopeMember(scopeId: string, label: string): Promise<{ ok: boolean }>;
-  removeScopeMember(scopeId: string, memberId: string, label: string): Promise<{ ok: boolean }>;
+  removeScopeMember(scopeId: string, memberId: string): Promise<{ ok: boolean }>;
   exportIdentityCard(): Promise<IdentityCardInfo>;
   inspectIdentityCard(url: string): Promise<IdentityCardInfo>;
   importIdentityCard(url: string, label: string): Promise<{ ok: boolean }>;
   sync(): Promise<{ ok: boolean }>;
   launchAtLogin(): Promise<boolean>;
   setLaunchAtLogin(value: boolean): Promise<boolean>;
-  openExternal(url: string): Promise<void>;
+  openItemURL(ref: RecordRef): Promise<void>;
+  openSupportLink(target: "docs" | "issues"): Promise<void>;
   updateStatus(): Promise<UpdateStatus>;
   checkForUpdates(): Promise<UpdateStatus>;
   installUpdate(): Promise<void>;

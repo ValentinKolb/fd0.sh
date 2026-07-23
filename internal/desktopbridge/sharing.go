@@ -36,8 +36,9 @@ type IdentityCardInfoResult struct {
 }
 
 type ScopeShareInfoResult struct {
-	Contacts []TrustedContact `json:"contacts"`
-	Members  []ScopeMember    `json:"members"`
+	ScopeLabel string           `json:"scopeLabel"`
+	Contacts   []TrustedContact `json:"contacts"`
+	Members    []ScopeMember    `json:"members"`
 }
 
 func (s *Service) scopeShareInfo(ctx context.Context, scopeID string) (ScopeShareInfoResult, error) {
@@ -49,8 +50,13 @@ func (s *Service) scopeShareInfo(ctx context.Context, scopeID string) (ScopeShar
 		return ScopeShareInfoResult{}, mapDomainError(err)
 	}
 	defer session.Close()
-	if scope, ok := session.Body.Scopes[scopeID]; !ok || scope.Leaving {
+	scope, ok := session.Body.Scopes[scopeID]
+	if !ok || scope.Leaving {
 		return ScopeShareInfoResult{}, fail("not_found", "That vault is no longer available.", "Refresh the vault list.", false)
+	}
+	scopeLabel := strings.TrimSpace(scope.Label)
+	if scopeLabel == "" {
+		scopeLabel = "Unnamed vault"
 	}
 	state, err := chain.ReplayScope(
 		session.Paths.ScopeChain(proto.MustParseScopeID(scopeID)),
@@ -65,8 +71,9 @@ func (s *Service) scopeShareInfo(ctx context.Context, scopeID string) (ScopeShar
 		return ScopeShareInfoResult{}, fail("integrity_check_failed", "fd0 could not read this vault's membership history.", "Open Support before sharing it.", false)
 	}
 	return ScopeShareInfoResult{
-		Contacts: trustedContacts(session.Body.PinnedIdentities, state.MemberSet),
-		Members:  scopeMembers(session.Body.PinnedIdentities, state.MemberSet, session.UserSuperPub),
+		ScopeLabel: boundedInventoryText(scopeLabel),
+		Contacts:   trustedContacts(session.Body.PinnedIdentities, state.MemberSet),
+		Members:    scopeMembers(session.Body.PinnedIdentities, state.MemberSet, session.UserSuperPub),
 	}, nil
 }
 

@@ -77,6 +77,7 @@ export function PassEditorModal(props: {
       await window.fd0.savePass({
         scopeId: props.input.scopeId,
         recordName: props.input.recordName,
+        authorization: props.input.authorization,
         item: {
           ...props.input.item,
           title: title().trim(),

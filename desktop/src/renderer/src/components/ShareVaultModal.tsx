@@ -19,7 +19,7 @@ export function ShareVaultModal(props: {
   onNotify(message: string): void;
 }): JSX.Element {
   const [mode, setMode] = createSignal<"access" | "new-contact">("access");
-  const [info, setInfo] = createSignal<ScopeShareInfo>({ contacts: [], members: [] });
+  const [info, setInfo] = createSignal<ScopeShareInfo>({ scopeLabel: props.scope.label, contacts: [], members: [] });
   const [ownCard, setOwnCard] = createSignal<IdentityCardInfo | null>(null);
   const [cardURL, setCardURL] = createSignal("");
   const [contactLabel, setContactLabel] = createSignal("");
@@ -78,7 +78,7 @@ export function ShareVaultModal(props: {
     setBusy(`remove:${memberID}`);
     setError("");
     try {
-      const result = await window.fd0.removeScopeMember(props.scope.id, memberID, label);
+      const result = await window.fd0.removeScopeMember(props.scope.id, memberID);
       if (!result.ok) return;
       await finishMembershipChange(`Removed ${label} from ${props.scope.label}.`);
     } catch (cause) {

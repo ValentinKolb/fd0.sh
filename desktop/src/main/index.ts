@@ -26,15 +26,20 @@ import electronUpdater from "electron-updater";
 import { BridgeSupervisor, DesktopBridgeError } from "./bridge";
 import { DesktopAutoLock, type SecurityLockReason } from "./auto-lock";
 import { ManagedClipboard } from "./managed-clipboard";
+import { supportLink, trustedItemURL, type SupportLinkTarget } from "./external-links";
+import { OperationGrants, type OperationGrantKind } from "./operation-grants";
 import type {
   DesktopCommand,
   FieldRef,
+  FieldView,
   GenerateSSHKeyInput,
   IdentityCardInfo,
+  ItemDetail,
   RecordRef,
   SavePassInput,
   SaveSecretInput,
   SaveSSHHostInput,
+  ScopeShareInfo,
   UnlockInput,
   UpdateStatus,
   VaultStatus,
@@ -43,6 +48,7 @@ import type {
 let mainWindow: BrowserWindow | null = null;
 let bridge: BridgeSupervisor | null = null;
 const managedClipboard = new ManagedClipboard(clipboard);
+const operationGrants = new OperationGrants();
 let tray: Tray | null = null;
 let updateTimer: NodeJS.Timeout | null = null;
 let installingUpdate = false;
@@ -276,6 +282,7 @@ function observeVaultStatus(status: VaultStatus): VaultStatus {
   autoLock?.observe(status);
   if (lockedTransition) {
     managedClipboard.clear();
+    operationGrants.clear();
     sendCommand("refresh");
   }
   return status;
@@ -298,6 +305,7 @@ async function requestVaultLock(): Promise<void> {
   const status = await bridge.request<VaultStatus>("vault.lock", {});
   observeVaultStatus(status);
   managedClipboard.clear();
+  operationGrants.clear();
   sendCommand("refresh");
 }
 
@@ -468,6 +476,74 @@ function assertTrustedSender(event: Electron.IpcMainInvokeEvent): void {
 
 type IPCResult<T> = { ok: true; value: T } | { ok: false; error: { code: string; message: string; action?: string; retryable: boolean } };
 
+function flattenFields(fields: FieldView[]): FieldView[] {
+  return fields.flatMap((field) => [field, ...flattenFields(field.children ?? [])]);
+}
+
+function dialogText(value: string, fallback: string): string {
+  const clean = value.replace(/[\u0000-\u001f\u007f]/g, " ").trim();
+  return [...clean].slice(0, 160).join("") || fallback;
+}
+
+async function loadTrustedItem(client: BridgeSupervisor, ref: RecordRef): Promise<ItemDetail> {
+  return client.request<ItemDetail>("item.detail", {
+    scopeId: ref.scopeId,
+    name: ref.name,
+    ...(ref.raw ? { raw: true } : {}),
+  });
+}
+
+async function confirmItemAction(
+  client: BridgeSupervisor,
+  ref: RecordRef,
+  options: {
+    title: string;
+    action: string;
+    message(detail: ItemDetail): string;
+    detail: string;
+    type?: "question" | "warning";
+  },
+): Promise<ItemDetail | null> {
+  if (!mainWindow) throw new Error("fd0 window is unavailable");
+  const item = await loadTrustedItem(client, ref);
+  const confirmation = await dialog.showMessageBox(mainWindow, {
+    type: options.type ?? "question",
+    buttons: ["Cancel", options.action],
+    defaultId: 0,
+    cancelId: 0,
+    title: options.title,
+    message: options.message(item),
+    detail: options.detail,
+    noLink: true,
+  });
+  return confirmation.response === 1 ? item : null;
+}
+
+async function issueEditGrant(
+  client: BridgeSupervisor,
+  ref: RecordRef,
+  kind: OperationGrantKind,
+): Promise<string | null> {
+  const detail = await confirmItemAction(client, ref, {
+    title: "Edit protected item?",
+    action: "Edit",
+    message: ({ item }) => `Edit ${dialogText(item.title, "this item")} from ${dialogText(item.vault, "this vault")}?`,
+    detail: "The editor will receive this item's decrypted fields until you save or close it.",
+  });
+  return detail ? operationGrants.issue(kind, ref.scopeId, ref.name) : null;
+}
+
+function requireEditGrant(
+  authorization: string | undefined,
+  kind: OperationGrantKind,
+  scopeId: string,
+  name: string,
+): void {
+  if (!operationGrants.consume(authorization, kind, scopeId, name)) {
+    throw new Error("Edit authorization expired. Close the editor and open the item again.");
+  }
+}
+
 async function respond<T>(operation: () => Promise<T>): Promise<IPCResult<T>> {
   try {
     return { ok: true, value: await operation() };
@@ -527,6 +603,7 @@ function registerIPC(client: BridgeSupervisor): void {
   handle("fd0:lock", async () => {
     const status = observeVaultStatus(await client.request<VaultStatus>("vault.lock", {}));
     managedClipboard.clear();
+    operationGrants.clear();
     sendCommand("refresh");
     return status;
   });
@@ -598,7 +675,24 @@ function registerIPC(client: BridgeSupervisor): void {
   handle("fd0:set-default-auth", async (method: string) => observeVaultStatus(await client.request<VaultStatus>("auth.default", { method })));
   handle("fd0:inventory", () => client.request("inventory.list", {}));
   handle("fd0:item-detail", (ref: RecordRef) => client.request("item.detail", ref));
-  handle("fd0:reveal", (ref: FieldRef) => client.request("field.value", ref));
+  handle("fd0:reveal", async (ref: FieldRef) => {
+    const detail = await loadTrustedItem(client, ref);
+    const field = flattenFields(detail.fields).find((candidate) => candidate.path === ref.path);
+    if (!field) throw new Error("That field is no longer available");
+    if (!mainWindow) throw new Error("fd0 window is unavailable");
+    const confirmation = await dialog.showMessageBox(mainWindow, {
+      type: "warning",
+      buttons: ["Cancel", "Reveal"],
+      defaultId: 0,
+      cancelId: 0,
+      title: "Reveal protected value?",
+      message: `Reveal ${dialogText(field.name, "this field")} from ${dialogText(detail.item.title, "this item")}?`,
+      detail: `Vault: ${dialogText(detail.item.vault, "this vault")}\n\nThe value will be visible on screen for 15 seconds.`,
+      noLink: true,
+    });
+    if (confirmation.response !== 1) return null;
+    return client.request("field.value", ref);
+  });
   handle("fd0:copy", async (ref: FieldRef) => {
     const result = await client.request<{ value: string }>("field.value", ref);
     return writeManagedClipboard(result.value);
@@ -607,8 +701,19 @@ function registerIPC(client: BridgeSupervisor): void {
     if (typeof value !== "string" || value.length > 64 * 1024) throw new Error("Clipboard value is invalid");
     return writeManagedClipboard(value);
   });
-  handle("fd0:save-pass", (input: SavePassInput) => client.request("pass.save", input));
-  handle("fd0:edit-pass", (ref: RecordRef) => client.request("pass.editData", ref));
+  handle("fd0:save-pass", async (input: SavePassInput) => {
+    const { authorization, ...params } = input;
+    if (input.create !== true) {
+      requireEditGrant(authorization, "pass.edit", input.scopeId, `pass:${input.recordName.trim()}`);
+    }
+    return client.request("pass.save", params);
+  });
+  handle("fd0:edit-pass", async (ref: RecordRef) => {
+    const authorization = await issueEditGrant(client, ref, "pass.edit");
+    if (!authorization) return null;
+    const input = await client.request<SavePassInput>("pass.editData", ref);
+    return { ...input, authorization };
+  });
   handle("fd0:set-favorite", (ref: RecordRef, favorite: boolean) => client.request("pass.favorite", { ...ref, favorite: Boolean(favorite) }));
   handle("fd0:pick-attachment", async () => {
     if (!mainWindow) throw new Error("fd0 window is unavailable");
@@ -631,10 +736,32 @@ function registerIPC(client: BridgeSupervisor): void {
     data.fill(0);
     return result;
   });
-  handle("fd0:save-secret", (input: SaveSecretInput) => client.request("secret.save", input));
-  handle("fd0:edit-secret", (ref: RecordRef) => client.request("secret.editData", ref));
-  handle("fd0:save-ssh-host", (input: SaveSSHHostInput) => client.request("sshHost.save", input));
-  handle("fd0:edit-ssh-host", (ref: RecordRef) => client.request("sshHost.editData", ref));
+  handle("fd0:save-secret", async (input: SaveSecretInput) => {
+    const { authorization, ...params } = input;
+    if (input.create !== true) {
+      requireEditGrant(authorization, "secret.edit", input.scopeId, input.oldName?.trim() ?? "");
+    }
+    return client.request("secret.save", params);
+  });
+  handle("fd0:edit-secret", async (ref: RecordRef) => {
+    const authorization = await issueEditGrant(client, ref, "secret.edit");
+    if (!authorization) return null;
+    const input = await client.request<SaveSecretInput>("secret.editData", ref);
+    return { ...input, authorization };
+  });
+  handle("fd0:save-ssh-host", async (input: SaveSSHHostInput) => {
+    const { authorization, ...params } = input;
+    if (input.oldName) {
+      requireEditGrant(authorization, "ssh.edit", input.scopeId, input.oldName);
+    }
+    return client.request("sshHost.save", params);
+  });
+  handle("fd0:edit-ssh-host", async (ref: RecordRef) => {
+    const authorization = await issueEditGrant(client, ref, "ssh.edit");
+    if (!authorization) return null;
+    const input = await client.request<SaveSSHHostInput>("sshHost.editData", ref);
+    return { ...input, authorization };
+  });
   handle("fd0:generate-ssh-key", (input: GenerateSSHKeyInput) => client.request("sshKey.generate", input));
   handle("fd0:import-config", async (kind: "kubernetes" | "talos", scopeId: string) => {
     if (!mainWindow || (kind !== "kubernetes" && kind !== "talos")) throw new Error("Invalid config import");
@@ -675,34 +802,49 @@ function registerIPC(client: BridgeSupervisor): void {
     return { saved: true };
   });
   handle("fd0:remove", async (ref: RecordRef) => {
-    if (!mainWindow) throw new Error("fd0 window is unavailable");
-    const confirmation = await dialog.showMessageBox(mainWindow, {
-      type: "warning",
-      buttons: ["Cancel", "Remove"],
-      defaultId: 0,
-      cancelId: 0,
+    const item = await confirmItemAction(client, ref, {
       title: "Remove item?",
-      message: "Remove this item from fd0?",
+      action: "Remove",
+      message: ({ item }) => `Remove ${dialogText(item.title, "this item")} from ${dialogText(item.vault, "this vault")}?`,
       detail: "This creates a deletion that will sync to other devices and vault members.",
-      noLink: true,
+      type: "warning",
     });
-    if (confirmation.response !== 1) return { ok: false };
+    if (!item) return { ok: false };
     return client.request("item.remove", ref);
   });
   handle("fd0:create-scope", (label: string) => client.request("scope.create", { label }));
   handle("fd0:scope-share-info", (scopeId: string) => client.request("scope.shareInfo", { scopeId }));
-  handle("fd0:scope-add-member", (scopeId: string, label: string) => client.request("scope.addMember", { scopeId, label }));
-  handle("fd0:scope-remove-member", async (scopeId: string, memberId: string, label: string) => {
+  handle("fd0:scope-add-member", async (scopeId: string, label: string) => {
     if (!mainWindow) throw new Error("fd0 window is unavailable");
-    const displayLabel = typeof label === "string" && label.trim() ? label.trim().slice(0, 80) : "this member";
+    const info = await client.request<ScopeShareInfo>("scope.shareInfo", { scopeId });
+    const contact = info.contacts.find((candidate) => candidate.label === label && !candidate.shared);
+    if (!contact) throw new Error("That trusted contact is no longer available");
+    const confirmation = await dialog.showMessageBox(mainWindow, {
+      type: "warning",
+      buttons: ["Cancel", "Share vault"],
+      defaultId: 0,
+      cancelId: 0,
+      title: `Share ${dialogText(info.scopeLabel, "this vault")}?`,
+      message: `Give ${dialogText(contact.label, "this contact")} access to ${dialogText(info.scopeLabel, "this vault")}?`,
+      detail: `Safety fingerprint: ${contact.fingerprint}…\n\nThey will be able to decrypt every current and future item in this vault.`,
+      noLink: true,
+    });
+    if (confirmation.response !== 1) return { ok: false };
+    return client.request("scope.addMember", { scopeId, label: contact.label });
+  });
+  handle("fd0:scope-remove-member", async (scopeId: string, memberId: string) => {
+    if (!mainWindow) throw new Error("fd0 window is unavailable");
+    const info = await client.request<ScopeShareInfo>("scope.shareInfo", { scopeId });
+    const member = info.members.find((candidate) => candidate.id === memberId && !candidate.self);
+    if (!member) throw new Error("That vault member is no longer available");
     const confirmation = await dialog.showMessageBox(mainWindow, {
       type: "warning",
       buttons: ["Cancel", "Remove access"],
       defaultId: 0,
       cancelId: 0,
-      title: `Remove ${displayLabel}?`,
-      message: `Remove ${displayLabel} from this vault?`,
-      detail: "fd0 will rotate the vault key. They keep anything already downloaded, but cannot decrypt future changes.",
+      title: `Remove ${dialogText(member.label, "this member")}?`,
+      message: `Remove ${dialogText(member.label, "this member")} from ${dialogText(info.scopeLabel, "this vault")}?`,
+      detail: `Safety fingerprint: ${member.fingerprint}…\n\nfd0 will rotate the vault key. They keep anything already downloaded, but cannot decrypt future changes.`,
       noLink: true,
     });
     if (confirmation.response !== 1) return { ok: false };
@@ -734,10 +876,27 @@ function registerIPC(client: BridgeSupervisor): void {
     app.setLoginItemSettings({ openAtLogin: Boolean(value), openAsHidden: true });
     return app.getLoginItemSettings().openAtLogin;
   });
-  handle("fd0:open-external", async (url: string) => {
-    const parsed = new URL(url);
-    if (parsed.protocol !== "https:") throw new Error("Only HTTPS links can be opened");
-    await shell.openExternal(parsed.toString());
+  handle("fd0:open-item-url", async (ref: RecordRef) => {
+    if (!mainWindow) throw new Error("fd0 window is unavailable");
+    const detail = await loadTrustedItem(client, ref);
+    const website = flattenFields(detail.fields).find((field) => field.type === "url" && field.path === "$url");
+    const url = trustedItemURL(website?.value ?? "");
+    const host = new URL(url).host;
+    const confirmation = await dialog.showMessageBox(mainWindow, {
+      type: "question",
+      buttons: ["Cancel", "Open website"],
+      defaultId: 0,
+      cancelId: 0,
+      title: "Open website?",
+      message: `Open ${host} for ${dialogText(detail.item.title, "this item")}?`,
+      detail: url,
+      noLink: true,
+    });
+    if (confirmation.response !== 1) return;
+    await shell.openExternal(url);
+  });
+  handle("fd0:open-support-link", async (target: SupportLinkTarget) => {
+    await shell.openExternal(supportLink(target));
   });
   handle("fd0:update-status", async () => updateState);
   handle("fd0:check-updates", () => checkForUpdates());
@@ -859,6 +1018,7 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   managedClipboard.clear();
+  operationGrants.clear();
   if (updateTimer) clearTimeout(updateTimer);
   if (securityStatusTimer) clearInterval(securityStatusTimer);
   securityStatusTimer = null;

@@ -163,9 +163,25 @@ test("runs the isolated desktop vault end to end", async () => {
     const accessDialog = page.getByRole("dialog", { name: "Access to Personal" });
     await expect(accessDialog).toBeVisible();
     await page.screenshot({ path: test.info().outputPath("fd0-share-access.png") });
+    await app.evaluate(({ dialog }) => {
+      const state = globalThis as typeof globalThis & { __fd0Prompts?: string[] };
+      state.__fd0Prompts = [];
+      Object.defineProperty(dialog, "showMessageBox", {
+        configurable: true,
+        value: async (...args: unknown[]) => {
+          const options = args.at(-1) as { message?: string };
+          state.__fd0Prompts?.push(options.message ?? "");
+          return { response: 1, checkboxChecked: false };
+        },
+      });
+    });
     const bennyContact = accessDialog.locator(".access-row").filter({ hasText: "Benny" });
     await bennyContact.getByRole("button", { name: "Add", exact: true }).click();
     await expect(page.getByText("Shared Personal with Benny.", { exact: true })).toBeVisible();
+    expect(await app.evaluate(() => {
+      const state = globalThis as typeof globalThis & { __fd0Prompts?: string[] };
+      return state.__fd0Prompts?.at(-1);
+    })).toBe("Give Benny access to Personal?");
     await expect(accessDialog.locator(".access-row").filter({ hasText: "Benny" }).getByRole("button", { name: "Remove" })).toBeVisible();
 
     await accessDialog.getByRole("button", { name: "New contact" }).click();
@@ -175,12 +191,6 @@ test("runs the isolated desktop vault end to end", async () => {
     await page.getByRole("button", { name: "Review card" }).click();
     await expect(page.getByText("Safety number", { exact: true })).toBeVisible();
     await page.screenshot({ path: test.info().outputPath("fd0-share-card-review.png") });
-    await app.evaluate(({ dialog }) => {
-      Object.defineProperty(dialog, "showMessageBox", {
-        configurable: true,
-        value: async () => ({ response: 1, checkboxChecked: false }),
-      });
-    });
     await page.getByRole("button", { name: "Trust and share…" }).click();
     await expect(page.getByText("Trusted Carol and shared Personal.", { exact: true })).toBeVisible();
     const carolMember = accessDialog.locator(".access-row").filter({ hasText: "Carol" });
@@ -215,7 +225,7 @@ test("runs the isolated desktop vault end to end", async () => {
     await expect(largeType).toBeVisible();
     await expect(largeType.locator(".large-type-character")).toHaveCount(Array.from("d3v-Vault!GitHub-2026").length);
     await largeType.getByRole("button", { name: "Close large type" }).click();
-    await page.getByRole("button", { name: "Reveal value" }).first().click();
+    await page.getByRole("button", { name: "Reveal password" }).click();
     await expect(page.getByText("d3v-Vault!GitHub-2026", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Remove from favorites" })).toBeVisible();
     await page.getByRole("button", { name: "Remove from favorites" }).click();
@@ -375,7 +385,7 @@ test("runs the isolated desktop vault end to end", async () => {
     await expect(page.getByText("Changes saved.", { exact: true })).toBeVisible();
     await expect(page.locator(".detail-title h1")).toHaveText("DESKTOP_E2E_RENAMED");
     await expect(page.getByText("DESKTOP_E2E_SECRET", { exact: true })).toHaveCount(0);
-    await page.getByRole("button", { name: "Reveal value" }).click();
+    await page.getByRole("button", { name: "Reveal Value" }).click();
     await expect(page.getByText("isolated-value-updated", { exact: true })).toBeVisible();
 
     await page.locator(".type-picker-button").click();
@@ -441,7 +451,7 @@ test("runs the isolated desktop vault end to end", async () => {
       fonts: "loaded",
     });
     await page.getByRole("button", { name: /^GitHub valentin@example.com/ }).click();
-    await page.getByRole("button", { name: "Reveal value" }).first().click();
+    await page.getByRole("button", { name: "Reveal password" }).click();
     await expect(page.getByText("d3v-Vault!GitHub-2026", { exact: true })).toBeVisible();
     await app.evaluate(({ powerMonitor }) => powerMonitor.emit("suspend"));
     await expect(page.getByRole("heading", { name: "Unlock fd0" })).toBeVisible();

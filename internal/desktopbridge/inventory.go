@@ -429,7 +429,8 @@ func passFieldViews(fields []passitem.Field, prefix, section string) []FieldView
 			view.Copyable = true
 		case passitem.FieldTOTP:
 			if value, err := passitem.TOTPFromField(field); err == nil {
-				view.Value, view.Remaining, _ = passitem.TOTPCode(value, time.Now())
+				_, view.Remaining, _ = passitem.TOTPCode(value, time.Now())
+				view.Sensitive = true
 				view.Copyable = true
 			}
 		case passitem.FieldFile:

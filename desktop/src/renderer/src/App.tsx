@@ -485,11 +485,11 @@ function App(): JSX.Element {
                 if (!item) return;
                 const ref = { scopeId: item.scopeId, name: item.recordName };
                 if (item.kind === "password") {
-                  void window.fd0.editPass(ref).then(setEditPass).catch((error) => setAppError(errorText(error)));
+                  void window.fd0.editPass(ref).then((value) => value && setEditPass(value)).catch((error) => setAppError(errorText(error)));
                 } else if (item.kind === "secret") {
-                  void window.fd0.editSecret(ref).then(setEditSecret).catch((error) => setAppError(errorText(error)));
+                  void window.fd0.editSecret(ref).then((value) => value && setEditSecret(value)).catch((error) => setAppError(errorText(error)));
                 } else if (item.kind === "ssh" && item.badge === "SSH HOST") {
-                  void window.fd0.editSSHHost(ref).then(setEditSSHHost).catch((error) => setAppError(errorText(error)));
+                  void window.fd0.editSSHHost(ref).then((value) => value && setEditSSHHost(value)).catch((error) => setAppError(errorText(error)));
                 }
               }}
               onSaveAttachment={(field) => {
@@ -512,7 +512,11 @@ function App(): JSX.Element {
                   })
                   .catch((error) => setAppError(errorText(error)));
               }}
-              onOpenURL={(url) => void window.fd0.openExternal(url).catch((error) => setAppError(errorText(error)))}
+              onOpenURL={() => {
+                const item = detail()?.item;
+                if (!item) return;
+                void window.fd0.openItemURL({ scopeId: item.scopeId, name: item.recordName }).catch((error) => setAppError(errorText(error)));
+              }}
               onError={(message) => setAppError(message)}
               onRefresh={() => void loadDetail(selectedItem())}
             />
@@ -1110,6 +1114,7 @@ function DetailPanel(props: {
     if (!item) return;
     try {
       const result = await window.fd0.reveal({ scopeId: item.scopeId, name: item.recordName, path: field.path });
+      if (!result) return;
       setRevealed((current) => ({ ...current, [field.path]: result.value }));
       setTimeout(() => {
         setRevealed((current) => {
@@ -1127,9 +1132,10 @@ function DetailPanel(props: {
     const item = props.detail?.item;
     if (!item) return;
     try {
-      const value = field.sensitive
-        ? (await window.fd0.reveal({ scopeId: item.scopeId, name: item.recordName, path: field.path })).value
-        : field.value ?? (await window.fd0.reveal({ scopeId: item.scopeId, name: item.recordName, path: field.path })).value;
+      const revealed = field.sensitive || field.value === undefined
+        ? await window.fd0.reveal({ scopeId: item.scopeId, name: item.recordName, path: field.path })
+        : null;
+      const value = field.value ?? revealed?.value;
       if (!value) return;
       setActionsOpen(false);
       setLargeType({ field, value });
@@ -1287,7 +1293,7 @@ function FieldRow(props: {
             <IconButton label={`Show ${props.field.name} in large type`} onClick={() => props.onLargeType(props.field)}><IconTextSize size={17} /></IconButton>
           </Show>
           <Show when={props.field.sensitive}>
-            <IconButton label={props.revealed !== undefined ? "Hide value" : "Reveal value"} onClick={() => props.onReveal(props.field)}>
+            <IconButton label={`${props.revealed !== undefined ? "Hide" : "Reveal"} ${props.field.name}`} onClick={() => props.onReveal(props.field)}>
               {props.revealed !== undefined ? <IconEyeOff size={17} /> : <IconEye size={17} />}
             </IconButton>
           </Show>
@@ -1518,8 +1524,8 @@ function SupportPanel(props: {
         </Show>
       </div>
       <div class="support-actions">
-        <button class="secondary-button" type="button" onClick={() => void window.fd0.openExternal("https://fd0.sh/docs").catch((error) => props.onError(errorText(error)))}><IconExternalLink size={16} />Open documentation</button>
-        <button class="secondary-button" type="button" onClick={() => void window.fd0.openExternal("https://github.com/ValentinKolb/fd0.sh/issues").catch((error) => props.onError(errorText(error)))}><IconAlertTriangle size={16} />Report a problem</button>
+        <button class="secondary-button" type="button" onClick={() => void window.fd0.openSupportLink("docs").catch((error) => props.onError(errorText(error)))}><IconExternalLink size={16} />Open documentation</button>
+        <button class="secondary-button" type="button" onClick={() => void window.fd0.openSupportLink("issues").catch((error) => props.onError(errorText(error)))}><IconAlertTriangle size={16} />Report a problem</button>
       </div>
     </section>
   );
