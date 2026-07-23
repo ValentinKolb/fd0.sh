@@ -273,6 +273,8 @@ Body (plaintext) = { secrets : [* SecretRecord] }   ; current projection at this
 
 server validates:
   - oek_version == prior_oek_version_max + 1   (=1 at genesis)
+  - op = "add" never grows auth_list beyond 1000 members
+  - key_deliveries count ≤ 131072; existing over-limit scopes may only shrink
   - op = "add":    member ∉ auth_list;
                    { kd.recipient_pubkey } == auth_list ∪ {member}
   - op = "remove": member ∈ auth_list;
@@ -487,6 +489,12 @@ The recovery file is never sent to the server. The protocol does not track that 
 ### 7.1 Optimistic CAS
 
 A scope-event push is rejected with `409 divergence` if `prev_hash ≠ scope.tip_hash`. The response includes the current tip. The client pulls, applies, re-encrypts the body under the new OEK if `oek_version_max` changed, updates `prev_hash`, re-signs, and retries. Auto-retry up to N (default 3) before surfacing.
+
+Sync work is paged and aggregate-bounded. One request carries at most 64 push
+items and 256 pull scopes. A pull response carries at most 1024 events and
+48 MiB of encoded event bytes. Membership and public witness chain discovery
+use ordered cursors; clients continue until the server omits the next cursor.
+Clients may reduce push batch size after a rate-limit response.
 
 ### 7.2 Stored-event de-duplication
 

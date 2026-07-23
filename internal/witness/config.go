@@ -58,6 +58,8 @@ type Config struct {
 	Chains []string
 }
 
+const maxWitnessChains = 1_024
+
 // Validate decodes ServerPubHex into ServerPub and applies defaults.
 // Idempotent — Validate may be called multiple times safely.
 func (c *Config) Validate() error {
@@ -93,7 +95,13 @@ func (c *Config) Validate() error {
 	if len(c.Chains) == 0 && !c.AutoDiscover {
 		return errors.New("witness: at least one chain required (or set auto_discover=true)")
 	}
+	if len(c.Chains) > maxWitnessChains {
+		return fmt.Errorf("witness: at most %d explicit chains are allowed", maxWitnessChains)
+	}
 	for _, ch := range c.Chains {
+		if len(ch) > maxChainIDLen {
+			return fmt.Errorf("witness: chain_id exceeds %d bytes", maxChainIDLen)
+		}
 		if !strings.HasPrefix(ch, "user:") && !strings.HasPrefix(ch, "scope:") {
 			return fmt.Errorf("witness: chain %q must start with %q or %q", ch, "user:", "scope:")
 		}

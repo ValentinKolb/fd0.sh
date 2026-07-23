@@ -189,3 +189,9 @@ FD0_WITNESS_SERVER_URL: https://api2.example.com
 - **Per-server backups.** Each server has its own SQLite DB and its own ed25519 key. Losing the standby's data costs only its DR archive; losing the primary's disk is recoverable from the standby's `backup_*` archive via the promotion ceremony (REPLICATION.md §3).
 
 The compose examples work behind any reverse proxy that terminates TLS and forwards to the container's port. To reproduce `fd0.sh` end-to-end, follow the Stack section above with the matching distro / runtime / proxy on each host.
+
+The server uses the direct peer address for per-IP rate limits by default. If
+the reverse proxy runs on another address, set `FD0_TRUSTED_PROXY_CIDRS` to
+that proxy's exact CIDR, for example `10.20.0.5/32`. fd0 then accepts a single
+IP in `X-Forwarded-For` only from that network. Do not trust a client-facing
+network or a comma-separated forwarding chain.

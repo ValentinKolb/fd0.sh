@@ -205,7 +205,7 @@ func (s *Session) fullPullScope(ctx context.Context, wcc *WitnessCheckClient, se
 	for round := 0; round < 64; round++ {
 		body, err := buildSyncRequestBody(
 			map[string]pullCursor{scopeID: {Seq: cursorSeq, Hash: cursorHash}},
-			nil, false, pageSize,
+			nil, false, "", pageSize,
 		)
 		if err != nil {
 			return nil, nil, err
@@ -575,7 +575,7 @@ func (s *Session) pushRebuiltEvent(ctx context.Context, wcc *WitnessCheckClient,
 	}
 
 	push := []any{pushItemFor(scopeID, ev, preSize)}
-	body, err := buildSyncRequestBody(nil, push, false, 0)
+	body, err := buildSyncRequestBody(nil, push, false, "", 0)
 	if err != nil {
 		return false, err
 	}

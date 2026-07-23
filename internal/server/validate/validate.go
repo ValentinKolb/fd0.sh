@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/valentinkolb/fd0.sh/internal/crypto"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
@@ -163,6 +164,12 @@ func ScopeEvent(ev *proto.ScopeEvent, prior *ScopeMeta, priorTipHash []byte, pri
 }
 
 func validateMemberChange(sp *proto.SignedPrefix, prior *ScopeMeta) (*ScopeMeta, error) {
+	if len(prior.Members) > proto.MaxLegacyScopeMembers {
+		return nil, errors.New("member.change: prior member set exceeds protocol limit")
+	}
+	if len(sp.KeyDeliveries) > proto.MaxKeyDeliveries {
+		return nil, errors.New("member.change: too many key_deliveries")
+	}
 	if sp.OEKVersion != prior.OEKVersionMax+1 {
 		return nil, fmt.Errorf("member.change: oek_version=%d, want %d", sp.OEKVersion, prior.OEKVersionMax+1)
 	}
@@ -178,6 +185,9 @@ func validateMemberChange(sp *proto.SignedPrefix, prior *ScopeMeta) (*ScopeMeta,
 		if memberContains(prior.Members, sp.Payload.Member) {
 			return nil, errors.New("member.change add: target already a member")
 		}
+		if len(prior.Members) >= proto.MaxScopeMembers {
+			return nil, errors.New("member.change add: scope member limit reached")
+		}
 	case proto.OpRemove:
 		if !memberContains(prior.Members, sp.Payload.Member) {
 			return nil, errors.New("member.change remove: target not a member")
@@ -186,6 +196,9 @@ func validateMemberChange(sp *proto.SignedPrefix, prior *ScopeMeta) (*ScopeMeta,
 		return nil, fmt.Errorf("member.change: bad op %q", sp.Payload.Op)
 	}
 	post := mutateMembers(prior.Members, sp.Payload.Member, sp.Payload.Op)
+	if len(sp.KeyDeliveries) != len(post) {
+		return nil, errors.New("member.change: key_deliveries don't match post-mutation set")
+	}
 	// key_deliveries set must equal X25519(post).
 	wantX := make([][]byte, 0, len(post))
 	for _, m := range post {
@@ -278,10 +291,6 @@ func equalSet(a, b [][]byte) bool {
 }
 
 func sortBytes(s [][]byte) [][]byte {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && bytes.Compare(s[j-1], s[j]) > 0; j-- {
-			s[j-1], s[j] = s[j], s[j-1]
-		}
-	}
+	sort.Slice(s, func(i, j int) bool { return bytes.Compare(s[i], s[j]) < 0 })
 	return s
 }

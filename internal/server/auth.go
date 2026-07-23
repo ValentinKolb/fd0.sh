@@ -40,8 +40,9 @@ type AuthResult struct {
 // consumed. Use the returned Body bytes.
 //
 // THREAT: T22 (per-request HTTP replay — nonce + ts window),
-//         T44 (authenticate as someone else — sig over signed input),
-//         T48 (per-IP brute-force / DoS — rate-limit).
+//
+//	T44 (authenticate as someone else — sig over signed input),
+//	T48 (per-IP brute-force / DoS — rate-limit).
 func (s *Server) verifyHTTPSig(ctx context.Context, r *http.Request) (*AuthResult, int, error) {
 	// SECURITY (codex security audit 🔴 auth.go:70/98/115): per-IP
 	// pre-auth rate limit. Without this, a key-rotating attacker
@@ -50,7 +51,7 @@ func (s *Server) verifyHTTPSig(ctx context.Context, r *http.Request) (*AuthResul
 	// which they bypass by definition of key rotation. The cheap
 	// per-IP token bucket fires BEFORE any expensive work.
 	if s.rl != nil {
-		if d := s.rl.AcquireAuthAttempt(clientIP(r)); !d.Allow {
+		if d := s.rl.AcquireAuthAttempt(s.clientIP(r)); !d.Allow {
 			return nil, http.StatusTooManyRequests, rateLimitedError{retry: d.Retry}
 		}
 	}
@@ -143,7 +144,7 @@ func (s *Server) verifyHTTPSig(ctx context.Context, r *http.Request) (*AuthResul
 // Retry-After header without sniffing the message string.
 type rateLimitedError struct{ retry time.Duration }
 
-func (e rateLimitedError) Error() string { return "rate_limited" }
+func (e rateLimitedError) Error() string             { return "rate_limited" }
 func (e rateLimitedError) RetryAfter() time.Duration { return e.retry }
 
 // readBody reads the request body without verifying a signature. Used by the
@@ -183,4 +184,3 @@ func absDelta(a, b int64) int64 {
 	}
 	return d
 }
-

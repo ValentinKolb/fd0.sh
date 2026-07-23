@@ -137,6 +137,8 @@ Request:
         scopes               : { * tstr => { cursor: { seq: uint, hash: bstr .size 32 / nil } } },
         limit_per_scope      : uint,             ; default 100, max 1000
         discover_memberships : bool,             ; optional, default false
+        membership_after     : tstr,             ; optional pagination cursor
+        membership_limit     : uint,             ; optional, default/max 256
     },
     push : [* { scope: tstr, event: ScopeEvent }],
 }
@@ -153,6 +155,7 @@ Request:
         admit_event  : tstr,                 ; event_id of the member.change op="add" of self
         oek_version  : uint,
     }],
+    memberships_next_after : tstr,           ; present when another page exists
     push : [* PushResult],
 }
 
@@ -162,6 +165,22 @@ PushResult =
 ```
 
 `pull` returns events contiguous from `cursor.seq + 1`. Clients verify the chain link to their stored `cursor.hash` before advancing the cursor.
+
+A sync request accepts at most 256 pull scopes and 64 push items. Pull
+responses return at most 1024 events and 48 MiB of encoded event bytes in
+aggregate; when several scopes are requested, the server lowers the effective
+per-scope page size and serves lower cursors first. Clients repeat membership
+discovery with `memberships_next_after`, bound pages per invocation, and persist
+the continuation cursor per server so later syncs retain complete coverage.
+Push rate accounting charges every submitted item, not only the enclosing
+request.
+
+Pagination-capable clients send a non-zero `membership_limit` (fd0 uses 32).
+For compatibility, a request that omits the field still receives a complete
+single page when the user has at most 256 memberships. If more rows exist, the
+server returns `426 membership_pagination_required` instead of silently hiding
+later scopes; upgrading the client resumes discovery without changing stored
+scope data.
 
 **Push cardinality invariant.** For every `/v1/sync` request, `len(response.push)` MUST equal `len(request.push)` — exactly one `PushResult` per submitted push item, in order, on a `200` response (including push-only requests with an empty `pull`). If the server cannot process a push item it MUST return a `PushResult` with `accepted: false` and a `reason`, never omit it. Clients rely on this 1:1 mapping to disposition each pushed event; a count mismatch on a `200` is a protocol violation and clients reject it. Non-`2xx` responses (e.g. `429` rate-limit) carry no `push` array at all — clients MUST check the HTTP status before decoding rather than treating a missing array as zero results.
 
@@ -225,6 +244,24 @@ fd0_http_requests_total{service="fd0-server",op="POST /v1/sync",status_class="2x
 
 Set `Authorization: Bearer <token>` when the env is configured. Unauthorised requests return `404 Not Found` — the endpoint never confirms its own existence to anonymous scrapers.
 
+### 2.8 `GET /v1/chains`
+
+Unauthenticated, bounded witness discovery.
+
+```
+GET /v1/chains?after=<chain_id>&limit=256
+
+200 OK:
+{
+    "chains":     [* tstr],
+    "next_after": tstr        ; absent on the final page
+}
+```
+
+`limit` defaults to 1024 and is capped at 1024. Results are ordered by
+`chain_id`. Witnesses continue with `next_after`; explicit configured chains
+remain active independently of discovery pagination.
+
 ---
 
 ## 3. Status codes
@@ -239,5 +276,6 @@ Set `Authorization: Bearer <token>` when the env is configured. Unauthorised req
 | 404  | User or scope not found                                |
 | 409  | Divergence, duplicate, or version conflict             |
 | 413  | Payload exceeds limit (`STORAGE.md` §9)                |
+| 426  | Client upgrade required for paginated membership discovery |
 | 429  | Rate limit exceeded (`STORAGE.md` §9)                  |
 | 500  | Server error                                           |

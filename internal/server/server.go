@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -84,6 +86,11 @@ type Config struct {
 	// ReplicateInterval controls how often the standby pulls from the
 	// primary. Zero = default (30s). Set short in tests.
 	ReplicateInterval time.Duration
+
+	// TrustedProxyCIDRs lists reverse proxies allowed to supply one
+	// X-Forwarded-For client IP for rate limiting. Empty means headers are
+	// ignored and RemoteAddr is authoritative.
+	TrustedProxyCIDRs []string
 }
 
 // Observer hooks the server emits on every domain operation. Implementations
@@ -114,15 +121,16 @@ func (NoopObserver) OnEventsPulled(string, int)   {}
 
 // Server is the HTTP service. New constructs it; ServeHTTP routes requests.
 type Server struct {
-	cfg       Config
-	store     *store.Store
-	mux       *http.ServeMux
-	log       *slog.Logger
-	rl        *ratelimit.Limiter // nil when disabled
-	rlStop    context.CancelFunc // cancels the limiter's GC goroutine on Close
-	pruneStop context.CancelFunc // cancels the noncePruner goroutine on Close
-	peerStop  context.CancelFunc // cancels the peer resolver goroutine on Close
-	replStop  context.CancelFunc // cancels the replication loop on Close
+	cfg            Config
+	store          *store.Store
+	mux            *http.ServeMux
+	log            *slog.Logger
+	rl             *ratelimit.Limiter // nil when disabled
+	rlStop         context.CancelFunc // cancels the limiter's GC goroutine on Close
+	pruneStop      context.CancelFunc // cancels the noncePruner goroutine on Close
+	peerStop       context.CancelFunc // cancels the peer resolver goroutine on Close
+	replStop       context.CancelFunc // cancels the replication loop on Close
+	trustedProxies []*net.IPNet
 }
 
 // Store exposes the underlying *store.Store for tests and tooling
@@ -160,6 +168,14 @@ func New(cfg Config) (*Server, error) {
 	if cfg.PeerResolveInterval == 0 {
 		cfg.PeerResolveInterval = 1 * time.Hour
 	}
+	var trustedProxies []*net.IPNet
+	for _, raw := range cfg.TrustedProxyCIDRs {
+		_, network, err := net.ParseCIDR(strings.TrimSpace(raw))
+		if err != nil {
+			return nil, fmt.Errorf("FD0_TRUSTED_PROXY_CIDRS %q: %w", raw, err)
+		}
+		trustedProxies = append(trustedProxies, network)
+	}
 
 	st, err := store.Open(cfg.DBPath)
 	if err != nil {
@@ -190,7 +206,13 @@ func New(cfg Config) (*Server, error) {
 		_ = st.Close()
 		return nil, err
 	}
-	s := &Server{cfg: cfg, store: st, mux: http.NewServeMux(), log: cfg.Logger}
+	s := &Server{
+		cfg:            cfg,
+		store:          st,
+		mux:            http.NewServeMux(),
+		log:            cfg.Logger,
+		trustedProxies: trustedProxies,
+	}
 	if !cfg.RateLimitDisabled {
 		var rlCtx context.Context
 		rlCtx, s.rlStop = context.WithCancel(context.Background())
@@ -356,20 +378,35 @@ func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 // the chains-to-poll set straight from the server without operator-side
 // configuration.
 //
-// Response: CBOR `{"chains": ["user:<id>", "scope:<id>", ...]}`.
+// Response: CBOR `{"chains": [...], "next_after": "..."}`.
 func (s *Server) handleChains(w http.ResponseWriter, r *http.Request) {
 	if s.rl != nil {
-		if d := s.rl.AcquireProof(clientIP(r)); !d.Allow {
+		if d := s.rl.AcquireProof(s.clientIP(r)); !d.Allow {
 			s.writeRateLimited(w, d.Retry)
 			return
 		}
 	}
-	ids, err := s.store.ListChainIDs(r.Context())
+	limit, err := strconv.Atoi(r.URL.Query().Get("limit"))
+	if err != nil && r.URL.Query().Get("limit") != "" {
+		writeErr(w, http.StatusBadRequest, "bad_limit", err.Error())
+		return
+	}
+	ids, nextAfter, err := s.store.ListChainIDsPage(
+		r.Context(),
+		r.URL.Query().Get("after"),
+		limit,
+	)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	writeCBOR(w, http.StatusOK, map[string]any{"chains": ids})
+	writeCBOR(w, http.StatusOK, struct {
+		Chains    []string `cbor:"chains"`
+		NextAfter string   `cbor:"next_after,omitempty"`
+	}{
+		Chains:    ids,
+		NextAfter: nextAfter,
+	})
 }
 
 // GET /v1/sth/{chainId} — current STH for chainId.
@@ -383,7 +420,7 @@ func (s *Server) handleChains(w http.ResponseWriter, r *http.Request) {
 // future namespaces).
 func (s *Server) handleSTH(w http.ResponseWriter, r *http.Request) {
 	if s.rl != nil {
-		if d := s.rl.AcquireProof(clientIP(r)); !d.Allow {
+		if d := s.rl.AcquireProof(s.clientIP(r)); !d.Allow {
 			s.writeRateLimited(w, d.Retry)
 			return
 		}
@@ -411,7 +448,7 @@ func (s *Server) handleSTH(w http.ResponseWriter, r *http.Request) {
 // server's current size; leaf_index MUST be < tree_size.
 func (s *Server) handleInclusionProof(w http.ResponseWriter, r *http.Request) {
 	if s.rl != nil {
-		if d := s.rl.AcquireProof(clientIP(r)); !d.Allow {
+		if d := s.rl.AcquireProof(s.clientIP(r)); !d.Allow {
 			s.writeRateLimited(w, d.Retry)
 			return
 		}
@@ -459,7 +496,7 @@ func (s *Server) handleInclusionProof(w http.ResponseWriter, r *http.Request) {
 // with empty); from_size == to_size returns an empty proof.
 func (s *Server) handleConsistencyProof(w http.ResponseWriter, r *http.Request) {
 	if s.rl != nil {
-		if d := s.rl.AcquireProof(clientIP(r)); !d.Allow {
+		if d := s.rl.AcquireProof(s.clientIP(r)); !d.Allow {
 			s.writeRateLimited(w, d.Retry)
 			return
 		}
@@ -513,7 +550,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	defer func() { s.cfg.Observer.OnRegister(result) }()
 
 	if s.rl != nil {
-		ip := clientIP(r)
+		ip := s.clientIP(r)
 		if d := s.rl.AcquireRegister(ip); !d.Allow {
 			result = "ratelimit"
 			s.writeRateLimited(w, d.Retry)
@@ -924,6 +961,8 @@ type syncPull struct {
 	Scopes              map[string]syncCursor `cbor:"scopes"`
 	LimitPerScope       uint64                `cbor:"limit_per_scope"`
 	DiscoverMemberships bool                  `cbor:"discover_memberships"`
+	MembershipAfter     string                `cbor:"membership_after,omitempty"`
+	MembershipLimit     uint64                `cbor:"membership_limit,omitempty"`
 }
 type syncCursor struct {
 	Cursor cursorPos `cbor:"cursor"`
@@ -952,9 +991,10 @@ type pushItem struct {
 
 // SyncResp is the response shape.
 type SyncResp struct {
-	Pull        map[string]pullScope `cbor:"pull"`
-	Memberships []membership         `cbor:"memberships,omitempty"`
-	Push        []pushResult         `cbor:"push"`
+	Pull                 map[string]pullScope `cbor:"pull"`
+	Memberships          []membership         `cbor:"memberships,omitempty"`
+	MembershipsNextAfter string               `cbor:"memberships_next_after,omitempty"`
+	Push                 []pushResult         `cbor:"push"`
 }
 type pullScope struct {
 	Tip           tipPos             `cbor:"tip"`
@@ -1023,10 +1063,12 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 	// SECURITY (codex audit 🟡 server.go:720+756): cap the per-
 	// request work so one signed body cannot trigger unbounded
 	// DB / proof lookups under one rate-limit token. 256 scopes
-	// + 1024 push items per request is an order-of-magnitude
+	// + 64 push items per request is an order-of-magnitude
 	// above any realistic v1 client and well below DoS thresholds.
 	const maxPullScopes = 256
-	const maxPushItems = 1024
+	const maxPushItems = 64
+	const maxPullEvents = 1024
+	const maxPullEventBytes = 48 << 20
 	if len(req.Pull.Scopes) > maxPullScopes {
 		writeErr(w, http.StatusRequestEntityTooLarge, "too_many_pull_scopes",
 			fmt.Sprintf("%d > %d", len(req.Pull.Scopes), maxPullScopes))
@@ -1037,21 +1079,54 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("%d > %d", len(req.Push), maxPushItems))
 		return
 	}
-	resp := SyncResp{Pull: map[string]pullScope{}}
-	limit := int(req.Pull.LimitPerScope)
-	if limit <= 0 || limit > 1000 {
-		limit = 100
+	if s.rl != nil && len(req.Push) > 1 {
+		ident := base64.StdEncoding.EncodeToString(auth.Pub)
+		if d := s.rl.AcquireWrites(ident, len(req.Push)-1); !d.Allow {
+			s.writeRateLimited(w, d.Retry)
+			return
+		}
 	}
+	resp := SyncResp{Pull: map[string]pullScope{}}
+	limit := boundedPullLimit(int(req.Pull.LimitPerScope), len(req.Pull.Scopes), maxPullEvents)
 	// Pull. Caller must be in the scope's auth_list to receive any events.
 	// Three response states per scope:
 	//   served (Events filled)                 → normal apply
 	//   denied=true                            → caller no longer authorised
 	//   absent from resp.Pull                  → server doesn't have the scope yet
-	for sid, cur := range req.Pull.Scopes {
+	scopeIDs := make([]string, 0, len(req.Pull.Scopes))
+	for sid := range req.Pull.Scopes {
+		scopeIDs = append(scopeIDs, sid)
+	}
+	sort.Slice(scopeIDs, func(i, j int) bool {
+		left := req.Pull.Scopes[scopeIDs[i]].Cursor.Seq
+		right := req.Pull.Scopes[scopeIDs[j]].Cursor.Seq
+		if left != right {
+			return left < right
+		}
+		return scopeIDs[i] < scopeIDs[j]
+	})
+	remainingPullBytes := maxPullEventBytes
+	for _, sid := range scopeIDs {
+		cur := req.Pull.Scopes[sid]
 		fresh := len(cur.Cursor.Hash) == 0 && cur.Cursor.Seq == 0
-		ps, err := s.pullScope(r.Context(), sid, cur.Cursor.Seq, limit, auth.Pub, fresh, cur.LastSTHSize)
+		ps, usedBytes, err := s.pullScope(
+			r.Context(),
+			sid,
+			cur.Cursor.Seq,
+			limit,
+			remainingPullBytes,
+			maxPullEventBytes,
+			auth.Pub,
+			fresh,
+			cur.LastSTHSize,
+		)
 		if err != nil {
 			switch {
+			case errors.Is(err, errPullBudget):
+				continue
+			case errors.Is(err, errPullEventTooLarge):
+				writeErr(w, http.StatusRequestEntityTooLarge, "stored_event_too_large", err.Error())
+				return
 			case errors.Is(err, errNotMember):
 				resp.Pull[sid] = pullScope{Denied: true}
 			case errors.Is(err, store.ErrNotFound):
@@ -1073,15 +1148,33 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 			}
 			continue
 		}
+		remainingPullBytes -= usedBytes
 		resp.Pull[sid] = ps
 		s.cfg.Observer.OnEventsPulled("scope", len(ps.Events))
 	}
 	// Discover.
 	if req.Pull.DiscoverMemberships {
-		ms, err := s.discoverMemberships(r.Context(), auth.Pub)
-		if err == nil {
-			resp.Memberships = ms
+		ms, nextAfter, err := s.discoverMemberships(
+			r.Context(),
+			auth.Pub,
+			req.Pull.MembershipAfter,
+			int(req.Pull.MembershipLimit),
+		)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+			return
 		}
+		if membershipPaginationRequired(req.Pull.MembershipLimit, nextAfter) {
+			writeErr(
+				w,
+				http.StatusUpgradeRequired,
+				"membership_pagination_required",
+				"upgrade fd0 to discover more than 256 scopes",
+			)
+			return
+		}
+		resp.Memberships = ms
+		resp.MembershipsNextAfter = nextAfter
 	}
 	// Push.
 	for _, p := range req.Push {
@@ -1104,15 +1197,25 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 	writeCBOR(w, http.StatusOK, resp)
 }
 
-func (s *Server) pullScope(ctx context.Context, scopeID string, since uint64, limit int, callerPub []byte, fresh bool, lastSTHSize uint64) (pullScope, error) {
+func (s *Server) pullScope(
+	ctx context.Context,
+	scopeID string,
+	since uint64,
+	limit int,
+	byteBudget int,
+	maxEventBytes int,
+	callerPub []byte,
+	fresh bool,
+	lastSTHSize uint64,
+) (pullScope, int, error) {
 	chainID := store.ChainID(store.KindScope, scopeID)
 	c, err := s.store.GetChain(ctx, chainID)
 	if err != nil {
-		return pullScope{}, err
+		return pullScope{}, 0, err
 	}
 	var meta validate.ScopeMeta
 	if err := proto.Unmarshal(c.Metadata, &meta); err != nil {
-		return pullScope{}, err
+		return pullScope{}, 0, err
 	}
 	isMember := false
 	for _, m := range meta.Members {
@@ -1122,11 +1225,24 @@ func (s *Server) pullScope(ctx context.Context, scopeID string, since uint64, li
 		}
 	}
 	if !isMember {
-		return pullScope{}, errNotMember
+		return pullScope{}, 0, errNotMember
 	}
-	rows, err := s.store.EventsSinceInclusive(ctx, chainID, since, limit, fresh)
+	rows, usedBytes, nextBytes, err := s.store.EventsSinceInclusiveBudget(
+		ctx,
+		chainID,
+		since,
+		limit,
+		fresh,
+		byteBudget,
+	)
 	if err != nil {
-		return pullScope{}, err
+		return pullScope{}, 0, err
+	}
+	if nextBytes > maxEventBytes {
+		return pullScope{}, 0, errPullEventTooLarge
+	}
+	if len(rows) == 0 && nextBytes > 0 {
+		return pullScope{}, 0, errPullBudget
 	}
 	out := pullScope{
 		Tip:           tipPos{Seq: c.TipSeq, Hash: c.TipHash},
@@ -1137,7 +1253,7 @@ func (s *Server) pullScope(ctx context.Context, scopeID string, since uint64, li
 	for _, e := range rows {
 		var d proto.ScopeEvent
 		if err := proto.Unmarshal(e.CBOR, &d); err != nil {
-			return pullScope{}, err
+			return pullScope{}, 0, err
 		}
 		out.Events = append(out.Events, d)
 		// In our scheme, leaf_index == event.Seq (events are appended
@@ -1152,20 +1268,24 @@ func (s *Server) pullScope(ctx context.Context, scopeID string, since uint64, li
 	// the response (per TRANSLOG.md §5.4: STH MANDATORY when not denied).
 	sth, incs, cons, perr := s.store.ProofsForChain(ctx, chainID, leafIndices, lastSTHSize)
 	if perr != nil {
-		return pullScope{}, perr
+		return pullScope{}, 0, perr
 	}
 	out.STH = sth
 	if len(incs) > 0 {
 		out.InclusionProofs = incs
 	}
 	out.ConsistencyProof = cons
-	return out, nil
+	return out, usedBytes, nil
 }
 
-func (s *Server) discoverMemberships(ctx context.Context, pk []byte) ([]membership, error) {
-	scopes, err := s.store.ScopesForMember(ctx, pk)
+func membershipPaginationRequired(requestedLimit uint64, nextAfter string) bool {
+	return requestedLimit == 0 && nextAfter != ""
+}
+
+func (s *Server) discoverMemberships(ctx context.Context, pk []byte, after string, limit int) ([]membership, string, error) {
+	scopes, nextAfter, err := s.store.ScopesForMemberPage(ctx, pk, after, limit)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	var out []membership
 	for _, c := range scopes {
@@ -1193,7 +1313,7 @@ func (s *Server) discoverMemberships(ctx context.Context, pk []byte) ([]membersh
 			OEKVersion: meta.OEKVersionMax,
 		})
 	}
-	return out, nil
+	return out, nextAfter, nil
 }
 
 func (s *Server) applyPush(ctx context.Context, authorPub []byte, p pushItem) pushResult {
@@ -1435,7 +1555,11 @@ func writeErr(w http.ResponseWriter, code int, reason, detail string) {
 	writeCBOR(w, code, map[string]string{"reason": reason, "detail": detail})
 }
 
-var errNotMember = errors.New("not a member")
+var (
+	errNotMember         = errors.New("not a member")
+	errPullBudget        = errors.New("pull response byte budget exhausted")
+	errPullEventTooLarge = errors.New("stored event exceeds pull response byte budget")
+)
 
 // eventExists is a tiny shortcut against the events table. Used by applyPush
 // for early dup detection (cheaper than running the full validator against
@@ -1457,15 +1581,47 @@ func (s *Server) writeRateLimited(w http.ResponseWriter, retry time.Duration) {
 }
 
 // clientIP extracts the caller IP for per-IP rate limiting. We deliberately
-// do NOT honour X-Forwarded-For: in the v1 deployment topology fd0-server is
-// reached directly. If you put it behind a trusted proxy, terminate the
-// proxy header there and pass through.
-func clientIP(r *http.Request) string {
+func boundedPullLimit(requested, scopeCount, aggregateLimit int) int {
+	if requested <= 0 || requested > 1000 {
+		requested = 100
+	}
+	if scopeCount <= 0 || aggregateLimit <= 0 {
+		return requested
+	}
+	if perScope := aggregateLimit / scopeCount; perScope < requested {
+		return perScope
+	}
+	return requested
+}
+
+// clientIP trusts X-Forwarded-For only from an explicitly configured reverse
+// proxy and only when it contains one valid IP. This keeps rate-limit identity
+// under operator control instead of accepting a client-spoofable header.
+func (s *Server) clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		host = r.RemoteAddr
 	}
-	return host
+	remoteIP := net.ParseIP(host)
+	trusted := false
+	for _, network := range s.trustedProxies {
+		if remoteIP != nil && network.Contains(remoteIP) {
+			trusted = true
+			break
+		}
+	}
+	if !trusted {
+		return host
+	}
+	values := r.Header.Values("X-Forwarded-For")
+	if len(values) != 1 || strings.Contains(values[0], ",") {
+		return host
+	}
+	forwarded := strings.TrimSpace(values[0])
+	if net.ParseIP(forwarded) == nil {
+		return host
+	}
+	return forwarded
 }
 
 func equalBytes(a, b []byte) bool {

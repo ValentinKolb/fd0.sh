@@ -33,7 +33,13 @@ var errScopePullDiverged = errors.New("scope pull diverged")
 // Each scope entry's LastSTHSize and each push item's LastSTHSize ride
 // on the wire as `last_sth_size` (CBOR omitempty when 0). The server
 // echoes consistency proofs only when these are > 0.
-func buildSyncRequestBody(scopes map[string]pullCursor, push []any, discover bool, limit uint64) ([]byte, error) {
+func buildSyncRequestBody(
+	scopes map[string]pullCursor,
+	push []any,
+	discover bool,
+	membershipAfter string,
+	limit uint64,
+) ([]byte, error) {
 	pulls := make(map[string]any, len(scopes))
 	for sid, c := range scopes {
 		entry := map[string]any{
@@ -47,13 +53,33 @@ func buildSyncRequestBody(scopes map[string]pullCursor, push []any, discover boo
 	if push == nil {
 		push = []any{}
 	}
+	pull := map[string]any{
+		"scopes":               pulls,
+		"limit_per_scope":      limit,
+		"discover_memberships": discover,
+	}
+	if membershipAfter != "" {
+		pull["membership_after"] = membershipAfter
+	}
+	if discover {
+		pull["membership_limit"] = uint64(membershipPageSize)
+	}
+	return proto.Marshal(map[string]any{
+		"pull": pull,
+		"push": push,
+	})
+}
+
+func buildMembershipDiscoveryRequest(after string) ([]byte, error) {
 	return proto.Marshal(map[string]any{
 		"pull": map[string]any{
-			"scopes":               pulls,
-			"limit_per_scope":      limit,
-			"discover_memberships": discover,
+			"scopes":               map[string]any{},
+			"limit_per_scope":      uint64(0),
+			"discover_memberships": true,
+			"membership_after":     after,
+			"membership_limit":     uint64(membershipPageSize),
 		},
-		"push": push,
+		"push": []any{},
 	})
 }
 

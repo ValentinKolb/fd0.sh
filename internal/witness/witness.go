@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/valentinkolb/fd0.sh/internal/httpguard"
@@ -56,20 +57,21 @@ type Observer interface {
 // need to nil-check; safe to plug in tests.
 type NoopObserver struct{}
 
-func (NoopObserver) OnPoll(string, string, string)                {}
-func (NoopObserver) OnCosign(string, string)                      {}
-func (NoopObserver) OnEquivocation(string, string)                {}
-func (NoopObserver) OnConsistencyFailure(string, string)          {}
-func (NoopObserver) OnTreeSize(string, string, uint64)            {}
+func (NoopObserver) OnPoll(string, string, string)       {}
+func (NoopObserver) OnCosign(string, string)             {}
+func (NoopObserver) OnEquivocation(string, string)       {}
+func (NoopObserver) OnConsistencyFailure(string, string) {}
+func (NoopObserver) OnTreeSize(string, string, uint64)   {}
 
 type Witness struct {
-	Store      *Store
-	HTTP       *http.Client
-	Log        *slog.Logger
-	Now        func() time.Time // injectable for tests
-	Config     Config
-	CosignPriv ed25519.PrivateKey
-	Observer   Observer
+	Store          *Store
+	HTTP           *http.Client
+	Log            *slog.Logger
+	Now            func() time.Time // injectable for tests
+	Config         Config
+	CosignPriv     ed25519.PrivateKey
+	Observer       Observer
+	discoveryAfter string
 }
 
 // New constructs a Witness with sensible defaults. cfg drives the
@@ -79,7 +81,7 @@ func New(store *Store, cfg Config, log *slog.Logger) *Witness {
 		log = slog.Default()
 	}
 	return &Witness{
-		Store:    store,
+		Store: store,
 		HTTP: &http.Client{
 			CheckRedirect: httpguard.RejectRedirect,
 			Timeout:       30 * time.Second,
@@ -184,14 +186,8 @@ func (w *Witness) effectiveChains(ctx context.Context) []string {
 	if !t.AutoDiscover {
 		return t.Chains
 	}
-	discovered, err := w.fetchChains(ctx, w.Config.ServerURL)
-	if err != nil {
-		w.Log.Warn("witness: chain discovery failed — falling back to static config",
-			"server", w.Config.ServerURL, "err", err)
-		return t.Chains
-	}
-	seen := make(map[string]struct{}, len(t.Chains)+len(discovered))
-	out := make([]string, 0, len(t.Chains)+len(discovered))
+	seen := make(map[string]struct{}, len(t.Chains))
+	out := make([]string, 0, maxWitnessChains)
 	for _, c := range t.Chains {
 		if _, ok := seen[c]; ok {
 			continue
@@ -199,6 +195,22 @@ func (w *Witness) effectiveChains(ctx context.Context) []string {
 		seen[c] = struct{}{}
 		out = append(out, c)
 	}
+	remaining := maxWitnessChains - len(out)
+	if remaining == 0 {
+		return out
+	}
+	discovered, nextAfter, err := w.fetchChains(
+		ctx,
+		w.Config.ServerURL,
+		w.discoveryAfter,
+		remaining,
+	)
+	if err != nil {
+		w.Log.Warn("witness: chain discovery failed — falling back to static config",
+			"server", w.Config.ServerURL, "err", err)
+		return out
+	}
+	w.discoveryAfter = nextAfter
 	for _, c := range discovered {
 		if _, ok := seen[c]; ok {
 			continue
@@ -257,17 +269,17 @@ func (w *Witness) smallestInterval() time.Duration {
 //     (server, chain):
 //     - If no prior STH: archive, log "first STH".
 //     - If new tree_size < prior: REGRESSION — log ERROR, archive
-//       (so the older + newer rows coexist as evidence of the
-//       server going backwards).
+//     (so the older + newer rows coexist as evidence of the
+//     server going backwards).
 //     - If new tree_size == prior + same root: idempotent re-poll,
-//       silently no-op.
+//     silently no-op.
 //     - If new tree_size == prior + DIFFERENT root: same-size
-//       fork — log ERROR, archive (Store.Insert sets
-//       EquivocationDetected).
+//     fork — log ERROR, archive (Store.Insert sets
+//     EquivocationDetected).
 //     - If new tree_size > prior: fetch /v1/proof/consistency from
-//       prior to new, verify against the pure-layer
-//       translog.VerifyConsistency. On failure log ERROR and
-//       archive both.
+//     prior to new, verify against the pure-layer
+//     translog.VerifyConsistency. On failure log ERROR and
+//     archive both.
 //
 // All log emissions go through w.Log so an operator running
 // `fd0-witness run | tee /var/log/fd0-witness.log` gets a clean
@@ -548,30 +560,63 @@ func (w *Witness) fetchSTH(ctx context.Context, serverURL, chainID string) (tran
 // individually (they get authenticated implicitly when the witness
 // tries to fetch an STH for one — a MITM-injected fake chain ID just
 // produces a 404 or an unverifiable STH and gets logged + skipped).
-func (w *Witness) fetchChains(ctx context.Context, serverURL string) ([]string, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", serverURL+"/v1/chains", nil)
+func (w *Witness) fetchChains(ctx context.Context, serverURL, after string, limit int) ([]string, string, error) {
+	endpoint, err := url.Parse(serverURL + "/v1/chains")
 	if err != nil {
-		return nil, err
+		return nil, "", err
+	}
+	query := endpoint.Query()
+	if after != "" {
+		query.Set("after", after)
+	}
+	query.Set("limit", fmt.Sprintf("%d", limit))
+	endpoint.RawQuery = query.Encode()
+	req, err := http.NewRequestWithContext(ctx, "GET", endpoint.String(), nil)
+	if err != nil {
+		return nil, "", err
 	}
 	resp, err := w.HTTP.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET /v1/chains: %s", resp.Status)
+		return nil, "", fmt.Errorf("GET /v1/chains: %s", resp.Status)
 	}
 	body, err := httpguard.ReadBody(resp.Body, maxTranslogResponseBytes)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	var payload struct {
-		Chains []string `cbor:"chains"`
+		Chains    []string `cbor:"chains"`
+		NextAfter string   `cbor:"next_after,omitempty"`
 	}
 	if err := proto.Unmarshal(body, &payload); err != nil {
-		return nil, fmt.Errorf("decode /v1/chains: %w", err)
+		return nil, "", fmt.Errorf("decode /v1/chains: %w", err)
 	}
-	return payload.Chains, nil
+	if len(payload.Chains) > limit {
+		return nil, "", fmt.Errorf("chain discovery returned %d chains, limit is %d", len(payload.Chains), limit)
+	}
+	previous := after
+	for _, chainID := range payload.Chains {
+		if len(chainID) > maxChainIDLen {
+			return nil, "", fmt.Errorf("discovered chain_id exceeds %d bytes", maxChainIDLen)
+		}
+		if !strings.HasPrefix(chainID, "user:") && !strings.HasPrefix(chainID, "scope:") {
+			return nil, "", fmt.Errorf("discovered invalid chain_id %q", chainID)
+		}
+		if chainID <= previous {
+			return nil, "", errors.New("chain discovery page is not strictly ordered")
+		}
+		previous = chainID
+	}
+	if payload.NextAfter != "" && payload.NextAfter != previous {
+		return nil, "", errors.New("chain discovery cursor does not match the page tail")
+	}
+	if payload.NextAfter == after && payload.NextAfter != "" {
+		return nil, "", errors.New("chain discovery pagination did not advance")
+	}
+	return payload.Chains, payload.NextAfter, nil
 }
 
 // fetchConsistencyProof issues GET /v1/proof/consistency.
@@ -605,76 +650,79 @@ func (w *Witness) fetchConsistencyProof(ctx context.Context, serverURL, chainID 
 // signature + scans for equivocations. Used by `fd0-witness verify`.
 // Returns the count of (errors, equivocations).
 func (w *Witness) VerifyArchive(ctx context.Context) (errs, equivs int, err error) {
-	sums, err := w.Store.Summary(ctx)
-	if err != nil {
-		return 0, 0, err
-	}
-	for _, sr := range sums {
-		pub, perr := w.Store.PinnedPub(ctx, sr.ServerURL)
-		if perr != nil {
-			w.Log.Error("witness verify: missing pin", "server", sr.ServerURL, "err", perr)
-			errs++
-			continue
+	afterServer := ""
+	afterChain := ""
+	for {
+		sums, nextServer, nextChain, pageErr := w.Store.SummaryPage(ctx, afterServer, afterChain, 256)
+		if pageErr != nil {
+			return errs, equivs, pageErr
 		}
-		// Walk every STH for this (server, chain) and re-verify sig.
-		rows, qerr := w.Store.db.QueryContext(ctx,
-			`SELECT tree_size, root_hash, timestamp, signature
-			   FROM witness_sths
-			  WHERE server_url = ? AND chain_id = ?
-			  ORDER BY tree_size`,
-			sr.ServerURL, sr.ChainID,
-		)
-		if qerr != nil {
-			return errs, equivs, qerr
-		}
-		// Codex linter (sqlclosecheck): defer Close so any
-		// early-return path doesn't leak the rows iterator.
-		defer rows.Close() //nolint:sqlclosecheck // explicit Close below for hot path
-		for rows.Next() {
-			var (
-				size int64
-				root []byte
-				ts   int64
-				sig  []byte
-			)
-			if scerr := rows.Scan(&size, &root, &ts, &sig); scerr != nil {
-				return errs, equivs, scerr
-			}
-			sth := translog.STH{
-				Head: translog.TreeHead{
-					ChainID: sr.ChainID, TreeSize: uint64(size),
-					RootHash: root, Timestamp: uint64(ts),
-				},
-				Signature: sig,
-			}
-			if verr := translog.VerifySTH(pub, sth); verr != nil {
-				w.Log.Error("witness verify: BAD STH SIGNATURE",
-					"server", sr.ServerURL, "chain", sr.ChainID,
-					"tree_size", size, "err", verr)
+		for _, sr := range sums {
+			pub, perr := w.Store.PinnedPub(ctx, sr.ServerURL)
+			if perr != nil {
+				w.Log.Error("witness verify: missing pin", "server", sr.ServerURL, "err", perr)
 				errs++
+				continue
+			}
+			rows, qerr := w.Store.db.QueryContext(ctx,
+				`SELECT tree_size, root_hash, timestamp, signature
+				   FROM witness_sths
+				  WHERE server_url = ? AND chain_id = ?
+				  ORDER BY tree_size`,
+				sr.ServerURL, sr.ChainID,
+			)
+			if qerr != nil {
+				return errs, equivs, qerr
+			}
+			for rows.Next() {
+				var (
+					size int64
+					root []byte
+					ts   int64
+					sig  []byte
+				)
+				if scerr := rows.Scan(&size, &root, &ts, &sig); scerr != nil {
+					rows.Close()
+					return errs, equivs, scerr
+				}
+				sth := translog.STH{
+					Head: translog.TreeHead{
+						ChainID: sr.ChainID, TreeSize: uint64(size),
+						RootHash: root, Timestamp: uint64(ts),
+					},
+					Signature: sig,
+				}
+				if verr := translog.VerifySTH(pub, sth); verr != nil {
+					w.Log.Error("witness verify: BAD STH SIGNATURE",
+						"server", sr.ServerURL, "chain", sr.ChainID,
+						"tree_size", size, "err", verr)
+					errs++
+				}
+			}
+			if rerr := rows.Err(); rerr != nil {
+				rows.Close()
+				return errs, equivs, rerr
+			}
+			rows.Close()
+			if sr.HasEquivAt {
+				equivs++
+				w.Log.Error("witness verify: EQUIVOCATION ARCHIVED (same-size multi-root)",
+					"server", sr.ServerURL, "chain", sr.ChainID)
+			}
+			if sr.ConsistencyFailureCount > 0 {
+				equivs++
+				w.Log.Error("witness verify: CONSISTENCY FAILURES ARCHIVED",
+					"server", sr.ServerURL, "chain", sr.ChainID,
+					"count", sr.ConsistencyFailureCount)
 			}
 		}
-		// Codex audit (🟡 witness.go:417): rows.Err() must be
-		// checked AFTER iteration. A cursor / context / SQLite
-		// error after a partial scan would otherwise let
-		// VerifyArchive report a clean archive while it actually
-		// stopped early.
-		if rerr := rows.Err(); rerr != nil {
-			rows.Close()
-			return errs, equivs, rerr
+		if nextServer == "" {
+			return errs, equivs, nil
 		}
-		rows.Close()
-		if sr.HasEquivAt {
-			equivs++
-			w.Log.Error("witness verify: EQUIVOCATION ARCHIVED (same-size multi-root)",
-				"server", sr.ServerURL, "chain", sr.ChainID)
+		if nextServer < afterServer || (nextServer == afterServer && nextChain <= afterChain) {
+			return errs, equivs, errors.New("witness: summary pagination did not advance")
 		}
-		if sr.ConsistencyFailureCount > 0 {
-			equivs++
-			w.Log.Error("witness verify: CONSISTENCY FAILURES ARCHIVED",
-				"server", sr.ServerURL, "chain", sr.ChainID,
-				"count", sr.ConsistencyFailureCount)
-		}
+		afterServer = nextServer
+		afterChain = nextChain
 	}
-	return errs, equivs, nil
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/valentinkolb/fd0.sh/internal/crypto"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
@@ -45,7 +46,7 @@ func (o LocalOpener) Open(sealed []byte) ([]byte, error) {
 // ScopeState is the post-replay state of one scope chain.
 type ScopeState struct {
 	ScopeID       proto.ScopeID
-	MemberSet     [][]byte // super_pubs, sorted by bytes
+	MemberSet     [][]byte          // super_pubs, sorted by bytes
 	OEKs          map[uint64][]byte // version → 32B key
 	CurrentOEKVer uint64
 	SecretIndex   map[string]ScopeSecret // secret_id → latest record
@@ -86,10 +87,11 @@ type ScopeSecret struct {
 // event's projection is the authoritative re-establishment.
 //
 // THREAT: T20 (bit-flipping of on-disk chain — every event signature
-//                checked here),
-//         T27 (foreign-author event splice — author ∈ MemberSet check),
-//         T29 (insider projection-poisoning for existing members),
-//         T30 (no-op membership change rejection).
+//
+//	       checked here),
+//	T27 (foreign-author event splice — author ∈ MemberSet check),
+//	T29 (insider projection-poisoning for existing members),
+//	T30 (no-op membership change rejection).
 func ReplayScope(path string, ownSuperPub, ownX25519Pub []byte, opener Opener) (*ScopeState, error) {
 	events, err := ReadScopeEvents(path)
 	if err != nil {
@@ -260,6 +262,12 @@ func findOurKeyDelivery(ev *proto.ScopeEvent, ownX25519Pub []byte) []byte {
 func applyMemberChange(st *ScopeState, ev *proto.ScopeEvent, ownSuperPub, oekPlain []byte, compacted bool) (bool, error) {
 	sp := &ev.SignedPrefix
 	pl := &sp.Payload
+	if len(st.MemberSet) > proto.MaxLegacyScopeMembers {
+		return false, errors.New("member.change: prior member set exceeds protocol limit")
+	}
+	if len(sp.KeyDeliveries) > proto.MaxKeyDeliveries {
+		return false, errors.New("member.change: too many key_deliveries")
+	}
 	if pl.Op != proto.OpAdd && pl.Op != proto.OpRemove {
 		return false, fmt.Errorf("member.change: bad op %q", pl.Op)
 	}
@@ -280,12 +288,18 @@ func applyMemberChange(st *ScopeState, ev *proto.ScopeEvent, ownSuperPub, oekPla
 		if isMember {
 			return false, fmt.Errorf("member.change: redundant add of existing member %x", pl.Member[:8])
 		}
+		if len(st.MemberSet) >= proto.MaxScopeMembers {
+			return false, errors.New("member.change: scope member limit reached")
+		}
 	case proto.OpRemove:
 		if !isMember {
 			return false, fmt.Errorf("member.change: remove of non-member %x", pl.Member[:8])
 		}
 	}
 	want := postMutationSet(st.MemberSet, pl.Member, pl.Op)
+	if len(sp.KeyDeliveries) != len(want) {
+		return false, errors.New("member.change: key_deliveries don't match post-mutation set")
+	}
 	got := recipientSet(sp.KeyDeliveries)
 	if !sameSet(want, got) {
 		return false, errors.New("member.change: key_deliveries don't match post-mutation set")
@@ -578,12 +592,7 @@ func sameSet(a, b [][]byte) bool {
 }
 
 func sortBytes(s [][]byte) [][]byte {
-	// Insertion sort — set sizes are small (≤1000 by spec, typically <10).
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && bytes.Compare(s[j-1], s[j]) > 0; j-- {
-			s[j-1], s[j] = s[j], s[j-1]
-		}
-	}
+	sort.Slice(s, func(i, j int) bool { return bytes.Compare(s[i], s[j]) < 0 })
 	return s
 }
 

@@ -53,7 +53,12 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	return &Store{db: db}, nil
+	store := &Store{db: db}
+	if err := store.ensureSummaryIndex(context.Background()); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("witness summary index: %w", err)
+	}
+	return store, nil
 }
 
 // Close releases the underlying DB.
@@ -173,8 +178,9 @@ type ArchiveResult struct {
 // crypto-blind, the polling layer is crypto-aware).
 //
 // THREAT: T40 (witness archive equivocation evidence — emits HTTP 409
-//                via the polling layer when a divergent root is seen
-//                at the same tree_size).
+//
+//	via the polling layer when a divergent root is seen
+//	at the same tree_size).
 func (s *Store) Insert(ctx context.Context, serverURL string, sth translog.STH, fetchedAt int64, witnessSig []byte) (ArchiveResult, error) {
 	if witnessSig != nil && len(witnessSig) != ed25519.SignatureSize {
 		return ArchiveResult{}, fmt.Errorf("witness.Insert: witnessSig must be %d bytes or nil", ed25519.SignatureSize)
@@ -334,9 +340,10 @@ func (s *Store) LatestSTHWithCosign(ctx context.Context, serverURL, chainID stri
 // case from THREATS.md T41).
 //
 // THREAT: T41 (first-fetch checkpoint rollback — fresh client
-//                with no prior STH cannot consistency-prove; the
-//                witness's highest-observed tree_size for the
-//                chain is the cross-check anchor).
+//
+//	with no prior STH cannot consistency-prove; the
+//	witness's highest-observed tree_size for the
+//	chain is the cross-check anchor).
 func (s *Store) HighestTreeSize(ctx context.Context, serverURL, chainID string) (uint64, bool, error) {
 	var maxSize sql.NullInt64
 	err := s.db.QueryRowContext(ctx,
@@ -362,7 +369,8 @@ func (s *Store) HighestTreeSize(ctx context.Context, serverURL, chainID string) 
 // tree_size is past the equivocation point.
 //
 // THREAT: T35 (server equivocation across clients — historical
-//                multi-roots remain evidence indefinitely).
+//
+//	multi-roots remain evidence indefinitely).
 func (s *Store) DetectChainEquivocation(ctx context.Context, serverURL, chainID string) (bool, error) {
 	var n int64
 	err := s.db.QueryRowContext(ctx,
@@ -447,31 +455,175 @@ func (s *Store) CountAll(ctx context.Context) (int64, error) {
 // SummaryRow is one (server_url, chain_id, max_tree_size) tuple from
 // the archive. `fd0-witness status` prints these.
 type SummaryRow struct {
-	ServerURL              string
-	ChainID                string
-	MaxTreeSize            uint64
-	RowCount               int64
-	HasEquivAt             bool  // any tree_size on this chain has multiple roots
+	ServerURL               string
+	ChainID                 string
+	MaxTreeSize             uint64
+	RowCount                int64
+	HasEquivAt              bool  // any tree_size on this chain has multiple roots
 	ConsistencyFailureCount int64 // rows in witness_consistency_failures for this chain
 }
 
+func (s *Store) ensureSummaryIndex(ctx context.Context) error {
+	var version string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT value FROM witness_schema_state WHERE key = 'summary_version'`,
+	).Scan(&version)
+	if err == nil && version == "1" {
+		return nil
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM witness_chain_summary`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO witness_chain_summary (
+			server_url, chain_id, max_tree_size, row_count,
+			has_equiv, consistency_failure_count
+		)
+		SELECT s.server_url,
+		       s.chain_id,
+		       MAX(s.tree_size),
+		       COUNT(*),
+		       EXISTS(
+		         SELECT 1
+		           FROM witness_sths e
+		          WHERE e.server_url = s.server_url AND e.chain_id = s.chain_id
+		          GROUP BY e.tree_size
+		         HAVING COUNT(DISTINCT e.root_hash) > 1
+		       ),
+		       (
+		         SELECT COUNT(*)
+		           FROM witness_consistency_failures f
+		          WHERE f.server_url = s.server_url AND f.chain_id = s.chain_id
+		       )
+		  FROM witness_sths s
+		 GROUP BY s.server_url, s.chain_id
+	`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO witness_schema_state (key, value)
+		VALUES ('summary_version', '1')
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value
+	`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+const (
+	maxStatusSummaryRows   = 10_000
+	maxObservedSummaryRows = 1_024
+	maxSummaryPageRows     = 1_024
+)
+
+var ErrSummaryLimit = errors.New("witness summary exceeds row limit")
+
 // Summary returns a per-(server, chain) overview. Useful for status.
 func (s *Store) Summary(ctx context.Context) ([]SummaryRow, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT server_url, chain_id, MAX(tree_size), COUNT(*)
-		   FROM witness_sths
-		  GROUP BY server_url, chain_id
-		  ORDER BY server_url, chain_id`,
+	return s.summary(ctx, "", maxStatusSummaryRows)
+}
+
+// SummaryForServer bounds the public observed endpoint to one server.
+func (s *Store) SummaryForServer(ctx context.Context, serverURL string) ([]SummaryRow, error) {
+	return s.summary(ctx, serverURL, maxObservedSummaryRows)
+}
+
+// CountSummary returns the number of materialized (server, chain) rows.
+func (s *Store) CountSummary(ctx context.Context) (int64, error) {
+	var n int64
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM witness_chain_summary`).Scan(&n)
+	return n, err
+}
+
+// SummaryPage returns a bounded ordered page for archive status and verify
+// commands. Pass the returned cursor pair to the next call.
+func (s *Store) SummaryPage(
+	ctx context.Context,
+	afterServer string,
+	afterChain string,
+	limit int,
+) ([]SummaryRow, string, string, error) {
+	if limit <= 0 || limit > maxSummaryPageRows {
+		limit = maxSummaryPageRows
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT server_url, chain_id, max_tree_size, row_count,
+		       has_equiv, consistency_failure_count
+		  FROM witness_chain_summary
+		 WHERE server_url > ?
+		    OR (server_url = ? AND chain_id > ?)
+		 ORDER BY server_url, chain_id
+		 LIMIT ?`,
+		afterServer, afterServer, afterChain, limit+1,
 	)
+	if err != nil {
+		return nil, "", "", err
+	}
+	defer rows.Close()
+	out, err := scanSummaryRows(rows)
+	if err != nil {
+		return nil, "", "", err
+	}
+	nextServer := ""
+	nextChain := ""
+	if len(out) > limit {
+		out = out[:limit]
+		nextServer = out[len(out)-1].ServerURL
+		nextChain = out[len(out)-1].ChainID
+	}
+	return out, nextServer, nextChain, nil
+}
+
+func (s *Store) summary(ctx context.Context, serverURL string, limit int) ([]SummaryRow, error) {
+	where := ""
+	args := []any{}
+	if serverURL != "" {
+		where = "WHERE server_url = ?"
+		args = append(args, serverURL)
+	}
+	args = append(args, limit+1)
+	query := `SELECT server_url, chain_id, max_tree_size, row_count,
+	                has_equiv, consistency_failure_count
+	           FROM witness_chain_summary
+	           ` + where + `
+	          ORDER BY server_url, chain_id
+	          LIMIT ?`
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	out, err := scanSummaryRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(out) > limit {
+		return nil, ErrSummaryLimit
+	}
+	return out, nil
+}
+
+func scanSummaryRows(rows *sql.Rows) ([]SummaryRow, error) {
 	var out []SummaryRow
 	for rows.Next() {
 		var sr SummaryRow
 		var max int64
-		if err := rows.Scan(&sr.ServerURL, &sr.ChainID, &max, &sr.RowCount); err != nil {
+		if err := rows.Scan(
+			&sr.ServerURL,
+			&sr.ChainID,
+			&max,
+			&sr.RowCount,
+			&sr.HasEquivAt,
+			&sr.ConsistencyFailureCount,
+		); err != nil {
 			return nil, err
 		}
 		sr.MaxTreeSize = uint64(max)
@@ -479,29 +631,6 @@ func (s *Store) Summary(ctx context.Context) ([]SummaryRow, error) {
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
-	}
-	// Annotate each row with same-size equivocation flag AND the
-	// count of consistency-proof failures (different-size forks +
-	// fetch failures). Done as separate queries per row to keep the
-	// SQL portable and the row count low.
-	for i := range out {
-		var equiv int64
-		err := s.db.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM (
-			    SELECT 1 FROM witness_sths
-			    WHERE server_url = ? AND chain_id = ?
-			    GROUP BY tree_size
-			    HAVING COUNT(DISTINCT root_hash) > 1
-			 )`, out[i].ServerURL, out[i].ChainID,
-		).Scan(&equiv)
-		if err != nil {
-			return out, err
-		}
-		out[i].HasEquivAt = equiv > 0
-		out[i].ConsistencyFailureCount, err = s.CountConsistencyFailures(ctx, out[i].ServerURL, out[i].ChainID)
-		if err != nil {
-			return out, err
-		}
 	}
 	return out, nil
 }

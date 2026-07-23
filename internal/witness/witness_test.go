@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -25,16 +26,16 @@ import (
 // proof bytes get returned per call so we can simulate equivocation,
 // regression, bad signatures, etc.
 type fakeServer struct {
-	mux        *http.ServeMux
-	srv        *httptest.Server
-	priv       ed25519.PrivateKey
-	pub        ed25519.PublicKey
-	chainID    string
-	state      atomic.Pointer[fakeServerState]
+	mux     *http.ServeMux
+	srv     *httptest.Server
+	priv    ed25519.PrivateKey
+	pub     ed25519.PublicKey
+	chainID string
+	state   atomic.Pointer[fakeServerState]
 }
 
 type fakeServerState struct {
-	leaves   [][]byte // leaf hashes appended so far
+	leaves     [][]byte // leaf hashes appended so far
 	currentSTH translog.STH
 }
 
@@ -161,6 +162,100 @@ func newWitness(t *testing.T, fs *fakeServer) *Witness {
 		t.Fatal(err)
 	}
 	return w
+}
+
+func TestFetchChainsRejectsDiscoveryFanoutAboveLimit(t *testing.T) {
+	chains := make([]string, maxWitnessChains+1)
+	for i := range chains {
+		chains[i] = fmt.Sprintf("scope:s_%04d", i)
+	}
+	body, err := proto.Marshal(map[string]any{"chains": chains})
+	if err != nil {
+		t.Fatal(err)
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/cbor")
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(upstream.Close)
+	w := &Witness{HTTP: upstream.Client()}
+	if _, _, err := w.fetchChains(context.Background(), upstream.URL, "", maxWitnessChains); err == nil {
+		t.Fatal("oversized discovered chain list accepted")
+	}
+}
+
+func TestFetchChainsRejectsUnorderedPage(t *testing.T) {
+	body, err := proto.Marshal(map[string]any{
+		"chains": []string{"scope:s_two", "scope:s_one"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/cbor")
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(upstream.Close)
+	w := &Witness{HTTP: upstream.Client()}
+	if _, _, err := w.fetchChains(context.Background(), upstream.URL, "", 2); err == nil {
+		t.Fatal("unordered discovered chain page accepted")
+	}
+}
+
+func TestEffectiveChainsBoundsStaticAndDiscoveredUnion(t *testing.T) {
+	chains := make([]string, maxWitnessChains)
+	for i := range chains {
+		chains[i] = fmt.Sprintf("scope:s_%04d", i)
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		limit := maxWitnessChains
+		if raw := r.URL.Query().Get("limit"); raw != "" {
+			if _, err := fmt.Sscanf(raw, "%d", &limit); err != nil {
+				t.Fatal(err)
+			}
+		}
+		start := 0
+		if after := r.URL.Query().Get("after"); after != "" {
+			for start < len(chains) && chains[start] <= after {
+				start++
+			}
+		}
+		end := start + limit
+		if end > len(chains) {
+			end = len(chains)
+		}
+		nextAfter := ""
+		if end < len(chains) {
+			nextAfter = chains[end-1]
+		}
+		body, err := proto.Marshal(map[string]any{
+			"chains":     chains[start:end],
+			"next_after": nextAfter,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/cbor")
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(upstream.Close)
+	w := &Witness{
+		HTTP: upstream.Client(),
+		Log:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Config: Config{
+			ServerURL:    upstream.URL,
+			AutoDiscover: true,
+			Chains:       []string{"scope:s_operator"},
+		},
+	}
+	got := w.effectiveChains(context.Background())
+	if len(got) != maxWitnessChains || got[0] != "scope:s_operator" {
+		t.Fatalf("first page should fill the bounded poll set, got %d", len(got))
+	}
+	got = w.effectiveChains(context.Background())
+	if len(got) != 2 || got[0] != "scope:s_operator" || got[1] != chains[len(chains)-1] {
+		t.Fatalf("second page should continue discovery, got %+v", got)
+	}
 }
 
 func TestWitnessArchivesFirstSTH(t *testing.T) {

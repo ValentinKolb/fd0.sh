@@ -25,13 +25,13 @@ func init() {
 	encMode = em
 
 	dm, err := cbor.DecOptions{
-		DupMapKey:                   cbor.DupMapKeyEnforcedAPF,
-		IndefLength:                 cbor.IndefLengthForbidden,
-		TagsMd:                      cbor.TagsForbidden,
-		IntDec:                      cbor.IntDecConvertSignedOrFail,
-		MaxArrayElements:            131072,
-		MaxMapPairs:                 131072,
-		MaxNestedLevels:             16,
+		DupMapKey:        cbor.DupMapKeyEnforcedAPF,
+		IndefLength:      cbor.IndefLengthForbidden,
+		TagsMd:           cbor.TagsForbidden,
+		IntDec:           cbor.IntDecConvertSignedOrFail,
+		MaxArrayElements: MaxCBORCollectionElements,
+		MaxMapPairs:      MaxCBORCollectionElements,
+		MaxNestedLevels:  16,
 		// Codex audit (🟡 cbor.go:27): case-sensitive struct field
 		// matching. Without it, two distinct CBOR encodings ("Field"
 		// and "field") could decode into the same struct field —

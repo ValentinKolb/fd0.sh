@@ -20,6 +20,19 @@ CREATE TABLE IF NOT EXISTS chains (
     metadata  BLOB
 );
 
+CREATE TABLE IF NOT EXISTS scope_members (
+    chain_id   TEXT NOT NULL REFERENCES chains(chain_id) ON DELETE CASCADE,
+    member_pub BLOB NOT NULL CHECK (length(member_pub) = 32),
+    PRIMARY KEY (chain_id, member_pub)
+);
+
+CREATE INDEX IF NOT EXISTS scope_members_by_member ON scope_members(member_pub, chain_id);
+
+CREATE TABLE IF NOT EXISTS schema_state (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS auth_nonces (
     pk    BLOB    NOT NULL,
     nonce BLOB    NOT NULL,

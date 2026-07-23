@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -26,6 +28,135 @@ func TestRetryAfterDelay(t *testing.T) {
 		if got := retryAfterDelay(c.header, max); got != c.want {
 			t.Errorf("retryAfterDelay(%q) = %v, want %v", c.header, got, c.want)
 		}
+	}
+}
+
+func TestRunSyncBatchesAdaptsToWriteCapacity(t *testing.T) {
+	var limits []int
+	calls := 0
+	budget := &syncRunBudget{membershipPages: maxMembershipPagesPerSync}
+	err := runSyncBatches(context.Background(), "https://example.test", budget, func(
+		_ context.Context,
+		_ string,
+		limit int,
+		gotBudget *syncRunBudget,
+	) error {
+		if gotBudget != budget {
+			t.Fatal("sync budget was reset between rounds")
+		}
+		limits = append(limits, limit)
+		calls++
+		switch calls {
+		case 1, 2:
+			return errSyncRateLimited
+		case 3:
+			return errSyncMorePushes
+		default:
+			return nil
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []int{32, 16, 8, 8}
+	if len(limits) != len(want) {
+		t.Fatalf("limits=%v, want %v", limits, want)
+	}
+	for i := range want {
+		if limits[i] != want[i] {
+			t.Fatalf("limits=%v, want %v", limits, want)
+		}
+	}
+}
+
+func TestRunSyncBatchesReturnsRateLimitAtMinimum(t *testing.T) {
+	err := runSyncBatches(
+		context.Background(),
+		"https://example.test",
+		&syncRunBudget{membershipPages: maxMembershipPagesPerSync},
+		func(
+			_ context.Context,
+			_ string,
+			_ int,
+			_ *syncRunBudget,
+		) error {
+			return errSyncRateLimited
+		})
+	if !errors.Is(err, errSyncRateLimited) {
+		t.Fatalf("got %v, want rate limit", err)
+	}
+}
+
+func TestMembershipDiscoveryRequestCarriesCursor(t *testing.T) {
+	body, err := buildMembershipDiscoveryRequest("scope:s_0256")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request struct {
+		Pull struct {
+			DiscoverMemberships bool   `cbor:"discover_memberships"`
+			MembershipAfter     string `cbor:"membership_after"`
+			MembershipLimit     uint64 `cbor:"membership_limit"`
+		} `cbor:"pull"`
+		Push []any `cbor:"push"`
+	}
+	if err := proto.Unmarshal(body, &request); err != nil {
+		t.Fatal(err)
+	}
+	if !request.Pull.DiscoverMemberships ||
+		request.Pull.MembershipAfter != "scope:s_0256" ||
+		request.Pull.MembershipLimit != membershipPageSize ||
+		len(request.Push) != 0 {
+		t.Fatalf("unexpected request: %+v", request)
+	}
+}
+
+func TestValidateMembershipPageBoundsServerWork(t *testing.T) {
+	memberships := make([]membershipResult, membershipPageSize+1)
+	for i := range memberships {
+		memberships[i].ScopeID = proto.DeriveScopeID(fmt.Sprintf("scope-%d", i)).String()
+	}
+	if err := validateMembershipPage("", memberships, "scope:s_next"); err == nil {
+		t.Fatal("oversized membership page accepted")
+	}
+	if err := validateMembershipPage(
+		"scope:s_z",
+		nil,
+		"scope:s_a",
+	); err == nil {
+		t.Fatal("non-advancing membership cursor accepted")
+	}
+	valid := proto.DeriveScopeID("tail").String()
+	if err := validateMembershipPage("", []membershipResult{{ScopeID: valid}}, "not-scope:"+valid); err == nil {
+		t.Fatal("malformed membership cursor accepted")
+	}
+	other := proto.DeriveScopeID("other").String()
+	if err := validateMembershipPage("", []membershipResult{{ScopeID: valid}}, "scope:"+other); err == nil {
+		t.Fatal("membership cursor unrelated to page tail accepted")
+	}
+}
+
+func TestSyncRequestCarriesPersistedMembershipCursor(t *testing.T) {
+	body, err := buildSyncRequestBody(
+		map[string]pullCursor{},
+		nil,
+		true,
+		"scope:s_0256",
+		1000,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request struct {
+		Pull struct {
+			MembershipAfter string `cbor:"membership_after"`
+		} `cbor:"pull"`
+	}
+	if err := proto.Unmarshal(body, &request); err != nil {
+		t.Fatal(err)
+	}
+	if request.Pull.MembershipAfter != "scope:s_0256" {
+		t.Fatalf("membership cursor = %q", request.Pull.MembershipAfter)
 	}
 }
 

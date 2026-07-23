@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 
 	"encoding/json"
@@ -33,72 +34,81 @@ import (
 )
 
 // promObserver implements witness.Observer using Prometheus collectors
-// registered on the same registry that powers /metrics. The collectors
-// label by (server, chain) so dashboards can pivot per chain — the
-// label cardinality is bounded by config (one entry per [[target]] chain).
+// registered on the same registry that powers /metrics. Chain-level details
+// stay in the witness API so server-controlled IDs cannot create unbounded
+// Prometheus series.
 type promObserver struct {
-	polls                *prometheus.CounterVec
-	cosigns              *prometheus.CounterVec
-	equivocations        *prometheus.CounterVec
-	consistencyFailures  *prometheus.CounterVec
-	treeSize             *prometheus.GaugeVec
-	lastPollSeconds      *prometheus.GaugeVec
-	now                  func() time.Time
+	polls               *prometheus.CounterVec
+	cosigns             *prometheus.CounterVec
+	equivocations       *prometheus.CounterVec
+	consistencyFailures *prometheus.CounterVec
+	treeSize            *prometheus.GaugeVec
+	lastPollSeconds     *prometheus.GaugeVec
+	now                 func() time.Time
+	mu                  sync.Mutex
+	maxTreeSize         map[string]uint64
 }
 
 func newPromObserver(reg *prometheus.Registry) *promObserver {
 	o := &promObserver{
 		polls: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "fd0_witness_polls_total",
-			Help: "Witness polls grouped by upstream server, chain and outcome.",
-		}, []string{"server", "chain", "result"}),
+			Help: "Witness polls grouped by upstream server and outcome.",
+		}, []string{"server", "result"}),
 		cosigns: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "fd0_witness_cosigns_total",
 			Help: "Witness cosigns successfully issued.",
-		}, []string{"server", "chain"}),
+		}, []string{"server"}),
 		equivocations: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "fd0_witness_equivocations_total",
 			Help: "Detected equivocations (multi-root archives at the same tree_size).",
-		}, []string{"server", "chain"}),
+		}, []string{"server"}),
 		consistencyFailures: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "fd0_witness_consistency_failures_total",
 			Help: "Consistency-proof failures between successive STHs.",
-		}, []string{"server", "chain"}),
+		}, []string{"server"}),
 		treeSize: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "fd0_witness_tree_size",
-			Help: "Most-recent tree_size observed and archived per chain.",
-		}, []string{"server", "chain"}),
+			Help: "Largest tree_size observed across chains for an upstream server.",
+		}, []string{"server"}),
 		lastPollSeconds: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "fd0_witness_last_poll_timestamp_seconds",
-			Help: "Unix timestamp of the most recent successful poll per chain.",
-		}, []string{"server", "chain"}),
-		now: time.Now,
+			Help: "Unix timestamp of the most recent successful poll for an upstream server.",
+		}, []string{"server"}),
+		now:         time.Now,
+		maxTreeSize: map[string]uint64{},
 	}
 	reg.MustRegister(o.polls, o.cosigns, o.equivocations, o.consistencyFailures, o.treeSize, o.lastPollSeconds)
 	return o
 }
 
 func (o *promObserver) OnPoll(server, chain, result string) {
-	o.polls.WithLabelValues(server, chain, result).Inc()
+	o.polls.WithLabelValues(server, result).Inc()
 	if result == "ok" {
-		o.lastPollSeconds.WithLabelValues(server, chain).Set(float64(o.now().Unix()))
+		o.lastPollSeconds.WithLabelValues(server).Set(float64(o.now().Unix()))
 	}
 }
 
 func (o *promObserver) OnCosign(server, chain string) {
-	o.cosigns.WithLabelValues(server, chain).Inc()
+	o.cosigns.WithLabelValues(server).Inc()
 }
 
 func (o *promObserver) OnEquivocation(server, chain string) {
-	o.equivocations.WithLabelValues(server, chain).Inc()
+	o.equivocations.WithLabelValues(server).Inc()
 }
 
 func (o *promObserver) OnConsistencyFailure(server, chain string) {
-	o.consistencyFailures.WithLabelValues(server, chain).Inc()
+	o.consistencyFailures.WithLabelValues(server).Inc()
 }
 
 func (o *promObserver) OnTreeSize(server, chain string, size uint64) {
-	o.treeSize.WithLabelValues(server, chain).Set(float64(size))
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if size <= o.maxTreeSize[server] {
+		return
+	}
+	o.maxTreeSize[server] = size
+	o.treeSize.WithLabelValues(server).Set(float64(size))
 }
 
 type cli struct {
@@ -283,25 +293,43 @@ func runStatus(w *witness.Witness) {
 		fmt.Fprintln(os.Stderr, "status:", err)
 		os.Exit(1)
 	}
-	rows, err := w.Store.Summary(ctx)
+	pairs, err := w.Store.CountSummary(ctx)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "status:", err)
 		os.Exit(1)
 	}
-	fmt.Printf("Witness archive: %d STHs across %d (server, chain) pairs\n\n", total, len(rows))
-	if len(rows) == 0 {
+	fmt.Printf("Witness archive: %d STHs across %d (server, chain) pairs\n\n", total, pairs)
+	if pairs == 0 {
 		fmt.Println("(no STHs archived yet — daemon hasn't polled)")
 		return
 	}
 	fmt.Printf("%-40s %-40s %12s %8s  EQUIV\n", "SERVER", "CHAIN", "MAX_SIZE", "ROWS")
-	for _, r := range rows {
-		mark := ""
-		if r.HasEquivAt {
-			mark = "⚠ EQUIVOCATION"
+	afterServer := ""
+	afterChain := ""
+	for {
+		rows, nextServer, nextChain, pageErr := w.Store.SummaryPage(ctx, afterServer, afterChain, 256)
+		if pageErr != nil {
+			fmt.Fprintln(os.Stderr, "status:", pageErr)
+			os.Exit(1)
 		}
-		fmt.Printf("%-40s %-40s %12d %8d  %s\n",
-			truncate(r.ServerURL, 40), truncate(r.ChainID, 40),
-			r.MaxTreeSize, r.RowCount, mark)
+		for _, r := range rows {
+			mark := ""
+			if r.HasEquivAt {
+				mark = "⚠ EQUIVOCATION"
+			}
+			fmt.Printf("%-40s %-40s %12d %8d  %s\n",
+				truncate(r.ServerURL, 40), truncate(r.ChainID, 40),
+				r.MaxTreeSize, r.RowCount, mark)
+		}
+		if nextServer == "" {
+			return
+		}
+		if nextServer < afterServer || (nextServer == afterServer && nextChain <= afterChain) {
+			fmt.Fprintln(os.Stderr, "status: summary pagination did not advance")
+			os.Exit(1)
+		}
+		afterServer = nextServer
+		afterChain = nextChain
 	}
 }
 
@@ -331,4 +359,3 @@ func boolWord(b bool) string {
 	}
 	return "open"
 }
-

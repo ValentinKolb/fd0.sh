@@ -318,6 +318,26 @@ func TestScopeVaultDataPushFloorDefaultsToZero(t *testing.T) {
 	}
 }
 
+func TestPinnedServerMembershipCursorRoundtrip(t *testing.T) {
+	in := PinnedServer{
+		ServerPub:       make([]byte, 32),
+		PinnedAt:        42,
+		Registered:      true,
+		MembershipAfter: "scope:s_0256",
+	}
+	raw, err := Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out PinnedServer
+	if err := Unmarshal(raw, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.MembershipAfter != in.MembershipAfter {
+		t.Fatalf("membership cursor = %q, want %q", out.MembershipAfter, in.MembershipAfter)
+	}
+}
+
 // TestYubikeyPublicParamsForwardCompat: a future v2 may add fields
 // (e.g. firmware string, pin_policy hint, touch_policy hint). The
 // CBOR decoder MUST silently ignore unknown keys so a v1 reader

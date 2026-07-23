@@ -73,13 +73,29 @@ const m = {
   inFlight: 0,
   uptime: () => (Date.now() - startedAt) / 1000,
 };
-const opLabel = (path: string): string => {
-  const parts = path.replace(/^\//, "").split("/");
-  if (parts.length === 0 || parts[0] === "") return "/";
-  if (parts.length === 1) return `/${parts[0]}`;
-  if (parts.length >= 3) return `/${parts[0]}/${parts[1]}/*`;
-  return `/${parts[0]}/${parts[1]}`;
+const metricPaths = new Set([
+  ...SEO_ROUTES.map((route) => route.path),
+  "/health",
+  "/version",
+  "/metrics",
+  "/robots.txt",
+  "/sitemap.xml",
+  "/llms.txt",
+  "/install",
+  "/install.sh",
+  "/install-desktop",
+  "/install-desktop.sh",
+  "/files/compose.yml",
+]);
+export const metricPathLabel = (path: string): string => {
+  if (metricPaths.has(path)) return path;
+  if (path.startsWith("/public/")) return "/public/*";
+  return "/*";
 };
+export const metricMethod = (method: string): string =>
+  ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"].includes(method)
+    ? method
+    : "OTHER";
 const statusClass = (s: number): string => {
   if (s >= 500) return "5xx";
   if (s >= 400) return "4xx";
@@ -190,7 +206,7 @@ const app = new Hono()
     } finally {
       m.inFlight--;
       bumpCounter(
-        [c.req.method, opLabel(c.req.path), statusClass(c.res.status)].join("|"),
+        [metricMethod(c.req.method), metricPathLabel(c.req.path), statusClass(c.res.status)].join("|"),
       );
     }
   })
