@@ -16,6 +16,7 @@ import (
 
 	"github.com/valentinkolb/fd0.sh/internal/canon"
 	"github.com/valentinkolb/fd0.sh/internal/chain"
+	"github.com/valentinkolb/fd0.sh/internal/httpguard"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
 	"github.com/valentinkolb/fd0.sh/internal/translog"
 )
@@ -263,7 +264,6 @@ func (s *Session) EnsureUserRegistered(ctx context.Context, serverURL canon.URL)
 			break
 		}
 		wait := retryAfterDelay(resp.Header.Get("Retry-After"), maxRegWait)
-		_, _ = io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 		select {
 		case <-time.After(wait):
@@ -279,13 +279,19 @@ func (s *Session) EnsureUserRegistered(ctx context.Context, serverURL canon.URL)
 		// Could be `super_pub_taken` (already registered, fine) or
 		// `dup` (event_id collision — also already registered). Either
 		// way we're idempotently registered.
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		respBody, err := httpguard.ReadBody(resp.Body, 4096)
+		if err != nil {
+			return fmt.Errorf("registration: POST /users: %w", err)
+		}
 		if !strings.Contains(string(respBody), "super_pub_taken") &&
 			!strings.Contains(string(respBody), "dup") {
 			return fmt.Errorf("registration: 409 with unexpected reason: %s", respBody)
 		}
 	default:
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		respBody, err := httpguard.ReadBody(resp.Body, 4096)
+		if err != nil {
+			return fmt.Errorf("registration: POST /users: %w", err)
+		}
 		return fmt.Errorf("registration: POST /users: %s: %s", resp.Status, respBody)
 	}
 	// Persist Registered=true so future syncs skip the round-trip.
@@ -314,7 +320,7 @@ func fetchServerInfo(ctx context.Context, canonicalURL string) (translog.ServerI
 	if resp.StatusCode != http.StatusOK {
 		return translog.ServerInfo{}, fmt.Errorf("/v1/server-info: %s", resp.Status)
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := httpguard.ReadBody(resp.Body, 1<<20)
 	if err != nil {
 		return translog.ServerInfo{}, err
 	}

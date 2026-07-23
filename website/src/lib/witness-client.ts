@@ -44,6 +44,7 @@ export type WitnessSnapshot = {
 };
 
 const CACHE_TTL_MS = 30_000;
+const MAX_WITNESS_RESPONSE_BYTES = 1 << 20;
 
 let cached: WitnessSnapshot | null = null;
 let pending: Promise<WitnessSnapshot> | null = null;
@@ -114,12 +115,41 @@ async function fetchSnapshot(
   }
 }
 
-async function fetchCbor<T>(url: string, signal: AbortSignal): Promise<T> {
-  const res = await fetch(url, { signal, headers: { Accept: "application/cbor" } });
+export async function fetchCbor<T>(url: string, signal: AbortSignal): Promise<T> {
+  const res = await fetch(url, {
+    signal,
+    redirect: "manual",
+    headers: { Accept: "application/cbor" },
+  });
   if (!res.ok) {
     throw new Error(`${url} → ${res.status} ${res.statusText}`);
   }
-  const buf = new Uint8Array(await res.arrayBuffer());
+  const contentLength = Number(res.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > MAX_WITNESS_RESPONSE_BYTES) {
+    throw new Error(`${url} → response exceeds ${MAX_WITNESS_RESPONSE_BYTES} bytes`);
+  }
+  if (!res.body) {
+    throw new Error(`${url} → empty response body`);
+  }
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_WITNESS_RESPONSE_BYTES) {
+      await reader.cancel();
+      throw new Error(`${url} → response exceeds ${MAX_WITNESS_RESPONSE_BYTES} bytes`);
+    }
+    chunks.push(value);
+  }
+  const buf = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    buf.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
   return decodeCbor(buf) as T;
 }
 

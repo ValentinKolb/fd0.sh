@@ -15,16 +15,21 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/valentinkolb/fd0.sh/internal/canon"
+	"github.com/valentinkolb/fd0.sh/internal/httpguard"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
 	"github.com/valentinkolb/fd0.sh/internal/server/store"
 	"github.com/valentinkolb/fd0.sh/internal/translog"
 )
+
+var peerHTTPClient = &http.Client{
+	CheckRedirect: httpguard.RejectRedirect,
+	Timeout:       10 * time.Second,
+}
 
 // canonicalisePeers normalises every FD0_PEERS entry through
 // canon.ParseURL so the resolver and the peers-table key both see the
@@ -127,7 +132,7 @@ func (s *Server) resolveOnePeer(ctx context.Context, url string) error {
 	if err != nil {
 		return err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := peerHTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("fetch: %w", err)
 	}
@@ -135,7 +140,7 @@ func (s *Server) resolveOnePeer(ctx context.Context, url string) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("status %s", resp.Status)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	body, err := httpguard.ReadBody(resp.Body, 64*1024)
 	if err != nil {
 		return fmt.Errorf("read: %w", err)
 	}

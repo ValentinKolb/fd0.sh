@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -15,6 +14,7 @@ import (
 	"time"
 
 	"github.com/valentinkolb/fd0.sh/internal/canon"
+	"github.com/valentinkolb/fd0.sh/internal/httpguard"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
 	"github.com/valentinkolb/fd0.sh/internal/server/store"
 	"github.com/valentinkolb/fd0.sh/internal/translog"
@@ -36,6 +36,13 @@ import (
 
 const defaultReplicateInterval = 30 * time.Second
 
+func newReplicationHTTPClient() *http.Client {
+	return &http.Client{
+		CheckRedirect: httpguard.RejectRedirect,
+		Timeout:       60 * time.Second,
+	}
+}
+
 type replicator struct {
 	primary canon.URL
 	store   *store.Store
@@ -54,7 +61,7 @@ func (s *Server) startReplication(ctx context.Context, primary canon.URL, interv
 	r := &replicator{
 		primary: primary,
 		store:   s.store,
-		client:  &http.Client{Timeout: 60 * time.Second},
+		client:  newReplicationHTTPClient(),
 		log:     s.log,
 	}
 	go func() {
@@ -129,7 +136,7 @@ func (r *replicator) primaryPub(ctx context.Context) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("server-info: %s", resp.Status)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body, err := httpguard.ReadBody(resp.Body, 1<<20)
 	if err != nil {
 		return nil, err
 	}
@@ -160,7 +167,7 @@ func (r *replicator) listChains(ctx context.Context) ([]string, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("chains: %s", resp.Status)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<24))
+	body, err := httpguard.ReadBody(resp.Body, 1<<24)
 	if err != nil {
 		return nil, err
 	}
@@ -365,7 +372,7 @@ func (r *replicator) peerGetChain(ctx context.Context, srcPub []byte, chainID st
 		return nil, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<26))
+	body, err := httpguard.ReadBody(resp.Body, 1<<26)
 	if err != nil {
 		return nil, err
 	}

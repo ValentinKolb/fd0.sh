@@ -22,7 +22,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -36,6 +35,7 @@ import (
 	"github.com/valentinkolb/fd0.sh/internal/canon"
 	"github.com/valentinkolb/fd0.sh/internal/chain"
 	"github.com/valentinkolb/fd0.sh/internal/fdhome"
+	"github.com/valentinkolb/fd0.sh/internal/httpguard"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
 	"github.com/valentinkolb/fd0.sh/internal/translog"
 )
@@ -197,7 +197,7 @@ func RunSync(ctx context.Context, server string) error {
 		return err
 	}
 	defer resp.Body.Close()
-	rb, err := io.ReadAll(resp.Body)
+	rb, err := httpguard.ReadBody(resp.Body, maxSyncResponseBytes)
 	if err != nil {
 		return err
 	}
@@ -688,8 +688,11 @@ var syncHTTPClient = &http.Client{
 		ResponseHeaderTimeout: 30 * time.Second,
 		IdleConnTimeout:       90 * time.Second,
 	},
-	Timeout: 5 * time.Minute,
+	CheckRedirect: httpguard.RejectRedirect,
+	Timeout:       5 * time.Minute,
 }
+
+const maxSyncResponseBytes = 64 << 20
 
 // signedPOST performs an authenticated POST against the fd0-server.
 //
@@ -759,11 +762,10 @@ func (s *Session) signedPOST(ctx context.Context, endpoint string, body []byte) 
 		if resp.StatusCode != http.StatusTooManyRequests || attempt >= maxAttempts-1 {
 			return resp, nil
 		}
-		// Rate-limited and attempts remain: drain+close the body, wait
+		// Rate-limited and attempts remain: close the body, wait
 		// out Retry-After (server sends integer seconds; default 1s,
 		// capped), then re-sign and retry.
 		wait := retryAfterDelay(resp.Header.Get("Retry-After"), maxWait)
-		_, _ = io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 		select {
 		case <-time.After(wait):

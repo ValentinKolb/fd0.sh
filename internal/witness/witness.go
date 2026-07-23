@@ -5,12 +5,12 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"time"
 
+	"github.com/valentinkolb/fd0.sh/internal/httpguard"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
 	"github.com/valentinkolb/fd0.sh/internal/translog"
 )
@@ -80,7 +80,10 @@ func New(store *Store, cfg Config, log *slog.Logger) *Witness {
 	}
 	return &Witness{
 		Store:    store,
-		HTTP:     &http.Client{Timeout: 30 * time.Second},
+		HTTP: &http.Client{
+			CheckRedirect: httpguard.RejectRedirect,
+			Timeout:       30 * time.Second,
+		},
 		Log:      log,
 		Now:      time.Now,
 		Config:   cfg,
@@ -143,7 +146,7 @@ func (w *Witness) fetchAndVerifyServerPub(ctx context.Context, serverURL string)
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("GET /v1/server-info: %s", resp.Status)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTranslogResponseBytes))
+	body, err := httpguard.ReadBody(resp.Body, maxTranslogResponseBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -527,7 +530,7 @@ func (w *Witness) fetchSTH(ctx context.Context, serverURL, chainID string) (tran
 	if resp.StatusCode != http.StatusOK {
 		return translog.STH{}, fmt.Errorf("GET /v1/sth/%s: %s", chainID, resp.Status)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTranslogResponseBytes))
+	body, err := httpguard.ReadBody(resp.Body, maxTranslogResponseBytes)
 	if err != nil {
 		return translog.STH{}, err
 	}
@@ -558,7 +561,7 @@ func (w *Witness) fetchChains(ctx context.Context, serverURL string) ([]string, 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("GET /v1/chains: %s", resp.Status)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTranslogResponseBytes))
+	body, err := httpguard.ReadBody(resp.Body, maxTranslogResponseBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -587,7 +590,7 @@ func (w *Witness) fetchConsistencyProof(ctx context.Context, serverURL, chainID 
 	if resp.StatusCode != http.StatusOK {
 		return translog.ConsistencyProof{}, fmt.Errorf("GET /v1/proof/consistency: %s", resp.Status)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTranslogResponseBytes))
+	body, err := httpguard.ReadBody(resp.Body, maxTranslogResponseBytes)
 	if err != nil {
 		return translog.ConsistencyProof{}, err
 	}

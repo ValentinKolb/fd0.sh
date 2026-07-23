@@ -22,6 +22,7 @@ import (
 
 	"github.com/valentinkolb/fd0.sh/internal/canon"
 	"github.com/valentinkolb/fd0.sh/internal/chain"
+	"github.com/valentinkolb/fd0.sh/internal/httpguard"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
 	"github.com/valentinkolb/fd0.sh/internal/translog"
 )
@@ -213,7 +214,7 @@ func (s *Session) fullPullScope(ctx context.Context, wcc *WitnessCheckClient, se
 		if err != nil {
 			return nil, nil, err
 		}
-		rb, err := readAll(resp.Body)
+		rb, err := httpguard.ReadBody(resp.Body, maxSyncResponseBytes)
 		resp.Body.Close()
 		if err != nil {
 			return nil, nil, err
@@ -590,7 +591,7 @@ func (s *Session) pushRebuiltEvent(ctx context.Context, wcc *WitnessCheckClient,
 		return false, err
 	}
 	defer resp.Body.Close()
-	rb, err := readAll(resp.Body)
+	rb, err := httpguard.ReadBody(resp.Body, maxSyncResponseBytes)
 	if err != nil {
 		return false, err
 	}

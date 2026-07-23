@@ -188,24 +188,6 @@ func scopeLastSTHSizeFor(sd proto.ScopeVaultData, serverKey string) uint64 {
 	return sth.Head.TreeSize
 }
 
-// readAll is a tiny shim around io.ReadAll to avoid extra imports here.
-func readAll(r interface{ Read(p []byte) (int, error) }) ([]byte, error) {
-	var out []byte
-	buf := make([]byte, 4096)
-	for {
-		n, err := r.Read(buf)
-		if n > 0 {
-			out = append(out, buf[:n]...)
-		}
-		if err != nil {
-			if err.Error() == "EOF" {
-				return out, nil
-			}
-			return out, err
-		}
-	}
-}
-
 // decryptSecretBody returns the SecretBody plaintext from a secret.set event
 // using oek (32 B). The AAD is the same one the writer used.
 func decryptSecretBody(ev *proto.ScopeEvent, oek []byte) (*proto.SecretBody, error) {
