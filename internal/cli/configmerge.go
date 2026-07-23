@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"reflect"
 
 	"gopkg.in/yaml.v3"
 )
@@ -130,12 +131,54 @@ func mergeNamedList(base, overlay []any) []any {
 	return base
 }
 
+func namedEntry(entries []any, name string) (map[string]any, bool) {
+	for _, entry := range entries {
+		m, ok := entry.(map[string]any)
+		if ok && m["name"] == name {
+			return m, true
+		}
+	}
+	return nil, false
+}
+
+func refuseActiveKubeReplacement(userDoc, fd0Doc map[string]any) error {
+	active, _ := userDoc["current-context"].(string)
+	if active == "" {
+		return nil
+	}
+	userContexts := asSlice(userDoc["contexts"])
+	fd0Contexts := asSlice(fd0Doc["contexts"])
+	userActive, userHasActive := namedEntry(userContexts, active)
+	fd0Active, fd0HasActive := namedEntry(fd0Contexts, active)
+	if fd0HasActive && (!userHasActive || !reflect.DeepEqual(userActive, fd0Active)) {
+		return fmt.Errorf("fd0 context %q would replace or activate the current local context", active)
+	}
+	if !userHasActive {
+		return nil
+	}
+	body, _ := userActive["context"].(map[string]any)
+	for _, key := range []string{"cluster", "user"} {
+		name, _ := body[key].(string)
+		if name == "" {
+			continue
+		}
+		userEntry, userHas := namedEntry(asSlice(userDoc[key+"s"]), name)
+		fd0Entry, fd0Has := namedEntry(asSlice(fd0Doc[key+"s"]), name)
+		if fd0Has && (!userHas || !reflect.DeepEqual(userEntry, fd0Entry)) {
+			return fmt.Errorf("fd0 %s %q would replace the %s used by current context %q",
+				key, name, key, active)
+		}
+	}
+	return nil
+}
+
 // mergeKubeconfigFile folds the fd0-rendered kubeconfig at fd0Path into
 // the user's kubeconfig at userPath. fd0's clusters / users / contexts
 // replace same-named entries; everything else the user has — including
 // exec / auth-provider clusters fd0 doesn't model — is preserved. The
-// user's current-context is left untouched.
-func mergeKubeconfigFile(fd0Path, userPath string) error {
+// user's current-context and its referenced cluster/user are protected
+// unless replaceActive is an explicit one-shot request.
+func mergeKubeconfigFile(fd0Path, userPath string, replaceActive bool) error {
 	fd0Doc, err := loadYAMLMap(fd0Path)
 	if err != nil {
 		return fmt.Errorf("kube merge: read rendered config: %w", err)
@@ -153,6 +196,11 @@ func mergeKubeconfigFile(fd0Path, userPath string) error {
 	if userDoc["kind"] == nil {
 		userDoc["kind"] = "Config"
 	}
+	if !replaceActive {
+		if err := refuseActiveKubeReplacement(userDoc, fd0Doc); err != nil {
+			return fmt.Errorf("kube merge: %w; rerun with --replace-active to confirm", err)
+		}
+	}
 	for _, key := range []string{"clusters", "users", "contexts"} {
 		cur, err := asSliceStrict(userDoc[key], key, userPath)
 		if err != nil {
@@ -167,8 +215,9 @@ func mergeKubeconfigFile(fd0Path, userPath string) error {
 // into the user's talosconfig at userPath. fd0's contexts overwrite
 // same-named ones; the user's other contexts are preserved. The active
 // `context` pointer is left alone unless the user has none yet, in
-// which case fd0's is adopted so the merge is immediately usable.
-func mergeTalosconfigFile(fd0Path, userPath string) error {
+// which case fd0's is adopted so the merge is immediately usable. An
+// existing active context is protected unless replaceActive is explicit.
+func mergeTalosconfigFile(fd0Path, userPath string, replaceActive bool) error {
 	fd0Doc, err := loadYAMLMap(fd0Path)
 	if err != nil {
 		return fmt.Errorf("talos merge: read rendered config: %w", err)
@@ -184,7 +233,17 @@ func mergeTalosconfigFile(fd0Path, userPath string) error {
 	if err != nil {
 		return fmt.Errorf("talos merge: %w", err)
 	}
-	for name, v := range asStringMap(fd0Doc["contexts"]) {
+	fd0Contexts := asStringMap(fd0Doc["contexts"])
+	active, _ := userDoc["context"].(string)
+	if !replaceActive && active != "" {
+		if overlay, ok := fd0Contexts[active]; ok {
+			current, exists := uctx[active]
+			if !exists || !reflect.DeepEqual(current, overlay) {
+				return fmt.Errorf("talos merge: fd0 context %q would replace or activate the current local context; rerun with --replace-active to confirm", active)
+			}
+		}
+	}
+	for name, v := range fd0Contexts {
 		uctx[name] = v
 	}
 	userDoc["contexts"] = uctx

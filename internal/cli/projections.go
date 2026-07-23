@@ -58,14 +58,14 @@ func refreshEnabledProjections(ctx context.Context) {
 	s.Close()
 
 	if kubeRendered && cfg.Kube.AutoMerge {
-		if err := mergeKubeconfigFile(kubeconfPath(), userKubeconfigPath()); err != nil {
+		if err := mergeKubeconfigFile(kubeconfPath(), userKubeconfigPath(), false); err != nil {
 			stderrln("⚠ kube merge: %v", err)
 		} else {
 			stderrln("✓ merged into %s", userKubeconfigPath())
 		}
 	}
 	if talosRendered && cfg.Talos.AutoMerge {
-		if err := mergeTalosconfigFile(talosconfPath(), userTalosconfigPath()); err != nil {
+		if err := mergeTalosconfigFile(talosconfPath(), userTalosconfigPath(), false); err != nil {
 			stderrln("⚠ talos merge: %v", err)
 		} else {
 			stderrln("✓ merged into %s", userTalosconfigPath())
@@ -118,7 +118,7 @@ func autoMergeKubeIfEnabled() {
 	if !projectionAutoMerge(cfg) {
 		return
 	}
-	if err := mergeKubeconfigFile(kubeconfPath(), userKubeconfigPath()); err != nil {
+	if err := mergeKubeconfigFile(kubeconfPath(), userKubeconfigPath(), false); err != nil {
 		stderrln("⚠ kube merge: %v", err)
 		return
 	}
@@ -134,7 +134,7 @@ func autoMergeTalosIfEnabled() {
 	if !projectionAutoMerge(cfg) {
 		return
 	}
-	if err := mergeTalosconfigFile(talosconfPath(), userTalosconfigPath()); err != nil {
+	if err := mergeTalosconfigFile(talosconfPath(), userTalosconfigPath(), false); err != nil {
 		stderrln("⚠ talos merge: %v", err)
 		return
 	}

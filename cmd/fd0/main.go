@@ -356,7 +356,8 @@ type talosMoveCmd struct {
 	Force   bool   `name:"force" help:"Overwrite an existing context with the same name in destination."`
 }
 type talosSyncCmd struct {
-	Merge bool `name:"merge" help:"After rendering, fold into ~/.talos/config."`
+	Merge         bool `name:"merge" help:"After rendering, fold into ~/.talos/config."`
+	ReplaceActive bool `name:"replace-active" help:"Allow this merge to replace the active local context."`
 }
 type talosRoleAddCmd struct {
 	From        string   `name:"from" required:"" help:"Existing fd0-managed talos context with admin privileges (issuer)."`
@@ -446,7 +447,8 @@ type kubeMoveCmd struct {
 	Force   bool   `name:"force" help:"Overwrite an existing kubeconfig with the same name in destination."`
 }
 type kubeSyncCmd struct {
-	Merge bool `name:"merge" help:"After rendering, fold into ~/.kube/config."`
+	Merge         bool `name:"merge" help:"After rendering, fold into ~/.kube/config."`
+	ReplaceActive bool `name:"replace-active" help:"Allow this merge to replace the active local context and its cluster/user."`
 }
 
 type initCmd struct{}
@@ -982,7 +984,7 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 	case "talos move <name>":
 		return cli.RunTalosMove(ctx, c.Talos.Move.Name, c.Talos.Move.From, c.Talos.Move.ToScope, c.Talos.Move.Force)
 	case "talos sync":
-		return cli.RunTalosSync(ctx, c.Talos.Sync.Merge)
+		return cli.RunTalosSync(ctx, c.Talos.Sync.Merge, c.Talos.Sync.ReplaceActive)
 	case "talos role-add":
 		return cli.RunTalosRoleAdd(ctx, cli.TalosRoleAddOpts{
 			SourceContext: c.Talos.RoleAdd.From,
@@ -1043,7 +1045,7 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 	case "kube move <name>":
 		return cli.RunKubeMove(ctx, c.Kube.Move.Name, c.Kube.Move.From, c.Kube.Move.ToScope, c.Kube.Move.Force)
 	case "kube sync":
-		return cli.RunKubeSync(ctx, c.Kube.Sync.Merge)
+		return cli.RunKubeSync(ctx, c.Kube.Sync.Merge, c.Kube.Sync.ReplaceActive)
 	}
 	return fmt.Errorf("unknown command %q", kctx.Command())
 }

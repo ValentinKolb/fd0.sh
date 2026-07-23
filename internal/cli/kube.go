@@ -416,7 +416,7 @@ func RunKubeMove(ctx context.Context, name, fromScope, toScope string, force boo
 }
 
 func RunKubeEnable(ctx context.Context, merge bool) error {
-	if err := RunKubeSync(ctx, merge); err != nil {
+	if err := RunKubeSync(ctx, merge, false); err != nil {
 		return err
 	}
 	if err := setProjectionConfig("kube", true, merge); err != nil {
@@ -438,7 +438,10 @@ func RunKubeDisable(_ context.Context) error {
 	return nil
 }
 
-func RunKubeSync(ctx context.Context, merge bool) error {
+func RunKubeSync(ctx context.Context, merge, replaceActive bool) error {
+	if replaceActive && !merge {
+		return errors.New("kube sync: --replace-active requires --merge")
+	}
 	// Render under flock; close the session BEFORE shelling out to
 	// kubectl so a slow kubectl plugin / blocked filesystem can't
 	// block every other fd0 command on the lock.
@@ -454,7 +457,7 @@ func RunKubeSync(ctx context.Context, merge bool) error {
 		s.Close()
 	}
 	if merge {
-		if err := mergeKubeconfigFile(kubeconfPath(), userKubeconfigPath()); err != nil {
+		if err := mergeKubeconfigFile(kubeconfPath(), userKubeconfigPath(), replaceActive); err != nil {
 			return err
 		}
 		stderrln("✓ merged into %s", userKubeconfigPath())

@@ -363,7 +363,7 @@ func RunTalosMove(ctx context.Context, name, fromScope, toScope string, force bo
 }
 
 func RunTalosEnable(ctx context.Context, merge bool) error {
-	if err := RunTalosSync(ctx, merge); err != nil {
+	if err := RunTalosSync(ctx, merge, false); err != nil {
 		return err
 	}
 	if err := setProjectionConfig("talos", true, merge); err != nil {
@@ -393,7 +393,10 @@ func RunTalosDisable(_ context.Context) error {
 // The render happens under the session flock; the merge runs after the
 // session is closed so a slow / read-only filesystem can't block every
 // other fd0 command competing for the lock.
-func RunTalosSync(ctx context.Context, merge bool) error {
+func RunTalosSync(ctx context.Context, merge, replaceActive bool) error {
+	if replaceActive && !merge {
+		return errors.New("talos sync: --replace-active requires --merge")
+	}
 	{
 		s, err := Open(ctx)
 		if err != nil {
@@ -406,7 +409,7 @@ func RunTalosSync(ctx context.Context, merge bool) error {
 		s.Close()
 	}
 	if merge {
-		if err := mergeTalosconfigFile(talosconfPath(), userTalosconfigPath()); err != nil {
+		if err := mergeTalosconfigFile(talosconfPath(), userTalosconfigPath(), replaceActive); err != nil {
 			return err
 		}
 		stderrln("✓ merged into %s", userTalosconfigPath())
