@@ -206,7 +206,7 @@ func RunUpdate(ctx context.Context, opts UpdateOptions) error {
 	if err != nil {
 		return fmt.Errorf("update: create temp dir: %w", err)
 	}
-	defer os.RemoveAll(tmp)
+	defer func() { _ = os.RemoveAll(tmp) }()
 	base := strings.TrimRight(opts.ReleaseBase, "/") + "/download/" + target.DownloadTag
 	archivePath := filepath.Join(tmp, archiveName)
 	fmt.Fprintf(opts.Stderr, "fetch %s\n", base+"/"+archiveName)
@@ -729,7 +729,7 @@ func extractClientBinaries(archivePath, dst string) error {
 	if err != nil {
 		return fmt.Errorf("update: open archive: %w", err)
 	}
-	defer gz.Close()
+	defer func() { _ = gz.Close() }()
 	tr := tar.NewReader(gz)
 	want := map[string]bool{"fd0": false, "fd0-agent": false}
 	for {
@@ -744,7 +744,7 @@ func extractClientBinaries(archivePath, dst string) error {
 		if _, ok := want[name]; !ok {
 			continue
 		}
-		if h.Typeflag != tar.TypeReg && h.Typeflag != tar.TypeRegA {
+		if h.Typeflag != tar.TypeReg {
 			return fmt.Errorf("update: archive entry %s is not a regular file", h.Name)
 		}
 		if h.Size <= 0 || h.Size > updateArchiveMaxBytes {
@@ -778,6 +778,9 @@ func extractClientBinaries(archivePath, dst string) error {
 }
 
 func installClientBinaries(srcDir, prefix string) error {
+	// The caller-selected prefix contains executables, not secret material;
+	// conventional user and system binary directories require traversal.
+	// #nosec G301 -- executable installation directories conventionally use 0755.
 	if err := os.MkdirAll(prefix, 0o755); err != nil {
 		return fmt.Errorf("update: create install dir %s: %w", prefix, err)
 	}

@@ -2,7 +2,7 @@ package passitem
 
 import (
 	"crypto/hmac"
-	"crypto/sha1"
+	"crypto/sha1" // #nosec G505 -- RFC 6238 requires HMAC-SHA1 interoperability.
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/base32"
@@ -250,6 +250,9 @@ func NewTOTPField(v TOTPValue) (Field, error) {
 	if err := ValidateTOTP(v); err != nil {
 		return Field{}, err
 	}
+	// The value is encrypted as part of the containing fd0 record before it
+	// leaves the trusted process; JSON is only the internal typed encoding.
+	// #nosec G117 -- the field name describes encrypted application data.
 	raw, err := json.Marshal(v)
 	if err != nil {
 		return Field{}, err

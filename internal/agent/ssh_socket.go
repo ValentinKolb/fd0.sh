@@ -27,7 +27,6 @@ import (
 	"sync"
 
 	"github.com/valentinkolb/fd0.sh/internal/sshagent"
-	"github.com/valentinkolb/fd0.sh/internal/sshkey"
 	"golang.org/x/crypto/ssh/agent"
 )
 
@@ -99,13 +98,3 @@ func handleSSHConn(log *slog.Logger, conn net.Conn, fetcher SSHKeyFetcher) {
 		log.Debug("ssh-agent: serve finished", "err", err)
 	}
 }
-
-// noKeysFetcher is the default fetcher used until the operator wires
-// the real one from cmd/fd0-agent. It always returns an empty list.
-// Kept as a separate function so the test for StartSSHSocket can use
-// it without importing the real fetcher.
-func noKeysFetcher() ([]sshagent.KeyEntry, error) { return nil, nil }
-
-// (unused) helper to silence importable-but-unused warnings on
-// platforms where the test build doesn't reach sshkey.
-var _ = sshkey.TypeEd25519

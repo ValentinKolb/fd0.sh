@@ -782,7 +782,7 @@ func validateMembershipPage(after string, memberships []membershipResult, nextAf
 func membershipCursorScopeID(cursor string) (string, error) {
 	const prefix = "scope:"
 	if !strings.HasPrefix(cursor, prefix) {
-		return "", errors.New("cursor must start with scope:")
+		return "", errors.New("cursor must start with scope")
 	}
 	scopeID := strings.TrimPrefix(cursor, prefix)
 	if _, err := proto.ParseScopeID(scopeID); err != nil {

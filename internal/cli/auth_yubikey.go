@@ -292,7 +292,7 @@ func confirmSlotOverwrite(force bool) error {
 		}
 		return fmt.Errorf("yubikey: cannot probe slot 0x9d before enrollment (%w); pass --force to skip the probe (DANGEROUS — may overwrite an existing key)", err)
 	}
-	defer card.Close()
+	defer func() { _ = card.Close() }()
 	pub, err := card.PublicX25519()
 	if err != nil {
 		// PublicX25519 fails when the slot is empty (the cached pub

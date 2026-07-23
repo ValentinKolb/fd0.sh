@@ -260,12 +260,6 @@ func (w *Witness) Run(ctx context.Context) error {
 	}
 }
 
-// smallestInterval is no longer needed (single target). Kept as a
-// stub returning Config.PollInterval for any in-tree caller.
-func (w *Witness) smallestInterval() time.Duration {
-	return w.Config.PollInterval
-}
-
 // pollOne handles a single (target, chain_id):
 //
 //  1. Fetch /v1/sth/{chain_id} → STH
@@ -681,36 +675,37 @@ func (w *Witness) VerifyArchive(ctx context.Context) (errs, equivs int, err erro
 			if qerr != nil {
 				return errs, equivs, qerr
 			}
-			for rows.Next() {
-				var (
-					size int64
-					root []byte
-					ts   int64
-					sig  []byte
-				)
-				if scerr := rows.Scan(&size, &root, &ts, &sig); scerr != nil {
-					rows.Close()
-					return errs, equivs, scerr
+			qerr = func() error {
+				defer func() { _ = rows.Close() }()
+				for rows.Next() {
+					var (
+						size int64
+						root []byte
+						ts   int64
+						sig  []byte
+					)
+					if scerr := rows.Scan(&size, &root, &ts, &sig); scerr != nil {
+						return scerr
+					}
+					sth := translog.STH{
+						Head: translog.TreeHead{
+							ChainID: sr.ChainID, TreeSize: uint64(size),
+							RootHash: root, Timestamp: uint64(ts),
+						},
+						Signature: sig,
+					}
+					if verr := translog.VerifySTH(pub, sth); verr != nil {
+						w.Log.Error("witness verify: BAD STH SIGNATURE",
+							"server", sr.ServerURL, "chain", sr.ChainID,
+							"tree_size", size, "err", verr)
+						errs++
+					}
 				}
-				sth := translog.STH{
-					Head: translog.TreeHead{
-						ChainID: sr.ChainID, TreeSize: uint64(size),
-						RootHash: root, Timestamp: uint64(ts),
-					},
-					Signature: sig,
-				}
-				if verr := translog.VerifySTH(pub, sth); verr != nil {
-					w.Log.Error("witness verify: BAD STH SIGNATURE",
-						"server", sr.ServerURL, "chain", sr.ChainID,
-						"tree_size", size, "err", verr)
-					errs++
-				}
+				return rows.Err()
+			}()
+			if qerr != nil {
+				return errs, equivs, qerr
 			}
-			if rerr := rows.Err(); rerr != nil {
-				rows.Close()
-				return errs, equivs, rerr
-			}
-			rows.Close()
 			if sr.HasEquivAt {
 				equivs++
 				w.Log.Error("witness verify: EQUIVOCATION ARCHIVED (same-size multi-root)",
