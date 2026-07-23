@@ -14,7 +14,7 @@ import (
 
 func TestAgentUnlockAllowsChainAheadWhenUsedMethodStillLive(t *testing.T) {
 	paths, pass, _ := writeAuthTipAheadFixture(t, true)
-	resp := (&Server{}).handleUnlock(&UnlockReq{
+	resp := (&Server{paths: paths}).handleUnlock(&UnlockReq{
 		VaultPath:     paths.Vault,
 		UserChainPath: paths.UserChain,
 		MethodType:    proto.AuthPassphrase,
@@ -27,7 +27,7 @@ func TestAgentUnlockAllowsChainAheadWhenUsedMethodStillLive(t *testing.T) {
 
 func TestAgentUnlockRejectsChainAheadWhenUsedMethodWasRemoved(t *testing.T) {
 	paths, pass, _ := writeAuthTipAheadFixture(t, false)
-	resp := (&Server{}).handleUnlock(&UnlockReq{
+	resp := (&Server{paths: paths}).handleUnlock(&UnlockReq{
 		VaultPath:     paths.Vault,
 		UserChainPath: paths.UserChain,
 		MethodType:    proto.AuthPassphrase,
@@ -38,6 +38,90 @@ func TestAgentUnlockRejectsChainAheadWhenUsedMethodWasRemoved(t *testing.T) {
 	}
 	if !strings.Contains(resp.Err, "method_id \"am_a\" is no longer active") {
 		t.Fatalf("unexpected error: %s", resp.Err)
+	}
+}
+
+func TestAgentUnlockCannotDisableCanonicalChainCheck(t *testing.T) {
+	paths, pass, _ := writeAuthTipAheadFixture(t, false)
+	resp := (&Server{paths: paths}).handleUnlock(&UnlockReq{
+		VaultPath:  paths.Vault,
+		MethodType: proto.AuthPassphrase,
+		Passphrase: pass,
+	})
+	if resp.Err == "" || !strings.Contains(resp.Err, `method_id "am_a" is no longer active`) {
+		t.Fatalf("empty caller user-chain path bypassed revocation check: %q", resp.Err)
+	}
+}
+
+func TestAgentUnlockRejectsOrphanWrapAtCurrentChainTip(t *testing.T) {
+	paths, pass, _ := writeAuthTipAheadFixture(t, false)
+	st, err := chain.ReplayUser(paths.UserChain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := vault.Read(paths.Vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := vault.Open(v, []vault.MethodResolver{
+		vault.PassphraseResolver{Passphrase: pass},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer crypto.Wipe(opened.UnlockKey)
+	defer crypto.Wipe(opened.PayloadKey)
+	defer crypto.Wipe(opened.Body.SuperPriv)
+	opened.Body.AuthTip = proto.ChainTip{Seq: st.TipSeq, Hash: append([]byte(nil), st.TipHash...)}
+	if err := vault.SaveBody(paths.Vault, v.UserSuperPub, opened.Body, opened.PayloadKey); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := (&Server{paths: paths}).handleUnlock(&UnlockReq{
+		VaultPath:     paths.Vault,
+		UserChainPath: paths.UserChain,
+		MethodType:    proto.AuthPassphrase,
+		Passphrase:    pass,
+	})
+	if resp.Err == "" || !strings.Contains(resp.Err, `method_id "am_a" is no longer active`) {
+		t.Fatalf("orphan wrap remained usable at current chain tip: %q", resp.Err)
+	}
+}
+
+func TestAgentUnlockRejectsCallerSelectedPaths(t *testing.T) {
+	paths, pass, _ := writeAuthTipAheadFixture(t, true)
+	resp := (&Server{paths: paths}).handleUnlock(&UnlockReq{
+		VaultPath:     paths.Vault + ".stale",
+		UserChainPath: paths.UserChain,
+		MethodType:    proto.AuthPassphrase,
+		Passphrase:    pass,
+	})
+	if resp.Err == "" || !strings.Contains(resp.Err, "refusing caller-selected vault path") {
+		t.Fatalf("unexpected error: %q", resp.Err)
+	}
+}
+
+func TestAgentAddWrapRejectsMethodOutsideCanonicalChain(t *testing.T) {
+	paths, pass, _ := writeAuthTipAheadFixture(t, true)
+	srv := &Server{paths: paths}
+	t.Cleanup(srv.lock)
+	unlock := srv.handleUnlock(&UnlockReq{
+		VaultPath:     paths.Vault,
+		UserChainPath: paths.UserChain,
+		MethodType:    proto.AuthPassphrase,
+		Passphrase:    pass,
+	})
+	if unlock.Err != "" {
+		t.Fatalf("unlock: %s", unlock.Err)
+	}
+	resp := srv.handleAddWrap(&AddWrapReq{
+		VaultPath:  paths.Vault,
+		MethodID:   "am_orphan",
+		MethodType: proto.AuthPassphrase,
+		UnlockKey:  bytes.Repeat([]byte{0x44}, 32),
+	})
+	if resp.Err == "" || !strings.Contains(resp.Err, `method_id "am_orphan" is no longer active`) {
+		t.Fatalf("unexpected add-wrap response: %q", resp.Err)
 	}
 }
 

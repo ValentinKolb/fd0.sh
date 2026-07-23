@@ -428,7 +428,10 @@ func (s *Server) handleUnlock(u *UnlockReq) *Response {
 		return errResp(fmt.Sprintf("unsupported method_type %q", u.MethodType))
 	}
 
-	v, err := vault.Read(u.VaultPath)
+	if err := s.validateCanonicalPaths(u.VaultPath, u.UserChainPath); err != nil {
+		return errResp(err.Error())
+	}
+	v, err := vault.Read(s.paths.Vault)
 	if err != nil {
 		return errResp(err.Error())
 	}
@@ -449,67 +452,47 @@ func (s *Server) handleUnlock(u *UnlockReq) *Response {
 		return errResp("vault: super_priv pub != user_super_pub")
 	}
 
-	// SECURITY: rollback-detection (codex audit 🔴). The vault file
-	// is mutable storage; the user.cbor chain is append-only and
-	// every entry is signed. If an attacker rolls back vault.enc to
-	// an older snapshot (e.g. one where a now-revoked credential
-	// was still active), the older vault still decrypts cleanly and
-	// the agent would otherwise cache super_priv under the revoked
-	// credential. Compare body.AuthTip against the live chain tip;
-	// mismatch ⇒ refuse.
-	if u.UserChainPath != "" {
-		st, rerr := chain.ReplayUser(u.UserChainPath)
-		if rerr != nil {
-			crypto.Wipe(res.UnlockKey)
-			crypto.Wipe(res.PayloadKey)
-			return errResp(fmt.Sprintf("vault: replay user chain for rollback check: %v", rerr))
-		}
-		// st == nil means "no user chain yet" (file missing or
-		// empty). For a freshly-`init`'d vault this is fine; for a
-		// vault that has gone through `auth add` etc, body.AuthTip
-		// would be non-zero, and a missing chain is a rollback.
-		var liveSeq uint64
-		var liveHash []byte
-		if st != nil {
-			liveSeq = st.TipSeq
-			liveHash = st.TipHash
-		}
-		// SECURITY (codex security audit 🟠 vault.go:253): legacy
-		// vaults from before the AuthTip field was added decode
-		// with AuthTip = zero (CBOR omits absent fields). If an
-		// attacker rolls back to such a vault snapshot AND deletes
-		// the user chain, the previous check would see (0, nil) ==
-		// (0, nil) and unlock. Properly init'd modern vaults have
-		// AuthTip.Hash == HashPrefix(genesis_event), which is
-		// always exactly 32 bytes. Reject any vault whose AuthTip
-		// hash is missing/short — it can't be a legitimately-
-		// initialised v1 vault.
-		if len(body.AuthTip.Hash) != 32 {
-			crypto.Wipe(res.UnlockKey)
-			crypto.Wipe(res.PayloadKey)
-			return errResp(fmt.Sprintf(
-				"vault: AuthTip.Hash is %d bytes (want 32) — possible legacy/rolled-back vault; refusing to unlock",
-				len(body.AuthTip.Hash),
-			))
-		}
-		if liveSeq != body.AuthTip.Seq || !bytes.Equal(liveHash, body.AuthTip.Hash) {
-			if st == nil || st.TipSeq <= body.AuthTip.Seq {
-				crypto.Wipe(res.UnlockKey)
-				crypto.Wipe(res.PayloadKey)
-				return errResp(fmt.Sprintf(
-					"vault: ROLLBACK DETECTED — vault auth_tip (seq=%d) does not match user chain tip (seq=%d); refusing to unlock with potentially revoked credentials",
-					body.AuthTip.Seq, liveSeq,
-				))
-			}
-			if err := verifyChainAheadUnlock(st, v.UserSuperPub, body.SuperPriv, res.UsedWrap, res.UnlockKey); err != nil {
-				crypto.Wipe(res.UnlockKey)
-				crypto.Wipe(res.PayloadKey)
-				return errResp(fmt.Sprintf(
-					"vault: ROLLBACK DETECTED — vault auth_tip (seq=%d) is behind user chain tip (seq=%d) and used auth method is not live: %v",
-					body.AuthTip.Seq, liveSeq, err,
-				))
-			}
-		}
+	// The canonical signed user chain is authoritative for every unlock, not
+	// only when its tip is ahead of the vault. This rejects revoked methods
+	// and orphan wraps even when a stale vault has an internally consistent
+	// AuthTip.
+	st, rerr := chain.ReplayUser(s.paths.UserChain)
+	if rerr != nil {
+		crypto.Wipe(res.UnlockKey)
+		crypto.Wipe(res.PayloadKey)
+		return errResp(fmt.Sprintf("vault: replay canonical user chain: %v", rerr))
+	}
+	if st == nil || st.LatestAuthSet == nil {
+		crypto.Wipe(res.UnlockKey)
+		crypto.Wipe(res.PayloadKey)
+		return errResp("vault: canonical user chain is missing; refusing to unlock")
+	}
+	if !bytes.Equal(st.UserSuperPub, v.UserSuperPub) {
+		crypto.Wipe(res.UnlockKey)
+		crypto.Wipe(res.PayloadKey)
+		return errResp("vault: canonical user chain belongs to a different identity")
+	}
+	if len(body.AuthTip.Hash) != 32 {
+		crypto.Wipe(res.UnlockKey)
+		crypto.Wipe(res.PayloadKey)
+		return errResp(fmt.Sprintf(
+			"vault: AuthTip.Hash is %d bytes (want 32) — possible legacy/rolled-back vault; refusing to unlock",
+			len(body.AuthTip.Hash),
+		))
+	}
+	if st.TipSeq < body.AuthTip.Seq ||
+		(st.TipSeq == body.AuthTip.Seq && !bytes.Equal(st.TipHash, body.AuthTip.Hash)) {
+		crypto.Wipe(res.UnlockKey)
+		crypto.Wipe(res.PayloadKey)
+		return errResp(fmt.Sprintf(
+			"vault: ROLLBACK DETECTED — vault auth_tip (seq=%d) does not match canonical user chain tip (seq=%d)",
+			body.AuthTip.Seq, st.TipSeq,
+		))
+	}
+	if err := verifyLiveAuthMethod(st, v.UserSuperPub, body.SuperPriv, res.UsedWrap, res.UnlockKey); err != nil {
+		crypto.Wipe(res.UnlockKey)
+		crypto.Wipe(res.PayloadKey)
+		return errResp(fmt.Sprintf("vault: used auth method is not active in the canonical user chain: %v", err))
 	}
 
 	x, err := crypto.EdPrivToX25519(body.SuperPriv)
@@ -626,6 +609,9 @@ func (s *Server) handleReSeal(r *ReSealReq) *Response {
 	if s.superPriv == nil || s.payloadKey == nil {
 		return errResp("locked")
 	}
+	if err := s.validateCanonicalVaultPath(r.VaultPath); err != nil {
+		return errResp(err.Error())
+	}
 	body, err := s.unredact(r.RedactedBody)
 	if err != nil {
 		return errResp(err.Error())
@@ -634,7 +620,7 @@ func (s *Server) handleReSeal(r *ReSealReq) *Response {
 	pk := make([]byte, 32)
 	copy(pk, s.payloadKey.Bytes())
 	defer crypto.Wipe(pk)
-	if err := vault.SaveBody(r.VaultPath, s.userSuperPub, body, pk); err != nil {
+	if err := vault.SaveBody(s.paths.Vault, s.userSuperPub, body, pk); err != nil {
 		return errResp(err.Error())
 	}
 	if s.redactedBody != nil {
@@ -748,6 +734,9 @@ func (s *Server) handleAddWrap(r *AddWrapReq) *Response {
 	if s.superPriv == nil || s.payloadKey == nil {
 		return errResp("locked")
 	}
+	if err := s.validateCanonicalVaultPath(r.VaultPath); err != nil {
+		return errResp(err.Error())
+	}
 	if r.MethodID == "" || r.MethodType == "" || len(r.UnlockKey) != 32 {
 		return errResp("add_wrap: missing method_id/method_type/unlock_key")
 	}
@@ -765,7 +754,19 @@ func (s *Server) handleAddWrap(r *AddWrapReq) *Response {
 		PublicParams: r.PublicParams,
 		UnlockKey:    r.UnlockKey,
 	}
-	if err := vault.AddWrap(r.VaultPath, s.userSuperPub, body, pk, wrap); err != nil {
+	st, err := chain.ReplayUser(s.paths.UserChain)
+	if err != nil {
+		return errResp(fmt.Sprintf("add_wrap: replay canonical user chain: %v", err))
+	}
+	candidate := &proto.WrappedKey{
+		MethodID:     r.MethodID,
+		MethodType:   r.MethodType,
+		PublicParams: r.PublicParams,
+	}
+	if err := verifyLiveAuthMethod(st, s.userSuperPub, body.SuperPriv, candidate, r.UnlockKey); err != nil {
+		return errResp(fmt.Sprintf("add_wrap: method is not active in the canonical user chain: %v", err))
+	}
+	if err := vault.AddWrap(s.paths.Vault, s.userSuperPub, body, pk, wrap); err != nil {
 		return errResp(err.Error())
 	}
 	return &Response{AddWrap: &AddWrapResp{}}
@@ -780,6 +781,9 @@ func (s *Server) handleRemoveWrap(r *RemoveWrapReq) *Response {
 	if s.superPriv == nil || s.payloadKey == nil {
 		return errResp("locked")
 	}
+	if err := s.validateCanonicalVaultPath(r.VaultPath); err != nil {
+		return errResp(err.Error())
+	}
 	if r.MethodID == s.unlockMID {
 		return errResp("remove_wrap: cannot remove the currently-active method (lock first, unlock with another method, then retry)")
 	}
@@ -791,7 +795,7 @@ func (s *Server) handleRemoveWrap(r *RemoveWrapReq) *Response {
 	pk := make([]byte, 32)
 	copy(pk, s.payloadKey.Bytes())
 	defer crypto.Wipe(pk)
-	if err := vault.RemoveWrap(r.VaultPath, s.userSuperPub, body, pk, r.MethodID); err != nil {
+	if err := vault.RemoveWrap(s.paths.Vault, s.userSuperPub, body, pk, r.MethodID); err != nil {
 		return errResp(err.Error())
 	}
 	return &Response{RemoveWrap: &RemoveWrapResp{}}
@@ -834,9 +838,35 @@ func (s *Server) lockHeld() {
 	s.lastActivity = time.Time{}
 }
 
-func verifyChainAheadUnlock(st *chain.UserState, userSuperPub, superPriv []byte, used *proto.WrappedKey, unlockKey []byte) error {
+func (s *Server) validateCanonicalPaths(vaultPath, userChainPath string) error {
+	if err := s.validateCanonicalVaultPath(vaultPath); err != nil {
+		return err
+	}
+	if s.paths.UserChain == "" {
+		return errors.New("agent: canonical user chain path is unavailable")
+	}
+	if userChainPath != "" && userChainPath != s.paths.UserChain {
+		return errors.New("agent: refusing caller-selected user chain path")
+	}
+	return nil
+}
+
+func (s *Server) validateCanonicalVaultPath(vaultPath string) error {
+	if s.paths.Vault == "" {
+		return errors.New("agent: canonical vault path is unavailable")
+	}
+	if vaultPath != "" && vaultPath != s.paths.Vault {
+		return errors.New("agent: refusing caller-selected vault path")
+	}
+	return nil
+}
+
+func verifyLiveAuthMethod(st *chain.UserState, userSuperPub, superPriv []byte, used *proto.WrappedKey, unlockKey []byte) error {
 	if st == nil || st.LatestAuthSet == nil {
 		return errors.New("missing latest auth.set")
+	}
+	if !bytes.Equal(st.UserSuperPub, userSuperPub) {
+		return errors.New("auth.set belongs to a different identity")
 	}
 	if used == nil {
 		return errors.New("missing used wrap")

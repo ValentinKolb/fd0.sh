@@ -67,8 +67,9 @@ type EncryptSuperPrivResp struct {
 }
 
 // AddWrapReq adds a new vault wrap (new K_unlock for the same payload_key).
-// The agent encrypts its cached payload_key under the supplied K_unlock and
-// re-writes the vault file atomically.
+// VaultPath is retained for wire compatibility; the agent only accepts its
+// canonical fdhome vault path. The method must already be active in the
+// verified current user chain.
 type AddWrapReq struct {
 	VaultPath    string `cbor:"vault_path"`
 	MethodID     string `cbor:"method_id"`
@@ -121,17 +122,11 @@ type GetBodyResp struct {
 	UserSuperPub []byte `cbor:"user_super_pub"`
 }
 
-// UnlockReq supplies a credential to open the vault at VaultPath.
+// UnlockReq supplies a credential to open the agent's canonical vault.
 //
-// UserChainPath is the path to the user.cbor chain file. The agent
-// uses it during unlock for a rollback-detection check: after
-// AEAD-decrypt of the vault body, the agent compares
-// `body.AuthTip` against the live chain's tip; a mismatch means the
-// vault file has been rolled back relative to the (signed,
-// append-only) chain — likely a revoked-credential resurrection
-// attempt — and the agent refuses to cache super_priv (codex audit:
-// 🔴 vault.go:68). Empty string disables the check (back-compat
-// for old callers; emit a warning when this happens).
+// VaultPath and UserChainPath remain on the wire for compatibility, but the
+// agent rejects non-empty values that differ from its own fdhome.Paths. An
+// empty UserChainPath no longer disables rollback and revocation checks.
 type UnlockReq struct {
 	VaultPath     string `cbor:"vault_path"`
 	UserChainPath string `cbor:"user_chain_path,omitempty"`

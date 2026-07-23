@@ -1,13 +1,13 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/valentinkolb/fd0.sh/internal/chain"
 	"github.com/valentinkolb/fd0.sh/internal/crypto"
 	"github.com/valentinkolb/fd0.sh/internal/fdhome"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
@@ -33,15 +33,38 @@ func TestAgentRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Modern vaults always have a 32-byte AuthTip.Hash from the
-	// genesis auth.set event. The agent's new rollback check
-	// (Wave 2.4 codex security fix) rejects zero-hash AuthTips
-	// to detect legacy/rolled-back vaults.
-	authTipHash := bytes.Repeat([]byte{0xCC}, 32)
+	encSP, err := vault.EncryptSuperPriv(priv.Bytes(), pub.Bytes(), "am_p", uk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	method := proto.AuthMethod{
+		MethodID:           "am_p",
+		MethodType:         proto.AuthPassphrase,
+		PublicParams:       pp,
+		EncryptedSuperPriv: encSP,
+	}
+	genesis, err := chain.BuildUserAuthSet(
+		chain.LocalSigner{Priv: priv},
+		pub.Bytes(),
+		0,
+		nil,
+		[]proto.AuthMethod{method},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chain.AppendUser(paths.UserChain, genesis); err != nil {
+		t.Fatal(err)
+	}
+	prefix, err := genesis.PrevHashInput()
+	if err != nil {
+		t.Fatal(err)
+	}
+	authTipHash := proto.HashPrefix(prefix)
 	body := &proto.VaultBody{
-		SuperPriv: priv.Bytes(),
-		AuthTip:   proto.ChainTip{Seq: 0, Hash: authTipHash},
-		Scopes:    map[string]proto.ScopeVaultData{},
+		SuperPriv:        priv.Bytes(),
+		AuthTip:          proto.ChainTip{Seq: 0, Hash: authTipHash[:]},
+		Scopes:           map[string]proto.ScopeVaultData{},
 		PinnedIdentities: map[string]proto.PinnedIdentity{},
 	}
 	if err := vault.Save(paths.Vault, pub.Bytes(), body, []vault.WrapInput{{
@@ -68,13 +91,8 @@ func TestAgentRoundtrip(t *testing.T) {
 	if st.Unlocked {
 		t.Fatal("expected locked")
 	}
-	// Unlock.
-	// Pass empty UserChainPath to skip the rollback-detection
-	// check — this unit test fixture builds a vault without the
-	// matching user.cbor chain, which the production-path check
-	// would (correctly) reject. Integration tests cover the
-	// real path.
-	ur, err := cli.Unlock(paths.Vault, "", proto.AuthPassphrase, UnlockCredential{Passphrase: pass})
+	// Unlock against the matching canonical user chain.
+	ur, err := cli.Unlock(paths.Vault, paths.UserChain, proto.AuthPassphrase, UnlockCredential{Passphrase: pass})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -274,8 +274,8 @@ func SaveBody(path string, userSuperPub []byte, body *proto.VaultBody, payloadKe
 // Idempotent on duplicate method_id: if a wrap with that method_id already
 // exists AND its payload-key decryption matches under the supplied
 // UnlockKey, the call is a no-op (= success). This supports crash recovery
-// when a previous `auth add` was interrupted between AddWrap and the
-// chain.AppendUser write — retrying must not error.
+// when a previous `auth add` was interrupted after the signed chain append
+// or while persisting the authorized wrap — retrying must not error.
 //
 // If a wrap with the same method_id exists but with a DIFFERENT
 // UnlockKey (genuine collision: random ulid duplicated, or programmer
@@ -318,7 +318,7 @@ func AddWrap(path string, userSuperPub []byte, body *proto.VaultBody, payloadKey
 		if !match {
 			return fmt.Errorf("vault: method_id %q exists but wraps a different payload_key", newWrap.MethodID)
 		}
-		// Truly a no-op retry. Caller's chain step can proceed.
+		// Truly a no-op retry.
 		return nil
 	}
 	wrapNonce, err := crypto.Nonce12()
