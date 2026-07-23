@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration_isolation.sh"
+fd0_test_require_isolation
 
 # Translog (TRANSLOG.md §6.1) requires explicit opt-in for non-TTY pinning.
 # Tests run unattended → enable auto-pin so the first /sync can land the pin.
@@ -33,15 +35,15 @@ ok()   { PASS=$((PASS+1)); printf "  \033[32m✓\033[0m %s\n" "$*"; }
 no()   { FAIL=$((FAIL+1)); printf "  \033[31m✗\033[0m %s\n" "$*"; }
 
 cleanup() {
-    pkill -f fd0-agent 2>/dev/null || true
+    fd0_test_stop_matching -f fd0-agent 2>/dev/null || true
     kill $SERVER_PID 2>/dev/null || true
     rm -rf "$HOME_DIR" "$SERVER_DB" "$SERVER_LOG"
 }
 trap cleanup EXIT
 
 step "Setup"
-pkill -f fd0-server 2>/dev/null || true
-pkill -f fd0-agent  2>/dev/null || true
+fd0_test_stop_matching -f fd0-server 2>/dev/null || true
+fd0_test_stop_matching -f fd0-agent  2>/dev/null || true
 sleep 0.3
 rm -rf "$HOME_DIR" "$SERVER_DB" "$SERVER_LOG"
 mkdir -p "$HOME_DIR" && chmod 700 "$HOME_DIR"
@@ -79,7 +81,7 @@ PERMS_LOCK=$(stat -f "%Lp" "$HOME_DIR/.lock" 2>/dev/null || stat -c "%a" "$HOME_
 # end state is 0700.
 step "F2) Loose home perms (0777) → fd0 self-heals"
 A lock >/dev/null 2>&1
-pkill -f fd0-agent 2>/dev/null || true
+fd0_test_stop_matching -f fd0-agent 2>/dev/null || true
 sleep 0.3
 chmod 777 "$HOME_DIR"
 printf "p\n" | env FD0_HOME="$HOME_DIR" FD0_SSH_SOCK="$HOME_DIR/ssh.sock" "$FD0" unlock >/dev/null 2>&1 || true

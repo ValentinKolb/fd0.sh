@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration_isolation.sh"
+fd0_test_require_isolation
 
 # Translog (TRANSLOG.md §6.1) requires explicit opt-in for non-TTY pinning.
 # Tests run unattended → enable auto-pin so the first /sync can land the pin.
@@ -85,8 +87,8 @@ EOF
 
 # ─── setup ────────────────────────────────────────────────────────────────
 step "Setup (seed=$SEED iters=$ITERS interval=$SYNC_INTERVAL)"
-pkill -f fd0-server 2>/dev/null || true
-pkill -f fd0-agent  2>/dev/null || true
+fd0_test_stop_matching -f fd0-server 2>/dev/null || true
+fd0_test_stop_matching -f fd0-agent  2>/dev/null || true
 sleep 0.3
 rm -f "$SERVER_DB" "$SERVER_LOG" "$RECOVERY".alice "$RECOVERY".bob
 rm -rf "$HOME/.fd0-alice-laptop" "$HOME/.fd0-alice-desktop" \
@@ -94,7 +96,7 @@ rm -rf "$HOME/.fd0-alice-laptop" "$HOME/.fd0-alice-desktop" \
 
 "$FD0_SERVER_BIN" --bind=":${SERVER_PORT}" --db="$SERVER_DB" --no-ratelimit > "$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
-trap 'kill $SERVER_PID 2>/dev/null || true; pkill -f fd0-agent 2>/dev/null || true' EXIT
+trap 'kill $SERVER_PID 2>/dev/null || true; fd0_test_stop_matching -f fd0-agent 2>/dev/null || true' EXIT
 sleep 0.5
 curl -fsS "http://127.0.0.1:${SERVER_PORT}/health" >/dev/null
 log "fd0-server up"

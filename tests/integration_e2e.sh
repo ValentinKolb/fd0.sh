@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration_isolation.sh"
+fd0_test_require_isolation
 
 # Translog (TRANSLOG.md §6.1) requires explicit opt-in for non-TTY pinning.
 export FD0_AUTO_PIN=1
@@ -66,8 +68,8 @@ expect_ge() {
 norm_members() { sed -e 's/^[* ] //' | sort; }
 
 cleanup() {
-    pkill -f fd0-witness 2>/dev/null || true
-    pkill -f fd0-agent  2>/dev/null || true
+    fd0_test_stop_matching -f fd0-witness 2>/dev/null || true
+    fd0_test_stop_matching -f fd0-agent  2>/dev/null || true
     kill $SERVER_PID $WITNESS_PID 2>/dev/null || true
     rm -rf "$HOME_AL" "$HOME_AD" "$HOME_AP" "$HOME_BL" "$HOME_BD" "$HOME_CL" "$HOME_EL"
     rm -f  "$SERVER_DB" "$SERVER_DB-wal" "$SERVER_DB-shm" \
@@ -144,9 +146,9 @@ chain_file_path() {
 
 phase "Phase 1 — Setup: server, witness, 7 devices for 4 users"
 
-pkill -f fd0-server 2>/dev/null || true
-pkill -f fd0-agent  2>/dev/null || true
-pkill -f fd0-witness 2>/dev/null || true
+fd0_test_stop_matching -f fd0-server 2>/dev/null || true
+fd0_test_stop_matching -f fd0-agent  2>/dev/null || true
+fd0_test_stop_matching -f fd0-witness 2>/dev/null || true
 sleep 0.3
 rm -rf "$HOME_AL" "$HOME_AD" "$HOME_AP" "$HOME_BL" "$HOME_BD" "$HOME_CL" "$HOME_EL"
 rm -f  "$SERVER_DB" "$SERVER_DB-wal" "$SERVER_DB-shm" \

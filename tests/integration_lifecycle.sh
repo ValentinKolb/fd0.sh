@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration_isolation.sh"
+fd0_test_require_isolation
 
 # Lifecycle / signal integration tests. These hit the bug class
 # that none of our other tests covered: SIGTERM handling, restart-
@@ -31,7 +33,7 @@ ok()    { PASS=$((PASS+1)); printf "  \033[32m✓\033[0m %s\n" "$*"; }
 no()    { FAIL=$((FAIL+1)); printf "  \033[31m✗\033[0m %s\n" "$*"; }
 
 cleanup() {
-    pkill -f fd0-agent  2>/dev/null || true
+    fd0_test_stop_matching -f fd0-agent  2>/dev/null || true
     kill $SERVER_PID 2>/dev/null || true
     rm -rf "$HOME_AL" "$SERVER_DB" "$SERVER_DB-wal" "$SERVER_DB-shm" \
            "$SERVER_LOG" "$SERVER_KEY"
@@ -65,15 +67,14 @@ wait_for() {
 # ---- Setup -----------------------------------------------------------
 
 phase "Setup"
-pkill -f fd0-server fd0-agent 2>/dev/null || true
+fd0_test_stop_matching -f fd0-server fd0-agent 2>/dev/null || true
 sleep 0.3
 rm -rf "$HOME_AL" "$SERVER_DB" "$SERVER_LOG" "$SERVER_KEY"
 
 "$FD0_SERVER_BIN" --bind=":${SERVER_PORT}" --db="$SERVER_DB" \
     --no-ratelimit > "$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
-sleep 0.5
-curl -fs "http://127.0.0.1:${SERVER_PORT}/health" >/dev/null || { no "server failed"; exit 1; }
+wait_for "server startup" "curl -fs http://127.0.0.1:${SERVER_PORT}/health" 5 || exit 1
 ok "server up (pid=$SERVER_PID)"
 
 # Bootstrap a client.

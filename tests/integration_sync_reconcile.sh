@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration_isolation.sh"
+fd0_test_require_isolation
 # Sync reconcile / data-safety smoke.
 #
 # Reproduces the reported divergence scenario with TWO real clients
@@ -33,8 +35,8 @@ HOME_BACKUP=$HOME
 export FD0_AGENT_BIN
 
 cleanup() {
-  pkill -f "$FD0_SERVER_BIN" 2>/dev/null
-  pkill -f "$FD0_AGENT_BIN"  2>/dev/null
+  fd0_test_stop_matching -f "$FD0_SERVER_BIN" 2>/dev/null
+  fd0_test_stop_matching -f "$FD0_AGENT_BIN"  2>/dev/null
   sleep 0.3
   export HOME=$HOME_BACKUP
 }
@@ -153,7 +155,7 @@ SCOPE_CHAIN=$(ls "$BASE/alice/chains/"s_*.cbor 2>/dev/null | head -1)
 cp "$SCOPE_CHAIN" "$BASE/chain-before.cbor"
 
 # Kill the server, then sync → transport failure (no data should change).
-pkill -f "$FD0_SERVER_BIN" 2>/dev/null
+fd0_test_stop_matching -f "$FD0_SERVER_BIN" 2>/dev/null
 sleep 0.5
 as alice sync > "$BASE/alice-deadsync.log" 2>&1
 [[ $? -ne 0 ]] && ok "sync against dead server failed (as expected)" || no "dead-server sync unexpectedly ok"

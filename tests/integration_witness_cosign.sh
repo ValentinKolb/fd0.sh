@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration_isolation.sh"
+fd0_test_require_isolation
 
 # fd0-witness COSIGN + CLIENT CROSS-CHECK integration test
 # (TRANSLOG.md §8.3 / §10).
@@ -51,10 +53,10 @@ ok()   { PASS=$((PASS+1)); printf "  \033[32m✓\033[0m %s\n" "$*"; }
 no()   { FAIL=$((FAIL+1)); printf "  \033[31m✗\033[0m %s\n" "$*"; }
 
 cleanup() {
-    pkill -f "fd0-witness.*${WITNESS_PORT}"  2>/dev/null || true
-    pkill -f "fd0-witness.*${WITNESS_PORT2}" 2>/dev/null || true
-    pkill -f fd0-witness  2>/dev/null || true
-    pkill -f fd0-agent    2>/dev/null || true
+    fd0_test_stop_matching -f "fd0-witness.*${WITNESS_PORT}"  2>/dev/null || true
+    fd0_test_stop_matching -f "fd0-witness.*${WITNESS_PORT2}" 2>/dev/null || true
+    fd0_test_stop_matching -f fd0-witness  2>/dev/null || true
+    fd0_test_stop_matching -f fd0-agent    2>/dev/null || true
     kill $SERVER_PID 2>/dev/null || true
     rm -rf "$HOME_AL" "$SERVER_DB" "$SERVER_DB-wal" "$SERVER_DB-shm" \
            "$SERVER_LOG" "$SERVER_KEY" \
@@ -125,9 +127,9 @@ start_witness() {
 # ---- setup ------------------------------------------------------------
 
 step "Setup: clean slate"
-pkill -f fd0-server  2>/dev/null || true
-pkill -f fd0-agent   2>/dev/null || true
-pkill -f fd0-witness 2>/dev/null || true
+fd0_test_stop_matching -f fd0-server  2>/dev/null || true
+fd0_test_stop_matching -f fd0-agent   2>/dev/null || true
+fd0_test_stop_matching -f fd0-witness 2>/dev/null || true
 sleep 0.3
 rm -rf "$HOME_AL" "$SERVER_DB" "$SERVER_LOG" "$SERVER_KEY" \
        "$WITNESS_DB" "$WITNESS_KEY" "$WITNESS_CFG" "$WITNESS_LOG" \

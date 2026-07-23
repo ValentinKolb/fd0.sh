@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration_isolation.sh"
+fd0_test_require_isolation
 # Multi-server compaction safety smoke.
 #
 # Reproduces the reported production failure: with TWO configured
@@ -40,8 +42,8 @@ export FD0_AGENT_BIN
 S2_PID=""
 
 cleanup() {
-  pkill -f "$FD0_SERVER_BIN" 2>/dev/null
-  pkill -f "$FD0_AGENT_BIN"  2>/dev/null
+  fd0_test_stop_matching -f "$FD0_SERVER_BIN" 2>/dev/null
+  fd0_test_stop_matching -f "$FD0_AGENT_BIN"  2>/dev/null
   sleep 0.3
   export HOME=$HOME_BACKUP
 }

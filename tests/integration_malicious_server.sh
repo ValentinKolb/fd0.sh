@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration_isolation.sh"
+fd0_test_require_isolation
 
 export FD0_AUTO_PIN=1
 
@@ -54,8 +56,8 @@ ok()    { PASS=$((PASS+1)); printf "  \033[32m✓\033[0m %s\n" "$*"; }
 no()    { FAIL=$((FAIL+1)); printf "  \033[31m✗\033[0m %s\n" "$*"; }
 
 cleanup() {
-    pkill -f fd0-test-mitm 2>/dev/null || true
-    pkill -f fd0-agent     2>/dev/null || true
+    fd0_test_stop_matching -f fd0-test-mitm 2>/dev/null || true
+    fd0_test_stop_matching -f fd0-agent     2>/dev/null || true
     kill $SERVER_PID 2>/dev/null || true
     rm -rf "$HOME_AL" "$HOME_BL" "$SERVER_DB" "$SERVER_DB-wal" "$SERVER_DB-shm" \
            "$SERVER_LOG" "$PROXY_LOG"
@@ -80,7 +82,7 @@ BL() { env FD0_HOME="$HOME_BL" FD0_SSH_SOCK="$HOME_BL/ssh.sock" "$FD0" "$@"; }
 
 start_proxy() {
     local mode="$1"
-    pkill -f fd0-test-mitm 2>/dev/null || true
+    fd0_test_stop_matching -f fd0-test-mitm 2>/dev/null || true
     sleep 0.2
     "$FD0_MITM_BIN" \
         --listen=":${PROXY_PORT}" \
@@ -185,9 +187,9 @@ run_scenario() {
 }
 
 phase "Setup: server, proxy in passthrough, Bob bootstraps shared scope"
-pkill -f fd0-server     2>/dev/null || true
-pkill -f fd0-agent      2>/dev/null || true
-pkill -f fd0-test-mitm  2>/dev/null || true
+fd0_test_stop_matching -f fd0-server     2>/dev/null || true
+fd0_test_stop_matching -f fd0-agent      2>/dev/null || true
+fd0_test_stop_matching -f fd0-test-mitm  2>/dev/null || true
 sleep 0.3
 rm -rf "$HOME_AL" "$HOME_BL" "$SERVER_DB" "$SERVER_DB-wal" "$SERVER_DB-shm" \
        "$SERVER_LOG" "$PROXY_LOG"
@@ -230,7 +232,7 @@ if [ "$GOT" = "v1" ]; then
 else
     no "Alice did NOT discover the scope: got '$GOT'"
 fi
-pkill -f fd0-test-mitm 2>/dev/null || true
+fd0_test_stop_matching -f fd0-test-mitm 2>/dev/null || true
 sleep 0.2
 
 phase "Scenario 1: passthrough — baseline"
