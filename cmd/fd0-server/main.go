@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"log/slog"
 	"net/http"
 	"os"
@@ -249,7 +250,8 @@ func main() {
 	errCh := make(chan error, 1)
 	go func() {
 		log.Info("fd0-server listening", "bind", c.Bind, "version", version,
-			"metrics_auth", boolWord(c.MetricsToken != ""))
+			"metrics_auth", boolWord(c.MetricsToken != ""),
+			"server_pub_hex", hex.EncodeToString(srv.Store().TranslogPub()))
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- err
 			return

@@ -438,7 +438,14 @@ CREATE TABLE translog_server_key (
 
 ### 8.1 Operation
 
-Configured with one or more `(server_url, server_pub_pin, [chain_id…])` tuples. Polls `GET /v1/sth/{chain_id}` per tuple at a configurable interval (default `1h`).
+Configured with one or more `(server_url, server_pub_pin, [chain_id…])` tuples.
+The `server_pub_pin` for a fresh production witness MUST be obtained through a
+channel independent of the server connection being monitored. A persisted pin
+from an earlier run remains authoritative. Fetching the self-signed key from
+`/v1/server-info` on first contact is available only through the explicit
+`pin_on_first_use` development option and does not establish independent
+witness trust. The witness polls `GET /v1/sth/{chain_id}` per tuple at a
+configurable interval (default `1h`).
 
 For each new STH the witness MUST, in order:
 

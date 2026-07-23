@@ -445,10 +445,18 @@ Status legend:
   endpoint returns true iff the witness has EVER archived
   multi-roots at any tree_size for the chain. Closes the
   historical-equivocation gap.
+- **Witness identity binding**: a fresh production witness requires
+  an explicit server public key obtained out of band. It checks the
+  persisted pin before any network request and refuses first contact
+  without an explicit pin. Self-signed first-contact TOFU is disabled
+  by default and exposed only as an unsafe development option, so an
+  attacker controlling the first connection cannot create an
+  apparently independent witness for its own server identity.
 - **Code**: `cli/witness_check.go` CrossCheckSTH +
   fetchEquivocationProbe, `witness/store.go` Insert +
   DetectEquivocationAt + DetectChainEquivocation,
-  `witness/http.go` handleEquivocation.
+  `witness/http.go` handleEquivocation,
+  `witness.Witness.EnsurePins`.
 - **Spec**: `TRANSLOG.md` §6.
 
 #### T36 — Server returns wrong consistency proof (forks history)

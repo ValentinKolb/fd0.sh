@@ -174,10 +174,17 @@ The client writes and reads only the primary — one ordering authority per scop
 ```yaml
 # witness-a — paired with server A
 FD0_WITNESS_SERVER_URL: https://api.example.com
+FD0_WITNESS_SERVER_PUB: <server-a public key obtained out of band>
 
 # witness-b — paired with server B
 FD0_WITNESS_SERVER_URL: https://api2.example.com
+FD0_WITNESS_SERVER_PUB: <server-b public key obtained out of band>
 ```
+
+`fd0-server` prints `server_pub_hex` at startup. Transfer that public key to
+the witness through a channel independent of the API connection. A fresh
+witness refuses to start without it; an existing witness continues to use its
+persisted pin.
 
 ### Operational notes
 

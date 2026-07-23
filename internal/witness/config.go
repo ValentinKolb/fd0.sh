@@ -25,12 +25,11 @@ type Config struct {
 
 	// ServerPub is the server's ed25519 cosign pubkey, the trust
 	// anchor for every STH signature check. Set explicitly out-of-band
-	// for an independent witness. Leave empty + set PinOnFirstUse for
-	// self-host (TOFU on first contact).
+	// for a fresh production witness. It may be empty when the store
+	// already contains a pin from an earlier run.
 	ServerPub []byte
 	// ServerPubHex is the operator-facing form of ServerPub; Validate
-	// decodes it into ServerPub. May be empty when PinOnFirstUse is
-	// true.
+	// decodes it into ServerPub.
 	ServerPubHex string
 
 	// PollInterval between rounds. Minimum 1 s. Default 30 s when
@@ -47,9 +46,9 @@ type Config struct {
 	// known_hosts semantics; later changes fail with ErrPinMismatch).
 	//
 	// Footgun: /v1/server-info is self-signed, so a MITM at first
-	// contact pins the attacker's key. Safe for self-host where one
-	// operator runs both server and witness; for independent witnesses,
-	// set ServerPubHex explicitly out-of-band instead.
+	// contact pins the attacker's key. This mode is for isolated
+	// development only and must never count as independent production
+	// witness trust.
 	PinOnFirstUse bool
 
 	// Chains is an explicit allow-list of chains to poll. Empty +
@@ -77,9 +76,6 @@ func (c *Config) Validate() error {
 
 	hexStr := strings.TrimSpace(c.ServerPubHex)
 	if hexStr == "" {
-		if !c.PinOnFirstUse {
-			return errors.New("witness: server_pub required (or set pin_on_first_use=true)")
-		}
 		c.ServerPub = nil
 	} else {
 		raw, err := hex.DecodeString(hexStr)

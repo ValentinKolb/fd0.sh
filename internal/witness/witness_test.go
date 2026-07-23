@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -39,6 +40,12 @@ type fakeServerState struct {
 	currentSTH translog.STH
 }
 
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
 func newFakeServer(t *testing.T) *fakeServer {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -54,9 +61,25 @@ func newFakeServer(t *testing.T) *fakeServer {
 	fs.state.Store(&fakeServerState{})
 	fs.mux.HandleFunc("GET /v1/sth/{chainId}", fs.handleSTH)
 	fs.mux.HandleFunc("GET /v1/proof/consistency", fs.handleConsistency)
+	fs.mux.HandleFunc("GET /v1/server-info", fs.handleServerInfo)
 	fs.srv = httptest.NewServer(fs.mux)
 	t.Cleanup(fs.srv.Close)
 	return fs
+}
+
+func (fs *fakeServer) handleServerInfo(w http.ResponseWriter, _ *http.Request) {
+	info, err := translog.SignServerInfo(fs.priv, 1_700_000_000, "", nil)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	body, err := proto.Marshal(info)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/cbor")
+	_, _ = w.Write(body)
 }
 
 func (fs *fakeServer) handleSTH(w http.ResponseWriter, r *http.Request) {
@@ -511,6 +534,130 @@ func TestPinServerRejectsConflictingKey(t *testing.T) {
 	}
 }
 
+func TestEnsurePinsAcceptsCorrectExplicitPin(t *testing.T) {
+	fs := newFakeServer(t)
+	store, err := Open(filepath.Join(t.TempDir(), "w.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	w := New(store, Config{
+		ServerURL: fs.srv.URL,
+		ServerPub: fs.pub,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	if err := w.EnsurePins(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.PinnedPub(context.Background(), fs.srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ed25519.PublicKey(got).Equal(fs.pub) {
+		t.Fatal("stored pin does not match explicit server key")
+	}
+}
+
+func TestEnsurePinsRequiresExplicitFirstContactWithoutNetwork(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "w.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	w := New(store, Config{ServerURL: "https://attacker.invalid"}, nil)
+	var requests atomic.Int64
+	w.HTTP = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		requests.Add(1)
+		return nil, errors.New("unexpected network request")
+	})}
+
+	err = w.EnsurePins(context.Background())
+	if !errors.Is(err, ErrExplicitServerPinRequired) {
+		t.Fatalf("expected ErrExplicitServerPinRequired, got %v", err)
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("first-contact policy made %d unauthenticated network requests", got)
+	}
+}
+
+func TestEnsurePinsAllowsExplicitUnsafeDevelopmentTOFU(t *testing.T) {
+	fs := newFakeServer(t)
+	store, err := Open(filepath.Join(t.TempDir(), "w.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	w := New(store, Config{
+		ServerURL:     fs.srv.URL,
+		PinOnFirstUse: true,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	if err := w.EnsurePins(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.PinnedPub(context.Background(), fs.srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ed25519.PublicKey(got).Equal(fs.pub) {
+		t.Fatal("TOFU pin does not match the contacted development server")
+	}
+}
+
+func TestEnsurePinsUsesPersistedPinWithoutNetworkOrTOFU(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "w.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const serverURL = "https://persisted.example"
+	if err := store.PinServer(context.Background(), serverURL, pub); err != nil {
+		t.Fatal(err)
+	}
+	w := New(store, Config{ServerURL: serverURL}, nil)
+	w.HTTP = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("persisted pin must not trigger a network request")
+		return nil, nil
+	})}
+
+	if err := w.EnsurePins(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !ed25519.PublicKey(w.Config.ServerPub).Equal(pub) {
+		t.Fatal("persisted pin was not installed in runtime config")
+	}
+}
+
+func TestEnsurePinsRejectsWrongExplicitPin(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "w.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	persisted, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configured, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const serverURL = "https://pinned.example"
+	if err := store.PinServer(context.Background(), serverURL, persisted); err != nil {
+		t.Fatal(err)
+	}
+	w := New(store, Config{ServerURL: serverURL, ServerPub: configured}, nil)
+
+	err = w.EnsurePins(context.Background())
+	if !errors.Is(err, ErrPinMismatch) {
+		t.Fatalf("expected ErrPinMismatch, got %v", err)
+	}
+}
+
 func TestConfigValidate(t *testing.T) {
 	pub, _, _ := ed25519.GenerateKey(rand.Reader)
 	pubHex := hex.EncodeToString(pub)
@@ -522,6 +669,9 @@ func TestConfigValidate(t *testing.T) {
 		{"valid", Config{
 			ServerURL: "https://x", ServerPubHex: pubHex,
 			Chains: []string{"scope:s_test"}, PollInterval: time.Second,
+		}, false},
+		{"persisted pin resolved at runtime", Config{
+			ServerURL: "https://x", AutoDiscover: true,
 		}, false},
 		{"empty config", Config{}, true},
 		{"empty url", Config{ServerPubHex: pubHex, Chains: []string{"scope:s_x"}}, true},

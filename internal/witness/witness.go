@@ -74,6 +74,10 @@ type Witness struct {
 	discoveryAfter string
 }
 
+var ErrExplicitServerPinRequired = errors.New(
+	"witness: explicit server_pub required for first contact; unsafe development TOFU requires pin_on_first_use=true",
+)
+
 // New constructs a Witness with sensible defaults. cfg drives the
 // poll targets; logger is required (callers usually pass slog.Default).
 func New(store *Store, cfg Config, log *slog.Logger) *Witness {
@@ -102,12 +106,12 @@ func New(store *Store, cfg Config, log *slog.Logger) *Witness {
 func (w *Witness) EnsurePins(ctx context.Context) error {
 	c := &w.Config
 	if len(c.ServerPub) == 0 {
-		// TOFU mode. If a prior run already pinned, reuse the DB row
-		// as canonical and don't even talk to the server. If not,
-		// fetch /v1/server-info, verify the self-signature, persist.
+		// A persisted pin is canonical and avoids all first-contact
+		// network trust. Fresh stores require an explicit operator pin
+		// unless unsafe development TOFU was deliberately enabled.
 		pub, err := w.Store.PinnedPub(ctx, c.ServerURL)
 		if err == nil {
-			w.Log.Info("witness: using existing TOFU pin from store",
+			w.Log.Info("witness: using persisted server pin",
 				"server", c.ServerURL,
 				"pub", fmt.Sprintf("%x", pub[:8]))
 			c.ServerPub = pub
@@ -115,12 +119,15 @@ func (w *Witness) EnsurePins(ctx context.Context) error {
 			if !errors.Is(err, ErrNotPinned) {
 				return fmt.Errorf("pin lookup %s: %w", c.ServerURL, err)
 			}
+			if !c.PinOnFirstUse {
+				return ErrExplicitServerPinRequired
+			}
 			pub, ferr := w.fetchAndVerifyServerPub(ctx, c.ServerURL)
 			if ferr != nil {
 				return fmt.Errorf("pin_on_first_use %s: %w", c.ServerURL, ferr)
 			}
 			c.ServerPub = pub
-			w.Log.Warn("witness: pinning server pubkey on first contact (TOFU) — verify out-of-band",
+			w.Log.Warn("witness: UNSAFE DEVELOPMENT TOFU enabled; first-contact server key is not independently authenticated",
 				"server", c.ServerURL,
 				"pub_hex", fmt.Sprintf("%x", pub))
 		}

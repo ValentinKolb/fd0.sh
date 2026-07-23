@@ -123,10 +123,10 @@ type cli struct {
 	// multiple containers; each gets process / storage / metrics
 	// isolation and a smaller failure domain than one mega-witness.
 	ServerURL     string        `name:"server-url" help:"fd0-server to watch (e.g. https://api.fd0.sh or http://fd0-server:4048)." env:"FD0_WITNESS_SERVER_URL"`
-	ServerPub     string        `name:"server-pub" help:"Server cosign pubkey (hex, 32 bytes). Set explicitly to opt out of TOFU." default:"" env:"FD0_WITNESS_SERVER_PUB"`
+	ServerPub     string        `name:"server-pub" help:"Server cosign pubkey obtained out of band (hex, 32 bytes). Required for a fresh production witness." default:"" env:"FD0_WITNESS_SERVER_PUB"`
 	PollInterval  time.Duration `name:"poll-interval" help:"Time between poll rounds." default:"30s" env:"FD0_WITNESS_POLL_INTERVAL"`
 	AutoDiscover  bool          `name:"auto-discover" help:"Fetch chain list from GET /v1/chains every round." default:"true" env:"FD0_WITNESS_AUTO_DISCOVER"`
-	PinOnFirstUse bool          `name:"pin-on-first-use" help:"Pin the server pubkey from /v1/server-info on first poll (TOFU). Set --server-pub to disable." default:"true" env:"FD0_WITNESS_PIN_ON_FIRST_USE"`
+	PinOnFirstUse bool          `name:"pin-on-first-use" help:"UNSAFE development-only TOFU from /v1/server-info. Never use for independent production witness trust." default:"false" env:"FD0_WITNESS_PIN_ON_FIRST_USE"`
 	Chains        []string      `name:"chain" help:"Explicit chain ID to poll. Combine with --auto-discover or use as an allow-list when auto-discover is off." env:"FD0_WITNESS_CHAINS"`
 
 	Run    runCmd    `cmd:"" default:"1" help:"Start the polling daemon (default)."`

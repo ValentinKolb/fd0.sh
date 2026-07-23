@@ -27,6 +27,7 @@ printf 'METRICS_TOKEN=%s\n' "$(openssl rand -hex 32)" > .env
 case "$(uname -m)" in arm64|aarch64) printf 'FD0_SERVER_IMAGE=%s\n' 'ghcr.io/valentinkolb/fd0-server:latest-arm64' >> .env ;; esac
 docker compose up -d
 curl http://localhost:4048/health
+docker compose logs fd0-server | grep server_pub_hex
 ```
 
 From this repository:
@@ -38,6 +39,7 @@ printf 'METRICS_TOKEN=%s\n' "$(openssl rand -hex 32)" > .env
 case "$(uname -m)" in arm64|aarch64) printf 'FD0_SERVER_IMAGE=%s\n' 'ghcr.io/valentinkolb/fd0-server:latest-arm64' >> .env ;; esac
 docker compose up -d
 curl http://localhost:4048/health
+docker compose logs fd0-server | grep server_pub_hex
 ```
 
 Put your TLS terminator on the same host or proxy to `127.0.0.1:4048`, then
@@ -58,6 +60,7 @@ cd deploy/witness
 umask 077
 {
   printf 'SERVER_URL=%s\n' 'https://api.fd0.sh'
+  printf 'SERVER_PUB=%s\n' '<64 hex characters obtained out of band>'
   printf 'METRICS_TOKEN=%s\n' "$(openssl rand -hex 32)"
 } > .env
 case "$(uname -m)" in arm64|aarch64) printf 'FD0_WITNESS_IMAGE=%s\n' 'ghcr.io/valentinkolb/fd0-witness:latest-arm64' >> .env ;; esac
@@ -65,7 +68,14 @@ docker compose up -d
 curl http://localhost:4049/health
 ```
 
-The witness auto-discovers chains from the server's `/v1/chains` endpoint and TOFU-pins the server's pubkey on first contact. To run an independent witness against a server you don't operate, set `FD0_WITNESS_SERVER_PUB` to the hex pubkey obtained out-of-band — see the comments in `witness/compose.yml`.
+The witness auto-discovers chains from `/v1/chains`. A fresh witness requires
+the server's 32-byte ed25519 public key as 64 hex characters. Obtain it from
+the server operator through a channel independent of the server connection
+being monitored. A self-hosted `fd0-server` prints `server_pub_hex` in its
+startup log. Existing witness databases continue to use their persisted pin.
+`FD0_WITNESS_PIN_ON_FIRST_USE=true` enables unauthenticated first-contact TOFU
+for isolated development only; it must not be treated as independent witness
+trust.
 
 ## Configuration
 
@@ -74,7 +84,7 @@ Both composes are env-driven. Required vars are declared with `:?` so `docker co
 | Service | Required | Useful optionals |
 |---|---|---|
 | server | `METRICS_TOKEN` | `FD0_SERVER_IMAGE`, `FD0_LABEL`, `FD0_PEERS`, `FD0_PEER_RESOLVE_INTERVAL`, `FD0_REPLICATE_FROM`, `FD0_BIND`, `FD0_DB`, `FD0_RATELIMIT_*` |
-| witness | `SERVER_URL`, `METRICS_TOKEN` | `FD0_WITNESS_IMAGE`, `FD0_WITNESS_SERVER_PUB`, `FD0_WITNESS_POLL_INTERVAL`, `FD0_WITNESS_CHAINS` |
+| witness | `SERVER_URL`, `SERVER_PUB`, `METRICS_TOKEN` | `FD0_WITNESS_IMAGE`, `FD0_WITNESS_POLL_INTERVAL`, `FD0_WITNESS_CHAINS` |
 
 Current image tags are per architecture: `latest` for amd64 and `latest-arm64`
 for arm64. Set `FD0_SERVER_IMAGE` or `FD0_WITNESS_IMAGE` in `.env` when the
