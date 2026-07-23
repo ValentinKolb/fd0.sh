@@ -2,6 +2,7 @@ package chain
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"sort"
@@ -9,6 +10,8 @@ import (
 	"github.com/valentinkolb/fd0.sh/internal/crypto"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
 )
+
+var ErrMalformedMemberKey = errors.New("chain: malformed member public key")
 
 // Opener decrypts a libsodium sealed-box that was sealed to this principal's
 // X25519 public key. Used by ReplayScope to open per-event key_deliveries
@@ -271,8 +274,13 @@ func applyMemberChange(st *ScopeState, ev *proto.ScopeEvent, ownSuperPub, oekPla
 	if pl.Op != proto.OpAdd && pl.Op != proto.OpRemove {
 		return false, fmt.Errorf("member.change: bad op %q", pl.Op)
 	}
-	if len(pl.Member) == 0 {
-		return false, errors.New("member.change: empty member pubkey")
+	if len(pl.Member) != ed25519.PublicKeySize {
+		return false, fmt.Errorf(
+			"%w: member.change target has %d bytes, want %d",
+			ErrMalformedMemberKey,
+			len(pl.Member),
+			ed25519.PublicKeySize,
+		)
 	}
 	// SECURITY (codex audit 🔴 scope.go:249): no-op membership
 	// changes MUST be rejected. add of an existing member or

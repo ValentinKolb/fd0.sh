@@ -2,12 +2,51 @@ package chain
 
 import (
 	"bytes"
+	"errors"
 	"path/filepath"
 	"testing"
 
 	"github.com/valentinkolb/fd0.sh/internal/crypto"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
 )
+
+func TestReplayRejectsSignedShortRemovalTargetWithoutPanic(t *testing.T) {
+	path, ownerPub, ownerPriv, _, _, ownerXPub, ownerXPriv, scopeID := setupTwoMember(t)
+	st, err := ReplayScope(path, ownerPub, ownerXPub, LocalOpener{Pub: ownerXPub, Priv: ownerXPriv})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsedPriv, err := crypto.ParseEd25519Priv(ownerPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev, _, err := BuildMemberChange(
+		LocalSigner{Priv: parsedPriv},
+		ownerPub,
+		scopeID,
+		st.TipSeq,
+		st.TipHash,
+		st.CurrentOEKVer,
+		proto.OpRemove,
+		[]byte{1, 2, 3, 4, 5, 6, 7},
+		st.MemberSet,
+		buildProjection(st),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := AppendScope(path, ev); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReplayScope(
+		path,
+		ownerPub,
+		ownerXPub,
+		LocalOpener{Pub: ownerXPub, Priv: ownerXPriv},
+	); !errors.Is(err, ErrMalformedMemberKey) {
+		t.Fatalf("expected ErrMalformedMemberKey, got %v", err)
+	}
+}
 
 // Malicious-member tests. The threat model: a legitimate scope
 // member who turns hostile and tries to subvert the chain. Each

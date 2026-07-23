@@ -1,8 +1,10 @@
 package chain
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"errors"
 	"strings"
 	"testing"
 
@@ -29,6 +31,27 @@ func TestApplyMemberChangeRejectsDeliveryOverflowBeforeRecipientWork(t *testing.
 	}
 }
 
+func TestApplyMemberChangeRejectsShortRemovalTargetWithoutPanic(t *testing.T) {
+	state := &ScopeState{
+		MemberSet:     [][]byte{replayMemberKey(0)},
+		CurrentOEKVer: 1,
+	}
+	for size := 0; size < ed25519.PublicKeySize; size++ {
+		ev := &proto.ScopeEvent{SignedPrefix: proto.SignedPrefix{
+			Kind:       proto.KindMemberChange,
+			OEKVersion: 2,
+			Payload: proto.Payload{
+				Op:     proto.OpRemove,
+				Member: make([]byte, size),
+			},
+		}}
+		_, err := applyMemberChange(state, ev, replayMemberKey(1), nil, false)
+		if !errors.Is(err, ErrMalformedMemberKey) {
+			t.Fatalf("size %d: expected ErrMalformedMemberKey, got %v", size, err)
+		}
+	}
+}
+
 func TestApplyMemberChangeRejectsAddAtMemberLimit(t *testing.T) {
 	members := make([][]byte, proto.MaxScopeMembers)
 	for i := range members {
@@ -48,6 +71,36 @@ func TestApplyMemberChangeRejectsAddAtMemberLimit(t *testing.T) {
 	}, ev, replayMemberKey(0), nil, false)
 	if err == nil || !strings.Contains(err.Error(), "scope member limit reached") {
 		t.Fatalf("expected member limit error, got %v", err)
+	}
+}
+
+func TestApplyMemberChangeRemovesValidMember(t *testing.T) {
+	members := replayValidMemberKeys(t, 2)
+	remaining := members[0]
+	removed := members[1]
+	recipient, err := fdcrypto.EdPubToX25519(remaining)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev := &proto.ScopeEvent{SignedPrefix: proto.SignedPrefix{
+		Kind:       proto.KindMemberChange,
+		OEKVersion: 2,
+		Payload: proto.Payload{
+			Op:     proto.OpRemove,
+			Member: removed,
+		},
+		KeyDeliveries: []proto.KeyDelivery{{RecipientPubkey: recipient}},
+	}}
+	state := &ScopeState{
+		MemberSet:     [][]byte{remaining, removed},
+		CurrentOEKVer: 1,
+	}
+	left, err := applyMemberChange(state, ev, remaining, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if left || len(state.MemberSet) != 1 || !bytes.Equal(state.MemberSet[0], remaining) {
+		t.Fatalf("unexpected removal result: left=%v members=%x", left, state.MemberSet)
 	}
 }
 
