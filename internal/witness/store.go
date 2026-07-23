@@ -53,12 +53,53 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := ensureWitnessSignatureColumn(context.Background(), db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("witness schema migration: %w", err)
+	}
 	store := &Store{db: db}
 	if err := store.ensureSummaryIndex(context.Background()); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("witness summary index: %w", err)
 	}
 	return store, nil
+}
+
+func ensureWitnessSignatureColumn(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx, `PRAGMA table_info(witness_sths)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	found := false
+	for rows.Next() {
+		var (
+			cid       int
+			name      string
+			columnTyp string
+			notNull   int
+			defaultV  any
+			primary   int
+		)
+		if err := rows.Scan(&cid, &name, &columnTyp, &notNull, &defaultV, &primary); err != nil {
+			return err
+		}
+		if name == "witness_signature" {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if found {
+		return nil
+	}
+	_, err = db.ExecContext(ctx, `
+		ALTER TABLE witness_sths
+		ADD COLUMN witness_signature BLOB
+		CHECK (witness_signature IS NULL OR length(witness_signature) = 64)
+	`)
+	return err
 }
 
 // Close releases the underlying DB.
