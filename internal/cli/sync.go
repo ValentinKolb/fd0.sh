@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -236,6 +237,7 @@ func RunSync(ctx context.Context, server string) error {
 	}
 	// Apply pulled events for each known scope.
 	dirty := false
+	pullReconciled := map[string]struct{}{}
 	for sid, ps := range sr.Pull {
 		// Server says caller is no longer authorised → drop the scope
 		// locally (STORAGE.md §5.3).
@@ -278,6 +280,17 @@ func RunSync(ctx context.Context, server string) error {
 		// will get a clean Denied from pull and drop normally.
 		if sd.Leaving {
 			continue
+		}
+		if err := validateScopePullPage(sid, pullScopes[sid], ps.Tip.Seq, ps.Tip.Hash, ps.Events); err != nil {
+			if errors.Is(err, errScopePullDiverged) {
+				if rerr := s.reconcileAndRepush(ctx, wcc, serverURL, sid, 3); rerr != nil {
+					return fmt.Errorf("scope %s: pull diverged (%v); reconcile failed: %w", sid, err, rerr)
+				}
+				pullReconciled[sid] = struct{}{}
+				dirty = true
+				continue
+			}
+			return fmt.Errorf("scope %s: invalid pull suffix: %w", sid, err)
 		}
 		// Translog verification: hard-fail BEFORE any local state
 		// mutation. Server invariant per TRANSLOG.md §5.4: STH is
@@ -468,6 +481,12 @@ func RunSync(ctx context.Context, server string) error {
 	floorDirty := false
 	maxSizePersisted := map[string]uint64{} // scope_id → max sth.head.tree_size
 	for _, p := range sr.Push {
+		if _, ok := pullReconciled[p.ScopeID]; ok {
+			// The full reconcile ran after this response was received and
+			// therefore already incorporated any event this stale push
+			// result accepted. Do not verify or retry the old result again.
+			continue
+		}
 		switch {
 		case p.Accepted:
 			pushed++

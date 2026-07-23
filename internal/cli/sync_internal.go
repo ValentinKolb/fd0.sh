@@ -8,6 +8,7 @@ package cli
 // (sync_reconcile.go) focused on their respective invariants.
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 
@@ -16,6 +17,8 @@ import (
 	"github.com/valentinkolb/fd0.sh/internal/proto"
 	"github.com/valentinkolb/fd0.sh/internal/translog"
 )
+
+var errScopePullDiverged = errors.New("scope pull diverged")
 
 // buildSyncRequestBody marshals the CBOR body for POST /sync. The schema
 // (PROTOCOL.md §7) lives here once; four call sites used to inline it
@@ -64,6 +67,72 @@ func pushItemFor(scope string, ev *proto.ScopeEvent, lastSTHSize uint64) map[str
 		out["last_sth_size"] = lastSTHSize
 	}
 	return out
+}
+
+// validateScopePullPage requires a server response to be the exact suffix
+// requested by cursor. Local replay may legitimately contain compaction gaps,
+// but newly received network history may not skip, duplicate, or swap events.
+func validateScopePullPage(scopeID string, cursor pullCursor, tipSeq uint64, tipHash []byte, events []proto.ScopeEvent) error {
+	expectedSeq := uint64(0)
+	prevHash := cursor.Hash
+	if cursor.Hash != nil {
+		expectedSeq = cursor.Seq + 1
+	}
+	if len(events) == 0 {
+		switch {
+		case cursor.Hash == nil:
+			return fmt.Errorf("%w: fresh pull omitted genesis", errScopePullDiverged)
+		case tipSeq > cursor.Seq:
+			return fmt.Errorf("%w: empty page before server tip %d", errScopePullDiverged, tipSeq)
+		case tipSeq == cursor.Seq && !bytes.Equal(tipHash, cursor.Hash):
+			return fmt.Errorf("%w: server tip hash differs at seq %d", errScopePullDiverged, tipSeq)
+		default:
+			// tipSeq < cursor.Seq is expected while this client has local
+			// events queued for push in the same sync request.
+			return nil
+		}
+	}
+	for i := range events {
+		ev := &events[i]
+		sp := &ev.SignedPrefix
+		if sp.Seq != expectedSeq {
+			return fmt.Errorf("%w: server returned event seq %d, want %d",
+				errScopePullDiverged, sp.Seq, expectedSeq)
+		}
+		if expectedSeq == 0 {
+			if sp.Scope != nil || len(sp.PrevHash) != 0 {
+				return fmt.Errorf("server returned invalid scope genesis")
+			}
+		} else {
+			if sp.Scope == nil || *sp.Scope != scopeID {
+				return fmt.Errorf("server returned event for a different scope")
+			}
+			if !bytes.Equal(sp.PrevHash, prevHash) {
+				return fmt.Errorf("%w: server returned event seq %d with non-contiguous prev_hash",
+					errScopePullDiverged, sp.Seq)
+			}
+		}
+		prefix, err := ev.PrevHashInput()
+		if err != nil {
+			return fmt.Errorf("canonical event input: %w", err)
+		}
+		if expectedSeq == 0 {
+			if got := proto.DeriveScopeID(proto.EventID(prefix)).String(); got != scopeID {
+				return fmt.Errorf("server genesis derives scope %s, want %s", got, scopeID)
+			}
+		}
+		hash := proto.HashPrefix(prefix)
+		prevHash = hash[:]
+		expectedSeq++
+	}
+	lastSeq := events[len(events)-1].SignedPrefix.Seq
+	switch {
+	case lastSeq > tipSeq:
+		return fmt.Errorf("server returned event seq %d beyond tip %d", lastSeq, tipSeq)
+	case lastSeq == tipSeq && !bytes.Equal(prevHash, tipHash):
+		return fmt.Errorf("server tip hash does not match event seq %d", lastSeq)
+	}
+	return nil
 }
 
 // leafHashAtSeq reads the local scope chain file and returns the leaf
@@ -179,4 +248,3 @@ func upsertOEK(ring []proto.OEKEntry, version uint64, key []byte) []proto.OEKEnt
 	}
 	return append(ring, proto.OEKEntry{Version: version, Key: append([]byte(nil), key...)})
 }
-

@@ -244,6 +244,10 @@ func (s *Session) fullPullScope(ctx context.Context, wcc *WitnessCheckClient, se
 		if ps.Denied {
 			return nil, nil, errors.New("denied: not a member")
 		}
+		cursor := pullCursor{Seq: cursorSeq, Hash: cursorHash}
+		if err := validateScopePullPage(scopeID, cursor, ps.Tip.Seq, ps.Tip.Hash, ps.Events); err != nil {
+			return nil, nil, fmt.Errorf("full pull %s: invalid page: %w", scopeID, err)
+		}
 		// Per-page translog verify. priorSTH is nil because we
 		// don't carry an anchor across pages — the STH must verify
 		// independently per page (and the final page's STH is what

@@ -76,15 +76,40 @@ func (s *Store) BackupAppendEvents(ctx context.Context, sourcePub []byte, evs []
 	return tx.Commit()
 }
 
-// BackupPutSTH archives a source STH verbatim. Idempotent on
-// (source, chain, tree_size).
+// BackupPutSTH archives a source STH verbatim. Re-storing the same root at
+// the same tree size is idempotent. A different root at that size is source
+// equivocation (or corruption) and must never be silently discarded.
 func (s *Store) BackupPutSTH(ctx context.Context, sourcePub []byte, chainID string, sth translog.STH) error {
-	_, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO backup_sths
-		   (source_pub, chain_id, tree_size, root_hash, timestamp, signature)
-		 VALUES (?,?,?,?,?,?)`,
-		sourcePub, chainID, int64(sth.Head.TreeSize), sth.Head.RootHash, int64(sth.Head.Timestamp), sth.Signature)
-	return err
+	if sth.Head.ChainID != chainID {
+		return fmt.Errorf("backup STH chain %s does not match archive chain %s", sth.Head.ChainID, chainID)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var root []byte
+	err = tx.QueryRowContext(ctx,
+		`SELECT root_hash FROM backup_sths
+		  WHERE source_pub = ? AND chain_id = ? AND tree_size = ?`,
+		sourcePub, chainID, int64(sth.Head.TreeSize)).Scan(&root)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO backup_sths
+			   (source_pub, chain_id, tree_size, root_hash, timestamp, signature)
+			 VALUES (?,?,?,?,?,?)`,
+			sourcePub, chainID, int64(sth.Head.TreeSize), sth.Head.RootHash, int64(sth.Head.Timestamp), sth.Signature); err != nil {
+			return err
+		}
+	case err != nil:
+		return err
+	case !bytesEqual(root, sth.Head.RootHash):
+		return fmt.Errorf("backup STH conflict: source served different roots for %s tree size %d",
+			chainID, sth.Head.TreeSize)
+	}
+	return tx.Commit()
 }
 
 // BackupEvents returns archived events for (sourcePub, chainID) ascending
