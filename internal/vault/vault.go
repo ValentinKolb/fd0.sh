@@ -223,7 +223,7 @@ func SaveBody(path string, userSuperPub []byte, body *proto.VaultBody, payloadKe
 	if len(payloadKey) != 32 {
 		return errors.New("vault: SaveBody requires 32-byte payload_key")
 	}
-	v, err := Read(path)
+	v, err := readForMutation(path, userSuperPub)
 	if err != nil {
 		return err
 	}
@@ -285,7 +285,7 @@ func AddWrap(path string, userSuperPub []byte, body *proto.VaultBody, payloadKey
 	if len(payloadKey) != 32 || len(newWrap.UnlockKey) != 32 {
 		return errors.New("vault: AddWrap requires 32-byte keys")
 	}
-	v, err := Read(path)
+	v, err := readForMutation(path, userSuperPub)
 	if err != nil {
 		return err
 	}
@@ -358,7 +358,7 @@ func RemoveWrap(path string, userSuperPub []byte, body *proto.VaultBody, payload
 	if len(payloadKey) != 32 {
 		return errors.New("vault: RemoveWrap requires 32-byte payload_key")
 	}
-	v, err := Read(path)
+	v, err := readForMutation(path, userSuperPub)
 	if err != nil {
 		return err
 	}
@@ -490,6 +490,24 @@ func bodyAAD(v *proto.VaultFile) ([]byte, error) {
 		return nil, err
 	}
 	return append([]byte(proto.DomainVaultBody), hb...), nil
+}
+
+// ErrIdentityMismatch means a caller tried to mutate an existing vault under
+// a different user identity. The owner key is immutable because it is part of
+// every wrap AAD; changing it without re-wrapping every entry would make the
+// vault permanently unreadable.
+var ErrIdentityMismatch = errors.New("vault: user_super_pub does not match existing vault")
+
+func readForMutation(path string, userSuperPub []byte) (*proto.VaultFile, error) {
+	v, err := Read(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(userSuperPub) != len(v.UserSuperPub) ||
+		subtle.ConstantTimeCompare(userSuperPub, v.UserSuperPub) != 1 {
+		return nil, ErrIdentityMismatch
+	}
+	return v, nil
 }
 
 // atomicWrite writes data to path via a tmp file with fsync + rename + dir fsync.
