@@ -111,9 +111,10 @@ for one invocation.
 | --- | --- |
 | [docs/PROTOCOL.md](./docs/PROTOCOL.md) | Cryptographic protocol, event formats, identities, scopes, vault, recovery. |
 | [docs/API.md](./docs/API.md) | HTTP API, authentication header, `/v1/sync`, status codes. |
-| [docs/STORAGE.md](./docs/STORAGE.md) | Server SQLite schema, client files, replay, compaction, backup rules. |
+| [docs/STORAGE.md](./docs/STORAGE.md) | Server SQLite schema, client files, replay, history repair, backup rules. |
 | [docs/TRANSLOG.md](./docs/TRANSLOG.md) | RFC 6962-style transparency log, STHs, witnesses, peer hints. |
 | [docs/THREATS.md](./docs/THREATS.md) | Canonical threat catalogue and code annotation coverage. |
+| [docs/CRYPTO_AUDIT.md](./docs/CRYPTO_AUDIT.md) | Defensive protocol and cryptographic-composition audit with invariant evidence. |
 | [docs/HOSTING.md](./docs/HOSTING.md) | Production hosting runbook. |
 | [docs/REPLICATION.md](./docs/REPLICATION.md) | Disaster-recovery replication model. |
 | [docs/BENCH.md](./docs/BENCH.md) | Performance baseline and benchmark method. |

@@ -11,7 +11,9 @@ import (
 //
 // Encoding uses RFC 8949 §4.2.1 Core Deterministic Encoding so that signed
 // inputs and content-addressed event IDs are byte-stable across implementations.
-// Decoding is strict: any non-canonical input is rejected.
+// Decoding rejects ambiguous and resource-hostile forms while intentionally
+// ignoring unknown map fields for additive wire compatibility. Signature and
+// hash inputs are always reconstructed through the deterministic encoder.
 var (
 	encMode cbor.EncMode
 	decMode cbor.DecMode
@@ -49,10 +51,11 @@ func init() {
 // Marshal returns deterministic CBOR per RFC 8949 §4.2.1.
 func Marshal(v any) ([]byte, error) { return encMode.Marshal(v) }
 
-// Unmarshal strictly decodes deterministic CBOR.
+// Unmarshal decodes bounded CBOR with duplicate keys, tags, and indefinite
+// lengths forbidden. Unknown struct fields remain allowed for rolling upgrades.
 func Unmarshal(data []byte, v any) error { return decMode.Unmarshal(data, v) }
 
-// NewStreamDecoder returns a strict streaming decoder over r. Used by chain
+// NewStreamDecoder returns the bounded streaming decoder over r. Used by chain
 // replay where events are concatenated raw CBOR (STORAGE.md §3.1).
 // Decoder.NumBytesRead() reports total bytes consumed and is used to recover
 // per-event offsets for tail-truncation on partial decode.

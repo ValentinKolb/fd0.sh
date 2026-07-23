@@ -14,7 +14,7 @@ The wire format and cryptographic constructions follow `PROTOCOL.md` conventions
 6. [Client verification](#6-client-verification)
 7. [Storage](#7-storage)
 8. [Witness binary](#8-witness-binary)
-9. [Compaction](#9-compaction)
+9. [Full-history clients and legacy repair](#9-full-history-clients-and-legacy-repair)
 10. [Deferred to v1.x and beyond](#10-deferred-to-v1x-and-beyond)
 11. [Peer hints](#11-peer-hints-v004)
 12. [Threat-model implications](#12-threat-model-implications)
@@ -28,7 +28,7 @@ Properties enforced by the protocol against a malicious server, given correct cl
 - **Append-only commitment.** The server publishes a Merkle tree per chain. Each event's leaf is fixed at insertion time and cannot be removed or rewritten without breaking a consistency proof against any earlier signed tree head (STH).
 - **Equivocation detection (offline).** A server that presents two divergent histories of the same chain to two different clients produces two STHs at the same `tree_size` with different `root_hash`. Detected by any party that holds both STHs (the affected clients via cross-device gossip, a witness via STH archive).
 - **Inclusion verifiability.** Every event a client appends to its local chain is delivered with an inclusion proof against an STH the client persists. A server-side rewrite of historical events is detected on the next pull (consistency proof fails).
-- **Compaction-safe verification.** Local compaction (`STORAGE.md` §5.4) drops superseded events from the client's chain file. The transparency log is anchored by STHs, not local events, so compaction does not reduce verifiability of new appends.
+- **Full-history repair.** v1 clients retain a contiguous local chain. Files produced by older compacting clients are repaired from a pinned server's full history only after STH and inclusion-proof verification.
 - **Witness publishability.** A passive `fd0-witness` observer (§8) can fetch and archive STHs from any number of servers without needing membership in any scope. Witnesses see only `(chain_id, tree_size, root_hash, timestamp, signature)`; never plaintext events, never cleartext membership.
 
 The transparency log adds one trust input (the server's signing pubkey) and one ceremony (first-contact pinning, analogous to identity-card safety-number verification — see `PROTOCOL.md` §2.3, `THREATS.md` §3).
@@ -475,6 +475,12 @@ CREATE TABLE witness_sths (
 
 `root_hash` in the primary key is intentional: two STHs at the same `tree_size` with different roots coexist as evidence. Same-size equivocation is detected by counting distinct `root_hash` per `(server, chain, tree_size)` after insert. Different-size forks are detected via §8.1 step 3 and durably recorded in `witness_consistency_failures`.
 
+On startup, the witness inspects `PRAGMA table_info(witness_sths)`. Archives
+created before cosigning are migrated in place by adding the nullable
+`witness_signature` column. Existing STH evidence remains readable but is not
+treated as cosigned; new rows can carry and serve verified cosigns immediately.
+The migration is idempotent.
+
 When same-size equivocation is detected the witness logs:
 
 ```
@@ -539,14 +545,12 @@ Clients configure pinned witnesses in `[[witness]]` config and a quorum threshol
 
 ---
 
-## 9. Compaction
+## 9. Full-history clients and legacy repair
 
-Local chain compaction (`STORAGE.md` §5.4) drops superseded `secret.set` events from the chain file. The transparency log is unaffected:
-
-- Server NEVER compacts. Tree grows monotonically forever per chain.
-- Client persists `LastSTH` per chain — derived from the server's tree, not the local chain. Compaction does not alter `LastSTH`.
-- On the next sync, the client supplies `last_sth_size = LastSTH.tree_size`. Server returns `consistency_proof` from that size to current. Verification proceeds normally.
-- Inclusion proofs are issued only for newly-pulled events. The client never re-verifies historical events that have been compacted out of the local chain.
+- The server never compacts. Its tree grows monotonically for each chain.
+- Current clients retain every signed local event and require contiguous `seq` and `prev_hash` links during replay.
+- A non-contiguous file is never exposed to a read command. During sync, the client performs a full pull from `cursor=0`, verifies the pinned server's STH and inclusion proofs, preserves local-only writes, and atomically replaces the file.
+- The verified final STH becomes the new `LastSTH` anchor only after replay succeeds. Any failure restores the original local chain and vault state.
 
 A fresh device performing a full pull (`cursor=0`) effectively gets `last_sth_size=0` (no persisted STH). It receives every event with an inclusion proof, plus a consistency proof from `from_size=0` to `to_size=tree_size` (trivially satisfied — any tree is consistent with empty). The first STH the device persists becomes the anchor for all subsequent syncs.
 
