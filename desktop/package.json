@@ -83,6 +83,12 @@
       "notarize": true,
       "entitlements": "resources/entitlements.mac.plist",
       "entitlementsInherit": "resources/entitlements.mac.plist",
+      "extraFiles": [
+        {
+          "from": "resources/sh.fd0.desktop.agent.plist",
+          "to": "Library/LaunchAgents/sh.fd0.desktop.agent.plist"
+        }
+      ],
       "target": [
         "dmg",
         "zip"

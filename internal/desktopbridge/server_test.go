@@ -469,7 +469,7 @@ func TestAgentCompatibility(t *testing.T) {
 		{name: "matching", status: &agent.StatusResp{Version: "1.2.3", Flavor: "yubikey"}, want: true},
 		{name: "different version", status: &agent.StatusResp{Version: "1.2.2", Flavor: "yubikey"}},
 		{name: "different flavor", status: &agent.StatusResp{Version: "1.2.3", Flavor: "standard"}},
-		{name: "legacy metadata", status: &agent.StatusResp{}, want: true},
+		{name: "legacy metadata", status: &agent.StatusResp{}},
 		{name: "missing status"},
 	}
 	for _, tt := range tests {

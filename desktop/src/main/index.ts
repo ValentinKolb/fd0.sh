@@ -25,6 +25,7 @@ import {
 } from "electron";
 import electronUpdater from "electron-updater";
 import { BridgeSupervisor, DesktopBridgeError } from "./bridge";
+import { AgentLifecycle } from "./agent-lifecycle";
 import { DesktopAutoLock, type SecurityLockReason } from "./auto-lock";
 import { ManagedClipboard } from "./managed-clipboard";
 import { supportLink, trustedItemURL, type SupportLinkTarget } from "./external-links";
@@ -56,6 +57,7 @@ import type {
 
 let mainWindow: BrowserWindow | null = null;
 let bridge: BridgeSupervisor | null = null;
+const agentLifecycle = new AgentLifecycle();
 const managedClipboard = new ManagedClipboard(clipboard);
 const operationGrants = new OperationGrants();
 let tray: Tray | null = null;
@@ -70,6 +72,9 @@ let securityStatusRefreshing = false;
 let lastObservedUnlocked: boolean | undefined;
 const { autoUpdater } = electronUpdater;
 const applicationRoot = app.isPackaged ? app.getAppPath() : resolve(import.meta.dirname, "../..");
+const nativeAgentManaged = app.isPackaged
+  && process.env.FD0_HOME === undefined
+  && process.env.FD0_SSH_SOCK === undefined;
 
 app.setName("fd0");
 if (!app.isPackaged) app.setPath("userData", requiredEnv("FD0_DESKTOP_USER_DATA"));
@@ -85,10 +90,15 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 
+const lifecycleCommand = process.argv.find((value) => [
+  "--fd0-agent-service-stop",
+  "--fd0-agent-service-restart",
+  "--fd0-agent-service-uninstall",
+].includes(value));
 const relayExitCode = runPackagedRelay();
 if (relayExitCode !== null) process.exit(relayExitCode);
 
-if (!app.requestSingleInstanceLock()) {
+if (!lifecycleCommand && !app.requestSingleInstanceLock()) {
   app.quit();
 }
 
@@ -112,6 +122,7 @@ function runtimeEnvironment(): NodeJS.ProcessEnv {
       FD0_BIN: join(process.resourcesPath, "bin", "fd0"),
       FD0_DESKTOP_MODE: "system",
       FD0_DESKTOP_VERSION: app.getVersion(),
+      ...(nativeAgentManaged ? { FD0_AGENT_MANAGED: "1" } : {}),
       ...(process.env.FD0_SSH_SOCK !== undefined ? { FD0_SSH_SOCK: process.env.FD0_SSH_SOCK } : {}),
     };
   }
@@ -373,7 +384,11 @@ async function installReadyUpdate(): Promise<void> {
   if (installingUpdate) return;
   installingUpdate = true;
   try {
-    if (bridge) await bridge.request("agent.prepareUpdate", {}, 10_000);
+    if (nativeAgentManaged) {
+      await agentLifecycle.stop();
+    } else if (bridge) {
+      await bridge.request("agent.prepareUpdate", {}, 10_000);
+    }
     setTimeout(() => autoUpdater.quitAndInstall(false, true), 100);
   } catch (error) {
     installingUpdate = false;
@@ -688,12 +703,14 @@ function registerIPC(client: BridgeSupervisor): void {
 
   handle("fd0:status", async () => observeVaultStatus(await client.request<VaultStatus>("vault.status", {})));
   handle("fd0:create-vault", async (passphrase: string, label: string) => {
+    await ensureManagedAgent(client);
     const buffer = Buffer.from(passphrase, "utf8");
     const encoded = buffer.toString("base64");
     buffer.fill(0);
     return observeVaultStatus(await client.request<VaultStatus>("vault.create", { passphrase: encoded, label }));
   });
   handle("fd0:unlock", async (input: UnlockInput) => {
+    await ensureManagedAgent(client);
     const passphrase = Buffer.from(input?.passphrase ?? "", "utf8");
     const pin = Buffer.from(input?.pin ?? "", "utf8");
     const params = {
@@ -725,6 +742,10 @@ function registerIPC(client: BridgeSupervisor): void {
       noLink: true,
     });
     if (confirmation.response !== 1) return observeVaultStatus(await client.request<VaultStatus>("vault.status", {}));
+    if (nativeAgentManaged) {
+      await agentLifecycle.restart();
+      return observeVaultStatus(await client.request<VaultStatus>("vault.status", {}));
+    }
     return observeVaultStatus(await client.request<VaultStatus>("agent.restart", {}, 15_000));
   });
   handle("fd0:restore-vault", async (recoveryPassphrase: string, newPassphrase: string) => {
@@ -1001,11 +1022,9 @@ function registerIPC(client: BridgeSupervisor): void {
       serverUrl: preparation.serverUrl,
     }, 5 * 60_000);
   });
-  handle("fd0:launch-at-login", async () => app.getLoginItemSettings().openAtLogin);
+  handle("fd0:launch-at-login", async () => agentLifecycle.guiLaunchesAtLogin());
   handle("fd0:set-launch-at-login", async (value: boolean) => {
-    if (!app.isPackaged) return false;
-    app.setLoginItemSettings({ openAtLogin: Boolean(value), openAsHidden: true });
-    return app.getLoginItemSettings().openAtLogin;
+    return agentLifecycle.setGuiLaunchAtLogin(Boolean(value));
   });
   handle("fd0:open-item-url", async (ref: RecordRef) => {
     if (!mainWindow) throw new Error("fd0 window is unavailable");
@@ -1034,6 +1053,22 @@ function registerIPC(client: BridgeSupervisor): void {
   handle("fd0:install-update", async () => {
     await installReadyUpdate();
   });
+}
+
+async function ensureManagedAgent(client: BridgeSupervisor): Promise<void> {
+  if (!nativeAgentManaged) return;
+  await agentLifecycle.assertReady(await agentLifecycle.ensureRunning());
+  let status = await client.request<VaultStatus>("vault.status", {});
+  if (status.agentRunning && status.agentMismatch) {
+    await agentLifecycle.restart();
+  }
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    status = await client.request<VaultStatus>("vault.status", {});
+    if (status.agentRunning && !status.agentMismatch) return;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
+  }
+  throw new Error("The fd0 background service did not become ready");
 }
 
 function mimeForExtension(extension: string): string {
@@ -1117,6 +1152,17 @@ function registerAppProtocol(): void {
 
 async function start(): Promise<void> {
   await app.whenReady();
+  if (lifecycleCommand) {
+    if (lifecycleCommand === "--fd0-agent-service-restart") {
+      await agentLifecycle.restart();
+    } else if (lifecycleCommand === "--fd0-agent-service-stop") {
+      await agentLifecycle.stop();
+    } else {
+      await agentLifecycle.uninstall();
+    }
+    app.exit(0);
+    return;
+  }
   if (!app.isPackaged && process.platform === "darwin") {
     app.dock?.setIcon(join(applicationRoot, "resources", "icon.png"));
   }
@@ -1126,6 +1172,25 @@ async function start(): Promise<void> {
   const client = new BridgeSupervisor(bridgeBinary(), runtimeEnvironment());
   await client.start();
   bridge = client;
+  if (nativeAgentManaged) {
+    const serviceStatus = await agentLifecycle.ensureRunning();
+    if (serviceStatus === "requires-approval") {
+      void showAppMessageBox({
+        type: "warning",
+        buttons: ["Open Login Items", "Later"],
+        defaultId: 0,
+        cancelId: 1,
+        title: "Allow the fd0 background service",
+        message: "fd0 needs permission to run its local vault service.",
+        detail: "The service starts locked and keeps your CLI and desktop app available after restarts.",
+        noLink: true,
+      }).then((answer) => {
+        if (answer.response === 0) {
+          void shell.openExternal("x-apple.systempreferences:com.apple.LoginItems-Settings.extension");
+        }
+      });
+    }
+  }
   disposeAutoLockEvents = configureAutoLock();
   await refreshSecurityStatus();
   securityStatusTimer = setInterval(() => void refreshSecurityStatus(), 10_000);
@@ -1147,7 +1212,16 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
-app.on("before-quit", () => {
+let quitPrepared = false;
+app.on("before-quit", (event) => {
+  if (!quitPrepared && bridge && !installingUpdate) {
+    event.preventDefault();
+    quitPrepared = true;
+    void bridge.request("vault.lock", {}, 5_000)
+      .catch(() => undefined)
+      .finally(() => app.quit());
+    return;
+  }
   managedClipboard.clear();
   operationGrants.clear();
   if (updateTimer) clearTimeout(updateTimer);

@@ -648,10 +648,10 @@ func (s *Service) agentCompatible(status *agent.StatusResp) bool {
 	if status == nil {
 		return false
 	}
-	if s.ExpectedVersion != "" && s.ExpectedVersion != "dev" && status.Version != "" && status.Version != s.ExpectedVersion {
+	if s.ExpectedVersion != "" && s.ExpectedVersion != "dev" && status.Version != s.ExpectedVersion {
 		return false
 	}
-	if s.ExpectedFlavor != "" && status.Flavor != "" && buildinfo.NormalizeFlavor(status.Flavor) != buildinfo.NormalizeFlavor(s.ExpectedFlavor) {
+	if s.ExpectedFlavor != "" && buildinfo.NormalizeFlavor(status.Flavor) != buildinfo.NormalizeFlavor(s.ExpectedFlavor) {
 		return false
 	}
 	return true
@@ -807,13 +807,16 @@ func (s *Service) unlock(ctx context.Context, selector string, passphrase, pin [
 	client := agent.NewClient(paths.AgentSock)
 	if client.IsRunning() {
 		if current, err := client.Status(); err == nil {
-			if current.Unlocked {
-				return s.status()
-			}
 			if !s.agentCompatible(current) {
+				if os.Getenv("FD0_AGENT_MANAGED") == "1" {
+					return StatusResult{}, fail("agent_incompatible", "The running fd0 service does not match this app version.", "Restart fd0 from Support.", true)
+				}
 				if err := stopDesktopAgent(paths); err != nil {
 					return StatusResult{}, fail("agent_restart_failed", "fd0 could not replace an incompatible local agent.", "Open Support and restart the local service.", true)
 				}
+			}
+			if current.Unlocked {
+				return s.status()
 			}
 		}
 	}
@@ -857,6 +860,9 @@ func (s *Service) unlock(ctx context.Context, selector string, passphrase, pin [
 		return StatusResult{}, fail("method_unavailable", "This unlock method is not supported by fd0 Desktop.", "Use the fd0 CLI for this method.", false)
 	}
 	if !client.IsRunning() {
+		if os.Getenv("FD0_AGENT_MANAGED") == "1" {
+			return StatusResult{}, fail("agent_unavailable", "The fd0 background service is not running.", "Open Support and repair the local service.", true)
+		}
 		if err := agent.Spawn(s.AgentBin, paths.AgentLog); err != nil {
 			return StatusResult{}, mapDomainError(err)
 		}

@@ -164,8 +164,12 @@ CLI_DIR=$([ "$SYSTEM" = "1" ] && printf '/usr/local/bin' || printf '%s/.local/bi
 
 if [ "$UNINSTALL" = "1" ]; then
     confirm "uninstall fd0 Desktop and its managed CLI? Vault data will be kept." || { printf 'aborted.\n'; exit 1; }
-    if [ -f "$CLI_DIR/fd0" ] && grep -q '^# fd0-desktop-managed-v1$' "$CLI_DIR/fd0"; then
-        "$CLI_DIR/fd0" agent stop >/dev/null 2>&1 || true
+    if [ "$OS" = "darwin" ] && [ -x "$TARGET/Contents/MacOS/fd0" ]; then
+        "$TARGET/Contents/MacOS/fd0" --fd0-agent-service-uninstall >/dev/null 2>&1 || true
+    elif [ "$OS" = "linux" ]; then
+        systemctl --user disable --now fd0-agent.service >/dev/null 2>&1 || true
+        rm -f "$HOME/.config/systemd/user/fd0-agent.service"
+        systemctl --user daemon-reload >/dev/null 2>&1 || true
     fi
     remove_managed_wrapper "$CLI_DIR/fd0"
     remove_managed_wrapper "$CLI_DIR/fd0-agent"
