@@ -784,19 +784,11 @@ function registerIPC(client: BridgeSupervisor): void {
     const secret = Buffer.from(passphrase, "utf8");
     const encoded = secret.toString("base64");
     secret.fill(0);
-    const result = await client.request<{ data: string }>("recovery.export", { passphrase: encoded }, 2 * 60_000);
-    const data = Buffer.from(result.data, "base64");
-    if (data.length === 0 || data.length > 128 * 1024) {
-      data.fill(0);
-      throw new Error("fd0 returned an invalid recovery file");
-    }
-    try {
-      await writeFile(destination.filePath, data, { mode: 0o600 });
-      await chmod(destination.filePath, 0o600);
-    } finally {
-      data.fill(0);
-    }
-    return { saved: true };
+    return client.request<{ saved: boolean; verified: boolean }>(
+      "recovery.exportFile",
+      { path: destination.filePath, passphrase: encoded },
+      2 * 60_000,
+    );
   });
   handle("fd0:set-default-auth", async (method: string) => observeVaultStatus(await client.request<VaultStatus>("auth.default", { method })));
   handle("fd0:inventory", () => client.request("inventory.list", {}));

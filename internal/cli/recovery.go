@@ -104,6 +104,42 @@ func ExportRecoveryWithPassphrase(ctx context.Context, pass []byte) ([]byte, err
 	return out, nil
 }
 
+// VerifyRecoveryWithPassphrase decrypts and validates a recovery artifact
+// without changing local state.
+func VerifyRecoveryWithPassphrase(data, pass, expectedPub []byte) error {
+	var rf proto.RecoveryFile
+	if err := proto.Unmarshal(data, &rf); err != nil {
+		return fmt.Errorf("recovery: decode: %w", err)
+	}
+	if rf.Magic != proto.RecoveryMagic || rf.Version != 1 {
+		return errors.New("recovery: unsupported recovery file")
+	}
+	if !bytesEq(rf.UserSuperPub, expectedPub) {
+		return errors.New("recovery: identity does not match current vault")
+	}
+	kRecovery, err := crypto.DeriveKey(pass, rf.Salt, crypto.Argon2Params{
+		M: rf.Argon2Params.M, T: rf.Argon2Params.T, P: rf.Argon2Params.P,
+	})
+	if err != nil {
+		return fmt.Errorf("recovery: %w", err)
+	}
+	defer crypto.Wipe(kRecovery)
+	aad := append([]byte(proto.DomainRecoveryKey), rf.UserSuperPub...)
+	superPriv, err := crypto.AEADOpen(kRecovery, rf.Nonce, rf.EncryptedSuperPriv, aad)
+	if err != nil {
+		return fmt.Errorf("recovery: verify decrypt: %w", err)
+	}
+	defer crypto.Wipe(superPriv)
+	if len(superPriv) != ed25519.PrivateKeySize {
+		return errors.New("recovery: super_priv length")
+	}
+	derived := ed25519.PrivateKey(superPriv).Public().(ed25519.PublicKey)
+	if !bytesEq(derived, expectedPub) {
+		return errors.New("recovery: private identity does not match public identity")
+	}
+	return nil
+}
+
 // RunRecoveryImport bootstraps a fresh fd0 home from a RecoveryFile.
 //
 // Use cases:

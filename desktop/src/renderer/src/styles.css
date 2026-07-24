@@ -1618,6 +1618,44 @@ kbd {
   cursor: pointer;
 }
 
+.safety-banner {
+  position: fixed;
+  top: 66px;
+  right: 18px;
+  z-index: 35;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+  width: min(560px, calc(100vw - 36px));
+  padding: 11px 12px;
+  border: 1px solid #66511e;
+  border-radius: 5px;
+  background: #1d190d;
+  box-shadow: var(--shadow);
+  color: #e7c66a;
+}
+
+.safety-banner div {
+  display: grid;
+  gap: 2px;
+}
+
+.safety-banner strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.safety-banner span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.safety-banner .secondary-button {
+  white-space: nowrap;
+}
+
 .toast {
   position: fixed;
   left: 50%;

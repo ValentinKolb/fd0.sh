@@ -21,6 +21,10 @@ export type VaultStatus = {
   idleTimeoutMillis?: number;
   maxLifetimeMillis?: number;
   authMethods?: AuthMethodSummary[];
+  readiness?: {
+    firstSyncAt?: number;
+    recoveryVerifiedAt?: number;
+  };
 };
 
 export type AuthMethodSummary = {

@@ -65,6 +65,7 @@ type StatusResult struct {
 	IdleTimeoutMillis int64               `json:"idleTimeoutMillis,omitempty"`
 	MaxLifetimeMillis int64               `json:"maxLifetimeMillis,omitempty"`
 	AuthMethods       []AuthMethodSummary `json:"authMethods,omitempty"`
+	Readiness         ReadinessState      `json:"readiness"`
 }
 
 type AuthMethodSummary struct {
@@ -296,6 +297,19 @@ func (s *Service) Handle(ctx context.Context, method string, raw json.RawMessage
 		return struct {
 			Data []byte `json:"data"`
 		}{Data: data}, nil
+	case "recovery.exportFile":
+		var params struct {
+			Path       string `json:"path"`
+			Passphrase []byte `json:"passphrase"`
+		}
+		if err := decodeParams(raw, &params); err != nil {
+			return nil, err
+		}
+		defer crypto.Wipe(params.Passphrase)
+		if len(params.Passphrase) < 12 {
+			return nil, fail("validation", "Use a recovery passphrase with at least 12 characters.", "A longer generated phrase is safer.", false)
+		}
+		return s.exportRecoveryFile(ctx, params.Path, params.Passphrase)
 	case "recovery.import":
 		var params struct {
 			Data               []byte `json:"data"`
@@ -316,6 +330,13 @@ func (s *Service) Handle(ctx context.Context, method string, raw json.RawMessage
 		}
 		if _, err := cli.ImportRecoveryWithPassphrases(ctx, params.Data, params.RecoveryPassphrase, params.NewPassphrase); err != nil {
 			return nil, mapRecoveryError(err)
+		}
+		paths, err := fdhome.Resolve()
+		if err != nil {
+			return nil, err
+		}
+		if err := markRecoveryVerified(paths); err != nil {
+			return nil, err
 		}
 		return s.unlock(ctx, proto.AuthPassphrase, params.NewPassphrase, nil)
 	case "auth.default":
@@ -502,6 +523,13 @@ func (s *Service) Handle(ctx context.Context, method string, raw json.RawMessage
 		if err := cli.RunSyncPrimary(ctx, params.ServerURL); err != nil {
 			return nil, mapDomainError(err)
 		}
+		paths, err := fdhome.Resolve()
+		if err != nil {
+			return nil, err
+		}
+		if err := markFirstSync(paths); err != nil {
+			return nil, err
+		}
 		return map[string]bool{"ok": true}, nil
 	default:
 		return nil, fail("unknown_method", "The desktop app requested an unsupported operation.", "Update fd0 Desktop.", false)
@@ -612,6 +640,9 @@ func (s *Service) status() (StatusResult, error) {
 		ExpectedVersion: s.ExpectedVersion,
 		ExpectedFlavor:  s.ExpectedFlavor,
 	}
+	if result.Readiness, err = loadReadiness(paths); err != nil {
+		return StatusResult{}, err
+	}
 	if _, err := os.Stat(paths.Vault); err == nil {
 		result.VaultExists = true
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -642,6 +673,46 @@ func (s *Service) status() (StatusResult, error) {
 	result.MaxLifetimeMillis = status.MaxLifetimeMillis
 	result.AgentMismatch = !s.agentCompatible(status)
 	return result, nil
+}
+
+func (s *Service) exportRecoveryFile(ctx context.Context, path string, passphrase []byte) (map[string]bool, error) {
+	path = strings.TrimSpace(path)
+	if path == "" || !filepath.IsAbs(path) {
+		return nil, fail("validation", "Choose a valid recovery file location.", "", false)
+	}
+	data, err := cli.ExportRecoveryWithPassphrase(ctx, passphrase)
+	if err != nil {
+		return nil, mapDomainError(err)
+	}
+	defer crypto.Wipe(data)
+	session, err := cli.Open(ctx)
+	if err != nil {
+		return nil, mapDomainError(err)
+	}
+	expectedPub := append([]byte(nil), session.UserSuperPub...)
+	session.Close()
+	if err := cli.VerifyRecoveryWithPassphrase(data, passphrase, expectedPub); err != nil {
+		return nil, mapRecoveryError(err)
+	}
+	staged := path + ".new"
+	if err := os.WriteFile(staged, data, 0o600); err != nil {
+		return nil, err
+	}
+	if err := os.Rename(staged, path); err != nil {
+		_ = os.Remove(staged)
+		return nil, err
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return nil, err
+	}
+	paths, err := fdhome.Resolve()
+	if err != nil {
+		return nil, err
+	}
+	if err := markRecoveryVerified(paths); err != nil {
+		return nil, err
+	}
+	return map[string]bool{"saved": true, "verified": true}, nil
 }
 
 func (s *Service) agentCompatible(status *agent.StatusResp) bool {

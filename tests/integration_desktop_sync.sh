@@ -108,6 +108,13 @@ import json, os
 r = json.loads(os.environ["RUN"])
 assert r.get("result", {}).get("ok") is True, r
 PY
+python3 - "$CLIENT_HOME/desktop-state.json" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    state = json.load(handle)
+assert state.get("firstSyncAt", 0) > 0, state
+assert state.get("recoveryVerifiedAt", 0) == 0, state
+PY
 
 SECOND=$(bridge sync.prepare)
 export SECOND

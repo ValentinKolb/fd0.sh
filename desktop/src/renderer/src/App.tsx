@@ -532,6 +532,26 @@ function App(): JSX.Element {
               <button type="button" onClick={() => setAppError("")} aria-label="Dismiss error"><IconX size={17} /></button>
             </div>
           </Show>
+          <Show when={!window.fd0.development && (!status()?.readiness?.firstSyncAt || !status()?.readiness?.recoveryVerifiedAt)}>
+            <div class="safety-banner" role="status">
+              <IconAlertTriangle size={19} />
+              <div>
+                <strong>Your vault is not fully recoverable yet</strong>
+                <span>
+                  {!status()?.readiness?.firstSyncAt
+                    ? "Sync uploads encrypted vault history. Until it succeeds, this device holds the only copy."
+                    : "Export and verify an offline recovery file. It restores your identity; sync restores vault contents."}
+                </span>
+              </div>
+              <button
+                class="secondary-button"
+                type="button"
+                onClick={() => status()?.readiness?.firstSyncAt ? setRecoveryOpen(true) : void syncVault()}
+              >
+                {status()?.readiness?.firstSyncAt ? "Set up recovery" : "Sync now"}
+              </button>
+            </div>
+          </Show>
           <Show when={toast()}>
             <div class="toast" role="status"><IconCheck size={17} />{toast()}</div>
           </Show>
@@ -597,7 +617,8 @@ function App(): JSX.Element {
               onClose={() => setRecoveryOpen(false)}
               onSaved={() => {
                 setRecoveryOpen(false);
-                notify("Recovery file saved.");
+                notify("Recovery file saved and verified.");
+                void refresh();
               }}
             />
           </Show>

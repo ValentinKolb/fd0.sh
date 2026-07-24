@@ -413,7 +413,7 @@ test("runs the isolated desktop vault end to end", async () => {
     await page.getByLabel("Recovery passphrase", { exact: true }).fill("fd0-e2e-recovery-passphrase");
     await page.getByLabel("Confirm recovery passphrase", { exact: true }).fill("fd0-e2e-recovery-passphrase");
     await page.getByRole("button", { name: "Choose location…" }).click();
-    await expect(page.getByText("Recovery file saved.", { exact: true })).toBeVisible();
+    await expect(page.getByText("Recovery file saved and verified.", { exact: true })).toBeVisible();
     expect(existsSync(recoveryPath)).toBe(true);
     expect(statSync(recoveryPath).mode & 0o777).toBe(0o600);
 
