@@ -137,10 +137,12 @@ Client releases publish two install flavors:
 | `standard` | `fd0_<os>_<arch>.tar.gz` | Default pure-Go client without YubiKey/PIV support. |
 | `yubikey` | `fd0_yubikey_<os>_<arch>.tar.gz` | Client with PIV support in both `fd0` and `fd0-agent`. |
 
-The CLI and Desktop installers require
+The CLI-only installer requires
 [Cosign](https://docs.sigstore.dev/cosign/system_config/installation/) on
-`PATH`. They verify the release manifest against the exact fd0 release
-workflow and tag before installing an artifact.
+`PATH`. The Desktop installer bootstraps an exact, SHA-256-pinned Cosign
+version when needed; installed Desktop updates use the bundled fd0 verifier.
+Both paths authenticate the release manifest against the exact fd0 workflow
+and tag before installing an artifact.
 
 Install the default client:
 
@@ -168,7 +170,13 @@ curl -fsSL https://fd0.sh/install | sh -s -- --desktop
 ```
 
 Desktop-managed commands update from the app under **Support**, not through the
-CLI-only release channel.
+CLI-only release channel. The installer preserves existing standalone
+`fd0` and `fd0-agent` commands and restores them on uninstall; vault data under
+`~/.fd0` is never removed.
+
+Dragging the DMG into `/Applications` or launching the AppImage directly
+installs only the GUI and its bundled service. Use the script when fd0 Desktop
+should also provide the `fd0` and `fd0-agent` shell commands.
 
 See [CHANGELOG.md](./CHANGELOG.md) for release history.
 

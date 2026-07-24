@@ -54,7 +54,9 @@ Windows: not yet built by the release pipeline. The binaries cross-compile but t
 curl -fsSL https://fd0.sh/install | sh -s -- --desktop
 ```
 
-Desktop is one versioned bundle containing the app, YubiKey-capable CLI, and agent. Its installer requires Cosign, then creates `fd0` and `fd0-agent` wrappers in `~/.local/bin` or `/usr/local/bin`; do not install a second CLI release on top. Desktop updates the app, CLI, and agent together from **Support**. Linux in-app updates also require Cosign to authenticate the downloaded AppImage. A bundled `fd0 update` prints that handoff instead of modifying the signed app.
+Desktop is one versioned bundle containing the app, YubiKey-capable CLI, and agent. Its installer bootstraps a SHA-256-pinned release verifier when needed, then creates marked `fd0` and `fd0-agent` wrappers in `~/.local/bin` or `/usr/local/bin`. Existing standalone commands are preserved and restored on uninstall. Desktop updates the app, CLI, and agent together from **Support**; Linux uses the verifier bundled in the app, so users do not install Cosign. A bundled `fd0 update` prints that handoff instead of modifying the signed app.
+
+A directly installed DMG or launched AppImage provides the GUI and its bundled service without replacing shell commands. Use the script when Desktop should own the `fd0` and `fd0-agent` command paths too.
 
 Uninstall the app and its marked wrappers without deleting `~/.fd0`:
 

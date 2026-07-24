@@ -5,12 +5,13 @@ set -eu
 
 REPO="ValentinKolb/fd0.sh"
 RELEASE_BASE="${FD0_RELEASE_BASE:-https://github.com/${REPO}/releases}"
-API_BASE="${FD0_API_BASE:-https://api.github.com/repos/${REPO}}"
+DESKTOP_FEED="${FD0_DESKTOP_FEED_URL:-https://fd0.sh/api/desktop/releases}"
 VERSION="${FD0_DESKTOP_VERSION:-latest}"
 SYSTEM="${FD0_DESKTOP_SYSTEM:-0}"
 ASSUME_YES="${FD0_DESKTOP_ASSUME_YES:-0}"
 ALLOW_DOWNGRADE="${FD0_DESKTOP_ALLOW_DOWNGRADE:-0}"
 UNINSTALL=0
+COSIGN_VERSION="3.0.6"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -40,6 +41,37 @@ done
 die() { printf 'fd0 Desktop: %s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 COSIGN="${FD0_COSIGN_BIN:-cosign}"
+
+sha256_file() {
+    if have sha256sum; then
+        sha256sum "$1" | awk '{print $1}'
+    elif have shasum; then
+        shasum -a 256 "$1" | awk '{print $1}'
+    else
+        die "sha256sum or shasum is required"
+    fi
+}
+
+prepare_cosign() {
+    if have "$COSIGN"; then
+        COSIGN=$(command -v "$COSIGN")
+        return
+    fi
+    [ -z "${FD0_COSIGN_BIN:-}" ] || die "configured Cosign verifier is not executable: $FD0_COSIGN_BIN"
+    case "$OS/$ASSET_ARCH" in
+        darwin/x64)   expected="4c3e7af8372d3ca3296e62fa56f23fcbb5721cc6ac1827900d398f110d7cd280"; cosign_os=darwin; cosign_arch=amd64 ;;
+        darwin/arm64) expected="5fadd012ae6381a6a29ff86a7d39aa873878852f1073fc90b15995961ecfb084"; cosign_os=darwin; cosign_arch=arm64 ;;
+        linux/x64)    expected="c956e5dfcac53d52bcf058360d579472f0c1d2d9b69f55209e256fe7783f4c74"; cosign_os=linux; cosign_arch=amd64 ;;
+        linux/arm64)  expected="bedac92e8c3729864e13d4a17048007cfafa79d5deca993a43a90ffe018ef2b8"; cosign_os=linux; cosign_arch=arm64 ;;
+        *) die "no release verifier is available for $OS/$ASSET_ARCH" ;;
+    esac
+    COSIGN="$TMP/cosign"
+    curl -fsSL "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-${cosign_os}-${cosign_arch}" \
+        -o "$COSIGN" || die "could not download the pinned release verifier"
+    actual=$(sha256_file "$COSIGN")
+    [ "$actual" = "$expected" ] || die "release verifier SHA-256 mismatch"
+    chmod 700 "$COSIGN"
+}
 
 version_lt() {
     awk -v left="$1" -v right="$2" '
@@ -90,6 +122,27 @@ version_lt() {
     '
 }
 
+latest_stable_desktop() {
+    best=""
+    separator='?'
+    case "$DESKTOP_FEED" in
+        *\?*) separator='&' ;;
+    esac
+    payload=$(curl -fsSL "${DESKTOP_FEED}${separator}format=tags") \
+        || die "stable desktop release feed is unavailable; select an explicit --version"
+    for candidate in $payload; do
+        if printf '%s\n' "$candidate" | grep -Eq '^desktop-v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            if [ -z "$best" ] || version_lt "${best#desktop-v}" "${candidate#desktop-v}"; then
+                best=$candidate
+            fi
+        else
+            die "stable desktop release feed returned invalid data"
+        fi
+    done
+    [ -n "$best" ] || die "no stable desktop release found"
+    printf '%s\n' "$best"
+}
+
 install_executable() {
     src=$1
     dst=$2
@@ -120,6 +173,48 @@ remove_managed_wrapper() {
     if [ -f "$path" ] && grep -q '^# fd0-desktop-managed-v1$' "$path"; then
         remove_path "$path"
     fi
+}
+
+ownership_backup() {
+    printf '%s/%s.previous' "$OWNERSHIP_DIR" "$1"
+}
+
+preserve_existing_wrapper() {
+    path=$1
+    name=$2
+    backup=$(ownership_backup "$name")
+    if { [ -e "$path" ] || [ -L "$path" ]; } \
+        && ! { [ -f "$path" ] && grep -q '^# fd0-desktop-managed-v1$' "$path"; } \
+        && [ ! -e "$backup" ] && [ ! -L "$backup" ]; then
+        if [ "$SYSTEM" = "1" ] && [ "$(id -u)" != "0" ]; then
+            sudo mkdir -p "$OWNERSHIP_DIR"
+            sudo cp -pP "$path" "$backup"
+        else
+            mkdir -p "$OWNERSHIP_DIR"
+            cp -pP "$path" "$backup"
+        fi
+        printf '✓ preserved existing %s at %s\n' "$name" "$backup"
+    fi
+}
+
+restore_preserved_wrapper() {
+    path=$1
+    name=$2
+    backup=$(ownership_backup "$name")
+    [ -e "$backup" ] || [ -L "$backup" ] || return 0
+    if [ -e "$path" ] || [ -L "$path" ]; then
+        printf '! kept preserved %s at %s because %s is now user-managed\n' "$name" "$backup" "$path" >&2
+        return 0
+    fi
+    dir=$(dirname "$path")
+    if [ "$SYSTEM" = "1" ] && [ "$(id -u)" != "0" ]; then
+        sudo mkdir -p "$dir"
+        sudo mv "$backup" "$path"
+    else
+        mkdir -p "$dir"
+        mv "$backup" "$path"
+    fi
+    printf '✓ restored previous %s at %s\n' "$name" "$path"
 }
 
 shell_quote() {
@@ -161,21 +256,32 @@ else
     TARGET=$([ "$SYSTEM" = "1" ] && printf '/usr/local/bin/fd0-desktop' || printf '%s/.local/bin/fd0-desktop' "$HOME")
 fi
 CLI_DIR=$([ "$SYSTEM" = "1" ] && printf '/usr/local/bin' || printf '%s/.local/bin' "$HOME")
+OWNERSHIP_DIR=$([ "$SYSTEM" = "1" ] && printf '/usr/local/share/fd0-desktop' || printf '%s/.local/share/fd0-desktop' "$HOME")
 
 if [ "$UNINSTALL" = "1" ]; then
     confirm "uninstall fd0 Desktop and its managed CLI? Vault data will be kept." || { printf 'aborted.\n'; exit 1; }
     if [ "$OS" = "darwin" ] && [ -x "$TARGET/Contents/MacOS/fd0" ]; then
         "$TARGET/Contents/MacOS/fd0" --fd0-agent-service-uninstall >/dev/null 2>&1 || true
     elif [ "$OS" = "linux" ]; then
-        systemctl --user disable --now fd0-agent.service >/dev/null 2>&1 || true
-        rm -f "$HOME/.config/systemd/user/fd0-agent.service"
-        systemctl --user daemon-reload >/dev/null 2>&1 || true
+        unit="$HOME/.config/systemd/user/fd0-agent.service"
+        if [ -f "$unit" ] && grep -q '^# fd0-desktop-managed-v1$' "$unit"; then
+            systemctl --user disable --now fd0-agent.service >/dev/null 2>&1 || true
+            rm -f "$unit"
+            systemctl --user daemon-reload >/dev/null 2>&1 || true
+        fi
     fi
     remove_managed_wrapper "$CLI_DIR/fd0"
     remove_managed_wrapper "$CLI_DIR/fd0-agent"
+    restore_preserved_wrapper "$CLI_DIR/fd0" fd0
+    restore_preserved_wrapper "$CLI_DIR/fd0-agent" fd0-agent
     remove_path "$TARGET"
     if [ "$OS" = "linux" ] && [ "$SYSTEM" != "1" ]; then
         remove_path "$HOME/.local/share/applications/sh.fd0.desktop.desktop"
+    fi
+    if [ "$SYSTEM" = "1" ] && [ "$(id -u)" != "0" ]; then
+        sudo rmdir "$OWNERSHIP_DIR" 2>/dev/null || true
+    else
+        rmdir "$OWNERSHIP_DIR" 2>/dev/null || true
     fi
     printf '✓ fd0 Desktop removed; %s was not changed\n' "${FD0_HOME:-$HOME/.fd0}"
     exit 0
@@ -185,10 +291,7 @@ have curl || die "curl is required"
 REQUESTED_LATEST=0
 if [ "$VERSION" = "latest" ]; then
     REQUESTED_LATEST=1
-    VERSION=$(curl -fsSL "${API_BASE}/releases?per_page=30" \
-        | sed -n 's/.*"tag_name": *"\(desktop-v[^"]*\)".*/\1/p' \
-        | head -n1)
-    [ -n "$VERSION" ] || die "no desktop release found"
+    VERSION=$(latest_stable_desktop)
 fi
 case "$VERSION" in
     desktop-v*) ;;
@@ -211,8 +314,6 @@ if printf '%s\n' "$CURRENT" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z][
         die "refusing downgrade from $CURRENT to $VERSION_NUM; select an explicit version and pass --allow-downgrade"
     fi
 fi
-have "$COSIGN" || die "cosign is required to authenticate fd0 Desktop releases; install cosign and retry"
-
 if [ "$OS" = "darwin" ]; then
     ASSET="fd0-desktop_${VERSION_NUM}_${ASSET_OS}_${ASSET_ARCH}.dmg"
 else
@@ -234,19 +335,14 @@ cleanup() {
     rm -rf "$TMP"
 }
 trap cleanup EXIT HUP INT TERM
+prepare_cosign
 
 DL="${RELEASE_BASE}/download/${VERSION}"
 curl -fsSL "$DL/$ASSET" -o "$TMP/$ASSET" || die "could not download $ASSET"
 curl -fsSL "$DL/checksums.txt" -o "$TMP/checksums.txt" || die "missing checksums.txt"
 expected=$(awk -v target="$ASSET" '$2 == target || $2 == "*"target {print $1}' "$TMP/checksums.txt")
 [ -n "$expected" ] || die "$ASSET is not listed in checksums.txt"
-if have sha256sum; then
-    actual=$(sha256sum "$TMP/$ASSET" | awk '{print $1}')
-elif have shasum; then
-    actual=$(shasum -a 256 "$TMP/$ASSET" | awk '{print $1}')
-else
-    die "sha256sum or shasum is required"
-fi
+actual=$(sha256_file "$TMP/$ASSET")
 [ "$actual" = "$expected" ] || die "SHA-256 mismatch; refusing to install"
 
 curl -fsSL "$DL/checksums.txt.sig" -o "$TMP/checksums.txt.sig" || die "missing checksums.txt.sig"
@@ -344,6 +440,8 @@ EOF
 exec $APP_Q --fd0-agent-relay "\$@"
 EOF
 fi
+preserve_existing_wrapper "$CLI_DIR/fd0" fd0
+preserve_existing_wrapper "$CLI_DIR/fd0-agent" fd0-agent
 install_executable "$TMP/wrappers/fd0" "$CLI_DIR/fd0"
 install_executable "$TMP/wrappers/fd0-agent" "$CLI_DIR/fd0-agent"
 

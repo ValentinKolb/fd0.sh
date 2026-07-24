@@ -16,6 +16,8 @@ const recoveryPath = join(tmpdir(), `fd0-desktop-e2e-recovery-${process.pid}.cbo
 const attachmentPath = join(tmpdir(), `fd0-desktop-e2e-attachment-${process.pid}.txt`);
 const restoreHome = join(tmpdir(), `fd0-desktop-e2e-restore-${process.pid}`);
 const restoreSock = join(tmpdir(), `fd0-desktop-e2e-restore-ssh-${process.pid}.sock`);
+const startupHome = join(tmpdir(), `fd0-desktop-e2e-startup-${process.pid}`);
+const startupSock = join(tmpdir(), `fd0-desktop-e2e-startup-${process.pid}.sock`);
 const environment: NodeJS.ProcessEnv = {
   ...process.env,
   NODE_ENV: "test",
@@ -72,6 +74,8 @@ test.afterAll(() => {
   if (existsSync(join(restoreHome, ".desktop-isolated")) && readFileSync(join(restoreHome, ".desktop-isolated"), "utf8") === "fd0-desktop-isolated-v1\n") {
     rmSync(restoreHome, { recursive: true });
   }
+  rmSync(startupHome, { recursive: true, force: true });
+  rmSync(startupSock, { force: true });
 });
 
 test("runs the isolated desktop vault end to end", async () => {
@@ -506,5 +510,31 @@ test("restores an identity without contacting the production fd0 instance", asyn
   } finally {
     await app.close();
     spawnSync(join(buildDir, "fd0"), ["agent", "stop"], { cwd: repoRoot, env: restoreEnvironment });
+  }
+});
+
+test("shows recovery controls when the local bridge cannot start", async () => {
+  const app = await electron.launch({
+    executablePath: electronPath,
+    args: [join(desktopRoot, "out", "main", "index.js")],
+    env: {
+      ...environment,
+      FD0_HOME: startupHome,
+      FD0_SSH_SOCK: startupSock,
+      FD0_DESKTOP_USER_DATA: join(startupHome, "desktop-ui"),
+      FD0_DESKTOP_BRIDGE_BIN: join(startupHome, "missing-bridge"),
+    },
+  });
+  try {
+    const page = await app.firstWindow();
+    await expect(page.getByRole("heading", { name: "fd0 needs attention" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Try again" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Repair local service" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Copy diagnostics" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Open logs" })).toBeVisible();
+    await page.getByRole("button", { name: "Try again" }).click();
+    await expect(page.getByRole("heading", { name: "fd0 needs attention" })).toBeVisible();
+  } finally {
+    await app.close();
   }
 });

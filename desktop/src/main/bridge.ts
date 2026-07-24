@@ -43,7 +43,11 @@ export class BridgeClient {
     return this.#closed;
   }
 
-  constructor(binary: string, environment: NodeJS.ProcessEnv) {
+  constructor(
+    binary: string,
+    environment: NodeJS.ProcessEnv,
+    onDiagnostic?: (event: string, detail?: unknown) => void,
+  ) {
     this.#process = spawn(binary, [], {
       env: environment,
       stdio: ["pipe", "pipe", "pipe"],
@@ -53,13 +57,18 @@ export class BridgeClient {
     const lines = createInterface({ input: this.#process.stdout, crlfDelay: Infinity });
     lines.on("line", (line) => this.#handleLine(line));
     this.#process.stderr.on("data", (chunk: Buffer) => {
+      onDiagnostic?.("stderr", chunk.toString("utf8").trimEnd());
       if (!process.env.NODE_ENV || process.env.NODE_ENV === "development") {
         console.error(`[fd0 bridge] ${chunk.toString("utf8").trimEnd()}`);
       }
     });
-    this.#process.once("error", (error) => this.#failAll(error));
+    this.#process.once("error", (error) => {
+      onDiagnostic?.("process-error", error);
+      this.#failAll(error);
+    });
     this.#process.once("exit", (code, signal) => {
       this.#closed = true;
+      onDiagnostic?.("process-exit", signal ?? code ?? "unknown");
       this.#failAll(new Error(`fd0 bridge exited (${signal ?? code ?? "unknown"})`));
     });
   }
@@ -144,13 +153,19 @@ export class BridgeClient {
 export class BridgeSupervisor {
   readonly #binary: string;
   readonly #environment: NodeJS.ProcessEnv;
+  readonly #onDiagnostic?: (event: string, detail?: unknown) => void;
   #client: BridgeClient | null = null;
   #starting: Promise<BridgeClient> | null = null;
   #disposed = false;
 
-  constructor(binary: string, environment: NodeJS.ProcessEnv) {
+  constructor(
+    binary: string,
+    environment: NodeJS.ProcessEnv,
+    onDiagnostic?: (event: string, detail?: unknown) => void,
+  ) {
     this.#binary = binary;
     this.#environment = environment;
+    this.#onDiagnostic = onDiagnostic;
   }
 
   async start(): Promise<void> {
@@ -182,7 +197,7 @@ export class BridgeSupervisor {
     if (this.#client && !this.#client.closed) return this.#client;
     if (this.#starting) return this.#starting;
     this.#starting = (async () => {
-      const candidate = new BridgeClient(this.#binary, this.#environment);
+      const candidate = new BridgeClient(this.#binary, this.#environment, this.#onDiagnostic);
       try {
         await candidate.handshake();
         if (this.#disposed) {

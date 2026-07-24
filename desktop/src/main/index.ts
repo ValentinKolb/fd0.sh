@@ -1,4 +1,4 @@
-import { basename, extname, join, resolve, sep } from "node:path";
+import { basename, dirname, extname, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createReadStream } from "node:fs";
 import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -30,15 +30,18 @@ import { DesktopAutoLock, type SecurityLockReason } from "./auto-lock";
 import { ManagedClipboard } from "./managed-clipboard";
 import { supportLink, trustedItemURL, type SupportLinkTarget } from "./external-links";
 import { OperationGrants, type OperationGrantKind } from "./operation-grants";
+import { DiagnosticsLog, redactDiagnosticText } from "./diagnostics";
 import {
   checksumForAsset,
   compareSemver,
-  desktopReleaseIdentity,
+  linuxDesktopAssetName,
+  requireSelectedNewerRelease,
   selectDesktopRelease,
   type DesktopRelease,
 } from "./release-verification";
 import type {
   DesktopCommand,
+  DiagnosticsSnapshot,
   FieldRef,
   FieldView,
   GenerateSSHKeyInput,
@@ -49,6 +52,7 @@ import type {
   SaveSecretInput,
   SaveSSHHostInput,
   ScopeShareInfo,
+  StartupStatus,
   SyncPreparation,
   UnlockInput,
   UpdateStatus,
@@ -70,6 +74,12 @@ let disposeAutoLockEvents: (() => void) | null = null;
 let securityStatusTimer: NodeJS.Timeout | null = null;
 let securityStatusRefreshing = false;
 let lastObservedUnlocked: boolean | undefined;
+let lastVaultStatus: VaultStatus | null = null;
+let diagnostics: DiagnosticsLog | null = null;
+let startupStatus: StartupStatus = { state: "starting" };
+let domainIPCRegistered = false;
+let servicesStarting: Promise<StartupStatus> | null = null;
+let syncState: DiagnosticsSnapshot["sync"] = { state: "never" };
 const { autoUpdater } = electronUpdater;
 const applicationRoot = app.isPackaged ? app.getAppPath() : resolve(import.meta.dirname, "../..");
 const nativeAgentManaged = app.isPackaged
@@ -122,6 +132,9 @@ function runtimeEnvironment(): NodeJS.ProcessEnv {
       FD0_BIN: join(process.resourcesPath, "bin", "fd0"),
       FD0_DESKTOP_MODE: "system",
       FD0_DESKTOP_VERSION: app.getVersion(),
+      ...(process.platform === "linux"
+        ? { LD_LIBRARY_PATH: join(process.resourcesPath, "runtime") }
+        : {}),
       ...(nativeAgentManaged ? { FD0_AGENT_MANAGED: "1" } : {}),
       ...(process.env.FD0_SSH_SOCK !== undefined ? { FD0_SSH_SOCK: process.env.FD0_SSH_SOCK } : {}),
     };
@@ -179,6 +192,7 @@ function sendCommand(command: DesktopCommand): void {
 
 function publishUpdate(status: UpdateStatus): void {
   updateState = status;
+  diagnostics?.record("updater", `state:${status.state}`, status.state === "error" ? status.message : undefined);
   mainWindow?.webContents.send("desktop:update", status);
 }
 
@@ -208,16 +222,34 @@ async function checkForUpdates(): Promise<UpdateStatus> {
 }
 
 async function resolveDesktopUpdateRelease(): Promise<DesktopRelease> {
-  const response = await net.fetch("https://api.github.com/repos/ValentinKolb/fd0.sh/releases?per_page=30", {
-    headers: {
-      Accept: "application/vnd.github+json",
-      "User-Agent": `fd0-desktop/${app.getVersion()}`,
-      "X-GitHub-Api-Version": "2022-11-28",
-    },
-  });
-  if (!response.ok) throw new Error(`GitHub release lookup failed with HTTP ${response.status}`);
-  const payload = await response.json() as unknown;
+  const headers = {
+    Accept: "application/vnd.github+json",
+    "User-Agent": `fd0-desktop/${app.getVersion()}`,
+    "X-GitHub-Api-Version": "2022-11-28",
+  };
   const allowPrerelease = app.getVersion().includes("-");
+  try {
+    const response = await net.fetch("https://fd0.sh/api/desktop/releases", { headers });
+    if (response.ok) {
+      const release = selectDesktopRelease(await response.json() as unknown, allowPrerelease);
+      if (release) return release;
+    }
+  } catch {
+    // The authenticated artifact path below remains available through GitHub.
+  }
+
+  const payload: unknown[] = [];
+  for (let page = 1; page <= 20; page++) {
+    const response = await net.fetch(
+      `https://api.github.com/repos/ValentinKolb/fd0.sh/releases?per_page=100&page=${page}`,
+      { headers },
+    );
+    if (!response.ok) throw new Error(`GitHub release lookup failed with HTTP ${response.status}`);
+    const pagePayload = await response.json() as unknown;
+    if (!Array.isArray(pagePayload)) throw new Error("GitHub release lookup returned invalid data");
+    payload.push(...pagePayload);
+    if (pagePayload.length < 100) break;
+  }
   const release = selectDesktopRelease(payload, allowPrerelease);
   if (!release) throw new Error("No fd0 Desktop release is available");
   return release;
@@ -235,17 +267,11 @@ async function fetchReleaseFile(release: DesktopRelease, name: string, maxBytes 
 
 async function verifyDownloadedDesktopUpdate(version: string, downloadedFile: string): Promise<void> {
   if (process.platform !== "linux") return;
-  const release = selectedUpdateRelease;
-  if (!release || release.version !== version || compareSemver(version, app.getVersion()) <= 0) {
-    throw new Error("Downloaded update does not match the selected newer release");
-  }
-  const assetArch = process.arch === "x64" ? "x64" : process.arch === "arm64" ? "arm64" : "";
-  if (!assetArch) throw new Error(`Unsupported update architecture: ${process.arch}`);
-  const assetName = `fd0-desktop_${version}_linux_${assetArch}.AppImage`;
-  const [manifestBytes, signature, certificate, actual] = await Promise.all([
+  const release = requireSelectedNewerRelease(selectedUpdateRelease, version, app.getVersion());
+  const assetName = linuxDesktopAssetName(version, process.arch);
+  const [manifestBytes, signatureBundle, actual] = await Promise.all([
     fetchReleaseFile(release, "checksums.txt"),
-    fetchReleaseFile(release, "checksums.txt.sig"),
-    fetchReleaseFile(release, "checksums.txt.pem"),
+    fetchReleaseFile(release, "checksums.txt.sigstore.json"),
     sha256Path(downloadedFile),
   ]);
   const manifest = new TextDecoder().decode(manifestBytes);
@@ -255,33 +281,25 @@ async function verifyDownloadedDesktopUpdate(version: string, downloadedFile: st
   const root = await mkdtemp(join(tmpdir(), "fd0-update-"));
   try {
     const manifestPath = join(root, "checksums.txt");
-    const signaturePath = join(root, "checksums.txt.sig");
-    const certificatePath = join(root, "checksums.txt.pem");
+    const bundlePath = join(root, "checksums.txt.sigstore.json");
     await Promise.all([
       writeFile(manifestPath, manifestBytes, { mode: 0o600 }),
-      writeFile(signaturePath, signature, { mode: 0o600 }),
-      writeFile(certificatePath, certificate, { mode: 0o600 }),
+      writeFile(bundlePath, signatureBundle, { mode: 0o600 }),
     ]);
-    const cosign = process.env.FD0_COSIGN_BIN?.trim() || "cosign";
-    const verification = spawnSync(cosign, [
-      "verify-blob",
-      "--certificate", certificatePath,
-      "--signature", signaturePath,
-      "--certificate-identity-regexp", desktopReleaseIdentity(release.tag),
-      "--certificate-oidc-issuer", "https://token.actions.githubusercontent.com",
+    const verifier = join(process.resourcesPath, "bin", "fd0-release-verify");
+    const verification = spawnSync(verifier, [
+      "--bundle", bundlePath,
+      "--tag", release.tag,
       manifestPath,
     ], {
       env: runtimeEnvironment(),
       encoding: "utf8",
       timeout: 30_000,
     });
-    if (verification.error) {
-      if ((verification.error as NodeJS.ErrnoException).code === "ENOENT") {
-        throw new Error("Cosign is required to authenticate Linux desktop updates");
-      }
-      throw verification.error;
+    if (verification.error) throw verification.error;
+    if (verification.status !== 0) {
+      throw new Error("fd0 rejected the desktop release signature");
     }
-    if (verification.status !== 0) throw new Error("Cosign rejected the fd0 Desktop release signature");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -397,6 +415,7 @@ async function installReadyUpdate(): Promise<void> {
 }
 
 function observeVaultStatus(status: VaultStatus): VaultStatus {
+  lastVaultStatus = status;
   const lockedTransition = lastObservedUnlocked === true && !status.unlocked;
   lastObservedUnlocked = status.unlocked;
   autoLock?.observe(status);
@@ -688,6 +707,91 @@ async function respond<T>(operation: () => Promise<T>): Promise<IPCResult<T>> {
       },
     };
   }
+}
+
+function displayPath(path: string): string {
+  const home = homedir();
+  return path === home ? "~" : path.startsWith(home + sep) ? `~${path.slice(home.length)}` : path;
+}
+
+async function diagnosticSnapshot(): Promise<DiagnosticsSnapshot> {
+  const serviceState = await agentLifecycle.status();
+  const status = lastVaultStatus;
+  const effectiveSyncState = syncState.state === "never" && status?.readiness?.firstSyncAt
+    ? { state: "ok" as const, lastAttemptAt: new Date(status.readiness.firstSyncAt).toISOString() }
+    : syncState;
+  const recentErrors = (diagnostics?.recent() ?? []).filter((entry) =>
+    /error|failed|failure|stderr|exit|crash|rejected/i.test(`${entry.event} ${entry.message ?? ""}`),
+  );
+  const healthy = startupStatus.state === "ready"
+    && Boolean(status?.agentRunning)
+    && !status?.agentMismatch
+    && effectiveSyncState.state !== "error"
+    && updateState.state !== "error"
+    && (!status?.vaultExists || Boolean(status.readiness?.firstSyncAt && status.readiness?.recoveryVerifiedAt));
+  return {
+    generatedAt: new Date().toISOString(),
+    health: healthy ? "healthy" : "attention",
+    app: {
+      version: app.getVersion(),
+      platform: process.platform,
+      architecture: process.arch,
+      packageType: process.platform === "darwin"
+        ? "dmg"
+        : process.env.APPIMAGE
+          ? "AppImage"
+          : "deb/rpm",
+    },
+    paths: {
+      application: displayPath(process.env.APPIMAGE || process.execPath),
+      fd0Home: displayPath(runtimeEnvironment().FD0_HOME ?? join(homedir(), ".fd0")),
+      logs: displayPath(diagnostics?.path ?? app.getPath("logs")),
+    },
+    service: {
+      state: serviceState,
+      running: status?.agentRunning,
+      version: status?.version,
+      flavor: status?.flavor,
+      mismatch: status?.agentMismatch,
+    },
+    vault: {
+      exists: status?.vaultExists,
+      unlocked: status?.unlocked,
+      firstSyncComplete: Boolean(status?.readiness?.firstSyncAt),
+      recoveryVerified: Boolean(status?.readiness?.recoveryVerifiedAt),
+    },
+    sync: effectiveSyncState,
+    update: updateState,
+    recentErrors,
+  };
+}
+
+function registerInfrastructureIPC(): void {
+  const handle = <T>(channel: string, operation: () => Promise<T>): void => {
+    ipcMain.handle(channel, (event) => {
+      assertTrustedSender(event);
+      return respond(operation);
+    });
+  };
+  handle("fd0:startup-status", async () => startupStatus);
+  handle("fd0:retry-startup", initializeServices);
+  handle("fd0:repair-service", async () => {
+    diagnostics?.record("agent", "repair-requested");
+    if (nativeAgentManaged) await agentLifecycle.restart();
+    return initializeServices();
+  });
+  handle("fd0:diagnostics", diagnosticSnapshot);
+  handle("fd0:copy-diagnostics", async () => {
+    clipboard.writeText(JSON.stringify(await diagnosticSnapshot(), null, 2));
+    return { copied: true };
+  });
+  handle("fd0:open-logs", async () => {
+    const error = await shell.openPath(dirname(diagnostics?.path ?? app.getPath("logs")));
+    if (error) throw new Error(error);
+  });
+  handle("fd0:quit", async () => {
+    app.quit();
+  });
 }
 
 function registerIPC(client: BridgeSupervisor): void {
@@ -988,31 +1092,42 @@ function registerIPC(client: BridgeSupervisor): void {
     return client.request("card.import", { url, label });
   });
   handle("fd0:sync", async () => {
-    const preparation = await client.request<SyncPreparation>("sync.prepare", {}, 30_000);
-    if (preparation.requiresConfirmation) {
-      if (!mainWindow) throw new Error("fd0 window is unavailable");
-      const name = dialogText(preparation.label ?? "", preparation.serverUrl);
-      const confirmation = await dialog.showMessageBox(mainWindow, {
-        type: "warning",
-        buttons: ["Cancel", "Trust and sync"],
-        defaultId: 0,
-        cancelId: 0,
-        title: "Trust this fd0 service?",
-        message: `Trust ${name}?`,
-        detail: `${preparation.serverUrl}\n\nSafety fingerprint:\n${preparation.fingerprint}\n\nVerify this fingerprint through an independent trusted channel before continuing.`,
-        noLink: true,
-      });
-      if (confirmation.response !== 1) return { ok: false, cancelled: true };
-    }
-    if (!preparation.alreadyPinned) {
-      await client.request("sync.pin", {
+    syncState = { state: "never", lastAttemptAt: new Date().toISOString() };
+    diagnostics?.record("sync", "started");
+    try {
+      const preparation = await client.request<SyncPreparation>("sync.prepare", {}, 30_000);
+      if (preparation.requiresConfirmation) {
+        if (!mainWindow) throw new Error("fd0 window is unavailable");
+        const name = dialogText(preparation.label ?? "", preparation.serverUrl);
+        const confirmation = await dialog.showMessageBox(mainWindow, {
+          type: "warning",
+          buttons: ["Cancel", "Trust and sync"],
+          defaultId: 0,
+          cancelId: 0,
+          title: "Trust this fd0 service?",
+          message: `Trust ${name}?`,
+          detail: `${preparation.serverUrl}\n\nSafety fingerprint:\n${preparation.fingerprint}\n\nVerify this fingerprint through an independent trusted channel before continuing.`,
+          noLink: true,
+        });
+        if (confirmation.response !== 1) return { ok: false, cancelled: true };
+      }
+      if (!preparation.alreadyPinned) {
+        await client.request("sync.pin", {
+          serverUrl: preparation.serverUrl,
+          serverPub: preparation.serverPub,
+        }, 30_000);
+      }
+      const result = await client.request<{ ok: boolean }>("sync.run", {
         serverUrl: preparation.serverUrl,
-        serverPub: preparation.serverPub,
-      }, 30_000);
+      }, 5 * 60_000);
+      syncState = { state: "ok", lastAttemptAt: new Date().toISOString() };
+      diagnostics?.record("sync", "completed");
+      return result;
+    } catch (error) {
+      syncState = { state: "error", lastAttemptAt: new Date().toISOString() };
+      diagnostics?.record("sync", "failed", error);
+      throw error;
     }
-    return client.request<{ ok: boolean }>("sync.run", {
-      serverUrl: preparation.serverUrl,
-    }, 5 * 60_000);
   });
   handle("fd0:launch-at-login", async () => agentLifecycle.guiLaunchesAtLogin());
   handle("fd0:set-launch-at-login", async (value: boolean) => {
@@ -1142,8 +1257,70 @@ function registerAppProtocol(): void {
   });
 }
 
+async function initializeServices(): Promise<StartupStatus> {
+  if (startupStatus.state === "ready") return startupStatus;
+  if (servicesStarting) return servicesStarting;
+  servicesStarting = (async () => {
+    startupStatus = { state: "starting" };
+    const client = new BridgeSupervisor(
+      bridgeBinary(),
+      runtimeEnvironment(),
+      (event, detail) => diagnostics?.record("bridge", event, detail),
+    );
+    try {
+      await client.start();
+      bridge = client;
+      if (nativeAgentManaged) {
+        const serviceStatus = await agentLifecycle.ensureRunning();
+        diagnostics?.record("agent", `service:${serviceStatus}`);
+        if (serviceStatus === "requires-approval") {
+          void showAppMessageBox({
+            type: "warning",
+            buttons: ["Open Login Items", "Later"],
+            defaultId: 0,
+            cancelId: 1,
+            title: "Allow the fd0 background service",
+            message: "fd0 needs permission to run its local vault service.",
+            detail: "The service starts locked and keeps your CLI and desktop app available after restarts.",
+            noLink: true,
+          }).then((answer) => {
+            if (answer.response === 0) {
+              void shell.openExternal("x-apple.systempreferences:com.apple.LoginItems-Settings.extension");
+            }
+          });
+        }
+      }
+      if (!domainIPCRegistered) {
+        registerIPC(client);
+        domainIPCRegistered = true;
+      }
+      if (!disposeAutoLockEvents) disposeAutoLockEvents = configureAutoLock();
+      await refreshSecurityStatus();
+      if (!securityStatusTimer) {
+        securityStatusTimer = setInterval(() => void refreshSecurityStatus(), 10_000);
+      }
+      startupStatus = { state: "ready" };
+      diagnostics?.record("app", "services-ready");
+      sendCommand("refresh");
+      return startupStatus;
+    } catch (error) {
+      client.dispose();
+      if (bridge === client) bridge = null;
+      const message = redactDiagnosticText(error);
+      startupStatus = { state: "error", message };
+      diagnostics?.record("app", "startup-failed", error);
+      return startupStatus;
+    } finally {
+      servicesStarting = null;
+    }
+  })();
+  return servicesStarting;
+}
+
 async function start(): Promise<void> {
   await app.whenReady();
+  diagnostics = new DiagnosticsLog(join(app.getPath("logs"), "fd0-desktop.log"));
+  diagnostics.record("app", "starting", `${process.platform}/${process.arch} ${app.getVersion()}`);
   if (lifecycleCommand) {
     if (lifecycleCommand === "--fd0-agent-service-restart") {
       await agentLifecycle.restart();
@@ -1161,36 +1338,12 @@ async function start(): Promise<void> {
   registerAppProtocol();
   session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
   session.defaultSession.setPermissionCheckHandler(() => false);
-  const client = new BridgeSupervisor(bridgeBinary(), runtimeEnvironment());
-  await client.start();
-  bridge = client;
-  if (nativeAgentManaged) {
-    const serviceStatus = await agentLifecycle.ensureRunning();
-    if (serviceStatus === "requires-approval") {
-      void showAppMessageBox({
-        type: "warning",
-        buttons: ["Open Login Items", "Later"],
-        defaultId: 0,
-        cancelId: 1,
-        title: "Allow the fd0 background service",
-        message: "fd0 needs permission to run its local vault service.",
-        detail: "The service starts locked and keeps your CLI and desktop app available after restarts.",
-        noLink: true,
-      }).then((answer) => {
-        if (answer.response === 0) {
-          void shell.openExternal("x-apple.systempreferences:com.apple.LoginItems-Settings.extension");
-        }
-      });
-    }
-  }
-  disposeAutoLockEvents = configureAutoLock();
-  await refreshSecurityStatus();
-  securityStatusTimer = setInterval(() => void refreshSecurityStatus(), 10_000);
-  registerIPC(client);
+  registerInfrastructureIPC();
   buildMenu();
   mainWindow = createWindow();
   createTray();
   configureUpdater();
+  await initializeServices();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) mainWindow = createWindow();
   });
@@ -1226,6 +1379,10 @@ app.on("before-quit", (event) => {
 });
 
 void start().catch((error) => {
-  dialog.showErrorBox("fd0 could not start", error instanceof Error ? error.message : String(error));
-  app.quit();
+  diagnostics?.record("app", "fatal-startup-error", error);
+  startupStatus = { state: "error", message: redactDiagnosticText(error) };
+  if (!mainWindow) {
+    dialog.showErrorBox("fd0 could not start", "The desktop window could not be created. Reopen fd0 or inspect the application logs.");
+    app.quit();
+  }
 });

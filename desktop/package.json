@@ -5,6 +5,8 @@
   "type": "module",
   "description": "fd0 desktop password manager",
   "author": "Valentin Kolb",
+  "homepage": "https://fd0.sh",
+  "desktopName": "sh.fd0.desktop.desktop",
   "license": "Apache-2.0",
   "main": "./out/main/index.js",
   "scripts": {
@@ -29,13 +31,19 @@
   },
   "devDependencies": {
     "@types/node": "26.1.1",
-    "electron": "43.1.0",
+    "electron": "43.2.0",
     "electron-builder": "26.15.3",
     "electron-vite": "5.0.0",
     "@playwright/test": "1.61.1",
     "typescript": "7.0.2",
     "vite": "7.3.6",
     "vite-plugin-solid": "2.11.12"
+  },
+  "overrides": {
+    "brace-expansion": "5.0.8",
+    "fast-uri": "3.1.4",
+    "postcss": "8.5.23",
+    "tar": "7.5.22"
   },
   "trustedDependencies": [
     "electron"
@@ -46,6 +54,9 @@
     "artifactName": "fd0-desktop_${version}_${os}_${arch}.${ext}",
     "icon": "resources/icon.png",
     "asar": true,
+    "toolsets": {
+      "appimage": "1.0.3"
+    },
     "electronFuses": {
       "runAsNode": false,
       "enableCookieEncryption": false,
@@ -74,6 +85,14 @@
       {
         "from": "../.build/desktop/fd0",
         "to": "bin/fd0"
+      },
+      {
+        "from": "../.build/desktop/fd0-release-verify",
+        "to": "bin/fd0-release-verify"
+      },
+      {
+        "from": "../.build/desktop/runtime",
+        "to": "runtime"
       }
     ],
     "mac": {
@@ -98,6 +117,7 @@
       "category": "Utility",
       "maintainer": "Valentin Kolb",
       "synopsis": "fd0 password and infrastructure credential manager",
+      "syncDesktopName": true,
       "target": [
         "AppImage",
         "deb",
@@ -105,10 +125,43 @@
       ]
     },
     "deb": {
-      "depends": ["libpcsclite1"]
+      "afterRemove": "resources/linux-after-remove.sh",
+      "depends": [
+        "libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0",
+        "libuuid1",
+        "libsecret-1-0",
+        "libgbm1",
+        "libasound2t64 | libasound2",
+        "libcups2t64 | libcups2",
+        "libdbus-1-3",
+        "libxkbcommon0",
+        "libpcsclite1"
+      ]
     },
     "rpm": {
-      "depends": ["pcsc-lite-libs"]
+      "afterRemove": "resources/linux-after-remove.sh",
+      "depends": [
+        "gtk3",
+        "libnotify",
+        "nss",
+        "libXScrnSaver",
+        "libXtst",
+        "xdg-utils",
+        "at-spi2-core",
+        "libuuid",
+        "mesa-libgbm",
+        "alsa-lib",
+        "cups-libs",
+        "dbus-libs",
+        "libxkbcommon",
+        "pcsc-lite-libs"
+      ]
     },
     "publish": [{
       "provider": "github",

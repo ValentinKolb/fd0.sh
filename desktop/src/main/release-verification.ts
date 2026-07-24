@@ -70,10 +70,41 @@ export function desktopReleaseIdentity(tag: string): string {
   return `^${identity.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`;
 }
 
+export function requireSelectedNewerRelease(
+  selected: DesktopRelease | null,
+  downloadedVersion: string,
+  currentVersion: string,
+): DesktopRelease {
+  if (
+    !selected
+    || selected.version !== downloadedVersion
+    || compareSemver(downloadedVersion, currentVersion) <= 0
+  ) {
+    throw new Error("Downloaded update does not match the selected newer release");
+  }
+  return selected;
+}
+
+export function linuxDesktopAssetName(version: string, architecture: string): string {
+  parseSemver(version);
+  if (architecture !== "x64" && architecture !== "arm64") {
+    throw new Error(`Unsupported update architecture: ${architecture}`);
+  }
+  return `fd0-desktop_${version}_linux_${architecture}.AppImage`;
+}
+
 export function checksumForAsset(manifest: string, assetName: string): string {
+  const matches: string[] = [];
   for (const line of manifest.split(/\r?\n/)) {
     const match = /^([a-fA-F0-9]{64})\s+\*?(.+)$/.exec(line.trim());
-    if (match?.[2] === assetName) return match[1]!.toLowerCase();
+    if (match?.[2] === assetName) matches.push(match[1]!.toLowerCase());
   }
-  throw new Error(`${assetName} is not listed in the authenticated release manifest`);
+  if (matches.length !== 1) {
+    throw new Error(
+      matches.length === 0
+        ? `${assetName} is not listed in the authenticated release manifest`
+        : `${assetName} has duplicate entries in the authenticated release manifest`,
+    );
+  }
+  return matches[0]!;
 }

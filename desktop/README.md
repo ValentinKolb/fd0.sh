@@ -69,10 +69,28 @@ The Electron test launches real temporary fd0 agents and vaults. It covers rende
 - Copied secrets clear after 30 seconds when the clipboard still contains the copied value.
 - Electron production fuses disable RunAsNode, Node options, and inspector arguments and require the embedded ASAR.
 - macOS releases require Developer ID signing, hardened runtime, and notarization. The release workflow fails when signing credentials are absent.
+- Startup failures stay inside a recovery screen with retry, service repair, redacted diagnostics, and log access. They never trigger a vault reset.
+- Diagnostic logs rotate at 512 KiB with three backups and redact credential assignments, bearer tokens, and user-home prefixes.
+
+## Linux runtime
+
+AppImage builds use electron-builder AppImage toolset `1.0.3`, whose static
+runtime does not require FUSE2. YubiKey builds link `fd0-agent` to
+`libpcsclite.so.1`; the AppImage bundles that library and its license so
+passphrase users do not need PC/SC packages. DEB and RPM keep native
+`libpcsclite1` or `pcsc-lite-libs` dependencies so their package managers own
+updates and removal.
+
+The Linux release job records the complete `ldd` closure for `fd0-agent` on
+x64 and arm64 and fails on any unresolved library. Clean-machine jobs run the
+AppImage on native runners plus Ubuntu, Debian, and Rocky Linux containers
+without host Cosign or PC/SC, then install and remove DEB and RPM packages.
+YubiKey use still requires a compatible card, the PC/SC daemon, and device
+access; standard vault access does not.
 
 ## Release
 
-Push `desktop-vX.Y.Z`. `.github/workflows/release-desktop.yml` verifies the repository, builds YubiKey-enabled macOS and Linux artifacts, signs and notarizes macOS bundles, signs the checksum manifest with Cosign, and publishes one GitHub release.
+Push `desktop-vX.Y.Z`. `.github/workflows/release-desktop.yml` verifies the repository, builds YubiKey-enabled macOS and Linux artifacts, signs and notarizes macOS bundles, publishes an SPDX SBOM and GitHub provenance, signs the checksum manifest with Sigstore, verifies it with fd0's embedded verifier, and publishes one GitHub release from draft state only after every artifact is present.
 
 Required GitHub secrets:
 
@@ -82,6 +100,25 @@ Required GitHub secrets:
 - `APPLE_API_KEY_ID`
 - `APPLE_API_ISSUER`
 
-The updater filters GitHub releases to `desktop-v*`. macOS uses architecture-specific update metadata; Linux uses AppImage metadata. Before installing an update, Desktop stops the running agent so the bundled app, CLI, and agent cannot drift across versions.
+The updater first reads the cached stable feed at `fd0.sh` and falls back to a
+fully paginated GitHub lookup. Drafts and prereleases do not enter the stable
+channel. macOS uses architecture-specific update metadata; Linux uses AppImage
+metadata and an embedded Sigstore verifier pinned to the exact release workflow
+and tag. Before installing an update, Desktop stops the running agent so the
+bundled app, CLI, and agent cannot drift across versions.
 
-`scripts/install-desktop.sh` verifies SHA-256 for every install and verifies the Cosign manifest when Cosign is available. On macOS it also verifies the app signature and Gatekeeper assessment before replacing the current app. The installer creates desktop-managed `fd0` and `fd0-agent` commands in `~/.local/bin` or `/usr/local/bin`; Linux commands relay into the installed AppImage, while macOS commands resolve into the stable app bundle path. `--uninstall` removes only the app and marked wrappers and preserves `~/.fd0`.
+`scripts/install-desktop.sh` verifies SHA-256 for every install and always
+authenticates the manifest. If Cosign is absent, it downloads the pinned Cosign
+3.0.6 binary and checks its hard-coded platform SHA-256 before use. On macOS it
+also verifies the app signature and Gatekeeper assessment before replacement.
+The installer creates marked `fd0` and `fd0-agent` wrappers in
+`~/.local/bin` or `/usr/local/bin`; any pre-existing standalone commands are
+preserved and restored on uninstall. Linux commands relay into the installed
+AppImage, while macOS commands resolve into the stable app bundle path.
+`--uninstall` removes only owned files and never removes `~/.fd0`.
+
+A DMG copied directly to `/Applications` or a directly launched AppImage is a
+GUI-only installation: the app starts and supervises its bundled agent, but it
+does not claim shell command paths. Use the install script when the same signed
+bundle should also own `fd0` and `fd0-agent` commands. DEB and RPM package
+ownership remains with the system package manager.

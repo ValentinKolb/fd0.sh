@@ -238,10 +238,10 @@ const InstallBody = () => (
     <Box>{`$ brew install cosign   # macOS or Linuxbrew
 $ cosign version`}</Box>
     <P>
-      fd0 requires <Link href="https://docs.sigstore.dev/cosign/system_config/installation/">Cosign</Link>{" "}
-      to authenticate release manifests. The installer refuses to continue
-      without it. On Linux, use the package for your distribution or another
-      installation method from the official Cosign documentation.
+      The CLI-only installer requires <Link href="https://docs.sigstore.dev/cosign/system_config/installation/">Cosign</Link>{" "}
+      to authenticate release manifests. The Desktop installer downloads an
+      exact pinned verifier when needed, so Desktop users do not install
+      release tools manually.
     </P>
     <H2>Install the client</H2>
     <Box>{`$ curl -fsSL https://fd0.sh/install | sh
@@ -263,8 +263,18 @@ fd0 <version> standard`}</Box>
       manages passwords, general secrets, SSH hosts and keys, kubeconfigs, and
       Talos contexts through the same local agent.
     </P>
+    <P>
+      A DMG copied into <Code>/Applications</Code> or a directly launched
+      AppImage installs the GUI and its bundled service without taking ownership
+      of shell command paths. Use the script when Desktop should also provide
+      the <Code>fd0</Code> and <Code>fd0-agent</Code> commands.
+    </P>
     <Box>{`$ curl -fsSL https://fd0.sh/install-desktop | sh -s -- --uninstall`}</Box>
-    <P>Uninstall removes the app and its managed command wrappers. It does not remove <Code>~/.fd0</Code> or your vault data.</P>
+    <P>
+      Uninstall removes the app and its managed command wrappers. Existing
+      standalone fd0 commands are restored when present. It does not remove{" "}
+      <Code>~/.fd0</Code> or your vault data.
+    </P>
     <H2>Install the YubiKey flavor</H2>
     <Box>{`$ curl -fsSL https://fd0.sh/install | sh -s -- --yubikey
 $ fd0 version

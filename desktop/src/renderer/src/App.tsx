@@ -51,6 +51,7 @@ import { password } from "@valentinkolb/stdlib";
 import { hotkeys } from "@valentinkolb/stdlib/solid";
 import type {
   FieldView,
+  DiagnosticsSnapshot,
   Inventory,
   ItemDetail,
   ItemKind,
@@ -60,6 +61,7 @@ import type {
   SaveSecretInput,
   SaveSSHHostInput,
   ScopeSummary,
+  StartupStatus,
   UpdateStatus,
   VaultStatus,
 } from "../../shared/contracts";
@@ -92,6 +94,7 @@ const kindIcons: Record<ItemKind, IconComponent> = {
 };
 
 function App(): JSX.Element {
+  const [startup, setStartup] = createSignal<StartupStatus>({ state: "starting" });
   const [status, setStatus] = createSignal<VaultStatus | null>(null);
   const [inventory, setInventory] = createSignal<Inventory>({ scopes: [], items: [], counts: {} });
   const [detail, setDetail] = createSignal<ItemDetail | null>(null);
@@ -276,9 +279,25 @@ function App(): JSX.Element {
   });
 
   onMount(() => {
-    void refresh();
-    const statusTimer = setInterval(() => void checkLockState(), 10_000);
-    const refreshOnFocus = () => void refresh();
+    let startupTimer: ReturnType<typeof setTimeout> | undefined;
+    const observeStartup = async (): Promise<void> => {
+      const next = await window.fd0.startupStatus();
+      setStartup(next);
+      if (next.state === "ready") {
+        await refresh();
+      } else if (next.state === "starting") {
+        startupTimer = setTimeout(() => void observeStartup(), 250);
+      }
+    };
+    void observeStartup().catch((error) => {
+      setStartup({ state: "error", message: errorText(error) });
+    });
+    const statusTimer = setInterval(() => {
+      if (startup().state === "ready") void checkLockState();
+    }, 10_000);
+    const refreshOnFocus = () => {
+      if (startup().state === "ready") void refresh();
+    };
     window.addEventListener("focus", refreshOnFocus);
     const shortcuts = hotkeys.create({
       "mod+f": { label: "Find", run: () => searchInput?.focus(), inInput: true },
@@ -311,13 +330,26 @@ function App(): JSX.Element {
       shortcuts.dispose();
       unsubscribe();
       clearInterval(statusTimer);
+      if (startupTimer) clearTimeout(startupTimer);
       window.removeEventListener("focus", refreshOnFocus);
       if (toastTimer) clearTimeout(toastTimer);
     });
   });
 
   return (
-    <div classList={{ app: true, "is-mac": window.fd0.platform === "darwin", compact: compactRows() }}>
+    <Show
+      when={startup().state === "ready"}
+      fallback={
+        <StartupRecovery
+          status={startup()}
+          onStatus={(next) => {
+            setStartup(next);
+            if (next.state === "ready") void refresh();
+          }}
+        />
+      }
+    >
+      <div classList={{ app: true, "is-mac": window.fd0.platform === "darwin", compact: compactRows() }}>
       <Show
         when={!loading()}
         fallback={
@@ -646,6 +678,64 @@ function App(): JSX.Element {
           </Show>
         </Show>
       </Show>
+      </div>
+    </Show>
+  );
+}
+
+function StartupRecovery(props: {
+  status: StartupStatus;
+  onStatus(status: StartupStatus): void;
+}): JSX.Element {
+  const [busy, setBusy] = createSignal(false);
+  const [error, setError] = createSignal("");
+
+  async function run(operation: () => Promise<StartupStatus>): Promise<void> {
+    setBusy(true);
+    setError("");
+    try {
+      props.onStatus(await operation());
+    } catch (cause) {
+      setError(errorText(cause));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div class="startup-recovery">
+      <header><Logo /></header>
+      <main>
+        <div class="startup-recovery-icon">
+          {props.status.state === "starting" ? <IconRefresh size={28} /> : <IconAlertTriangle size={28} />}
+        </div>
+        <h1>{props.status.state === "starting" ? "Starting fd0" : "fd0 needs attention"}</h1>
+        <p>
+          {props.status.state === "starting"
+            ? "Connecting to the local vault service…"
+            : "The local vault service could not start. Your vault data has not been changed."}
+        </p>
+        <Show when={props.status.message || error()}>
+          <div class="inline-error" role="alert">{error() || props.status.message}</div>
+        </Show>
+        <Show when={props.status.state === "error"}>
+          <div class="startup-recovery-actions">
+            <button class="primary-button" type="button" disabled={busy()} onClick={() => void run(window.fd0.retryStartup)}>
+              <IconRefresh size={16} />Try again
+            </button>
+            <button class="secondary-button" type="button" disabled={busy()} onClick={() => void run(window.fd0.repairService)}>
+              Repair local service
+            </button>
+            <button class="secondary-button" type="button" onClick={() => void window.fd0.copyDiagnostics()}>
+              <IconCopy size={16} />Copy diagnostics
+            </button>
+            <button class="secondary-button" type="button" onClick={() => void window.fd0.openLogs()}>
+              <IconFolder size={16} />Open logs
+            </button>
+            <button class="text-button" type="button" onClick={() => void window.fd0.quit()}>Quit fd0</button>
+          </div>
+        </Show>
+      </main>
     </div>
   );
 }
@@ -1482,11 +1572,23 @@ function SupportPanel(props: {
   onError(message: string): void;
 }): JSX.Element {
   const [update, setUpdate] = createSignal<UpdateStatus>({ state: "unsupported" });
+  const [diagnostics, setDiagnostics] = createSignal<DiagnosticsSnapshot | null>(null);
+  const refreshDiagnostics = (): Promise<void> => window.fd0.diagnostics()
+    .then((snapshot) => {
+      setDiagnostics(snapshot);
+    })
+    .catch((error) => props.onError(errorText(error)));
   onMount(() => {
     void window.fd0.updateStatus().then(setUpdate).catch((error) => props.onError(errorText(error)));
+    void refreshDiagnostics();
+    const diagnosticsTimer = setInterval(() => void refreshDiagnostics(), 10_000);
     const unsubscribe = window.fd0.onUpdate(setUpdate);
-    onCleanup(unsubscribe);
+    onCleanup(() => {
+      clearInterval(diagnosticsTimer);
+      unsubscribe();
+    });
   });
+  const healthy = createMemo(() => diagnostics()?.health === "healthy");
   const updateLabel = createMemo(() => {
     const current = update();
     switch (current.state) {
@@ -1503,11 +1605,15 @@ function SupportPanel(props: {
   return (
     <section class="workspace-panel support-panel">
       <header><h1>Support</h1><p>Health, updates, and help for this device.</p></header>
-      <div class="health-summary" classList={{ warning: Boolean(props.status.agentMismatch) }}>
-        {props.status.agentMismatch ? <IconAlertTriangle size={28} /> : <IconShieldCheck size={28} />}
+      <div class="health-summary" classList={{ warning: !healthy() }}>
+        {!healthy() ? <IconAlertTriangle size={28} /> : <IconShieldCheck size={28} />}
         <div>
-          <strong>{props.status.agentMismatch ? "Local service needs a restart" : "Everything is working"}</strong>
-          <span>{props.status.agentMismatch ? "The app and running fd0 agent use different versions." : "Your vault and local fd0 service are available."}</span>
+          <strong>{healthy() ? "Everything is working" : "fd0 needs attention"}</strong>
+          <span>{healthy()
+            ? "Service, sync, updates, and recovery are ready."
+            : props.status.agentMismatch
+              ? "The app and running fd0 service use different versions."
+              : "Review the status below or copy diagnostics for support."}</span>
         </div>
       </div>
       <div class="support-grid">
@@ -1515,6 +1621,8 @@ function SupportPanel(props: {
         <div><span>Local service</span><strong>{props.status.agentMismatch ? "Restart required" : props.status.agentRunning ? "Running" : "Stopped"}</strong></div>
         <div><span>App version</span><strong>{props.status.expectedVersion || props.status.version || "Development"}</strong></div>
         <div><span>Build</span><strong>{props.status.expectedFlavor || props.status.flavor || "standard"}</strong></div>
+        <div><span>Last sync</span><strong>{diagnostics()?.sync.state === "ok" ? "Successful" : diagnostics()?.sync.state === "error" ? "Failed" : "Not yet"}</strong></div>
+        <div><span>Recovery</span><strong>{props.status.readiness?.recoveryVerifiedAt ? "Verified" : "Required"}</strong></div>
       </div>
       <Show when={props.status.agentMismatch}>
         <div class="update-row service-warning">
@@ -1526,6 +1634,7 @@ function SupportPanel(props: {
               .then((next) => {
                 props.onStatus(next);
                 props.onNotify("Local service restarted.");
+                void refreshDiagnostics();
               })
               .catch((error) => props.onError(errorText(error)))}
           ><IconRefresh size={16} />Restart service</button>
@@ -1548,6 +1657,11 @@ function SupportPanel(props: {
         </Show>
       </div>
       <div class="support-actions">
+        <button class="secondary-button" type="button" onClick={() => void window.fd0.copyDiagnostics()
+          .then(() => props.onNotify("Diagnostics copied."))
+          .catch((error) => props.onError(errorText(error)))}><IconCopy size={16} />Copy diagnostics</button>
+        <button class="secondary-button" type="button" onClick={() => void window.fd0.openLogs()
+          .catch((error) => props.onError(errorText(error)))}><IconFolder size={16} />Open logs</button>
         <button class="secondary-button" type="button" onClick={() => void window.fd0.openSupportLink("docs").catch((error) => props.onError(errorText(error)))}><IconExternalLink size={16} />Open documentation</button>
         <button class="secondary-button" type="button" onClick={() => void window.fd0.openSupportLink("issues").catch((error) => props.onError(errorText(error)))}><IconAlertTriangle size={16} />Report a problem</button>
       </div>

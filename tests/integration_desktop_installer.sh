@@ -138,6 +138,10 @@ cat > "$BASE/api/releases" <<'EOF'
   }
 ]
 EOF
+cat > "$BASE/desktop-feed" <<'EOF'
+desktop-v0.0.9
+desktop-v0.1.0
+EOF
 
 cat > "$FAKE_BIN/uname" <<'EOF'
 #!/bin/sh
@@ -234,6 +238,18 @@ grep -Fq "Exec=$LINUX_HOME/.local/bin/fd0-desktop" \
 
 run_installer "$LINUX_HOME" Linux >/dev/null
 test "$(HOME="$LINUX_HOME" "$LINUX_HOME/.local/bin/fd0" version)" = "fd0 0.1.0 standard"
+
+LATEST_DESKTOP_HOME="$BASE/latest-desktop-home"
+HOME="$LATEST_DESKTOP_HOME" \
+TEST_UNAME_S=Linux \
+TEST_UNAME_M=arm64 \
+PATH="$FAKE_BIN:$PATH" \
+FD0_DESKTOP_FEED_URL="file://$BASE/desktop-feed" \
+FD0_RELEASE_BASE="file://$BASE/releases" \
+FD0_DESKTOP_ASSUME_YES=1 \
+FD0_COSIGN_BIN="$FAKE_BIN/cosign" \
+  sh "$ROOT/scripts/install-desktop.sh" >/dev/null
+test "$(HOME="$LATEST_DESKTOP_HOME" "$LATEST_DESKTOP_HOME/.local/bin/fd0" version)" = "fd0 0.1.0 standard"
 
 if HOME="$LINUX_HOME" \
   TEST_UNAME_S=Linux \
@@ -340,6 +356,30 @@ test ! -e "$MAIN_HOME/.local/bin/fd0-desktop"
 test ! -e "$MAIN_HOME/.local/bin/fd0"
 test ! -e "$MAIN_HOME/.local/bin/fd0-agent"
 test "$(cat "$MAIN_HOME/.fd0/vault.enc")" = "keep"
+
+OWNED_HOME="$BASE/owned-home"
+mkdir -p "$OWNED_HOME/.local/bin" "$OWNED_HOME/.fd0"
+cat > "$OWNED_HOME/.local/bin/fd0" <<'EOF'
+#!/bin/sh
+printf 'standalone fd0\n'
+EOF
+cat > "$OWNED_HOME/.local/bin/fd0-agent" <<'EOF'
+#!/bin/sh
+printf 'standalone agent\n'
+EOF
+chmod +x "$OWNED_HOME/.local/bin/fd0" "$OWNED_HOME/.local/bin/fd0-agent"
+printf 'keep owned vault\n' > "$OWNED_HOME/.fd0/vault.enc"
+run_installer "$OWNED_HOME" Linux >/dev/null
+test "$(HOME="$OWNED_HOME" "$OWNED_HOME/.local/bin/fd0" version)" = "fd0 0.1.0 standard"
+HOME="$OWNED_HOME" \
+TEST_UNAME_S=Linux \
+TEST_UNAME_M=arm64 \
+PATH="$FAKE_BIN:$PATH" \
+FD0_DESKTOP_ASSUME_YES=1 \
+  sh "$ROOT/scripts/install-desktop.sh" --uninstall --yes >/dev/null
+test "$(HOME="$OWNED_HOME" "$OWNED_HOME/.local/bin/fd0")" = "standalone fd0"
+test "$(HOME="$OWNED_HOME" "$OWNED_HOME/.local/bin/fd0-agent")" = "standalone agent"
+test "$(cat "$OWNED_HOME/.fd0/vault.enc")" = "keep owned vault"
 
 printf 'tampered\n' >> "$RELEASE/fd0-desktop_0.1.0_linux_arm64.AppImage"
 TAMPERED_HOME="$BASE/tampered-home"

@@ -214,6 +214,51 @@ export type UpdateStatus = {
   message?: string;
 };
 
+export type StartupStatus = {
+  state: "starting" | "ready" | "error";
+  message?: string;
+};
+
+export type DiagnosticsSnapshot = {
+  generatedAt: string;
+  health: "healthy" | "attention";
+  app: {
+    version: string;
+    platform: NodeJS.Platform;
+    architecture: string;
+    packageType: string;
+  };
+  paths: {
+    application: string;
+    fd0Home: string;
+    logs: string;
+  };
+  service: {
+    state: string;
+    running?: boolean;
+    version?: string;
+    flavor?: string;
+    mismatch?: boolean;
+  };
+  vault: {
+    exists?: boolean;
+    unlocked?: boolean;
+    firstSyncComplete?: boolean;
+    recoveryVerified?: boolean;
+  };
+  sync: {
+    state: "never" | "ok" | "error";
+    lastAttemptAt?: string;
+  };
+  update: UpdateStatus;
+  recentErrors: Array<{
+    at: string;
+    component: string;
+    event: string;
+    message?: string;
+  }>;
+};
+
 export type DesktopCommand =
   | "focus-search"
   | "new-item"
@@ -224,6 +269,13 @@ export type DesktopCommand =
 export type DesktopAPI = {
   platform: NodeJS.Platform;
   development: boolean;
+  startupStatus(): Promise<StartupStatus>;
+  retryStartup(): Promise<StartupStatus>;
+  repairService(): Promise<StartupStatus>;
+  diagnostics(): Promise<DiagnosticsSnapshot>;
+  copyDiagnostics(): Promise<{ copied: boolean }>;
+  openLogs(): Promise<void>;
+  quit(): Promise<void>;
   status(): Promise<VaultStatus>;
   createVault(passphrase: string, label: string): Promise<VaultStatus>;
   unlock(input: UnlockInput): Promise<VaultStatus>;

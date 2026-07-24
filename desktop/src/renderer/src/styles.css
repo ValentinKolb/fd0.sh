@@ -1232,6 +1232,59 @@ kbd {
   margin-top: 24px;
 }
 
+.startup-recovery {
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: 64px 1fr;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.startup-recovery > header {
+  display: flex;
+  align-items: center;
+  padding: 0 28px;
+  border-bottom: 1px solid var(--border);
+  -webkit-app-region: drag;
+}
+
+.startup-recovery > main {
+  width: min(560px, calc(100vw - 48px));
+  margin: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.startup-recovery h1,
+.startup-recovery p {
+  margin: 0;
+}
+
+.startup-recovery p {
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.startup-recovery-icon {
+  width: 52px;
+  height: 52px;
+  display: grid;
+  place-items: center;
+  color: var(--amber);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.startup-recovery-actions {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding-top: 8px;
+}
+
 .update-row {
   display: flex;
   align-items: center;

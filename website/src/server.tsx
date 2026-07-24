@@ -38,6 +38,7 @@ import {
   SpecThreats,
 } from "./pages/Spec";
 import Witness from "./pages/Witness";
+import { fetchStableDesktopReleases } from "./lib/desktop-releases";
 
 const VERSION = process.env.FD0_WEBSITE_VERSION ?? "dev";
 const METRICS_TOKEN = (process.env.FD0_WEBSITE_METRICS_TOKEN ?? "").trim();
@@ -86,6 +87,7 @@ const metricPaths = new Set([
   "/install-desktop",
   "/install-desktop.sh",
   "/files/compose.yml",
+  "/api/desktop/releases",
 ]);
 export const metricPathLabel = (path: string): string => {
   if (metricPaths.has(path)) return path;
@@ -226,6 +228,22 @@ const app = new Hono()
       api_version: "v1",
     }),
   )
+  .get("/api/desktop/releases", async (c) => {
+    try {
+      const releases = await fetchStableDesktopReleases();
+      const headers = {
+        "Cache-Control": "public, max-age=300, stale-if-error=86400",
+      };
+      if (c.req.query("format") === "tags") {
+        return c.text(releases.map((release) => release.tag_name).join("\n") + "\n", 200, headers);
+      }
+      return c.json(releases, 200, headers);
+    } catch {
+      return c.json({ error: "release feed unavailable" }, 503, {
+        "Cache-Control": "no-store",
+      });
+    }
+  })
   .get("/metrics", (c) => {
     if (!checkBearer(c.req.header("Authorization"), METRICS_TOKEN)) {
       return c.notFound();

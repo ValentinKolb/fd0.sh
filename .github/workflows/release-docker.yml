@@ -46,7 +46,7 @@ jobs:
       matrix:
         platform: [amd64, arm64]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - id: meta
         run: |
           version="${GITHUB_REF_NAME##*-v}"
@@ -58,13 +58,13 @@ jobs:
           else
             echo "tags=ghcr.io/${owner_lc}/fd0-server:${version}-arm64,ghcr.io/${owner_lc}/fd0-server:latest-arm64" >> "$GITHUB_OUTPUT"
           fi
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: ./cmd/fd0-server/Dockerfile
@@ -85,7 +85,7 @@ jobs:
       matrix:
         platform: [amd64, arm64]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - id: meta
         run: |
           version="${GITHUB_REF_NAME##*-v}"
@@ -97,13 +97,13 @@ jobs:
           else
             echo "tags=ghcr.io/${owner_lc}/fd0-witness:${version}-arm64,ghcr.io/${owner_lc}/fd0-witness:latest-arm64" >> "$GITHUB_OUTPUT"
           fi
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: ./cmd/fd0-witness/Dockerfile
@@ -124,7 +124,7 @@ jobs:
       matrix:
         platform: [amd64, arm64]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - id: meta
         run: |
           version="${GITHUB_REF_NAME##*-v}"
@@ -136,13 +136,13 @@ jobs:
           else
             echo "tags=ghcr.io/${owner_lc}/fd0-website:${version}-arm64,ghcr.io/${owner_lc}/fd0-website:latest-arm64" >> "$GITHUB_OUTPUT"
           fi
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: ./website/Dockerfile

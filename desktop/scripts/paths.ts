@@ -7,6 +7,8 @@ export const bridgeBin = join(buildDir, "fd0-desktop-bridge");
 export const agentBin = join(buildDir, "fd0-agent");
 export const cliBin = join(buildDir, "fd0");
 export const seedBin = join(buildDir, "fd0-desktop-dev-seed");
+export const releaseVerifierBin = join(buildDir, "fd0-release-verify");
+export const runtimeDir = join(buildDir, "runtime");
 
 export const devHome =
   process.platform === "darwin"

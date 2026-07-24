@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 const macServiceName = "sh.fd0.desktop.agent.plist";
 const linuxServiceName = "fd0-agent.service";
+const desktopManagedMarker = "# fd0-desktop-managed-v1";
 
 export type AgentServiceStatus =
   | "enabled"
@@ -57,6 +58,29 @@ export class AgentLifecycle {
     return "unsupported";
   }
 
+  async status(): Promise<string> {
+    if (!this.#packaged) return "development";
+    if (this.#platform === "darwin") {
+      return app.getLoginItemSettings({
+        type: "agentService",
+        serviceName: macServiceName,
+      }).status;
+    }
+    if (this.#platform === "linux") {
+      try {
+        const result = await this.#run(
+          "systemctl",
+          ["--user", "is-active", linuxServiceName],
+          { timeout: 5_000 },
+        );
+        return result.stdout.trim() || "unknown";
+      } catch {
+        return "inactive";
+      }
+    }
+    return "unsupported";
+  }
+
   async restart(): Promise<void> {
     if (!this.#packaged) throw new Error("Native agent supervision is unavailable in development mode");
     if (this.#platform === "darwin") {
@@ -84,17 +108,21 @@ export class AgentLifecycle {
       return;
     }
     if (this.#platform === "linux") {
+      if (!(await this.#ownsLinuxUnit())) return;
       await this.#systemctl(["stop", linuxServiceName], true);
     }
   }
 
   async uninstall(): Promise<void> {
-    await this.stop();
     if (this.#platform === "linux") {
+      if (!(await this.#ownsLinuxUnit())) return;
+      await this.stop();
       await this.#systemctl(["disable", linuxServiceName], true);
       await rm(this.#linuxUnitPath(), { force: true });
       await this.#systemctl(["daemon-reload"], true);
+      return;
     }
+    await this.stop();
   }
 
   async assertReady(status: AgentServiceStatus): Promise<void> {
@@ -150,6 +178,7 @@ export class AgentLifecycle {
   async #installLinuxUnit(): Promise<void> {
     const path = this.#linuxUnitPath();
     const unit = [
+      desktopManagedMarker,
       "[Unit]",
       "Description=fd0 local vault service",
       "Documentation=https://fd0.sh/docs",
@@ -173,6 +202,11 @@ export class AgentLifecycle {
     } catch {
       // Missing or unreadable unit is replaced atomically below.
     }
+    if (current && !current.startsWith(desktopManagedMarker + "\n")) {
+      throw new Error(
+        `A different fd0 service already owns ${path}. Stop or remove it before enabling fd0 Desktop.`,
+      );
+    }
     if (current !== unit) {
       const staged = `${path}.new`;
       await writeFile(staged, unit, { mode: 0o600 });
@@ -187,6 +221,15 @@ export class AgentLifecycle {
 
   #linuxAutostartPath(): string {
     return join(this.#home, ".config", "autostart", "sh.fd0.desktop.desktop");
+  }
+
+  async #ownsLinuxUnit(): Promise<boolean> {
+    try {
+      return (await readFile(this.#linuxUnitPath(), "utf8"))
+        .startsWith(desktopManagedMarker + "\n");
+    } catch {
+      return false;
+    }
   }
 
   async #systemctl(args: string[], ignoreMissing = false): Promise<void> {

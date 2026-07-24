@@ -3,12 +3,14 @@ import type {
   BridgeErrorShape,
   DesktopAPI,
   DesktopCommand,
+  DiagnosticsSnapshot,
   FieldRef,
   GenerateSSHKeyInput,
   RecordRef,
   SavePassInput,
   SaveSecretInput,
   SaveSSHHostInput,
+  StartupStatus,
   UpdateStatus,
 } from "../shared/contracts";
 
@@ -37,6 +39,13 @@ async function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
 const api: DesktopAPI = {
   platform: process.platform,
   development: process.argv.includes("--fd0-isolated"),
+  startupStatus: () => invoke<StartupStatus>("fd0:startup-status"),
+  retryStartup: () => invoke<StartupStatus>("fd0:retry-startup"),
+  repairService: () => invoke<StartupStatus>("fd0:repair-service"),
+  diagnostics: () => invoke<DiagnosticsSnapshot>("fd0:diagnostics"),
+  copyDiagnostics: () => invoke("fd0:copy-diagnostics"),
+  openLogs: () => invoke("fd0:open-logs"),
+  quit: () => invoke("fd0:quit"),
   status: () => invoke("fd0:status"),
   createVault: (passphrase: string, label: string) => invoke("fd0:create-vault", passphrase, label),
   unlock: (input) => invoke("fd0:unlock", input),
