@@ -249,7 +249,10 @@ function App(): JSX.Element {
     setSyncing(true);
     setAppError("");
     try {
-      if (!window.fd0.development) await window.fd0.sync();
+      if (!window.fd0.development) {
+        const result = await window.fd0.sync();
+        if (result.cancelled) return;
+      }
       await refresh();
       notify(window.fd0.development ? "Development vault refreshed." : "Vault synced.");
     } catch (error) {

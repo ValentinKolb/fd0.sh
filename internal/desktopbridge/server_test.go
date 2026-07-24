@@ -481,6 +481,33 @@ func TestAgentCompatibility(t *testing.T) {
 	}
 }
 
+func TestPinSyncServerRejectsHostedIdentityMismatchBeforeVaultMutation(t *testing.T) {
+	t.Setenv("FD0_SERVER", hostedServerURL)
+	service := &Service{
+		HostedServerURL: hostedServerURL,
+		HostedServerPub: bytes.Repeat([]byte{0x11}, 32),
+	}
+	_, err := service.pinSyncServer(
+		context.Background(),
+		hostedServerURL,
+		strings.Repeat("22", 32),
+	)
+	var methodErr *methodError
+	if !errors.As(err, &methodErr) || methodErr.bridge.Code != "hosted_server_identity_mismatch" {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestValidateCurrentServerRejectsConfigurationChange(t *testing.T) {
+	t.Setenv("FD0_SERVER", "https://new.example")
+	service := &Service{}
+	err := service.validateCurrentServer("https://old.example")
+	var methodErr *methodError
+	if !errors.As(err, &methodErr) || methodErr.bridge.Code != "server_changed" {
+		t.Fatalf("err=%v", err)
+	}
+}
+
 func TestStopDesktopAgentCleansStaleFiles(t *testing.T) {
 	root := t.TempDir()
 	paths := fdhome.Paths{

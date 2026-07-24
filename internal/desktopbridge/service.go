@@ -3,6 +3,7 @@ package desktopbridge
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,12 +30,19 @@ import (
 
 const isolatedMarker = "fd0-desktop-isolated-v1\n"
 
+const (
+	hostedServerURL    = "https://api.fd0.sh"
+	hostedServerPubHex = "bf7109e16fbcc477dba8d446751b67249633a4ea047ff06cc6ca90f4a5cc8218"
+)
+
 type Service struct {
 	Home            string
 	AgentBin        string
 	Mode            string
 	ExpectedVersion string
 	ExpectedFlavor  string
+	HostedServerURL string
+	HostedServerPub []byte
 }
 
 type HandshakeResult struct {
@@ -66,6 +74,16 @@ type AuthMethodSummary struct {
 	PINMode     string `json:"pinMode,omitempty"`
 	TouchPolicy string `json:"touchPolicy,omitempty"`
 	Default     bool   `json:"default,omitempty"`
+}
+
+type SyncPreparation struct {
+	ServerURL            string `json:"serverUrl"`
+	ServerPub            string `json:"serverPub"`
+	Fingerprint          string `json:"fingerprint"`
+	Label                string `json:"label,omitempty"`
+	Hosted               bool   `json:"hosted"`
+	AlreadyPinned        bool   `json:"alreadyPinned"`
+	RequiresConfirmation bool   `json:"requiresConfirmation"`
 }
 
 func NewServiceFromEnv() (*Service, error) {
@@ -135,12 +153,18 @@ func NewServiceFromEnv() (*Service, error) {
 	if agentBin == "" {
 		return nil, errors.New("desktop bridge: FD0_AGENT_BIN is required")
 	}
+	hostedPub, err := hex.DecodeString(hostedServerPubHex)
+	if err != nil || len(hostedPub) != 32 {
+		return nil, errors.New("desktop bridge: invalid embedded hosted server identity")
+	}
 	return &Service{
 		Home:            home,
 		AgentBin:        agentBin,
 		Mode:            mode,
 		ExpectedVersion: strings.TrimSpace(os.Getenv("FD0_DESKTOP_VERSION")),
 		ExpectedFlavor:  buildinfo.Flavor,
+		HostedServerURL: hostedServerURL,
+		HostedServerPub: hostedPub,
 	}, nil
 }
 
@@ -221,7 +245,7 @@ func (s *Service) Handle(ctx context.Context, method string, raw json.RawMessage
 				"ssh-key-generate", "config-import", "item-remove", "scope-create",
 				"scope-share", "scope-members", "identity-cards",
 				"recovery-export", "recovery-import", "auth-default", "agent-prepare-update",
-				"agent-restart",
+				"agent-restart", "structured-sync",
 			},
 		}, nil
 	case "vault.status":
@@ -445,17 +469,125 @@ func (s *Service) Handle(ctx context.Context, method string, raw json.RawMessage
 			return nil, err
 		}
 		return s.importIdentityCard(ctx, params.URL, params.Label)
+	case "sync.prepare":
+		if s.Mode == "isolated" {
+			return nil, fail("sync_disabled", "Sync is disabled for the isolated development vault.", "Use a dedicated test server before enabling sync.", false)
+		}
+		return s.prepareSync(ctx)
+	case "sync.pin":
+		if s.Mode == "isolated" {
+			return nil, fail("sync_disabled", "Sync is disabled for the isolated development vault.", "Use a dedicated test server before enabling sync.", false)
+		}
+		var params struct {
+			ServerURL string `json:"serverUrl"`
+			ServerPub string `json:"serverPub"`
+		}
+		if err := decodeParams(raw, &params); err != nil {
+			return nil, err
+		}
+		return s.pinSyncServer(ctx, params.ServerURL, params.ServerPub)
 	case "sync.run":
 		if s.Mode == "isolated" {
 			return nil, fail("sync_disabled", "Sync is disabled for the isolated development vault.", "Use a dedicated test server before enabling sync.", false)
 		}
-		if err := cli.RunSyncPrimary(ctx, ""); err != nil {
+		var params struct {
+			ServerURL string `json:"serverUrl"`
+		}
+		if err := decodeParams(raw, &params); err != nil {
+			return nil, err
+		}
+		if err := s.validateCurrentServer(params.ServerURL); err != nil {
+			return nil, err
+		}
+		if err := cli.RunSyncPrimary(ctx, params.ServerURL); err != nil {
 			return nil, mapDomainError(err)
 		}
 		return map[string]bool{"ok": true}, nil
 	default:
 		return nil, fail("unknown_method", "The desktop app requested an unsupported operation.", "Update fd0 Desktop.", false)
 	}
+}
+
+func (s *Service) prepareSync(ctx context.Context) (*SyncPreparation, error) {
+	server, err := cli.ResolvePrimary("")
+	if err != nil {
+		return nil, mapDomainError(err)
+	}
+	preview, err := cli.InspectServer(ctx, server)
+	if err != nil {
+		return nil, mapDomainError(err)
+	}
+	hosted := preview.URL == s.HostedServerURL
+	if hosted && !bytes.Equal(preview.ServerPub, s.HostedServerPub) {
+		return nil, fail(
+			"hosted_server_identity_mismatch",
+			"fd0 stopped because the hosted service identity does not match this app release.",
+			"Do not continue. Update fd0 Desktop or contact fd0 support.",
+			false,
+		)
+	}
+	session, err := cli.Open(ctx)
+	if err != nil {
+		return nil, mapDomainError(err)
+	}
+	defer session.Close()
+	alreadyPinned := false
+	if pinned, ok := session.Body.PinnedServers[preview.URL]; ok {
+		if !bytes.Equal(pinned.ServerPub, preview.ServerPub) {
+			return nil, mapDomainError(cli.ErrPinnedKeyMismatch)
+		}
+		alreadyPinned = true
+	}
+	return &SyncPreparation{
+		ServerURL:            preview.URL,
+		ServerPub:            hex.EncodeToString(preview.ServerPub),
+		Fingerprint:          preview.Fingerprint,
+		Label:                preview.Label,
+		Hosted:               hosted,
+		AlreadyPinned:        alreadyPinned,
+		RequiresConfirmation: !hosted && !alreadyPinned,
+	}, nil
+}
+
+func (s *Service) pinSyncServer(ctx context.Context, serverURL, serverPub string) (map[string]bool, error) {
+	if err := s.validateCurrentServer(serverURL); err != nil {
+		return nil, err
+	}
+	pub, err := hex.DecodeString(strings.TrimSpace(serverPub))
+	if err != nil || len(pub) != 32 {
+		return nil, fail("bad_request", "fd0 received an invalid server identity.", "Start the sync again.", false)
+	}
+	if serverURL == s.HostedServerURL && !bytes.Equal(pub, s.HostedServerPub) {
+		return nil, fail(
+			"hosted_server_identity_mismatch",
+			"fd0 stopped because the hosted service identity does not match this app release.",
+			"Do not continue. Update fd0 Desktop or contact fd0 support.",
+			false,
+		)
+	}
+	if err := cli.PinServer(ctx, serverURL, pub); err != nil {
+		return nil, mapDomainError(err)
+	}
+	return map[string]bool{"ok": true}, nil
+}
+
+func (s *Service) validateCurrentServer(serverURL string) error {
+	current, err := cli.ResolvePrimary("")
+	if err != nil {
+		return mapDomainError(err)
+	}
+	previewURL, err := cli.NormalizeServerURL(serverURL)
+	if err != nil {
+		return fail("bad_request", "fd0 received an invalid server address.", "Start the sync again.", false)
+	}
+	currentURL, err := cli.NormalizeServerURL(current)
+	if err != nil {
+		return mapDomainError(err)
+	}
+	if previewURL != currentURL {
+		return fail("server_changed", "The configured fd0 service changed while sync was starting.", "Review the service setting and start sync again.", true)
+	}
+	return nil
 }
 
 func decodeParams(raw json.RawMessage, target any) error {
@@ -1295,6 +1427,15 @@ func mapDomainError(err error) error {
 	}
 	if errors.Is(err, cli.ErrAgentNotRunning) {
 		return fail("agent_unavailable", "fd0 could not reach the local vault service.", "Try unlocking again.", true)
+	}
+	if errors.Is(err, cli.ErrServerIdentityChanged) {
+		return fail("server_changed", "The fd0 service identity changed while you were confirming it.", "Start sync again and review the new fingerprint.", true)
+	}
+	if errors.Is(err, cli.ErrPinnedKeyMismatch) {
+		return fail("server_identity_mismatch", "fd0 stopped because this service no longer matches its trusted identity.", "Do not continue. Open Support and verify the service independently.", false)
+	}
+	if errors.Is(err, cli.ErrServerInfoUnsigned) {
+		return fail("server_identity_invalid", "The fd0 service did not provide a valid signed identity.", "Check the service address or try again later.", false)
 	}
 	message := err.Error()
 	switch {

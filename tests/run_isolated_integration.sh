@@ -61,6 +61,7 @@ mkdir -p "$BUILD_BIN"
 for spec in \
     "fd0:./cmd/fd0" \
     "fd0-agent:./cmd/fd0-agent" \
+    "fd0-desktop-bridge:./cmd/fd0-desktop-bridge" \
     "fd0-server:./cmd/fd0-server" \
     "fd0-witness:./cmd/fd0-witness" \
     "fd0-test-mitm:./cmd/fd0-test-mitm" \

@@ -71,6 +71,16 @@ export type IdentityCardInfo = {
   expiresAt: string;
 };
 
+export type SyncPreparation = {
+  serverUrl: string;
+  serverPub: string;
+  fingerprint: string;
+  label?: string;
+  hosted: boolean;
+  alreadyPinned: boolean;
+  requiresConfirmation: boolean;
+};
+
 export type ItemSummary = {
   id: string;
   scopeId: string;
@@ -242,7 +252,7 @@ export type DesktopAPI = {
   exportIdentityCard(): Promise<IdentityCardInfo>;
   inspectIdentityCard(url: string): Promise<IdentityCardInfo>;
   importIdentityCard(url: string, label: string): Promise<{ ok: boolean }>;
-  sync(): Promise<{ ok: boolean }>;
+  sync(): Promise<{ ok: boolean; cancelled?: boolean }>;
   launchAtLogin(): Promise<boolean>;
   setLaunchAtLogin(value: boolean): Promise<boolean>;
   openItemURL(ref: RecordRef): Promise<void>;

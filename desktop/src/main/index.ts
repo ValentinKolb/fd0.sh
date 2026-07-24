@@ -48,6 +48,7 @@ import type {
   SaveSecretInput,
   SaveSSHHostInput,
   ScopeShareInfo,
+  SyncPreparation,
   UnlockInput,
   UpdateStatus,
   VaultStatus,
@@ -973,7 +974,33 @@ function registerIPC(client: BridgeSupervisor): void {
     if (confirmation.response !== 1) return { ok: false };
     return client.request("card.import", { url, label });
   });
-  handle("fd0:sync", () => client.request("sync.run", {}, 5 * 60_000));
+  handle("fd0:sync", async () => {
+    const preparation = await client.request<SyncPreparation>("sync.prepare", {}, 30_000);
+    if (preparation.requiresConfirmation) {
+      if (!mainWindow) throw new Error("fd0 window is unavailable");
+      const name = dialogText(preparation.label ?? "", preparation.serverUrl);
+      const confirmation = await dialog.showMessageBox(mainWindow, {
+        type: "warning",
+        buttons: ["Cancel", "Trust and sync"],
+        defaultId: 0,
+        cancelId: 0,
+        title: "Trust this fd0 service?",
+        message: `Trust ${name}?`,
+        detail: `${preparation.serverUrl}\n\nSafety fingerprint:\n${preparation.fingerprint}\n\nVerify this fingerprint through an independent trusted channel before continuing.`,
+        noLink: true,
+      });
+      if (confirmation.response !== 1) return { ok: false, cancelled: true };
+    }
+    if (!preparation.alreadyPinned) {
+      await client.request("sync.pin", {
+        serverUrl: preparation.serverUrl,
+        serverPub: preparation.serverPub,
+      }, 30_000);
+    }
+    return client.request<{ ok: boolean }>("sync.run", {
+      serverUrl: preparation.serverUrl,
+    }, 5 * 60_000);
+  });
   handle("fd0:launch-at-login", async () => app.getLoginItemSettings().openAtLogin);
   handle("fd0:set-launch-at-login", async (value: boolean) => {
     if (!app.isPackaged) return false;
