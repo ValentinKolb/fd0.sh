@@ -124,6 +124,9 @@ func (s *Session) MoveItem(
 	name, fromScope, toScope string,
 	force bool,
 ) error {
+	if err := guardOwnedName(kind, "move", name); err != nil {
+		return err
+	}
 	r, err := kind.record(s, fromScope, name)
 	if err != nil {
 		return err
@@ -171,6 +174,9 @@ func (s *Session) RenameItem(
 	force bool,
 	retitle func(payload []byte, newName string) ([]byte, error),
 ) error {
+	if err := guardOwnedName(kind, "rename", oldName); err != nil {
+		return err
+	}
 	if err := validItemName(newName); err != nil {
 		return fmt.Errorf("rename %s: %w", kind.Noun, err)
 	}
@@ -311,6 +317,9 @@ func RunItemHistory(ctx context.Context, kind ItemKind, scopeID, name string, js
 	}
 	defer s.Close()
 
+	if err := guardOwnedName(kind, "history", name); err != nil {
+		return err
+	}
 	entries, err := s.SecretHistory(scopeID, kind.Prefix+name)
 	if err != nil {
 		return err
@@ -386,6 +395,9 @@ func RunItemRestore(ctx context.Context, kind ItemKind, scopeID, name string, se
 	}
 	defer s.Close()
 
+	if err := guardOwnedName(kind, "history restore", name); err != nil {
+		return err
+	}
 	if err := s.RestoreSecretVersion(ctx, scopeID, kind.Prefix+name, seq); err != nil {
 		return err
 	}
@@ -393,4 +405,52 @@ func RunItemRestore(ctx context.Context, kind ItemKind, scopeID, name string, se
 	hooksFor(kind).after(s)
 	hintSyncForPeers()
 	return nil
+}
+
+// kindOwning reports which module owns a stored record name, if any.
+//
+// Records are namespaced by prefix ("host:", "pass:", …). Plain secrets have no
+// prefix, which means the secret commands would otherwise address every other
+// module's records too — `fd0 secret rm host:prod` would delete an SSH host
+// while claiming to remove a secret.
+func kindOwning(name string) (ItemKind, bool) {
+	for _, kind := range itemKinds {
+		if kind.Prefix != "" && strings.HasPrefix(name, kind.Prefix) {
+			return kind, true
+		}
+	}
+	return ItemKind{}, false
+}
+
+// guardPlainSecret refuses a name that belongs to another module and points at
+// the command that does own it. Modules stay reachable — just not by pretending
+// their records are plain secrets.
+func guardPlainSecret(verb, name string) error {
+	kind, owned := kindOwning(name)
+	if !owned {
+		return nil
+	}
+	bare := strings.TrimPrefix(name, kind.Prefix)
+	return fmt.Errorf("%q is a %s, not a plain secret\n  use: fd0 %s %s %s",
+		name, kind.Noun, kind.Command, secretVerbFor(kind, verb), bare)
+}
+
+// secretVerbFor maps a secret verb onto the owning module's equivalent. Only
+// the spellings that actually differ need translating.
+func secretVerbFor(kind ItemKind, verb string) string {
+	if verb == "get" {
+		// Modules render a whole item; there is no single value to print.
+		return "show"
+	}
+	return verb
+}
+
+// guardOwnedName applies the plain-secret namespace guard, but only for the
+// unprefixed secret module: a prefixed kind already scopes its own names, and
+// a host legitimately called "pass:notes" is its own business.
+func guardOwnedName(kind ItemKind, verb, name string) error {
+	if kind.Prefix != "" {
+		return nil
+	}
+	return guardPlainSecret(verb, name)
 }

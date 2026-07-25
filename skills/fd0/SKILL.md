@@ -88,6 +88,14 @@ fd0 <module> history restore NAME SEQ
 
 Plain secrets are `fd0 secret ...`. The older top-level spellings (`fd0 get`, `fd0 set`, `fd0 rm`, `fd0 ls`, `fd0 copy`) still work and always will, but no longer appear in `--help`; prefer the `secret` form in anything you write down.
 
+Each module owns its own records. `fd0 secret ls` lists plain secrets only (`--all` includes the rest), and the secret commands refuse a name belonging to another module rather than acting on it:
+
+```
+$ fd0 secret rm host:prod
+✗ "host:prod" is a host, not a plain secret
+  use: fd0 ssh rm prod
+```
+
 Two properties worth relying on:
 
 - **`edit` is a patch, `add --force` is a replace.** `edit --port 2222` leaves tags, description and key binding alone. Passing an empty value clears that one field (`--jump ""`), which is why "not given" and "set to empty" are different things. An edit that changes nothing writes nothing, so it does not burn a revision.

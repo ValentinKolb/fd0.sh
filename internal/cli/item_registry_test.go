@@ -84,3 +84,48 @@ func TestValidItemName(t *testing.T) {
 		}
 	}
 }
+
+// TestPlainSecretNamespaceGuard pins the boundary between `fd0 secret` and the
+// modules. Plain secrets are stored under the bare name the user typed, so
+// without this the secret commands address every other module's records too —
+// `fd0 secret rm host:prod` would delete an SSH host while reporting that it
+// removed a secret.
+func TestPlainSecretNamespaceGuard(t *testing.T) {
+	for _, kind := range itemKinds {
+		if kind.Prefix == "" {
+			continue
+		}
+		name := kind.Prefix + "example"
+		owner, owned := kindOwning(name)
+		if !owned || owner.Command != kind.Command {
+			t.Errorf("kindOwning(%q) = %q,%v; want %q", name, owner.Command, owned, kind.Command)
+		}
+		err := guardPlainSecret("rm", name)
+		if err == nil {
+			t.Fatalf("guardPlainSecret(%q) = nil; a module's record must not be reachable as a plain secret", name)
+		}
+		// The refusal is only useful if it names where to go instead.
+		if got := err.Error(); !strings.Contains(got, "fd0 "+kind.Command+" rm example") {
+			t.Errorf("guard for %q does not point at the owning command: %q", name, got)
+		}
+	}
+
+	// Ordinary names stay untouched, including ones that merely look prefix-ish.
+	for _, name := range []string{"TOKEN", "db-password", "sshkey", "hostname", "passphrase", "kubectl"} {
+		if _, owned := kindOwning(name); owned {
+			t.Errorf("kindOwning(%q) claimed ownership of an ordinary secret name", name)
+		}
+		if err := guardPlainSecret("get", name); err != nil {
+			t.Errorf("guardPlainSecret(%q) = %v; want nil", name, err)
+		}
+	}
+
+	// A prefixed module addresses its own names, so the guard must not fire for
+	// it — a host legitimately called "pass:notes" is that module's business.
+	if err := guardOwnedName(KindHost, "rename", "pass:notes"); err != nil {
+		t.Errorf("guardOwnedName for a prefixed kind = %v; want nil", err)
+	}
+	if err := guardOwnedName(KindSecret, "rename", "pass:notes"); err == nil {
+		t.Error("guardOwnedName for the secret module must refuse another module's name")
+	}
+}

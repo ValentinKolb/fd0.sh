@@ -130,6 +130,9 @@ func RunScopeList(ctx context.Context) error {
 // are preserved verbatim. This avoids leaking secrets into shell
 // history.
 func RunSecretSet(ctx context.Context, scopeID, name, value string) error {
+	if err := guardPlainSecret("set", name); err != nil {
+		return err
+	}
 	if value == "-" {
 		buf, err := io.ReadAll(os.Stdin)
 		if err != nil {
@@ -224,6 +227,9 @@ func RunSecretSet(ctx context.Context, scopeID, name, value string) error {
 //
 //	out=true (default) → print value to stdout
 func RunSecretGet(ctx context.Context, scopeID, name string) (string, error) {
+	if err := guardPlainSecret("get", name); err != nil {
+		return "", err
+	}
 	s, err := Open(ctx)
 	if err != nil {
 		return "", err
@@ -393,6 +399,9 @@ func CollectAllSecrets(ctx context.Context) ([]SecretEntry, *Session, error) {
 // SecretIndex[id].Record = nil) so subsequent reads return "not found" and
 // listings skip it.
 func RunSecretRemove(ctx context.Context, scopeID, name string, yes bool) error {
+	if err := guardPlainSecret("rm", name); err != nil {
+		return err
+	}
 	s, err := Open(ctx)
 	if err != nil {
 		return err
@@ -466,12 +475,31 @@ type secretListRow struct {
 }
 
 // RunSecretList prints every secret across every scope.
-func RunSecretList(ctx context.Context, jsonOut bool) error {
+// RunSecretList lists plain secrets.
+//
+// Records owned by another module — hosts, keys, pass items, clusters, Talos
+// contexts — are left to that module's own list, so `fd0 secret ls` answers
+// "what secrets do I have" rather than dumping every record in the vault.
+// `--all` restores the unfiltered view for the rare case someone wants it.
+func RunSecretList(ctx context.Context, jsonOut, all bool) error {
 	entries, s, err := CollectAllSecrets(ctx)
 	if err != nil {
 		return err
 	}
 	defer s.Close()
+	if !all {
+		plain := make([]SecretEntry, 0, len(entries))
+		for _, e := range entries {
+			if _, owned := kindOwning(e.Name); !owned {
+				plain = append(plain, e)
+			}
+		}
+		hidden := len(entries) - len(plain)
+		entries = plain
+		if hidden > 0 && !jsonOut {
+			defer stderrln("\n(%d record(s) owned by other modules hidden; use --all to include them)", hidden)
+		}
+	}
 	if jsonOut {
 		rows := make([]secretListRow, 0, len(entries))
 		for _, e := range entries {

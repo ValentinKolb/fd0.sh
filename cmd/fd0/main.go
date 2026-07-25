@@ -674,6 +674,7 @@ type rmCmd struct {
 }
 type listCmd struct {
 	JSON bool `name:"json" help:"Print JSON."`
+	All  bool `name:"all" help:"Include records owned by other modules (hosts, keys, pass items, clusters)."`
 }
 
 // ───── secret ─────────────────────────────────────────────────────────
@@ -1032,7 +1033,7 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 	case "rm <name>":
 		return cli.RunSecretRemove(ctx, c.Rm.Scope, c.Rm.Name, c.Rm.Yes)
 	case "list", "ls":
-		return cli.RunSecretList(ctx, c.List.JSON)
+		return cli.RunSecretList(ctx, c.List.JSON, c.List.All)
 	case "secret rename <name> <new-name>":
 		s, err := cli.Open(ctx)
 		if err != nil {
