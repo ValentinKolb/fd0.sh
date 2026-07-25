@@ -34,8 +34,11 @@ Map the user's intent to the right command before typing anything:
 | Attach a small key/recovery file | `fd0 pass file add NAME PATH [FIELD]` (32 KiB max per file) |
 | Export an attached file | `fd0 pass file export NAME FIELD --out PATH` |
 | Organize related secrets | `fd0 scope create --label LABEL` |
+| See your scopes, or who is in one | `fd0 scope ls`; `fd0 scope members [SCOPE]` |
+| Rename a scope | `fd0 scope rename SCOPE NEW_LABEL` (label only; the scope id never changes) |
 | Share a scope with a person | They run `fd0 card export`, you `fd0 card import URL --label THEIR_NAME --yes`, then `fd0 scope add-member THEIR_NAME --scope LABEL` |
 | Revoke access | `fd0 scope remove-member LABEL --scope LABEL` (rotates the per-scope key — they lose access on next sync) |
+| See or drop pinned identity cards | `fd0 card ls`; `fd0 card rm LABEL` (dropping a card does not revoke scope access — use `scope remove-member` for that) |
 | Pull / push to server | `fd0 sync` |
 | Confirm vault state | `fd0 doctor` (read-only check) |
 | Check installed client flavor | `fd0 version` (`standard` or `yubikey`) |
@@ -44,12 +47,15 @@ Map the user's intent to the right command before typing anything:
 | Switch an existing install to YubiKey flavor | `fd0 update --flavor=yubikey` then `fd0 agent restart` |
 | Set this device's default unlock method | `fd0 auth default yubikey` or `fd0 auth default passphrase` |
 | End the session | `fd0 lock` |
+| Inspect or restart the agent | `fd0 agent status`; `fd0 agent restart`; `fd0 agent stop` |
+| Add a second unlock method | `fd0 auth add` (passphrase) or `fd0 auth add --yubikey` |
 | Generate an SSH key (ed25519, in-vault) | `fd0 key add NAME [--scope LABEL]` — prints the authorized_keys line |
 | Import an existing SSH key | `fd0 key add NAME --import PATH` (encrypted RSA/ECDSA are refused — decrypt first) |
 | Show a public key for authorized_keys | `fd0 key show NAME --pub` |
 | Add an SSH host | `fd0 ssh add ALIAS [user@]host[:port] [--key NAME \| --with-key] [--jump ALIAS] [--tag T]` |
 | Connect to a host | `fd0 ssh ALIAS` (or bare `fd0 ssh` for the fuzzy picker) |
 | One-time SSH setup | `fd0 ssh enable` + `export SSH_AUTH_SOCK="$(fd0 ssh sock)"` in your shell rc |
+| Tag hosts without a full edit | `fd0 ssh tag ALIAS --add T --remove U` (`ssh edit --tag` replaces the whole list) |
 | Store a Talos context | `fd0 talos add NAME --from-config ~/.talos/config` (or per-field `--ca-file/--crt-file/--key-file`) |
 | Bootstrap a new Talos cluster (day-0) | `fd0 talos new NAME --endpoint https://IP:6443 [--vault-scope LABEL]` (needs `talosctl`) |
 | Render + merge talosconfig | `fd0 talos sync --merge` |
@@ -58,6 +64,7 @@ Map the user's intent to the right command before typing anything:
 | Store a kubeconfig | `fd0 kube add NAME --from-config ~/.kube/config` (or per-field `--server/--ca-file/...`) |
 | Fetch a fresh kubeconfig from Talos | `fd0 talos kubeconfig CTX` (needs `talosctl`) |
 | Render + merge kubeconfig | `fd0 kube sync --merge` |
+| Merge kube/talos into the standard config on every sync | `fd0 kube enable --merge`; `fd0 talos enable --merge` (`disable` reverses it) |
 | Change one field on any item | `fd0 <module> edit NAME --flag VALUE` — only what you pass changes |
 | Rename any item | `fd0 <module> rename OLD NEW` |
 | Move any item to another scope | `fd0 <module> move NAME --to-scope LABEL` |
