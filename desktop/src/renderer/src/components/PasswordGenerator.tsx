@@ -1,10 +1,17 @@
-import { Show, createEffect, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js";
-import { IconCopy, IconRefresh } from "@tabler/icons-solidjs";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js";
+import { IconCopy, IconDeviceFloppy, IconRefresh } from "@tabler/icons-solidjs";
 import { password } from "@valentinkolb/stdlib";
-import { errorText } from "../errors";
-import { IconButton, SelectControl } from "./Controls";
+import { errorText } from "../lib/errors";
+import { Button, IconButton } from "../ui/Button";
+import { Field, Select, Switch } from "../ui/Fields";
 
 type GeneratorMode = "random" | "memorable" | "pin";
+
+const modes: Array<{ id: GeneratorMode; label: string; blurb: string }> = [
+  { id: "random", label: "Random", blurb: "Strongest. Use where you never type it by hand." },
+  { id: "memorable", label: "Memorable", blurb: "Words you can read out or type on a phone." },
+  { id: "pin", label: "PIN", blurb: "Digits only, for devices and door codes." },
+];
 
 function createPasswordGenerator() {
   const [mode, setMode] = createSignal<GeneratorMode>("random");
@@ -20,28 +27,25 @@ function createPasswordGenerator() {
   const [pinLength, setPINLength] = createSignal(6);
   const [value, setValue] = createSignal("");
 
-  const regenerate = () => {
+  const regenerate = (): void => {
     switch (mode()) {
       case "memorable":
-        setValue(password.memorable({
-          words: words(),
-          separator: separator(),
-          capitalize: capitalize(),
-          fullWords: true,
-          addNumber: addNumber(),
-          addSymbol: addSymbol(),
-        }));
+        setValue(
+          password.memorable({
+            words: words(),
+            separator: separator(),
+            capitalize: capitalize(),
+            fullWords: true,
+            addNumber: addNumber(),
+            addSymbol: addSymbol(),
+          }),
+        );
         break;
       case "pin":
         setValue(password.pin({ length: pinLength() }));
         break;
       default:
-        setValue(password.random({
-          length: length(),
-          uppercase: uppercase(),
-          numbers: numbers(),
-          symbols: symbols(),
-        }));
+        setValue(password.random({ length: length(), uppercase: uppercase(), numbers: numbers(), symbols: symbols() }));
     }
   };
 
@@ -66,13 +70,22 @@ function createPasswordGenerator() {
 
 type GeneratorState = ReturnType<typeof createPasswordGenerator>;
 
-function GeneratorModePicker(props: { generator: GeneratorState }): JSX.Element {
-  const generator = props.generator;
+function ModePicker(props: { generator: GeneratorState }): JSX.Element {
   return (
-    <div class="generator-mode" role="radiogroup" aria-label="Generator type">
-      <button classList={{ active: generator.mode() === "random" }} type="button" role="radio" aria-checked={generator.mode() === "random"} onClick={() => generator.setMode("random")}>Password</button>
-      <button classList={{ active: generator.mode() === "memorable" }} type="button" role="radio" aria-checked={generator.mode() === "memorable"} onClick={() => generator.setMode("memorable")}>Memorable</button>
-      <button classList={{ active: generator.mode() === "pin" }} type="button" role="radio" aria-checked={generator.mode() === "pin"} onClick={() => generator.setMode("pin")}>PIN</button>
+    <div class="segmented" role="radiogroup" aria-label="Generator type">
+      <For each={modes}>
+        {(mode) => (
+          <button
+            type="button"
+            role="radio"
+            aria-checked={props.generator.mode() === mode.id}
+            classList={{ "is-active": props.generator.mode() === mode.id }}
+            onClick={() => props.generator.setMode(mode.id)}
+          >
+            {mode.label}
+          </button>
+        )}
+      </For>
     </div>
   );
 }
@@ -80,45 +93,148 @@ function GeneratorModePicker(props: { generator: GeneratorState }): JSX.Element 
 function GeneratorOptions(props: { generator: GeneratorState }): JSX.Element {
   const generator = props.generator;
   return (
-    <div class="generator-controls">
+    <div class="generator-options">
       <Show when={generator.mode() === "random"}>
-        <label><span>Length</span><input aria-label="Length" type="range" min="12" max="64" value={generator.length()} onInput={(event) => generator.setLength(Number(event.currentTarget.value))} /><output>{generator.length()}</output></label>
-        <label class="toggle"><span>Uppercase</span><input type="checkbox" checked={generator.uppercase()} onChange={(event) => generator.setUppercase(event.currentTarget.checked)} /></label>
-        <label class="toggle"><span>Numbers</span><input type="checkbox" checked={generator.numbers()} onChange={(event) => generator.setNumbers(event.currentTarget.checked)} /></label>
-        <label class="toggle"><span>Symbols</span><input type="checkbox" checked={generator.symbols()} onChange={(event) => generator.setSymbols(event.currentTarget.checked)} /></label>
+        <div class="slider-row">
+          <label for="generator-length">Length</label>
+          <input
+            id="generator-length"
+            type="range"
+            min="12"
+            max="64"
+            value={generator.length()}
+            onInput={(event) => generator.setLength(Number(event.currentTarget.value))}
+          />
+          <output for="generator-length">{generator.length()}</output>
+        </div>
+        <Switch label="Uppercase letters" checked={generator.uppercase()} onChange={generator.setUppercase} />
+        <Switch label="Numbers" checked={generator.numbers()} onChange={generator.setNumbers} />
+        <Switch label="Symbols" checked={generator.symbols()} onChange={generator.setSymbols} />
       </Show>
+
       <Show when={generator.mode() === "memorable"}>
-        <label><span>Words</span><input aria-label="Words" type="range" min="3" max="10" value={generator.words()} onInput={(event) => generator.setWords(Number(event.currentTarget.value))} /><output>{generator.words()}</output></label>
-        <label><span>Separator</span><SelectControl aria-label="Separator" value={generator.separator()} onChange={(event) => generator.setSeparator(event.currentTarget.value)}><option value="-">Hyphen</option><option value=" ">Space</option><option value=".">Period</option><option value="_">Underscore</option></SelectControl></label>
-        <label class="toggle"><span>Capitalize words</span><input type="checkbox" checked={generator.capitalize()} onChange={(event) => generator.setCapitalize(event.currentTarget.checked)} /></label>
-        <label class="toggle"><span>Add number</span><input type="checkbox" checked={generator.addNumber()} onChange={(event) => generator.setAddNumber(event.currentTarget.checked)} /></label>
-        <label class="toggle"><span>Add symbol</span><input type="checkbox" checked={generator.addSymbol()} onChange={(event) => generator.setAddSymbol(event.currentTarget.checked)} /></label>
+        <div class="slider-row">
+          <label for="generator-words">Words</label>
+          <input
+            id="generator-words"
+            type="range"
+            min="3"
+            max="10"
+            value={generator.words()}
+            onInput={(event) => generator.setWords(Number(event.currentTarget.value))}
+          />
+          <output for="generator-words">{generator.words()}</output>
+        </div>
+        <Field label="Separator">
+          {(field) => (
+            <Select
+              id={field.id}
+              label="Separator"
+              value={generator.separator()}
+              onChange={generator.setSeparator}
+              options={[
+                { value: "-", label: "Hyphen" },
+                { value: " ", label: "Space" },
+                { value: ".", label: "Period" },
+                { value: "_", label: "Underscore" },
+              ]}
+            />
+          )}
+        </Field>
+        <Switch label="Capitalise words" checked={generator.capitalize()} onChange={generator.setCapitalize} />
+        <Switch label="Add a number" checked={generator.addNumber()} onChange={generator.setAddNumber} />
+        <Switch label="Add a symbol" checked={generator.addSymbol()} onChange={generator.setAddSymbol} />
       </Show>
+
       <Show when={generator.mode() === "pin"}>
-        <label><span>Digits</span><input aria-label="Digits" type="range" min="4" max="12" value={generator.pinLength()} onInput={(event) => generator.setPINLength(Number(event.currentTarget.value))} /><output>{generator.pinLength()}</output></label>
+        <div class="slider-row">
+          <label for="generator-digits">Digits</label>
+          <input
+            id="generator-digits"
+            type="range"
+            min="4"
+            max="12"
+            value={generator.pinLength()}
+            onInput={(event) => generator.setPINLength(Number(event.currentTarget.value))}
+          />
+          <output for="generator-digits">{generator.pinLength()}</output>
+        </div>
       </Show>
     </div>
   );
 }
 
-export function PasswordGeneratorPanel(props: { onNotify(message: string): void; onError(message: string): void }): JSX.Element {
-  const generator = createPasswordGenerator();
+function GeneratedValue(props: { generator: GeneratorState; compact?: boolean }): JSX.Element {
   return (
-    <section class="workspace-panel generator-panel">
-      <header><h1>Password generator</h1><p>Create a strong password without storing it.</p></header>
-      <GeneratorModePicker generator={generator} />
-      <div class="generated-value">
-        <code>{generator.value()}</code>
-        <IconButton
-          label="Copy generated value"
-          onClick={() => void window.fd0.copyText(generator.value()).then(() => props.onNotify("Generated value copied. Clipboard clears in 30 seconds.")).catch((error) => props.onError(errorText(error)))}
-        ><IconCopy size={18} /></IconButton>
-        <IconButton label="Generate another value" onClick={generator.regenerate}><IconRefresh size={18} /></IconButton>
+    <div classList={{ "generated-value": true, "is-compact": props.compact }}>
+      <code>{props.generator.value()}</code>
+      <IconButton label="Generate another value" size={props.compact ? "sm" : "md"} onClick={props.generator.regenerate}>
+        <IconRefresh size={props.compact ? 15 : 17} />
+      </IconButton>
+    </div>
+  );
+}
+
+function StrengthLine(props: { generator: GeneratorState }): JSX.Element {
+  const strength = () => props.generator.strength();
+  return (
+    <div class="strength">
+      <div class="strength-track">
+        <div classList={{ "strength-fill": true, [`strength-${strength().score}`]: true }} style={{ width: `${(strength().score + 1) * 20}%` }} />
       </div>
-      <Show when={generator.mode() !== "pin"}>
-        <div class="strength-line"><span class={`score-${generator.strength().score}`} /><strong>{generator.strength().label}</strong><small>{generator.strength().crackTime}</small></div>
-      </Show>
-      <GeneratorOptions generator={generator} />
+      <div class="strength-text">
+        <span classList={{ "strength-label": true, [`strength-text-${strength().score}`]: true }}>{strength().label}</span>
+        <span class="strength-time">{strength().crackTime} to crack</span>
+      </div>
+    </div>
+  );
+}
+
+export function PasswordGeneratorPanel(props: {
+  onNotify(message: string, countdownSeconds?: number): void;
+  onError(message: string): void;
+  onSaveAsItem(value: string): void;
+}): JSX.Element {
+  const generator = createPasswordGenerator();
+
+  return (
+    <section class="panel generator-panel">
+      <header class="panel-header">
+        <h1>Password generator</h1>
+        <p>Create a strong password. Nothing is stored until you save it.</p>
+      </header>
+      <div class="panel-column">
+        <ModePicker generator={generator} />
+        <p class="inline-note">{modes.find((mode) => mode.id === generator.mode())?.blurb}</p>
+
+        <GeneratedValue generator={generator} />
+        <Show when={generator.mode() !== "pin"}>
+          <StrengthLine generator={generator} />
+        </Show>
+
+        <div class="generator-actions">
+          <Button
+            variant="primary"
+            onClick={() => {
+              void window.fd0
+                .copyText(generator.value())
+                .then((result) => props.onNotify("Password copied — clears in", result.clearAfterSeconds))
+                .catch((error) => props.onError(errorText(error)));
+            }}
+          >
+            <IconCopy size={15} />
+            Copy
+          </Button>
+          {/* Previously the generator was a dead end: you could copy a value but
+              never keep it. Saving is the obvious next step after generating. */}
+          <Button onClick={() => props.onSaveAsItem(generator.value())}>
+            <IconDeviceFloppy size={15} />
+            Save as a new item
+          </Button>
+        </div>
+
+        <GeneratorOptions generator={generator} />
+      </div>
     </section>
   );
 }
@@ -127,25 +243,33 @@ export function PasswordGeneratorPopover(props: { onUse(value: string): void; on
   const generator = createPasswordGenerator();
 
   onMount(() => {
-    const close = (event: KeyboardEvent) => event.key === "Escape" && props.onClose();
+    const close = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      props.onClose();
+    };
     document.addEventListener("keydown", close);
     onCleanup(() => document.removeEventListener("keydown", close));
   });
 
   return (
-    <div classList={{ "password-generator-popover": true, inline: Boolean(props.inline) }} role={props.inline ? "group" : "dialog"} aria-label="Password generator options" onPointerDown={(event) => event.stopPropagation()}>
-      <div class="generator-preview">
-        <code>{generator.value()}</code>
-        <IconButton label="Generate another value" onClick={generator.regenerate}><IconRefresh size={17} /></IconButton>
+    <div
+      classList={{ "generator-popover": true, inline: Boolean(props.inline) }}
+      role={props.inline ? "group" : "dialog"}
+      aria-label="Password generator"
+      onPointerDown={(event) => event.stopPropagation()}
+    >
+      <GeneratedValue generator={generator} compact />
+      {/* Always rendered, hidden for PIN: removing it would change the
+          popover's height when the mode changes. */}
+      <div classList={{ "generator-strength-slot": true, "is-hidden": generator.mode() === "pin" }} aria-hidden={generator.mode() === "pin"}>
+        <StrengthLine generator={generator} />
       </div>
-      <Show when={generator.mode() !== "pin"}>
-        <div class="generator-popover-strength"><span class={`score-${generator.strength().score}`} /><small>{generator.strength().label}</small></div>
-      </Show>
-      <GeneratorModePicker generator={generator} />
+      <ModePicker generator={generator} />
       <GeneratorOptions generator={generator} />
-      <footer>
-        <button class="secondary-button" type="button" onClick={props.onClose}>Cancel</button>
-        <button class="primary-button" type="button" onClick={() => props.onUse(generator.value())}>Use</button>
+      <footer class="generator-popover-footer">
+        <Button size="sm" onClick={props.onClose}>Cancel</Button>
+        <Button size="sm" variant="primary" onClick={() => props.onUse(generator.value())}>Use this</Button>
       </footer>
     </div>
   );

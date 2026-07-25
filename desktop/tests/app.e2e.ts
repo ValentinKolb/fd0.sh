@@ -1,4 +1,11 @@
-import { expect, test, _electron as electron, type Locator, type Page } from "@playwright/test";
+import {
+  expect,
+  test,
+  _electron as electron,
+  type ElectronApplication,
+  type Locator,
+  type Page,
+} from "@playwright/test";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -31,6 +38,9 @@ const environment: NodeJS.ProcessEnv = {
   FD0_AGENT_SYNC_DISABLED: "1",
 };
 
+/** The window's own minimum is 860x600; the layout is asserted below that too. */
+const DEFAULT_SIZE = { width: 1180, height: 780 };
+
 function run(command: string, args: string[]): void {
   const result = spawnSync(command, args, { cwd: repoRoot, env: environment, encoding: "utf8" });
   if (result.status !== 0) {
@@ -38,21 +48,82 @@ function run(command: string, args: string[]): void {
   }
 }
 
-async function dragWithPointer(page: Page, source: Locator, target: Locator): Promise<void> {
-  await source.scrollIntoViewIfNeeded();
-  await target.scrollIntoViewIfNeeded();
-  const sourceBox = await source.boundingBox();
-  if (!sourceBox) throw new Error("Drag source is not visible");
-  const start = { x: sourceBox.x + sourceBox.width / 2, y: sourceBox.y + sourceBox.height / 2 };
-  await page.mouse.move(start.x, start.y);
-  await page.mouse.down();
-  await page.mouse.move(start.x + 10, start.y + 8, { steps: 3 });
-  await expect(target).toHaveCSS("height", "38px");
-  const targetBox = await target.boundingBox();
-  if (!targetBox) throw new Error("Drag target is not visible");
-  const end = { x: targetBox.x + targetBox.width / 2, y: targetBox.y + targetBox.height / 2 };
-  await page.mouse.move(end.x, end.y, { steps: 8 });
-  await page.mouse.up();
+/** A list row, matched on its visible title rather than the whole row label. */
+function itemRow(page: Page, title: string): Locator {
+  const exactTitle = new RegExp(`^${title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`);
+  return page.locator(".item-row").filter({ has: page.locator(".item-title", { hasText: exactTitle }) });
+}
+
+/** The first step of creating anything: "What do you want to add?". */
+function typePicker(page: Page): Locator {
+  return page.getByRole("dialog", { name: "What do you want to add?" });
+}
+
+/**
+ * One of the six kinds in the type picker.
+ *
+ * Matched on the leading heading rather than the whole accessible name, which
+ * also carries the blurb: "Server" occurs inside "…key pair for servers", and
+ * "Talos" inside "…from a talosconfig file".
+ */
+function typeChoice(dialog: Locator, label: string): Locator {
+  return dialog.getByRole("button", { name: new RegExp(`^${label} `) });
+}
+
+/** The wrapper of one ordinary field row, matched on the name it carries. */
+function fieldRow(scope: Locator, name: string): Locator {
+  return scope.locator(`[data-field-name="${name}"]`);
+}
+
+/**
+ * Adds a field through one of the editor's `+` menus.
+ *
+ * The menu is portalled to <body>, so the entries are looked up on the page
+ * rather than inside the dialog. Each entry carries a blurb after its heading,
+ * and "Plain text such as a username" contains "text" as well, so the kind is
+ * matched on the leading word only.
+ */
+async function addField(page: Page, add: Locator, kind: string): Promise<void> {
+  await add.click();
+  await page
+    .getByRole("menu", { name: "Field type" })
+    .getByRole("menuitem", { name: new RegExp(`^${kind} `) })
+    .click();
+}
+
+/**
+ * Renames a field through its row menu.
+ *
+ * A field name is text in the row, not a control, so renaming lives behind the
+ * overflow menu. Enter is deliberately never pressed on the rename box: it sits
+ * inside the editor's own form, so Enter submits the whole item. Blurring it —
+ * which the next interaction does anyway — is what closes it.
+ */
+async function renameField(page: Page, scope: Locator, from: string, to: string): Promise<void> {
+  await scope.getByRole("button", { name: `Options for ${from}` }).click();
+  await page.getByRole("menuitem", { name: "Rename…" }).click();
+  await scope.getByRole("textbox", { name: "Field name" }).fill(to);
+}
+
+/**
+ * Resizes the window and waits for the renderer to observe the new width.
+ *
+ * The minimum size is relaxed first: the responsive layout has to hold below the
+ * window's own 860px floor, and that is only reachable from the main process.
+ */
+async function resizeWindow(app: ElectronApplication, page: Page, width: number, height: number): Promise<void> {
+  await app.evaluate(({ BrowserWindow }, size) => {
+    const window = BrowserWindow.getAllWindows()[0]!;
+    window.setMinimumSize(320, 320);
+    window.setSize(size.width, size.height);
+  }, { width, height });
+  await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(width);
+}
+
+async function expectNoHorizontalOverflow(page: Page): Promise<void> {
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth))
+    .toBeLessThanOrEqual(0);
 }
 
 test.beforeAll(() => {
@@ -92,12 +163,14 @@ test("runs the isolated desktop vault end to end", async () => {
       if (message.type() === "error") errors.push(message.text());
     });
     page.on("pageerror", (error) => errors.push(error.message));
-    await page.waitForTimeout(500);
-    if ((await page.getByRole("button", { name: /Passwords/ }).count()) === 0) {
+
+    const railPasswords = page.getByRole("button", { name: "Passwords", exact: true });
+    try {
+      await expect(railPasswords).toBeVisible({ timeout: 20_000 });
+    } catch {
       throw new Error(`Desktop UI did not initialize. Body: ${await page.locator("body").innerText()} Errors: ${errors.join(" | ")}`);
     }
-    await expect(page.getByRole("button", { name: /Passwords/ })).toBeVisible();
-    await expect(page.getByRole("button", { name: /^GitHub valentin@example.com/ })).toBeVisible();
+    await expect(itemRow(page, "GitHub")).toBeVisible();
     await expect(page.getByText("fd0", { exact: true }).first()).toBeVisible();
     const security = await app.evaluate(({ BrowserWindow }) => {
       const window = BrowserWindow.getAllWindows()[0]!;
@@ -124,47 +197,51 @@ test("runs the isolated desktop vault end to end", async () => {
       maxLifetimeMillis: 12 * 60 * 60_000,
     });
 
-    const typeTriggerGap = await page.locator(".type-picker-button").evaluate((button) => {
-      const count = button.querySelector(".sidebar-count")!.getBoundingClientRect();
-      const chevron = button.querySelector("svg:last-child")!.getBoundingClientRect();
-      return chevron.left - count.right;
-    });
-    expect(typeTriggerGap).toBeGreaterThanOrEqual(6);
-    await page.locator(".type-picker-button").click();
-    const selectedType = page.getByRole("option", { name: /Passwords/ });
-    await expect(selectedType.locator("svg")).toHaveCount(1);
-    expect(await selectedType.locator("svg").evaluate((icon) => getComputedStyle(icon).color)).toBe("rgb(255, 176, 0)");
-    await selectedType.click();
+    // The rail replaces the old type dropdown: every type is one click away.
+    await railPasswords.click();
+    await expect(page.getByRole("listbox", { name: "Passwords" })).toBeVisible();
+    await expect(page.locator(".item-row")).toHaveCount(3);
+    await expect(railPasswords).toHaveClass(/is-active/);
 
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setSize(860, 600));
-    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setSize(1180, 780));
+    // Retrieving a credential must not require opening the item first.
+    const githubRow = itemRow(page, "GitHub");
+    await githubRow.click();
+    await expect(githubRow).toHaveClass(/is-selected/);
+    await expect(githubRow.getByRole("button", { name: /^Copy password for / })).toBeVisible();
+    await expect(githubRow.getByRole("button", { name: /^Copy username for / })).toBeVisible();
 
-    await page.getByRole("button", { name: "Password generator" }).click();
+    // The layout must survive both the window minimum and a width below it.
+    await resizeWindow(app, page, 860, 600);
+    await expectNoHorizontalOverflow(page);
+    await resizeWindow(app, page, 620, 600);
+    await expectNoHorizontalOverflow(page);
+    await resizeWindow(app, page, DEFAULT_SIZE.width, DEFAULT_SIZE.height);
+
+    // The detail pane is a reading column, not the full width of the window.
+    const detailColumn = page.locator(".detail-column");
+    await expect(detailColumn).toBeVisible();
+    expect((await detailColumn.boundingBox())!.width).toBeLessThanOrEqual(640);
+
+    await page.getByRole("button", { name: "Password generator", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Password generator" })).toBeVisible();
     await page.getByRole("radio", { name: "Memorable" }).click();
     await expect.poll(async () => page.locator(".generated-value code").innerText()).toMatch(/-/);
     await page.getByRole("radio", { name: "PIN" }).click();
     await page.getByLabel("Digits").fill("8");
     await expect.poll(async () => page.locator(".generated-value code").innerText()).toMatch(/^\d{8}$/);
-    await page.getByRole("button", { name: "Support" }).click();
+    await page.getByRole("button", { name: "Support", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Support" })).toBeVisible();
-    await page.getByRole("button", { name: "Settings" }).click();
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
-    await page.locator(".type-picker-button").click();
-    await page.getByRole("option", { name: /Passwords/ }).click();
+    await railPasswords.click();
 
-    const personalVault = page.locator(".vault-row").filter({ hasText: "Personal" });
-    await personalVault.hover();
-    await personalVault.getByRole("button", { name: "Actions for Personal" }).click();
-    const vaultMenuInset = await page.locator(".vault-context-menu").evaluate((menu) => {
-      const sidebar = document.querySelector(".sidebar")!.getBoundingClientRect();
-      const bounds = menu.getBoundingClientRect();
-      return sidebar.right - bounds.right;
-    });
-    expect(vaultMenuInset).toBeGreaterThanOrEqual(10);
-    await page.getByRole("menuitem", { name: "Share vault…" }).click();
-    const accessDialog = page.getByRole("dialog", { name: "Access to Personal" });
+    // Vaults live in the title-bar switcher, sharing hangs off each vault row.
+    const vaultSwitcher = page.getByRole("button", { name: /Change vault/ });
+    await vaultSwitcher.click();
+    await expect(page.getByRole("menuitem", { name: /^All vaults/ })).toBeVisible();
+    await expect(page.getByRole("menuitem", { name: /^New vault/ })).toBeVisible();
+    await page.getByRole("button", { name: "Manage access to Personal" }).click();
+    const accessDialog = page.getByRole("dialog", { name: "Who can open Personal" });
     await expect(accessDialog).toBeVisible();
     await page.screenshot({ path: test.info().outputPath("fd0-share-access.png") });
     await app.evaluate(({ dialog }) => {
@@ -180,55 +257,99 @@ test("runs the isolated desktop vault end to end", async () => {
       });
     });
     const bennyContact = accessDialog.locator(".access-row").filter({ hasText: "Benny" });
-    await bennyContact.getByRole("button", { name: "Add", exact: true }).click();
-    await expect(page.getByText("Shared Personal with Benny.", { exact: true })).toBeVisible();
+    await bennyContact.getByRole("button", { name: "Give access" }).click();
+    await expect(page.getByText("Benny can now open Personal", { exact: true })).toBeVisible();
     expect(await app.evaluate(() => {
       const state = globalThis as typeof globalThis & { __fd0Prompts?: string[] };
       return state.__fd0Prompts?.at(-1);
     })).toBe("Give Benny access to Personal?");
     await expect(accessDialog.locator(".access-row").filter({ hasText: "Benny" }).getByRole("button", { name: "Remove" })).toBeVisible();
 
-    await accessDialog.getByRole("button", { name: "New contact" }).click();
-    await expect(page.getByRole("heading", { name: "Add a new contact" })).toBeVisible();
-    await page.getByLabel("Identity card URL").fill(readFileSync(join(testHome, ".desktop-demo-contact-card"), "utf8").trim());
-    await page.getByLabel("Contact name").fill("Carol");
-    await page.getByRole("button", { name: "Review card" }).click();
-    await expect(page.getByText("Safety number", { exact: true })).toBeVisible();
+    await accessDialog.getByRole("button", { name: "Add someone" }).click();
+    const newContactDialog = page.getByRole("dialog", { name: "Add someone new" });
+    await expect(newContactDialog.getByRole("heading", { name: "Add someone new" })).toBeVisible();
+    await newContactDialog.getByLabel("Their invite").fill(readFileSync(join(testHome, ".desktop-demo-contact-card"), "utf8").trim());
+    await newContactDialog.getByLabel("What should fd0 call them?").fill("Carol");
+    await newContactDialog.getByRole("button", { name: "Check this invite" }).click();
+    await expect(page.getByText("Read this code out to them", { exact: true })).toBeVisible();
     await page.screenshot({ path: test.info().outputPath("fd0-share-card-review.png") });
-    await page.getByRole("button", { name: "Trust and share…" }).click();
-    await expect(page.getByText("Trusted Carol and shared Personal.", { exact: true })).toBeVisible();
+    await newContactDialog.getByRole("button", { name: "Confirm and share" }).click();
+    await expect(page.getByText("Carol can now open Personal", { exact: true })).toBeVisible();
     const carolMember = accessDialog.locator(".access-row").filter({ hasText: "Carol" });
     await expect(carolMember.getByRole("button", { name: "Remove" })).toBeVisible();
     await carolMember.getByRole("button", { name: "Remove" }).click();
-    await expect(page.getByText("Removed Carol from Personal.", { exact: true })).toBeVisible();
+    await expect(page.getByText("Carol no longer has access to Personal", { exact: true })).toBeVisible();
     await expect(accessDialog.locator(".access-row").filter({ hasText: "Carol" }).getByRole("button", { name: "Remove" })).toHaveCount(0);
     await accessDialog.getByRole("button", { name: "Done" }).click();
+    await expect(accessDialog).toHaveCount(0);
 
-    await page.locator(".type-picker-button").click();
-    await page.getByRole("option", { name: /SSH/ }).click();
-    await expect(page.getByRole("button", { name: /^fd0 administrator@/ })).toBeVisible();
-    await expect(page.getByText("talos-gw", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "SSH", exact: true }).click();
+    await expect(itemRow(page, "fd0")).toBeVisible();
+    await expect(itemRow(page, "talos-gw")).toBeVisible();
 
-    await page.locator(".type-picker-button").click();
-    await page.getByRole("option", { name: /Secrets/ }).click();
-    await expect(page.getByText("GHCR_TOKEN", { exact: true })).toBeVisible();
-    await page.getByText("Show all", { exact: true }).click();
-    await expect(page.getByRole("checkbox", { name: "Show all" })).toBeChecked();
-    await expect(page.getByText("GitHub", { exact: true })).toBeVisible();
-    await expect(page.getByText("Generic stored record", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Secrets", exact: true }).click();
+    await expect(itemRow(page, "GHCR_TOKEN")).toBeVisible();
+    const rawRecords = page.getByRole("switch", { name: "Show raw records" });
+    await expect(rawRecords).not.toBeChecked();
+    await page.getByText("Show raw records", { exact: true }).click();
+    await expect(rawRecords).toBeChecked();
+    await expect(itemRow(page, "GitHub")).toBeVisible();
+    await itemRow(page, "GitHub").click();
+    await expect(page.getByText("Raw stored record", { exact: true })).toBeVisible();
 
-    await page.locator(".type-picker-button").click();
-    await page.getByRole("option", { name: /Passwords/ }).click();
-    await page.getByRole("button", { name: /^GitHub valentin@example.com/ }).click();
-    await expect(page.locator(".detail-actions > button, .detail-actions > .action-menu")).toHaveCount(2);
+    await railPasswords.click();
+    await expect(rawRecords).toHaveCount(0);
+    await itemRow(page, "GitHub").click();
+    await expect(page.locator(".detail-header-actions > button")).toHaveCount(2);
     await expect(page.locator(".field-value").filter({ hasText: "valentin@example.com" })).toBeVisible();
+    /*
+     * Large type is its own always-on-top window, not a modal in the app. It
+     * must be a real second BrowserWindow, float above other applications, and
+     * carry exactly the same renderer hardening as the main window.
+     */
     await expect(page.getByRole("button", { name: "Show password in large type" })).toBeVisible();
     await page.getByRole("button", { name: "More actions" }).click();
-    await page.getByRole("menuitem", { name: "Show in large type" }).click();
-    const largeType = page.getByRole("dialog", { name: "password" });
-    await expect(largeType).toBeVisible();
-    await expect(largeType.locator(".large-type-character")).toHaveCount(Array.from("d3v-Vault!GitHub-2026").length);
-    await largeType.getByRole("button", { name: "Close large type" }).click();
+    const largeTypeOpened = app.waitForEvent("window");
+    await page.getByRole("menuitem", { name: "Show password in large type" }).click();
+    const largeTypePage = await largeTypeOpened;
+    await expect(largeTypePage.getByRole("heading", { name: "password" })).toBeVisible();
+    await expect(largeTypePage.locator(".large-type-character")).toHaveCount(Array.from("d3v-Vault!GitHub-2026").length);
+    expect(
+      await largeTypePage.locator(".large-type-character strong").evaluateAll((cells) =>
+        cells.map((cell) => cell.textContent).join(""),
+      ),
+    ).toBe("d3v-Vault!GitHub-2026");
+    // The value travels over IPC only: never the URL, never web storage.
+    expect(largeTypePage.url()).toBe("fd0-app://app/index.html#large-type");
+    expect(
+      await largeTypePage.evaluate(() => JSON.stringify({ ...localStorage, ...sessionStorage })),
+    ).not.toContain("d3v-Vault");
+    expect(await largeTypePage.evaluate(() => window.fd0.largeTypeMode)).toBe(true);
+    expect(await app.evaluate(({ BrowserWindow }) => {
+      const floating = BrowserWindow.getAllWindows().find((candidate) => candidate.isAlwaysOnTop());
+      if (!floating) return null;
+      const preferences = floating.webContents.getLastWebPreferences();
+      return {
+        windows: BrowserWindow.getAllWindows().length,
+        alwaysOnTop: floating.isAlwaysOnTop(),
+        visible: floating.isVisible(),
+        resizable: floating.isResizable(),
+        contextIsolation: preferences.contextIsolation,
+        nodeIntegration: preferences.nodeIntegration,
+        sandbox: preferences.sandbox,
+      };
+    })).toEqual({
+      windows: 2,
+      alwaysOnTop: true,
+      visible: true,
+      resizable: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    });
+    await largeTypePage.screenshot({ path: test.info().outputPath("fd0-large-type-window.png") });
+    await largeTypePage.getByRole("button", { name: "Close" }).click();
+    await expect.poll(() => app.windows().length).toBe(1);
     await page.getByRole("button", { name: "Reveal password" }).click();
     await expect(page.getByText("d3v-Vault!GitHub-2026", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Remove from favorites" })).toBeVisible();
@@ -244,169 +365,487 @@ test("runs the isolated desktop vault end to end", async () => {
       });
     }, attachmentPath);
     await page.getByRole("button", { name: "Save backup file" }).click();
-    await expect(page.getByText("Attachment saved.", { exact: true })).toBeVisible();
+    await expect(page.getByText("File saved", { exact: true })).toBeVisible();
     expect(readFileSync(attachmentPath, "utf8")).toBe("fd0 desktop recovery demo\n");
     expect(statSync(attachmentPath).mode & 0o777).toBe(0o600);
 
     await page.getByRole("button", { name: "More actions" }).click();
     await page.getByRole("menuitem", { name: "Edit item" }).click();
-    let passEditor = page.getByRole("dialog", { name: "Edit password" });
+    /*
+     * Creating and editing share one upsert editor. Editing titles the dialog
+     * after the item itself, so this is "GitHub" rather than "Edit password".
+     */
+    let passEditor = page.getByRole("dialog", { name: "GitHub", exact: true });
     await expect(passEditor).toBeVisible();
-    expect((await passEditor.boundingBox())!.height).toBeGreaterThanOrEqual(730);
+    // The editor claims the height the window can give it, capped by the viewport.
+    const tallViewport = await page.evaluate(() => window.innerHeight);
+    expect((await passEditor.boundingBox())!.height).toBeLessThanOrEqual(tallViewport);
+    expect((await passEditor.boundingBox())!.height).toBeGreaterThanOrEqual(Math.min(700, tallViewport - 96));
     await expect(passEditor.getByRole("button", { name: "Save changes" })).toBeVisible();
+    /*
+     * Every picker in the editor is the app's own listbox. A native <select>
+     * has its popup drawn by the OS, which cannot be styled and cannot be
+     * portalled out of the modal's scroll container.
+     */
+    await expect(passEditor.locator("select")).toHaveCount(0);
 
-    const rootAddField = passEditor.locator(".editor-fields > .add-field-control");
-    await rootAddField.getByRole("button", { name: "Add field" }).click();
-    await passEditor.getByLabel("text value").last().fill("production");
-    await passEditor.getByLabel("Field name").last().fill("environment");
-    await rootAddField.getByLabel("New field type").selectOption("section");
-    await rootAddField.getByRole("button", { name: "Add field" }).click();
-    await passEditor.getByLabel("Field name").last().fill("Operations");
+    /*
+     * The first card is the login card. It is a VIEW over top-level fields,
+     * matched by the same preference lists the CLI uses, plus every website —
+     * not a container of its own. Nothing inside it carries a drag handle or a
+     * `data-field-name` wrapper, because it owns none of what it shows.
+     */
+    const loginCard = passEditor.locator(".editor-card").first();
+    await expect(loginCard.locator(".editor-cell-label")).toHaveText(["username", "password", "Website"]);
+    await expect(loginCard.getByLabel("username", { exact: true })).toHaveValue("valentin@example.com");
+    await expect(loginCard.getByLabel("password", { exact: true })).toHaveValue("d3v-Vault!GitHub-2026");
+    // The field name is text in the cell. Renaming lives behind the row menu,
+    // so no row offers a name input competing with the value.
+    await expect(loginCard.getByRole("textbox", { name: "Field name" })).toHaveCount(0);
+    await expect(loginCard.locator("[data-field-name]")).toHaveCount(0);
 
-    const environmentField = passEditor.locator('.pass-field-editor[data-field-name="environment"]');
-    const operationsField = passEditor.locator('.pass-field-editor[data-field-name="Operations"]');
-    const emptyOperationsSlot = operationsField.locator('.section-children .pass-field-drop-slot[data-drop-index="0"]');
-    await dragWithPointer(page, environmentField.locator(".pass-field-drag-handle"), emptyOperationsSlot);
-    await expect(operationsField.locator('.section-children .pass-field-editor[data-field-name="environment"]')).toBeVisible();
+    /*
+     * The note is a reserved top-level `notes` text field with its own editor,
+     * so it must never also show up as one more ordinary field row.
+     */
+    await expect(passEditor.getByRole("textbox", { name: "Notes", exact: true })).toBeVisible();
+    await expect(passEditor.locator('[data-field-name="notes"]')).toHaveCount(0);
 
-    const rootFirstSlot = passEditor.locator('.editor-fields > .pass-field-list > .pass-field-drop-slot[data-drop-parent="root"][data-drop-index="0"]');
-    const operationsHandle = operationsField.locator(":scope > .pass-field-drag-handle");
+    const fieldCount = passEditor.locator(".editor-count");
+    await expect(fieldCount).toHaveText(/^\d+ of 128$/);
+    const fieldsBefore = Number.parseInt((await fieldCount.innerText()).split(" ")[0]!, 10);
+
+    // `urls` is an array in the schema, so a second website is ordinary rather
+    // than an edge case, and it gets a row of its own.
+    await loginCard.getByRole("button", { name: "another website" }).click();
+    await expect(loginCard.locator('input[type="url"]')).toHaveCount(2);
+    await expect(loginCard.locator(".editor-cell-label")).toHaveText([
+      "username",
+      "password",
+      "Website",
+      "Website (alternative)",
+    ]);
+    await loginCard.getByLabel("Website 2", { exact: true }).fill("https://gist.github.com");
+
+    /*
+     * Adding goes through a `+` menu rather than a type dropdown. There is one
+     * per section card plus the editor's own in the footer, which is the last.
+     */
+    const addFieldButton = passEditor.getByRole("button", { name: "Add field" }).last();
+    await addField(page, addFieldButton, "Text");
+    await renameField(page, fieldRow(passEditor, "field"), "field", "environment");
+    const environmentField = fieldRow(passEditor, "environment");
+    await environmentField.getByLabel("environment", { exact: true }).fill("production");
+
+    await passEditor.getByRole("button", { name: "Add section" }).click();
+    const operationsSection = passEditor.locator(".editor-section").last();
+    await operationsSection.getByRole("textbox", { name: "Section name" }).fill("Operations");
+    await expect(environmentField).toBeVisible();
+
+    // A section card owns its own add control, so a field can be created inside it.
+    await addField(page, operationsSection.getByRole("button", { name: "Add field" }), "Text");
+    await renameField(page, fieldRow(operationsSection, "field"), "field", "runbook");
+    await fieldRow(operationsSection, "runbook").getByLabel("runbook", { exact: true }).fill("wiki/ops");
+    // The count sees nested fields too, so all three additions are in it.
+    await expect(fieldCount).toHaveText(`${fieldsBefore + 3} of 128`);
+
+    /*
+     * Only a TOP-LEVEL `notes` is the item's note. One inside a section belongs
+     * to that section, so it stays an ordinary row and the note stays empty.
+     */
+    await addField(page, operationsSection.getByRole("button", { name: "Add field" }), "Text");
+    await renameField(page, fieldRow(operationsSection, "field"), "field", "notes");
+    await fieldRow(operationsSection, "notes").getByLabel("notes", { exact: true }).fill("Runbook lives in the wiki");
+    await expect(fieldRow(operationsSection, "notes")).toHaveCount(1);
+    await expect(passEditor.getByRole("textbox", { name: "Notes", exact: true })).toHaveValue("");
+
+    /*
+     * The central rule of the login card: it is a view, not a container.
+     *
+     * Renaming the recognised password to something outside the preference list
+     * has to drop it out of the card and into the ordinary field card. Keeping
+     * it in place would claim a relationship the stored item no longer has.
+     */
+    await renameField(page, loginCard, "password", "api token");
+    await expect(loginCard.locator(".editor-cell-label")).toHaveText([
+      "username",
+      "Website",
+      "Website (alternative)",
+    ]);
+    await expect(loginCard.locator('[data-field-name="api token"]')).toHaveCount(0);
+    await expect(passEditor.locator(".editor-card").nth(1).locator('[data-field-name="api token"]')).toHaveCount(1);
+    // And renaming it back is all it takes to be recognised again.
+    await renameField(page, fieldRow(passEditor, "api token"), "api token", "password");
+    await expect(loginCard.locator(".editor-cell-label")).toHaveText([
+      "username",
+      "password",
+      "Website",
+      "Website (alternative)",
+    ]);
+
+    /*
+     * Drag-and-drop reorder, driven from the keyboard.
+     *
+     * A section's handle sits outside its card, in the gutter, so dragging
+     * moves the whole section and the card stays clean. The handle names what
+     * it moves, and Space arms a keyboard drag on the gutter element.
+     */
+    const operationsGutter = operationsSection.locator(".editor-section-gutter");
+    const operationsHandle = operationsGutter.locator(".editor-drag");
+    await expect(operationsHandle).toHaveAttribute("aria-label", "Move Operations");
+
+    // Slots register up front but collapse to nothing at rest, so the cards
+    // stay clean. They must gain real height for the drag: a zero-height target
+    // can never contain the pointer and the drop would be silently discarded.
+    const slots = page.locator(".editor-drop-slot[data-dnd-droppable]");
+    expect(await slots.count()).toBeGreaterThan(0);
+    expect((await slots.first().boundingBox())?.height ?? -1).toBe(0);
+
     await operationsHandle.focus();
     await page.keyboard.press("Space");
-    await page.keyboard.press("ArrowUp");
-    await expect(rootFirstSlot).toHaveAttribute("data-dnd-over", "true");
+    await expect(operationsGutter).toHaveAttribute("data-dnd-active", "true");
+    // The height is animated, so poll for the settled value rather than reading
+    // it in the same frame the class lands.
+    await expect
+      .poll(async () => (await slots.first().boundingBox())?.height ?? 0)
+      .toBeGreaterThan(0);
     await page.screenshot({ path: test.info().outputPath("fd0-edit-password-dragging.png") });
-    await page.keyboard.press("Enter");
-    await expect(passEditor.locator(".editor-fields > .pass-field-list > .pass-field-editor").first()).toHaveAttribute("data-field-name", "Operations");
 
-    const passwordField = passEditor.locator('.pass-field-editor[data-field-name="password"]');
-    await passwordField.getByRole("button", { name: "Password generator options" }).click();
-    const inlineGenerator = passwordField.getByRole("group", { name: "Password generator options" });
+    await page.keyboard.press("Escape");
+    await expect(operationsGutter).toHaveAttribute("data-dnd-active", "false");
+
+    /*
+     * The real proof: a move lands and the order actually changes.
+     *
+     * This reorders two fields inside Operations rather than the sections
+     * themselves, so the later save-and-reopen assertions still describe the
+     * same section.
+     */
+    const sectionFieldNames = async (): Promise<string[]> =>
+      operationsSection.locator("[data-field-name]").evaluateAll((nodes) =>
+        nodes.map((node) => node.getAttribute("data-field-name") ?? ""),
+      );
+    expect(await sectionFieldNames()).toEqual(["runbook", "notes"]);
+
+    /*
+     * Arrow keys walk one global list of positions, ordered top to bottom across
+     * every card, rather than stepping relative to the field being moved. So the
+     * test steps until the wanted position is the highlighted one instead of
+     * assuming a fixed number of presses.
+     */
+    const stepToSlotInSection = async (index: number): Promise<void> => {
+      const wanted = operationsSection.locator(
+        `.editor-drop-slot[data-drop-index="${index}"][data-dnd-over="true"]`,
+      );
+      for (let step = 0; step < 40; step += 1) {
+        if ((await wanted.count()) === 1) return;
+        await page.keyboard.press("ArrowDown");
+      }
+      throw new Error(`never reached position ${index} of the Operations section`);
+    };
+
+    const runbookHandle = fieldRow(operationsSection, "runbook").locator(".editor-drag");
+    await expect(runbookHandle).toHaveAttribute("aria-label", "Move runbook");
+    await runbookHandle.focus();
+    await page.keyboard.press("Space");
+    await stepToSlotInSection(2);
+    await page.keyboard.press("Enter");
+    await expect.poll(sectionFieldNames).toEqual(["notes", "runbook"]);
+
+    // Put it back, so what follows reads in the order it was written in.
+    await fieldRow(operationsSection, "runbook").locator(".editor-drag").focus();
+    await page.keyboard.press("Space");
+    await stepToSlotInSection(0);
+    await page.keyboard.press("Enter");
+    await expect.poll(sectionFieldNames).toEqual(["runbook", "notes"]);
+
+    // Escape during an armed drag cancels the move and leaves the editor open,
+    // rather than closing the whole modal behind it.
+    await operationsHandle.focus();
+    await page.keyboard.press("Space");
+    await expect(operationsGutter).toHaveAttribute("data-dnd-active", "true");
+    await page.keyboard.press("Escape");
+    await expect(operationsGutter).toHaveAttribute("data-dnd-active", "false");
+    await expect(passEditor).toBeVisible();
+
+    // Escape during an armed drag cancels the move and leaves the editor open,
+    // rather than closing the whole modal behind it.
+    await operationsHandle.focus();
+    await page.keyboard.press("Space");
+    await expect(operationsGutter).toHaveAttribute("data-dnd-active", "true");
+    await page.keyboard.press("Escape");
+    await expect(operationsGutter).toHaveAttribute("data-dnd-active", "false");
+    await expect(passEditor).toBeVisible();
+
+    // Generating sits where the secret is, not in a menu.
+    await loginCard.getByRole("button", { name: "Generate a value" }).click();
+    const inlineGenerator = page.locator(".generator-popover");
     await expect(inlineGenerator).toBeVisible();
-    expect(await inlineGenerator.evaluate((element) => getComputedStyle(element).position)).toBe("static");
+    // The modal body is a scroll container, so an in-flow popover loses its
+    // lower rows there. Portalling is what keeps the whole panel reachable.
+    expect(await inlineGenerator.evaluate((element) => element.closest(".modal-body") !== null)).toBe(false);
     await page.screenshot({ path: test.info().outputPath("fd0-edit-password-generator.png") });
     await inlineGenerator.getByRole("button", { name: "Cancel" }).click();
+    await expect(inlineGenerator).toHaveCount(0);
 
+    // An edited value has to survive the save, not only the render.
+    await loginCard.getByLabel("username", { exact: true }).fill("octo@example.com");
     await passEditor.getByRole("button", { name: "Save changes" }).click();
-    await expect(page.getByText("Changes saved.", { exact: true })).toBeVisible();
+    await expect(page.getByText("Changes saved", { exact: true })).toBeVisible();
+    await expect(page.getByText("production", { exact: true })).toBeVisible();
+    await expect(page.getByText("octo@example.com", { exact: true }).first()).toBeVisible();
+
+    await page.getByRole("button", { name: "More actions" }).click();
+    await page.getByRole("menuitem", { name: "Edit item" }).click();
+    passEditor = page.getByRole("dialog", { name: "GitHub", exact: true });
+    await expect(passEditor).toBeVisible();
+    const reopenedLogin = passEditor.locator(".editor-card").first();
+    await expect(reopenedLogin.getByLabel("username", { exact: true })).toHaveValue("octo@example.com");
+    /*
+     * Only the first website comes back: `ItemDraft` still carries a single
+     * `url` and `App.tsx` fills it from `urls[0]`, so every other website the
+     * item holds is invisible here and is dropped by the next save. Once the
+     * draft carries the whole array this should assert both rows again.
+     */
+    await expect(reopenedLogin.getByLabel("Website", { exact: true })).toHaveValue("https://github.com");
+    // The nested structure survives the round trip as well as the values do.
+    await expect(passEditor.locator(".editor-card").nth(1).locator('[data-field-name="environment"]')).toHaveCount(1);
+    const reopenedOperations = passEditor.locator(".editor-section").last();
+    await expect(reopenedOperations.getByRole("textbox", { name: "Section name" })).toHaveValue("Operations");
+    await expect(fieldRow(reopenedOperations, "runbook").getByLabel("runbook", { exact: true })).toHaveValue("wiki/ops");
+    await expect(fieldRow(reopenedOperations, "notes").getByLabel("notes", { exact: true })).toHaveValue(
+      "Runbook lives in the wiki",
+    );
+    // The section's own `notes` never became the item's note.
+    await expect(passEditor.getByRole("textbox", { name: "Notes", exact: true })).toHaveValue("");
+    await expect(passEditor.locator(".editor-card").nth(1).locator('[data-field-name="notes"]')).toHaveCount(0);
+    await expect(passEditor.locator(".editor-count")).toHaveText(`${fieldsBefore + 4} of 128`);
+    await page.screenshot({ path: test.info().outputPath("fd0-edit-password-nested.png") });
+    await resizeWindow(app, page, 860, 600);
+    const shortViewport = await page.evaluate(() => window.innerHeight);
+    expect((await passEditor.boundingBox())!.height).toBeLessThanOrEqual(shortViewport);
+    expect((await passEditor.boundingBox())!.height).toBeGreaterThanOrEqual(Math.min(700, shortViewport - 96));
+    await expect(passEditor.getByRole("button", { name: "Save changes" })).toBeVisible();
+    await expectNoHorizontalOverflow(page);
+    await page.screenshot({ path: test.info().outputPath("fd0-edit-password-small.png") });
+    await resizeWindow(app, page, DEFAULT_SIZE.width, DEFAULT_SIZE.height);
+
+    // Closing a touched editor asks before throwing the edit away, and
+    // "Keep editing" really does leave the form standing.
+    await fieldRow(passEditor, "environment").getByLabel("environment", { exact: true }).fill("staging");
+    await page.keyboard.press("Escape");
+    const passDiscardPrompt = page.getByRole("alertdialog", { name: "Discard changes?" });
+    await expect(passDiscardPrompt).toBeVisible();
+    await passDiscardPrompt.getByRole("button", { name: "Keep editing" }).click();
+    await expect(passDiscardPrompt).toHaveCount(0);
+    await expect(fieldRow(passEditor, "environment").getByLabel("environment", { exact: true })).toHaveValue("staging");
+    await page.keyboard.press("Escape");
+    await expect(passDiscardPrompt).toBeVisible();
+    await passDiscardPrompt.getByRole("button", { name: "Discard" }).click();
+    await expect(passEditor).toHaveCount(0);
+    // Discarding really discarded: the saved value is untouched.
     await expect(page.getByText("production", { exact: true })).toBeVisible();
 
-    await page.getByRole("button", { name: "More actions" }).click();
-    await page.getByRole("menuitem", { name: "Edit item" }).click();
-    passEditor = page.getByRole("dialog", { name: "Edit password" });
-    await expect(passEditor.locator(".editor-fields > .pass-field-list > .pass-field-editor").first()).toHaveAttribute("data-field-name", "Operations");
-    await expect(passEditor.locator('.pass-field-editor[data-field-name="Operations"] .section-children .pass-field-editor[data-field-name="environment"]')).toBeVisible();
-    await page.screenshot({ path: test.info().outputPath("fd0-edit-password-reordered.png") });
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setSize(860, 600));
-    expect((await passEditor.boundingBox())!.height).toBeGreaterThanOrEqual(550);
-    await expect(passEditor.getByRole("button", { name: "Save changes" })).toBeVisible();
-    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
-    await page.screenshot({ path: test.info().outputPath("fd0-edit-password-small.png") });
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setSize(1180, 780));
-    await passEditor.getByRole("button", { name: "Close" }).click();
-
+    /*
+     * Creating starts with a small "what am I adding?" step, so every kind is
+     * one click away instead of hiding behind a dropdown.
+     */
+    await resizeWindow(app, page, 900, 520);
     await page.getByRole("button", { name: "Add", exact: true }).click();
-    let newItemDialog = page.getByRole("dialog", { name: "New item" });
-    await newItemDialog.locator(".add-kind-picker > button").click();
-    for (const label of ["Password", "Secret", "SSH host", "SSH key", "Kubernetes", "Talos"]) {
-      await expect(newItemDialog.getByRole("menuitemradio", { name: new RegExp(`^${label}`) })).toBeVisible();
+    await expect(typePicker(page)).toBeVisible();
+    await expect(typePicker(page).locator(".type-choice")).toHaveCount(6);
+    for (const label of ["Password", "Secret", "Server", "SSH key", "Kubernetes", "Talos"]) {
+      await expect(typeChoice(typePicker(page), label)).toBeVisible();
     }
-    await newItemDialog.getByRole("menuitemradio", { name: /^SSH host/ }).click();
-    const sshFieldGeometry = await newItemDialog.evaluate((dialog) => {
-      const host = dialog.querySelector<HTMLInputElement>('input[placeholder="server.example.com"]')!.getBoundingClientRect();
+    await page.screenshot({ path: test.info().outputPath("fd0-add-type-picker.png") });
+    await typeChoice(typePicker(page), "Password").click();
+    await expect(typePicker(page)).toHaveCount(0);
+
+    let itemEditor = page.getByRole("dialog", { name: "New password", exact: true });
+    await expect(itemEditor).toBeVisible();
+    await expect(itemEditor.locator("select")).toHaveCount(0);
+
+    /*
+     * The field-type menu is portalled. In a short window this is exactly where
+     * an in-flow list used to be clipped by the scrolling modal body, losing
+     * its bottom rows.
+     */
+    await itemEditor.getByRole("button", { name: "Add field" }).last().click();
+    const fieldTypeList = page.getByRole("menu", { name: "Field type" });
+    await expect(fieldTypeList).toBeVisible();
+    await expect(fieldTypeList.getByRole("menuitem")).toHaveCount(6);
+    const listGeometry = await fieldTypeList.evaluate((list) => {
+      const bounds = list.getBoundingClientRect();
+      const backdrop = document.querySelector(".modal-backdrop")!;
+      return {
+        left: bounds.left,
+        top: bounds.top,
+        right: bounds.right,
+        bottom: bounds.bottom,
+        insideScrollingModalBody: list.closest(".modal-body") !== null,
+        viewportWidth: document.documentElement.clientWidth,
+        viewportHeight: document.documentElement.clientHeight,
+        popoverLayer: Number.parseInt(getComputedStyle(list).zIndex, 10),
+        backdropLayer: Number.parseInt(getComputedStyle(backdrop).zIndex, 10),
+      };
+    });
+    expect(listGeometry.left).toBeGreaterThanOrEqual(0);
+    expect(listGeometry.top).toBeGreaterThanOrEqual(0);
+    expect(listGeometry.right).toBeLessThanOrEqual(listGeometry.viewportWidth);
+    expect(listGeometry.bottom).toBeLessThanOrEqual(listGeometry.viewportHeight);
+    expect(listGeometry.insideScrollingModalBody).toBe(false);
+    expect(listGeometry.popoverLayer).toBeGreaterThan(listGeometry.backdropLayer);
+    await page.screenshot({ path: test.info().outputPath("fd0-add-field-type-short-window.png") });
+
+    // Escape belongs to the top overlay only: it closes the list, not the dialog.
+    await page.keyboard.press("Escape");
+    await expect(fieldTypeList).toHaveCount(0);
+    await expect(itemEditor).toBeVisible();
+    await resizeWindow(app, page, DEFAULT_SIZE.width, DEFAULT_SIZE.height);
+
+    // The vault picker in the footer is the same custom listbox, not a <select>.
+    await itemEditor.getByRole("combobox", { name: "Vault" }).click();
+    const vaultList = page.getByRole("listbox", { name: "Vault" });
+    await expect(vaultList.getByRole("option", { name: "Personal" })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(vaultList).toHaveCount(0);
+
+    await itemEditor.getByLabel("Title", { exact: true }).fill("DESKTOP_E2E_LOGIN");
+    await page.screenshot({ path: test.info().outputPath("fd0-add-item.png") });
+
+    // A new password draft starts with the two fields the login card shows.
+    const newLoginCard = itemEditor.locator(".editor-card").first();
+    await expect(newLoginCard.locator(".editor-cell-label")).toHaveText(["username", "password"]);
+    await newLoginCard.getByRole("button", { name: "Generate a value" }).click();
+    const generator = page.locator(".generator-popover");
+    await expect(generator).toBeVisible();
+    await expect(generator.getByLabel("Length")).toBeVisible();
+    await expect(generator.getByText("Uppercase letters", { exact: true })).toBeVisible();
+    await expect(generator.getByText("Numbers", { exact: true })).toBeVisible();
+    await expect(generator.getByText("Symbols", { exact: true })).toBeVisible();
+    /*
+     * The popover reserves the tallest mode's height and fixes its width, so
+     * switching modes must not move or resize it. It used to jump out from
+     * under the pointer between Random, Memorable and PIN.
+     */
+    const generatorBox = (await generator.boundingBox())!;
+    await generator.getByRole("radio", { name: "Memorable" }).click();
+    await expect(generator.getByRole("slider", { name: "Words", exact: true })).toBeVisible();
+    await expect(generator.getByLabel("Separator")).toBeVisible();
+    await expect(generator.getByText("Capitalise words", { exact: true })).toBeVisible();
+    await expect(generator.getByText("Add a number", { exact: true })).toBeVisible();
+    await expect(generator.getByText("Add a symbol", { exact: true })).toBeVisible();
+    await expect.poll(async () => generator.locator(".generated-value code").innerText()).toMatch(/-/);
+    expect(await generator.boundingBox()).toEqual(generatorBox);
+    await generator.getByRole("radio", { name: "PIN" }).click();
+    await expect.poll(async () => generator.locator(".generated-value code").innerText()).toMatch(/^\d+$/);
+    expect(await generator.boundingBox()).toEqual(generatorBox);
+
+    await generator.getByLabel("Digits").fill("8");
+    await expect.poll(async () => generator.locator(".generated-value code").innerText()).toMatch(/^\d{8}$/);
+    await page.screenshot({ path: test.info().outputPath("fd0-add-item-generator.png") });
+    await generator.getByRole("button", { name: "Use this" }).click();
+    await expect(generator).toHaveCount(0);
+    await expect(newLoginCard.getByLabel("password", { exact: true })).toHaveValue(/^\d{8}$/);
+    await itemEditor.getByRole("button", { name: "Create item" }).click();
+    await expect(page.getByText("Item created", { exact: true })).toBeVisible();
+    await expect(page.locator(".detail-title h1")).toHaveText("DESKTOP_E2E_LOGIN");
+    await expect(page.locator(".field-name").filter({ hasText: /^password$/ })).toHaveCount(1);
+
+    // Server items share the editor, and the two controls in one grid row have
+    // to sit on the same line.
+    await page.getByRole("button", { name: "Add", exact: true }).click();
+    await typeChoice(typePicker(page), "Server").click();
+    const serverDraft = page.getByRole("dialog", { name: "New server", exact: true });
+    await expect(serverDraft.getByRole("textbox", { name: "Address" })).toBeVisible();
+    const sshFieldGeometry = await serverDraft.evaluate((dialog) => {
       const user = dialog.querySelector<HTMLInputElement>('input[autocomplete="username"]')!.getBoundingClientRect();
       const port = dialog.querySelector<HTMLInputElement>('input[type="number"]')!.getBoundingClientRect();
-      const userLabel = dialog.querySelector<HTMLInputElement>('input[autocomplete="username"]')!.closest("label")!.querySelector("span")!.getBoundingClientRect();
-      return { labelGap: userLabel.top - host.bottom, aligned: Math.abs(user.top - port.top) };
+      return { aligned: Math.abs(user.top - port.top) };
     });
-    expect(sshFieldGeometry.labelGap).toBeGreaterThanOrEqual(14);
     expect(sshFieldGeometry.aligned).toBeLessThanOrEqual(1);
+    await expect(serverDraft.locator('input[placeholder="server.example.com"]')).toBeVisible();
     await page.screenshot({ path: test.info().outputPath("fd0-add-ssh-spacing.png") });
-    await newItemDialog.locator(".add-kind-picker > button").click();
-    await newItemDialog.getByRole("menuitemradio", { name: /^Password/ }).click();
-    await newItemDialog.getByLabel("Title", { exact: true }).fill("DESKTOP_E2E_LOGIN");
-    const vaultSelectInset = await newItemDialog.locator(".add-vault-control .select-control").evaluate((control) => {
-      const bounds = control.getBoundingClientRect();
-      const chevron = control.querySelector("svg")!.getBoundingClientRect();
-      return bounds.right - chevron.right;
-    });
-    expect(vaultSelectInset).toBeGreaterThanOrEqual(10);
-    await page.screenshot({ path: test.info().outputPath("fd0-add-item.png") });
-    await newItemDialog.getByRole("button", { name: "Password generator options" }).click();
-    const embeddedGenerator = newItemDialog.getByRole("dialog", { name: "Password generator options" });
-    await expect(embeddedGenerator.getByLabel("Length")).toBeVisible();
-    await expect(embeddedGenerator.getByText("Uppercase", { exact: true })).toBeVisible();
-    await expect(embeddedGenerator.getByText("Numbers", { exact: true })).toBeVisible();
-    await expect(embeddedGenerator.getByText("Symbols", { exact: true })).toBeVisible();
-    await embeddedGenerator.getByRole("radio", { name: "Memorable" }).click();
-    await expect(embeddedGenerator.getByRole("slider", { name: "Words", exact: true })).toBeVisible();
-    await expect(embeddedGenerator.getByLabel("Separator")).toBeVisible();
-    await expect(embeddedGenerator.getByText("Capitalize words", { exact: true })).toBeVisible();
-    await expect(embeddedGenerator.getByText("Add number", { exact: true })).toBeVisible();
-    await expect(embeddedGenerator.getByText("Add symbol", { exact: true })).toBeVisible();
-    await embeddedGenerator.getByRole("radio", { name: "PIN" }).click();
-    await embeddedGenerator.getByLabel("Digits").fill("8");
-    await page.screenshot({ path: test.info().outputPath("fd0-add-item-generator.png") });
-    await embeddedGenerator.getByRole("button", { name: "Use" }).click();
-    await expect(newItemDialog.getByLabel("Password", { exact: true })).toHaveValue(/^\d{8}$/);
-    await newItemDialog.getByRole("button", { name: "Save item" }).click();
-    await expect(page.getByText("Item saved.", { exact: true })).toBeVisible();
-    await expect(page.locator(".detail-title h1")).toHaveText("DESKTOP_E2E_LOGIN");
-    await expect(page.locator(".field-label").filter({ hasText: /^password$/ })).toHaveCount(1);
+    // Nothing was typed, so closing an untouched form asks no questions.
+    await page.keyboard.press("Escape");
+    await expect(serverDraft).toHaveCount(0);
 
     await page.getByRole("button", { name: "Add", exact: true }).click();
-    newItemDialog = page.getByRole("dialog", { name: "New item" });
-    await newItemDialog.locator(".add-kind-picker > button").click();
-    await newItemDialog.getByRole("menuitemradio", { name: /Secret/ }).click();
-    await newItemDialog.getByLabel("Name", { exact: true }).fill("DESKTOP_E2E_SECRET");
-    await newItemDialog.getByLabel("Value", { exact: true }).fill("isolated-value");
-    await newItemDialog.getByRole("button", { name: "Save item" }).click();
-    await expect(page.getByText("Item saved.", { exact: true })).toBeVisible();
+    await typeChoice(typePicker(page), "Secret").click();
+    itemEditor = page.getByRole("dialog", { name: "New secret", exact: true });
+    await itemEditor.getByLabel("Name", { exact: true }).fill("DESKTOP_E2E_SECRET");
+    await itemEditor.getByLabel("Value", { exact: true }).fill("isolated-value");
+    await itemEditor.getByRole("button", { name: "Create item" }).click();
+    await expect(page.getByText("Item created", { exact: true })).toBeVisible();
     await expect(page.locator(".detail-title h1")).toHaveText("DESKTOP_E2E_SECRET");
 
     await page.getByRole("button", { name: "Add", exact: true }).click();
-    newItemDialog = page.getByRole("dialog", { name: "New item" });
-    await newItemDialog.locator(".add-kind-picker > button").click();
-    await newItemDialog.getByRole("menuitemradio", { name: /Secret/ }).click();
-    await newItemDialog.getByLabel("Name", { exact: true }).fill("DESKTOP_E2E_SECRET");
-    await newItemDialog.getByLabel("Value", { exact: true }).fill("must-not-overwrite");
-    await newItemDialog.getByRole("button", { name: "Save item" }).click();
-    await expect(page.getByText(/already exists in this vault/)).toBeVisible();
+    await typeChoice(typePicker(page), "Secret").click();
+    itemEditor = page.getByRole("dialog", { name: "New secret", exact: true });
+    await itemEditor.getByLabel("Name", { exact: true }).fill("DESKTOP_E2E_SECRET");
+    await itemEditor.getByLabel("Value", { exact: true }).fill("must-not-overwrite");
+    await itemEditor.getByRole("button", { name: "Create item" }).click();
+    // Bridge text is never the headline; it stays behind the disclosure.
+    const saveFailure = page.locator(".notice").filter({ hasText: "fd0 could not save DESKTOP_E2E_SECRET" });
+    await expect(saveFailure).toBeVisible();
+    await expect(saveFailure.locator("strong")).toHaveText("fd0 could not save DESKTOP_E2E_SECRET");
+    await saveFailure.getByRole("button", { name: "Details" }).click();
+    await expect(saveFailure.locator(".notice-technical")).toContainText(/already exists in this vault/);
+    // Closing a half-filled form asks before throwing the input away, and
+    // "Keep editing" really does leave the form standing.
     await page.keyboard.press("Escape");
+    const discardPrompt = page.getByRole("alertdialog", { name: "Discard changes?" });
+    await expect(discardPrompt).toBeVisible();
+    await discardPrompt.getByRole("button", { name: "Keep editing" }).click();
+    await expect(discardPrompt).toHaveCount(0);
+    await expect(itemEditor.getByLabel("Value", { exact: true })).toHaveValue("must-not-overwrite");
+    await page.keyboard.press("Escape");
+    await expect(discardPrompt).toBeVisible();
+    await discardPrompt.getByRole("button", { name: "Discard" }).click();
+    await expect(itemEditor).toHaveCount(0);
+    await saveFailure.getByRole("button", { name: "Dismiss" }).click();
+    await expect(saveFailure).toHaveCount(0);
 
-    await page.locator(".type-picker-button").click();
-    await page.getByRole("option", { name: /Secrets/ }).click();
-    await page.getByText("Show all", { exact: true }).click();
-    await expect(page.getByRole("checkbox", { name: "Show all" })).not.toBeChecked();
-    await expect(page.getByRole("button", { name: /^DESKTOP_E2E_SECRET General/ })).toBeVisible();
+    await page.getByRole("button", { name: "Secrets", exact: true }).click();
+    await expect(page.getByRole("switch", { name: "Show raw records" })).not.toBeChecked();
+    const renamedSecret = itemRow(page, "DESKTOP_E2E_SECRET");
+    await expect(renamedSecret).toBeVisible();
+    await renamedSecret.click();
     await expect(page.locator(".detail-title h1")).toHaveText("DESKTOP_E2E_SECRET");
     await page.getByRole("button", { name: "More actions" }).click();
     await page.getByRole("menuitem", { name: "Edit item" }).click();
-    await expect(page.getByRole("dialog", { name: "Edit secret" })).toBeVisible();
-    await page.getByLabel("Name", { exact: true }).fill("DESKTOP_E2E_RENAMED");
-    await page.getByLabel("Value", { exact: true }).fill("isolated-value-updated");
-    await page.getByRole("button", { name: "Save changes" }).click();
-    await expect(page.getByText("Changes saved.", { exact: true })).toBeVisible();
+    // Secrets go through the same upsert editor now; there is no "Edit secret".
+    let secretEditor = page.getByRole("dialog", { name: "DESKTOP_E2E_SECRET", exact: true });
+    await expect(secretEditor).toBeVisible();
+    await expect(secretEditor.locator("select")).toHaveCount(0);
+    await secretEditor.getByLabel("Name", { exact: true }).fill("DESKTOP_E2E_RENAMED");
+    // The dialog is titled after the item, so renaming retitles it live.
+    secretEditor = page.getByRole("dialog", { name: "DESKTOP_E2E_RENAMED", exact: true });
+    await secretEditor.getByLabel("Value", { exact: true }).fill("isolated-value-updated");
+    await secretEditor.getByRole("button", { name: "Save changes" }).click();
+    await expect(page.getByText("Changes saved", { exact: true })).toBeVisible();
     await expect(page.locator(".detail-title h1")).toHaveText("DESKTOP_E2E_RENAMED");
     await expect(page.getByText("DESKTOP_E2E_SECRET", { exact: true })).toHaveCount(0);
     await page.getByRole("button", { name: "Reveal Value" }).click();
     await expect(page.getByText("isolated-value-updated", { exact: true })).toBeVisible();
 
-    await page.locator(".type-picker-button").click();
-    await page.getByRole("option", { name: /SSH/ }).click();
-    await page.getByRole("button", { name: /^talos-gw root@/ }).click();
+    await page.getByRole("button", { name: "SSH", exact: true }).click();
+    await itemRow(page, "talos-gw").click();
     await expect(page.locator(".detail-title h1")).toHaveText("talos-gw");
     await page.getByRole("button", { name: "More actions" }).click();
     await page.getByRole("menuitem", { name: "Edit item" }).click();
-    await expect(page.getByRole("dialog", { name: "Edit SSH host" })).toBeVisible();
-    await page.getByLabel("Alias", { exact: true }).fill("talos-gw-renamed");
-    await page.getByLabel("Notes", { exact: true }).fill("Edited safely in fd0 Desktop");
-    await page.getByRole("button", { name: "Save changes" }).click();
+    let serverEditor = page.getByRole("dialog", { name: "talos-gw", exact: true });
+    await expect(serverEditor).toBeVisible();
+    await serverEditor.getByLabel("Name", { exact: true }).fill("talos-gw-renamed");
+    serverEditor = page.getByRole("dialog", { name: "talos-gw-renamed", exact: true });
+    // Optional fields fold an "optional" chip into their label element.
+    await serverEditor.getByRole("textbox", { name: "Notes optional" }).fill("Edited safely in fd0 Desktop");
+    await serverEditor.getByRole("button", { name: "Save changes" }).click();
     await expect(page.locator(".detail-title h1")).toHaveText("talos-gw-renamed");
     await expect(page.getByText("talos-gw", { exact: true })).toHaveCount(0);
     await expect(page.getByText("Edited safely in fd0 Desktop", { exact: true })).toBeVisible();
 
-    await page.getByRole("button", { name: "Settings" }).click();
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
     await app.evaluate(({ dialog }, path) => {
       Object.defineProperty(dialog, "showSaveDialog", {
         configurable: true,
@@ -414,15 +853,42 @@ test("runs the isolated desktop vault end to end", async () => {
       });
     }, recoveryPath);
     await page.getByRole("button", { name: "Export…" }).click();
-    await page.getByLabel("Recovery passphrase", { exact: true }).fill("fd0-e2e-recovery-passphrase");
-    await page.getByLabel("Confirm recovery passphrase", { exact: true }).fill("fd0-e2e-recovery-passphrase");
-    await page.getByRole("button", { name: "Choose location…" }).click();
-    await expect(page.getByText("Recovery file saved and verified.", { exact: true })).toBeVisible();
+    const recoveryDialog = page.getByRole("dialog", { name: "Create a recovery file" });
+    await recoveryDialog.getByLabel("Passphrase for the recovery file", { exact: true }).fill("fd0-e2e-recovery-passphrase");
+    await recoveryDialog.getByLabel("Repeat passphrase", { exact: true }).fill("fd0-e2e-recovery-passphrase");
+    await recoveryDialog.getByRole("button", { name: "Choose where to save…" }).click();
+    await expect(page.getByText("Recovery file saved and verified", { exact: true })).toBeVisible();
     expect(existsSync(recoveryPath)).toBe(true);
     expect(statSync(recoveryPath).mode & 0o777).toBe(0o600);
 
-    await page.locator(".type-picker-button").click();
-    await page.getByRole("option", { name: /Passwords/ }).click();
+    // The palette searches items and runs commands from one surface.
+    await page.keyboard.press("ControlOrMeta+k");
+    const palette = page.getByRole("dialog", { name: "Search and commands" });
+    await expect(palette).toBeVisible();
+    await palette.getByRole("combobox").fill("git");
+    await expect(palette.getByRole("option", { name: /GitHub/ })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(palette).toHaveCount(0);
+
+    // Active filters are visible and removable rather than implicit.
+    await railPasswords.click();
+    await expect(page.locator(".chip")).toHaveCount(1);
+    await vaultSwitcher.click();
+    await page.getByRole("menuitem", { name: /^Personal/ }).click();
+    await expect(page.locator(".chip")).toHaveCount(2);
+    const filteredRows = await page.locator(".item-row").count();
+    await page.getByRole("button", { name: "Clear all" }).click();
+    await expect(page.locator(".chip")).toHaveCount(0);
+    expect(await page.locator(".item-row").count()).toBeGreaterThan(filteredRows);
+
+    // Copying from the row never opens the item, and the toast counts the
+    // clipboard down instead of clearing it silently.
+    await railPasswords.click();
+    const quickCopyRow = itemRow(page, "GitHub");
+    await quickCopyRow.click();
+    await quickCopyRow.getByRole("button", { name: /^Copy password for / }).click();
+    await expect(page.getByText("password copied — clears in")).toBeVisible();
+    await expect(page.locator(".toast-countdown")).toBeVisible();
 
     await page.evaluate(() => document.fonts.ready);
     await page.screenshot({ path: test.info().outputPath("fd0-desktop.png") });
@@ -438,30 +904,40 @@ test("runs the isolated desktop vault end to end", async () => {
     await page.getByRole("button", { name: "Hide passphrase" }).click();
     await expect(passphraseInput).toHaveAttribute("type", "password");
     await page.getByRole("button", { name: "Unlock", exact: true }).click();
-    await expect(page.locator(".type-picker-button")).toBeVisible();
-    await page.keyboard.press(process.platform === "darwin" ? "Meta+f" : "Control+f");
-    await expect(page.getByLabel("Search vault")).toBeFocused();
+    await expect(railPasswords).toBeVisible();
+    await page.keyboard.press("ControlOrMeta+f");
+    await expect(page.getByRole("dialog", { name: "Search and commands" }).getByRole("combobox")).toBeFocused();
+    await page.keyboard.press("Escape");
 
     const visualState = await page.evaluate(() => ({
       appColor: getComputedStyle(document.querySelector(".app")!).color,
-      sidebarColor: getComputedStyle(document.querySelector(".sidebar-item")!).color,
+      activeRailColor: getComputedStyle(document.querySelector(".rail-button.is-active")!).color,
       opacity: getComputedStyle(document.querySelector(".app")!).opacity,
       fonts: document.fonts.status,
     }));
     expect(visualState).toEqual({
       appColor: "rgb(241, 239, 233)",
-      sidebarColor: "rgb(136, 143, 137)",
+      activeRailColor: "rgb(255, 176, 0)",
       opacity: "1",
       fonts: "loaded",
     });
-    await page.getByRole("button", { name: /^GitHub valentin@example.com/ }).click();
+    await itemRow(page, "GitHub").click();
     await page.getByRole("button", { name: "Reveal password" }).click();
     await expect(page.getByText("d3v-Vault!GitHub-2026", { exact: true })).toBeVisible();
+
+    // Locking the vault must take the floating window down with everything else.
+    const lockedLargeTypeOpened = app.waitForEvent("window");
+    await page.getByRole("button", { name: "Show password in large type" }).click();
+    await lockedLargeTypeOpened;
+    await expect.poll(() => app.windows().length).toBe(2);
     await app.evaluate(({ powerMonitor }) => powerMonitor.emit("suspend"));
     await expect(page.getByRole("heading", { name: "Unlock fd0" })).toBeVisible();
     await expect(page.getByText("d3v-Vault!GitHub-2026", { exact: true })).toHaveCount(0);
+    await expect.poll(() => app.windows().length).toBe(1);
     expect(errors).toEqual([]);
   } finally {
+    // Never leave a copied credential behind on the developer's clipboard.
+    await app.evaluate(({ clipboard }) => clipboard.clear()).catch(() => undefined);
     await app.close();
   }
 });
@@ -484,7 +960,7 @@ test("restores an identity without contacting the production fd0 instance", asyn
   try {
     const page = await app.firstWindow();
     await expect(page.getByRole("heading", { name: "Protect your passwords with fd0" })).toBeVisible();
-    await page.getByRole("button", { name: "Restore", exact: true }).click();
+    await page.getByRole("tab", { name: "Restore" }).click();
     await app.evaluate(({ dialog }, path) => {
       Object.defineProperty(dialog, "showOpenDialog", {
         configurable: true,
@@ -502,8 +978,9 @@ test("restores an identity without contacting the production fd0 instance", asyn
     expect(await localPassphrase.inputValue()).toBe("fd0-e2e-local-passphrase");
     expect(await localConfirmation.inputValue()).toBe("fd0-e2e-local-passphrase");
     await page.getByRole("button", { name: "Choose recovery file and restore" }).click();
-    await expect(page.locator(".type-picker-button")).toBeVisible();
-    await expect(page.getByText("No matching items", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Passwords", exact: true })).toBeVisible();
+    await expect(page.getByRole("navigation", { name: "Sections" })).toBeVisible();
+    await expect(page.getByText("Your vault is ready", { exact: true })).toBeVisible();
     const log = readFileSync(join(restoreHome, "agent.log"), "utf8");
     expect(log).toContain("automatic sync disabled by environment");
     expect(log).not.toContain("on-unlock sync enabled");
@@ -536,5 +1013,84 @@ test("shows recovery controls when the local bridge cannot start", async () => {
     await expect(page.getByRole("heading", { name: "fd0 needs attention" })).toBeVisible();
   } finally {
     await app.close();
+  }
+});
+
+test("first run creates a vault and lands in a usable, error-free app", async () => {
+  const firstRunHome = join(tmpdir(), `fd0-desktop-e2e-first-${process.pid}`);
+  const firstRunSock = join(tmpdir(), `fd0-desktop-e2e-first-${process.pid}.sock`);
+  mkdirSync(firstRunHome, { recursive: true, mode: 0o700 });
+  writeFileSync(join(firstRunHome, ".desktop-isolated"), "fd0-desktop-isolated-v1\n", { mode: 0o600 });
+  const firstRunEnvironment: NodeJS.ProcessEnv = {
+    ...environment,
+    FD0_HOME: firstRunHome,
+    FD0_SSH_SOCK: firstRunSock,
+    FD0_DESKTOP_USER_DATA: join(firstRunHome, "desktop-ui"),
+  };
+
+  const app = await electron.launch({
+    executablePath: electronPath,
+    args: [join(desktopRoot, "out", "main", "index.js")],
+    env: firstRunEnvironment,
+  });
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator(".auth-card")).toBeVisible();
+
+    // An empty passphrase field must not claim any strength.
+    expect(await page.locator(".strength-fill").evaluate((bar) => (bar as HTMLElement).style.width)).toBe("0%");
+
+    const fields = page.locator(".auth-card input");
+    await fields.nth(1).fill("correct horse battery staple");
+    await fields.nth(2).fill("correct horse");
+    await expect(page.getByText(/Doesn.t match yet/)).toBeVisible();
+    await fields.nth(2).fill("correct horse battery staple");
+    await expect(page.getByText("Passphrases match")).toBeVisible();
+
+    await page.getByRole("button", { name: /^Create vault$/ }).click();
+
+    // The app must enter the vault rather than bounce back to unlock, and the
+    // empty vault must invite a first item instead of blaming a filter.
+    await expect(page.locator(".app")).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText("Your vault is ready")).toBeVisible();
+    await expect(page.getByRole("button", { name: /Add your first password/ })).toBeVisible();
+
+    /*
+     * The new vault must stay open.
+     *
+     * A brand-new user used to be bounced back to the unlock screen about a
+     * second and a half after finishing onboarding: create reported an unlocked
+     * session and something locked it immediately afterwards. Nothing in the
+     * agent log marked it, because a lock requested over the bridge is silent.
+     * Four seconds is well past that window.
+     */
+    for (let step = 0; step < 8; step += 1) {
+      await page.waitForTimeout(500);
+      const open = await page.evaluate(async () => {
+        const status = (await window.fd0.status()) as { unlocked?: boolean };
+        return Boolean(status.unlocked);
+      });
+      expect(open, `vault locked itself ${step * 500}ms after creation`).toBe(true);
+    }
+    await expect(page.locator(".app")).toBeVisible();
+
+    const body = await page.locator("body").innerText();
+    expect(body).not.toContain("Cannot read properties");
+    expect(body).not.toContain("Try another search or filter");
+
+    // Anything that does surface must be a written sentence, never a stack message.
+    if (await page.locator(".notice").count()) {
+      await expect(page.locator(".notice strong").first()).not.toHaveText(/^Cannot |^undefined|Error:/);
+    }
+  } finally {
+    await app.close();
+    spawnSync(join(buildDir, "fd0"), ["agent", "stop"], { cwd: repoRoot, env: firstRunEnvironment });
+    if (
+      existsSync(join(firstRunHome, ".desktop-isolated")) &&
+      readFileSync(join(firstRunHome, ".desktop-isolated"), "utf8") === "fd0-desktop-isolated-v1\n"
+    ) {
+      rmSync(firstRunHome, { recursive: true, force: true });
+    }
+    rmSync(firstRunSock, { force: true });
   }
 });

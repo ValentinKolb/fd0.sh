@@ -18,6 +18,31 @@ fd0-agent
 
 The agent remains the long-lived key holder. The renderer has no Node.js access, network access, filesystem access, or direct agent socket access. Secret clipboard writes, attachment export, recovery files, and external links cross native main-process handlers.
 
+## Renderer layout
+
+```text
+src/renderer/src/
+  App.tsx          shell: startup states, routing, overlays, shortcuts
+  lib/             store.ts (all vault state and actions), errors, items, format
+  ui/              tokens.css and the primitives every surface is built from
+  features/        one file per surface (rail, titlebar, list, detail, panels)
+  components/      the password editor, add-item, sharing, generator
+```
+
+`ui/tokens.css` is the single source for colour, spacing, type, radius, elevation,
+z-index, and motion. Component stylesheets must not contain literal hex values,
+off-scale spacing, or ad-hoc z-index numbers.
+
+Two rules are load-bearing:
+
+- **Popovers and menus render through `ui/Popover.tsx`**, which portals to `<body>`
+  with `position: fixed`. An in-flow popover is clipped by any ancestor with
+  `overflow: auto`, regardless of z-index — the modal body and the password
+  editor are both scroll containers.
+- **Escape ordering goes through `ui/overlayStack.ts`**, not z-index. Modals and
+  popovers both listen on `document` in the capture phase, where listener order
+  is registration order rather than visual order.
+
 ## Develop
 
 Prerequisites: Go from `go.mod`, Bun 1.3.14 or newer, and macOS PC/SC support. Linux also needs the PC/SC development package.

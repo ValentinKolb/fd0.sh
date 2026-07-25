@@ -137,7 +137,45 @@ export type RecordRef = {
 
 export type FieldRef = RecordRef & {
   path: string;
+  /**
+   * Read this field from a historical version instead of the current one.
+   * Omitted means "current", and the behaviour is unchanged.
+   */
+  seq?: number;
 };
+
+/** One past version of an item, from the scope's signed event chain. */
+export type ItemHistoryEntry = {
+  /** Content-addressed chain event id. Stable across reads. */
+  id: string;
+  /** Position in the chain. Authoritative ordering; always present. */
+  seq: number;
+  /**
+   * Only pass items carry a revision and a timestamp in their payload. These
+   * are omitted rather than invented for other types, because the event
+   * envelope has no clock of its own.
+   */
+  revision?: number;
+  updatedAt?: string;
+  /** Resolved person label, never a raw fingerprint. */
+  author: string;
+  /** This version deleted the item. */
+  tombstone?: boolean;
+  /** Shape-only description, e.g. "6 fields" or "Deleted". */
+  summary: string;
+};
+
+export type ItemHistoryPage = {
+  /** Total versions in the chain, regardless of paging. */
+  total: number;
+  limit: number;
+  offset: number;
+  entries: ItemHistoryEntry[];
+  /** The page stopped early to stay inside the bridge frame limit. */
+  truncated?: boolean;
+};
+
+export type ItemVersionRef = RecordRef & { seq: number };
 
 export type PassField = {
   type: "text" | "secret" | "totp" | "passkey" | "file" | "section";
@@ -207,6 +245,20 @@ export type ImportConfigResult = {
   skipped?: string[];
 };
 
+/** The label and value shown by the floating large-type window. */
+export type LargeTypeValue = {
+  label: string;
+  value: string;
+};
+
+export type LargeTypeWindowResult = {
+  /**
+   * False when the floating window could not be created. The caller then falls
+   * back to the in-window modal instead of failing silently.
+   */
+  window: boolean;
+};
+
 export type UpdateStatus = {
   state: "unsupported" | "idle" | "checking" | "available" | "downloading" | "ready" | "current" | "error";
   version?: string;
@@ -269,6 +321,12 @@ export type DesktopCommand =
 export type DesktopAPI = {
   platform: NodeJS.Platform;
   development: boolean;
+  /**
+   * True only inside the dedicated always-on-top large-type window. It comes
+   * from a process argument the main process sets on that window, so an in-page
+   * navigation or a crafted URL fragment cannot turn the main window into it.
+   */
+  largeTypeMode: boolean;
   startupStatus(): Promise<StartupStatus>;
   retryStartup(): Promise<StartupStatus>;
   repairService(): Promise<StartupStatus>;
@@ -286,6 +344,9 @@ export type DesktopAPI = {
   setDefaultAuthMethod(method: string): Promise<VaultStatus>;
   inventory(): Promise<Inventory>;
   itemDetail(ref: RecordRef): Promise<ItemDetail>;
+  itemHistory(ref: RecordRef, options?: { limit?: number; offset?: number }): Promise<ItemHistoryPage>;
+  itemVersion(ref: ItemVersionRef): Promise<ItemDetail>;
+  restoreItemVersion(ref: ItemVersionRef): Promise<{ ok: boolean }>;
   reveal(ref: FieldRef): Promise<{ value: string; remaining?: number } | null>;
   copy(ref: FieldRef): Promise<{ clearAfterSeconds: number }>;
   copyText(value: string): Promise<{ clearAfterSeconds: number }>;
@@ -313,6 +374,10 @@ export type DesktopAPI = {
   setLaunchAtLogin(value: boolean): Promise<boolean>;
   openItemURL(ref: RecordRef): Promise<void>;
   openSupportLink(target: "docs" | "issues"): Promise<void>;
+  showLargeType(label: string, value: string): Promise<LargeTypeWindowResult>;
+  largeTypeValue(): Promise<LargeTypeValue | null>;
+  copyLargeType(): Promise<{ clearAfterSeconds: number }>;
+  closeLargeType(): Promise<void>;
   updateStatus(): Promise<UpdateStatus>;
   checkForUpdates(): Promise<UpdateStatus>;
   installUpdate(): Promise<void>;

@@ -16,6 +16,7 @@ import {
   nativeImage,
   protocol,
   powerMonitor,
+  screen,
   session,
   shell,
   net,
@@ -47,10 +48,13 @@ import type {
   GenerateSSHKeyInput,
   IdentityCardInfo,
   ItemDetail,
+  ItemVersionRef,
+  LargeTypeValue,
+  LargeTypeWindowResult,
   RecordRef,
   SavePassInput,
-  SaveSecretInput,
   SaveSSHHostInput,
+  SaveSecretInput,
   ScopeShareInfo,
   StartupStatus,
   SyncPreparation,
@@ -420,6 +424,7 @@ function observeVaultStatus(status: VaultStatus): VaultStatus {
   lastObservedUnlocked = status.unlocked;
   autoLock?.observe(status);
   if (lockedTransition) {
+    closeLargeTypeWindow();
     managedClipboard.clear();
     operationGrants.clear();
     sendCommand("refresh");
@@ -443,6 +448,7 @@ async function requestVaultLock(): Promise<void> {
   if (!bridge) throw new Error("fd0 bridge is unavailable");
   const status = await bridge.request<VaultStatus>("vault.lock", {});
   observeVaultStatus(status);
+  closeLargeTypeWindow();
   managedClipboard.clear();
   operationGrants.clear();
   sendCommand("refresh");
@@ -828,6 +834,7 @@ function registerIPC(client: BridgeSupervisor): void {
   });
   handle("fd0:lock", async () => {
     const status = observeVaultStatus(await client.request<VaultStatus>("vault.lock", {}));
+    closeLargeTypeWindow();
     managedClipboard.clear();
     operationGrants.clear();
     sendCommand("refresh");
@@ -897,6 +904,33 @@ function registerIPC(client: BridgeSupervisor): void {
   handle("fd0:set-default-auth", async (method: string) => observeVaultStatus(await client.request<VaultStatus>("auth.default", { method })));
   handle("fd0:inventory", () => client.request("inventory.list", {}));
   handle("fd0:item-detail", (ref: RecordRef) => client.request("item.detail", ref));
+  handle("fd0:item-history", (ref: RecordRef, options?: { limit?: number; offset?: number }) =>
+    client.request("item.history", {
+      scopeId: ref.scopeId,
+      name: ref.name,
+      ...(typeof options?.limit === "number" ? { limit: options.limit } : {}),
+      ...(typeof options?.offset === "number" ? { offset: options.offset } : {}),
+    }),
+  );
+  handle("fd0:item-version", (ref: ItemVersionRef) =>
+    client.request("item.version", { scopeId: ref.scopeId, name: ref.name, seq: ref.seq }),
+  );
+  /*
+   * Restoring overwrites the item's current value, so it is confirmed natively
+   * like every other destructive action. It never rewrites history: the bridge
+   * writes the old payload back as a new event.
+   */
+  handle("fd0:restore-item-version", async (ref: ItemVersionRef) => {
+    const confirmed = await confirmItemAction(client, { scopeId: ref.scopeId, name: ref.name }, {
+      title: "Restore this version?",
+      action: "Restore",
+      type: "warning",
+      message: ({ item }) => `Replace ${dialogText(item.title, "this item")} with an earlier version?`,
+      detail: "The current value is replaced. It stays in this item's history, so you can restore it again.",
+    });
+    if (!confirmed) return { ok: false };
+    return client.request("item.restore", { scopeId: ref.scopeId, name: ref.name, seq: ref.seq });
+  });
   handle("fd0:reveal", async (ref: FieldRef) => {
     const detail = await loadTrustedItem(client, ref);
     const field = flattenFields(detail.fields).find((candidate) => candidate.path === ref.path);
@@ -1189,6 +1223,38 @@ function mimeForExtension(extension: string): string {
   }
 }
 
+/**
+ * The one hardened renderer configuration. Every fd0 window shares it so a new
+ * surface cannot quietly gain node access, drop the sandbox, or miss the preload.
+ */
+function secureWebPreferences(extraArguments: string[] = []): Electron.WebPreferences {
+  return {
+    preload: join(applicationRoot, "out", "preload", "index.cjs"),
+    additionalArguments: [app.isPackaged ? "--fd0-system" : "--fd0-isolated", ...extraArguments],
+    contextIsolation: true,
+    nodeIntegration: false,
+    sandbox: true,
+    webSecurity: true,
+    allowRunningInsecureContent: false,
+  };
+}
+
+/** Denies popups and any navigation away from the document the window loaded. */
+function applyWindowGuards(window: BrowserWindow): void {
+  window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  window.webContents.on("will-navigate", (event, url) => {
+    const current = window.webContents.getURL();
+    if (url !== current) event.preventDefault();
+  });
+}
+
+function rendererEntryURL(fragment = ""): string {
+  const base = !app.isPackaged && process.env.ELECTRON_RENDERER_URL
+    ? process.env.ELECTRON_RENDERER_URL
+    : "fd0-app://app/index.html";
+  return `${base}${fragment}`;
+}
+
 function createWindow(): BrowserWindow {
   const mac = process.platform === "darwin";
   const window = new BrowserWindow({
@@ -1204,31 +1270,148 @@ function createWindow(): BrowserWindow {
           trafficLightPosition: { x: 18, y: 18 },
         }
       : {}),
-    webPreferences: {
-      preload: join(applicationRoot, "out", "preload", "index.cjs"),
-      additionalArguments: [app.isPackaged ? "--fd0-system" : "--fd0-isolated"],
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-      webSecurity: true,
-      allowRunningInsecureContent: false,
-    },
+    webPreferences: secureWebPreferences(),
   });
-  window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-  window.webContents.on("will-navigate", (event, url) => {
-    const current = window.webContents.getURL();
-    if (url !== current) event.preventDefault();
-  });
+  applyWindowGuards(window);
   window.on("closed", () => {
     if (mainWindow === window) mainWindow = null;
   });
   window.once("ready-to-show", () => window.show());
-  if (!app.isPackaged && process.env.ELECTRON_RENDERER_URL) {
-    void window.loadURL(process.env.ELECTRON_RENDERER_URL);
-  } else {
-    void window.loadURL("fd0-app://app/index.html");
-  }
+  void window.loadURL(rendererEntryURL());
   return window;
+}
+
+// ------------------------------------------------------------------ large type
+
+const LARGE_TYPE_SECONDS = 30;
+/**
+ * The renderer counts down from 30 and closes itself. Main keeps a slightly
+ * later hard stop so a stalled or paused renderer cannot leave the value on
+ * screen — and in main-process memory — indefinitely.
+ */
+const LARGE_TYPE_HARD_STOP_MS = (LARGE_TYPE_SECONDS + 5) * 1000;
+const LARGE_TYPE_MAX_CHARACTERS = 512;
+
+let largeTypeWindow: BrowserWindow | null = null;
+/**
+ * The only copy of the value outside the renderer that asked for it.
+ *
+ * The value never touches disk, the network, or a third process: the main
+ * window hands it over the existing validated IPC, main holds it in this
+ * variable, and the floating window pulls it back over IPC once its document is
+ * live. Passing it through the URL, a query string, or localStorage instead
+ * would persist it in session history and in the Electron profile on disk.
+ */
+let largeTypeValue: LargeTypeValue | null = null;
+let largeTypeTimer: NodeJS.Timeout | null = null;
+
+function closeLargeTypeWindow(): void {
+  if (largeTypeTimer) clearTimeout(largeTypeTimer);
+  largeTypeTimer = null;
+  largeTypeValue = null;
+  const window = largeTypeWindow;
+  largeTypeWindow = null;
+  if (window && !window.isDestroyed()) window.destroy();
+}
+
+/** Centres the window on the display holding the focused window, or the cursor. */
+function largeTypeBounds(width: number, height: number): Electron.Rectangle {
+  const focused = BrowserWindow.getFocusedWindow();
+  const bounds = focused && !focused.isDestroyed() ? focused.getBounds() : null;
+  const anchor = bounds
+    ? { x: Math.round(bounds.x + bounds.width / 2), y: Math.round(bounds.y + bounds.height / 2) }
+    : screen.getCursorScreenPoint();
+  const area = screen.getDisplayNearestPoint(anchor).workArea;
+  const fitted = { width: Math.min(width, area.width), height: Math.min(height, area.height) };
+  return {
+    ...fitted,
+    x: Math.round(area.x + (area.width - fitted.width) / 2),
+    y: Math.round(area.y + (area.height - fitted.height) / 2),
+  };
+}
+
+function openLargeTypeWindow(label: unknown, value: unknown): LargeTypeWindowResult {
+  if (typeof label !== "string" || typeof value !== "string") throw new Error("Invalid large type request");
+  const characters = [...value];
+  if (characters.length === 0 || characters.length > LARGE_TYPE_MAX_CHARACTERS) {
+    throw new Error("That value cannot be shown in large type");
+  }
+  // Only one at a time: a second request replaces the first and drops its value.
+  closeLargeTypeWindow();
+
+  const window = new BrowserWindow({
+    ...largeTypeBounds(780, 440),
+    minWidth: 420,
+    minHeight: 260,
+    show: false,
+    frame: false,
+    resizable: true,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    title: "fd0 large type",
+    backgroundColor: "#0b0e0c",
+    webPreferences: secureWebPreferences(["--fd0-large-type"]),
+  });
+  /*
+   * "floating" maps to NSFloatingWindowLevel on macOS and the equivalent
+   * always-on-top band elsewhere. Window levels are a system-wide ordering, so
+   * this sits above ordinary windows of every application — the point of the
+   * feature is reading a code out while typing into a different app.
+   */
+  window.setAlwaysOnTop(true, "floating");
+  if (process.platform === "darwin") {
+    window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  }
+  applyWindowGuards(window);
+  window.on("closed", () => {
+    if (largeTypeWindow === window) closeLargeTypeWindow();
+  });
+  window.once("ready-to-show", () => {
+    window.show();
+    window.focus();
+  });
+
+  largeTypeWindow = window;
+  largeTypeValue = { label: dialogText(label, "Value"), value };
+  largeTypeTimer = setTimeout(closeLargeTypeWindow, LARGE_TYPE_HARD_STOP_MS);
+  void window.loadURL(rendererEntryURL("#large-type"));
+  return { window: true };
+}
+
+/**
+ * The large-type window gets its own sender check rather than being added to
+ * `assertTrustedSender`: it may only reach the four channels below, and every
+ * other fd0 channel stays main-window-only.
+ */
+function assertLargeTypeSender(event: Electron.IpcMainInvokeEvent): void {
+  if (!largeTypeWindow || largeTypeWindow.isDestroyed() || event.sender.id !== largeTypeWindow.webContents.id) {
+    throw new Error("Untrusted IPC sender");
+  }
+}
+
+function registerLargeTypeIPC(): void {
+  ipcMain.handle("fd0:show-large-type", (event, label: unknown, value: unknown) => {
+    assertTrustedSender(event);
+    return respond(async () => openLargeTypeWindow(label, value));
+  });
+  ipcMain.handle("fd0:large-type-value", (event) => {
+    assertLargeTypeSender(event);
+    return respond(async () => largeTypeValue);
+  });
+  ipcMain.handle("fd0:large-type-copy", (event) => {
+    assertLargeTypeSender(event);
+    return respond(async () => {
+      if (!largeTypeValue) throw new Error("That value is no longer available");
+      return writeManagedClipboard(largeTypeValue.value);
+    });
+  });
+  ipcMain.handle("fd0:large-type-close", (event) => {
+    assertLargeTypeSender(event);
+    return respond(async () => closeLargeTypeWindow());
+  });
 }
 
 function registerAppProtocol(): void {
@@ -1339,6 +1522,7 @@ async function start(): Promise<void> {
   session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
   session.defaultSession.setPermissionCheckHandler(() => false);
   registerInfrastructureIPC();
+  registerLargeTypeIPC();
   buildMenu();
   mainWindow = createWindow();
   createTray();
@@ -1359,6 +1543,9 @@ app.on("window-all-closed", () => {
 
 let quitPrepared = false;
 app.on("before-quit", (event) => {
+  // Runs on both passes: the quit below is deferred, and nothing should keep a
+  // secret on screen while the vault is being locked.
+  closeLargeTypeWindow();
   if (!quitPrepared && bridge && !installingUpdate) {
     event.preventDefault();
     quitPrepared = true;

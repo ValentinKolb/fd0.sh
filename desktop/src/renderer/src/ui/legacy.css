@@ -1,0 +1,261 @@
+
+/* ------------------------------------------------------------ segmented */
+
+.segmented {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.segmented button {
+  flex: 1;
+  height: var(--control-height-sm);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-3);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  cursor: default;
+}
+.segmented button:hover { color: var(--text); }
+.segmented button.is-active { background: var(--surface-hover); color: var(--text); }
+
+/* ------------------------------------------------------------ generator */
+
+.generated-value {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-3) var(--space-3) var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--field-bg);
+}
+.generated-value code {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+  line-height: var(--leading-normal);
+  overflow-wrap: anywhere;
+}
+.generated-value.is-compact { padding: var(--space-2); }
+.generated-value.is-compact code {
+  font-size: var(--text-sm);
+  /* Two lines, then scroll. A 53-character value must not stretch the popover. */
+  height: calc(var(--text-sm) * var(--leading-normal) * 2);
+  overflow-y: auto;
+}
+
+.generator-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.generator-options { display: flex; flex-direction: column; gap: var(--space-3); }
+
+.slider-row { display: flex; align-items: center; gap: var(--space-3); }
+.slider-row label { flex: none; width: 72px; color: var(--text-2); font-size: var(--text-sm); }
+.slider-row output {
+  flex: none;
+  min-width: 26px;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.slider-row input[type="range"] { flex: 1; appearance: none; height: 3px; border-radius: var(--radius-full); background: var(--line-control); }
+.slider-row input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  width: 15px;
+  height: 15px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/*
+ * The generator popover keeps one size for every mode.
+ *
+ * Its width is fixed and its options area reserves the height of the tallest
+ * mode, so switching Random/Memorable/PIN or dragging a slider never resizes or
+ * repositions the popover. A control that jumps under the pointer reads as
+ * broken even when it is working.
+ */
+.generator-popover {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  width: 320px;
+  padding: var(--space-4);
+  border: 1px solid var(--line-control);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-popover);
+}
+.generator-popover.inline { box-shadow: none; border: 0; padding: 0; }
+.generator-popover .generator-options { min-height: 196px; align-content: start; }
+.generator-strength-slot.is-hidden { visibility: hidden; }
+.generator-popover-footer { display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: auto; }
+
+/* ------------------------------------------------------- password editor */
+
+.editor-fields { display: flex; flex-direction: column; gap: var(--space-2); }
+.editor-fields-heading { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); }
+.editor-fields-heading small { color: var(--text-4); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
+.editor-fields-heading small.is-warning { color: var(--warn); }
+.pass-field-list { display: flex; flex-direction: column; gap: var(--space-1); list-style: none; margin: 0; padding: 0; }
+
+.pass-field-editor {
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+}
+.pass-field-editor.section { background: var(--surface); border-color: var(--line); }
+
+.pass-field-content { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-2); }
+
+.pass-field-head { display: flex; align-items: center; gap: var(--space-2); }
+.pass-field-head .pass-field-name { flex: 1; min-width: 0; height: var(--control-height-sm); font-size: var(--text-sm); }
+
+.pass-field-drag-handle {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: var(--control-height-sm);
+  flex: none;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-4);
+  cursor: grab;
+}
+.pass-field-drag-handle:hover { background: var(--surface-hover); color: var(--text-2); }
+
+.field-type-label {
+  flex: none;
+  color: var(--text-4);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+}
+
+.pass-field-secret { display: flex; align-items: center; gap: var(--space-2); }
+.pass-field-secret .input-with-action { flex: 1; min-width: 0; }
+
+.pass-field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2) var(--space-3); }
+.pass-field-grid label { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.pass-field-grid label > span { color: var(--text-3); font-size: var(--text-xs); }
+@media (max-width: 560px) { .pass-field-grid { grid-template-columns: minmax(0, 1fr); } }
+
+.pass-field-json { font-family: var(--font-mono); font-size: var(--text-xs); }
+
+.pass-field-file { display: flex; align-items: center; gap: var(--space-2); color: var(--text-2); font-size: var(--text-sm); }
+.pass-field-file-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pass-field-file small { color: var(--text-4); font-size: var(--text-xs); }
+
+.pass-field-drop-slot {
+  position: relative;
+  height: 4px;
+  margin: -2px 0;
+  transition: height var(--duration) var(--ease), margin var(--duration) var(--ease);
+}
+
+.pass-field-drop-slot::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 0;
+  left: 33px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+  opacity: 0;
+  translate: 0 -50%;
+}
+
+.pass-field-drop-slot > span { display: none; }
+
+.editor-fields.dragging .pass-field-drop-slot { height: 14px; margin: 0; }
+.editor-fields.dragging .pass-field-drop-slot[data-dnd-over="true"]::after { opacity: 1; }
+
+.editor-fields.dragging .pass-field-drop-slot.empty {
+  display: grid;
+  place-items: center;
+  height: 38px;
+  margin: 6px 0;
+  border: 1px dashed var(--line-control);
+  border-radius: var(--radius-sm);
+}
+.editor-fields.dragging .pass-field-drop-slot.empty::after { display: none; }
+.editor-fields.dragging .pass-field-drop-slot.empty[data-dnd-over="true"] {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
+.editor-fields.dragging .pass-field-drop-slot.empty > span {
+  display: block;
+  color: var(--text-3);
+  font-size: 10px;
+}
+
+.section-children { margin-top: var(--space-2); padding-left: var(--space-3); border-left: 1px solid var(--line); }
+.editor-value-row .input { flex: 1; }
+
+.add-field-control { display: flex; justify-content: flex-end; align-items: center; gap: var(--space-2); margin-top: var(--space-2); }
+.add-field-control .add-field-type { width: 180px; }
+.add-field-label { color: var(--text-4); font-size: var(--text-xs); }
+@media (max-width: 560px) { .add-item-overview { grid-template-columns: minmax(0, 1fr); } }
+.kind-trigger-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.kind-trigger-copy strong { font-size: var(--text-base); font-weight: var(--weight-medium); }
+.kind-trigger-copy small { color: var(--text-4); font-size: var(--text-xs); }
+.kind-option-copy { display: flex; flex-direction: column; gap: 1px; }
+.kind-option-copy strong { color: var(--text); font-size: var(--text-sm); font-weight: var(--weight-medium); }
+.kind-option-copy small { color: var(--text-4); font-size: var(--text-xs); line-height: var(--leading-normal); }
+
+.access-list { display: flex; flex-direction: column; }
+.access-row { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) 0; border-bottom: 1px solid var(--line-soft); }
+.access-row:last-child { border-bottom: 0; }
+.access-avatar {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-bold);
+}
+.access-person { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.access-person strong { color: var(--text); font-size: var(--text-base); font-weight: var(--weight-medium); }
+.access-person small { color: var(--text-4); font-size: var(--text-xs); }
+.access-person small.is-verified { color: var(--good); }
+
+.share-section { display: flex; flex-direction: column; gap: var(--space-3); }
+.share-section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); }
+.share-section-heading > div { display: flex; flex-direction: column; gap: 2px; }
+.share-section-heading strong { color: var(--text); font-size: var(--text-base); font-weight: var(--weight-medium); }
+.share-section-heading small { color: var(--text-4); font-size: var(--text-xs); line-height: var(--leading-normal); }
+.share-empty { display: flex; flex-direction: column; gap: 2px; padding: var(--space-4) 0; color: var(--text-4); font-size: var(--text-sm); }
+.share-loading { padding: var(--space-5) 0; color: var(--text-4); font-size: var(--text-sm); text-align: center; }
+.new-contact-fields { display: flex; flex-direction: column; gap: var(--space-4); }
+.card-exchange-row { display: flex; align-items: flex-end; gap: var(--space-2); }
+.card-exchange-row .field { flex: 1; }
+
+.safety-number {
+  display: block;
+  padding: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: var(--text-base);
+  letter-spacing: 0.08em;
+  text-align: center;
+  user-select: text;
+  word-break: break-all;
+}
