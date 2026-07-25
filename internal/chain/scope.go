@@ -67,6 +67,22 @@ type ScopeSecret struct {
 	Record  *proto.SecretRecord // nil = tombstone
 }
 
+// SecretVersion is one observed state of a secret during replay.
+//
+// There is no timestamp: SignedPrefix carries none (PROTOCOL.md §4.1), so
+// ordering is by Seq only. Any wall-clock time a caller shows must come
+// from inside the decrypted record payload, never from the envelope.
+type SecretVersion struct {
+	Seq     uint64
+	EventID string
+	Author  []byte
+	Record  *proto.SecretRecord // nil = tombstone
+}
+
+// SecretObserver is notified for every secret.set version that replay
+// applies, in chain order. See ReplayScopeObserved.
+type SecretObserver func(secretID string, v SecretVersion)
+
 // ReplayScope verifies every event in path and returns the post-replay state.
 //
 // Parameters:
@@ -92,6 +108,32 @@ type ScopeSecret struct {
 //	T29 (insider projection-poisoning for existing members),
 //	T30 (no-op membership change rejection).
 func ReplayScope(path string, ownSuperPub, ownX25519Pub []byte, opener Opener) (*ScopeState, error) {
+	return ReplayScopeObserved(path, ownSuperPub, ownX25519Pub, opener, nil)
+}
+
+// ReplayScopeObserved is ReplayScope plus an optional per-version observer.
+//
+// Verification is IDENTICAL to ReplayScope — the observer only watches what
+// replay already computed; it can neither skip nor reorder a check, and a
+// non-nil observer never changes the returned ScopeState.
+//
+// The observer fires exactly once per applied secret.set (including
+// tombstones, where Record is nil), in chain order. It does NOT fire for the
+// member.change projection rebuild: that rebuild is a re-encryption of the
+// current state under a new OEK, not a user edit, so surfacing it as a
+// version would invent history that never happened. It also does not fire
+// for pre-admit secret.set events — those are silently skipped by
+// applySecretSet because the OEK era predates our admit, and a version we
+// cannot decrypt must not appear as a phantom entry.
+//
+// Records handed to the observer are independently allocated copies, so they
+// stay valid after replay wipes its per-event plaintext buffers.
+func ReplayScopeObserved(
+	path string,
+	ownSuperPub, ownX25519Pub []byte,
+	opener Opener,
+	observe SecretObserver,
+) (*ScopeState, error) {
 	events, err := ReadScopeEvents(path)
 	if err != nil {
 		return nil, err
@@ -161,7 +203,7 @@ func ReplayScope(path string, ownSuperPub, ownX25519Pub []byte, opener Opener) (
 				st.Left = true
 			}
 		case proto.KindSecretSet:
-			if err := applySecretSet(st, ev); err != nil {
+			if err := applySecretSet(st, ev, observe); err != nil {
 				return nil, fmt.Errorf("scope[%d]: %w", i, err)
 			}
 		default:
@@ -454,7 +496,10 @@ func applyMemberChange(st *ScopeState, ev *proto.ScopeEvent, ownSuperPub, oekPla
 // happens during discovery when we receive pre-admit events whose OEK
 // era predates our admit. Our admit's projection is authoritative for
 // those secrets.
-func applySecretSet(st *ScopeState, ev *proto.ScopeEvent) error {
+//
+// observe (may be nil) is notified once the version has been fully verified
+// and installed — after, never instead of, the checks above it.
+func applySecretSet(st *ScopeState, ev *proto.ScopeEvent, observe SecretObserver) error {
 	sp := &ev.SignedPrefix
 	if len(sp.KeyDeliveries) != 0 {
 		return errors.New("secret.set: key_deliveries must be empty")
@@ -487,11 +532,46 @@ func applySecretSet(st *ScopeState, ev *proto.ScopeEvent) error {
 	if err != nil {
 		return err
 	}
+	eventID := proto.EventID(prefix)
 	st.SecretIndex[body.ID] = ScopeSecret{
-		EventID: proto.EventID(prefix),
+		EventID: eventID,
 		Record:  body.Record,
 	}
+	if observe != nil {
+		// Hand out a detached copy: `plain` (which body.Record may alias)
+		// is wiped when this function returns, and an observer keeps its
+		// versions for the whole replay.
+		record, cErr := cloneSecretRecord(body.Record)
+		if cErr != nil {
+			return fmt.Errorf("secret.set: copy record: %w", cErr)
+		}
+		observe(body.ID, SecretVersion{
+			Seq:     sp.Seq,
+			EventID: eventID,
+			Author:  append([]byte(nil), sp.Author...),
+			Record:  record,
+		})
+	}
 	return nil
+}
+
+// cloneSecretRecord returns an independently allocated copy of rec (nil for a
+// tombstone). Round-tripping through the deterministic codec is the same
+// technique applyMemberChange uses to detach projection records from the
+// plaintext buffer that is about to be wiped.
+func cloneSecretRecord(rec *proto.SecretRecord) (*proto.SecretRecord, error) {
+	if rec == nil {
+		return nil, nil
+	}
+	buf, err := proto.Marshal(rec)
+	if err != nil {
+		return nil, err
+	}
+	var fresh proto.SecretRecord
+	if err := proto.Unmarshal(buf, &fresh); err != nil {
+		return nil, err
+	}
+	return &fresh, nil
 }
 
 // ProjectionAAD returns the AAD used for AEAD-sealing the member.change

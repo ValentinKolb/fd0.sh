@@ -308,7 +308,17 @@ func secretToString(p any) string {
 // Returns chain.ErrRollback when the local chain is behind/diverged vs.
 // the vault binding.
 func (s *Session) replayAndCheckScope(scopeID string) (*chain.ScopeState, error) {
-	st, err := replayScopeViaAgent(s.Paths.ScopeChain(proto.MustParseScopeID(scopeID)), s.UserSuperPub, s.UserX25519Pub, s.Agent)
+	return s.replayObservedAndCheckScope(scopeID, nil)
+}
+
+// replayObservedAndCheckScope is replayAndCheckScope with an optional
+// per-version observer threaded into replay. Every check below is the same
+// code both entry points run — the observer only watches.
+func (s *Session) replayObservedAndCheckScope(scopeID string, observe chain.SecretObserver) (*chain.ScopeState, error) {
+	st, err := replayScopeObservedViaAgent(
+		s.Paths.ScopeChain(proto.MustParseScopeID(scopeID)),
+		s.UserSuperPub, s.UserX25519Pub, s.Agent, observe,
+	)
 	if err != nil {
 		return nil, err
 	}

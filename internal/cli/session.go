@@ -168,6 +168,17 @@ func replayScopeViaAgent(path string, ownSuperPub, ownX25519Pub []byte, ag *agen
 	return chain.ReplayScope(path, ownSuperPub, ownX25519Pub, AgentOpener{Agent: ag})
 }
 
+// replayScopeObservedViaAgent is replayScopeViaAgent with an optional
+// per-version observer. observe == nil is byte-for-byte the plain replay.
+func replayScopeObservedViaAgent(
+	path string,
+	ownSuperPub, ownX25519Pub []byte,
+	ag *agent.Client,
+	observe chain.SecretObserver,
+) (*chain.ScopeState, error) {
+	return chain.ReplayScopeObserved(path, ownSuperPub, ownX25519Pub, AgentOpener{Agent: ag}, observe)
+}
+
 // defaultLockWait is how long an interactive command waits for the flock
 // when neither FD0_LOCK_WAIT nor [client].lock_wait is set. The agent's
 // background auto-sync holds the lock for the duration of a sync; a
