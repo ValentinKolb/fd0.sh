@@ -167,6 +167,7 @@ type passCmd struct {
 	Copy     passCopyCmd     `cmd:"" help:"Copy a field value, secret, or current TOTP code."`
 	Generate passGenerateCmd `cmd:"" help:"Generate a password without storing it."`
 	Field    passFieldCmd    `cmd:"" help:"Set, get, or remove fields by slash path."`
+	Notes    passNotesCmd    `cmd:"" help:"Read, write, or remove the item's free-text note."`
 	Section  passSectionCmd  `cmd:"" help:"Manage section fields."`
 	TOTP     passTOTPCmd     `cmd:"" name:"totp" help:"Manage or print TOTP fields."`
 	File     passFileCmd     `cmd:"" help:"Attach or export small files."`
@@ -181,6 +182,7 @@ type passAddCmd struct {
 	URL   []string `name:"url" help:"Login URL or matching URL (repeatable)."`
 	Scope string   `name:"scope" help:"Scope label or id."`
 	Force bool     `name:"force" help:"Overwrite an existing pass item with the same name."`
+	Notes string   `name:"notes" help:"Free-text note to store on the new item."`
 }
 type passFindCmd struct {
 	Query string `arg:"" optional:"" help:"Text to match against title and URLs."`
@@ -237,6 +239,25 @@ type passFieldGetCmd struct {
 type passFieldRmCmd struct {
 	Name  string `arg:"" help:"Item name."`
 	Path  string `arg:"" help:"Field path."`
+	Scope string `name:"scope" help:"Scope label or id."`
+	Yes   bool   `name:"yes" short:"y" help:"Do not prompt before removing."`
+}
+type passNotesCmd struct {
+	Show passNotesShowCmd `cmd:"" default:"withargs" help:"Print the item's note."`
+	Set  passNotesSetCmd  `cmd:"" help:"Set the item's note."`
+	Rm   passNotesRmCmd   `cmd:"" help:"Remove the item's note."`
+}
+type passNotesShowCmd struct {
+	Name  string `arg:"" help:"Item name."`
+	Scope string `name:"scope" help:"Scope label or id."`
+}
+type passNotesSetCmd struct {
+	Name  string `arg:"" help:"Item name."`
+	Text  string `arg:"" optional:"" help:"Note text. Omitted: read stdin when piped, else open $EDITOR."`
+	Scope string `name:"scope" help:"Scope label or id."`
+}
+type passNotesRmCmd struct {
+	Name  string `arg:"" help:"Item name."`
 	Scope string `name:"scope" help:"Scope label or id."`
 	Yes   bool   `name:"yes" short:"y" help:"Do not prompt before removing."`
 }
@@ -694,6 +715,9 @@ func commandNeedsUnlockedVault(command string) bool {
 		"pass field set <name> <path>", "pass field set <name> <path> <value>",
 		"pass field get <name> <path>",
 		"pass field rm <name> <path>",
+		"pass notes <name>", "pass notes show <name>",
+		"pass notes set <name>", "pass notes set <name> <text>",
+		"pass notes rm <name>",
 		"pass section add <name> <path>",
 		"pass totp add <name> <uri>",
 		"pass totp", "pass totp <name>", "pass totp <name> <path>",
@@ -890,6 +914,7 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 			URL:   c.Pass.Add.URL,
 			Scope: c.Pass.Add.Scope,
 			Force: c.Pass.Add.Force,
+			Notes: c.Pass.Add.Notes,
 		})
 	case "pass find", "pass find <query>":
 		return cli.RunPassFind(ctx, c.Pass.Find.Scope, c.Pass.Find.Query, c.Pass.Find.URL, c.Pass.Find.JSON)
@@ -922,6 +947,19 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 		return cli.RunPassFieldGet(ctx, c.Pass.Field.Get.Scope, c.Pass.Field.Get.Name, c.Pass.Field.Get.Path, c.Pass.Field.Get.Raw)
 	case "pass field rm <name> <path>":
 		return cli.RunPassFieldRemove(ctx, c.Pass.Field.Rm.Scope, c.Pass.Field.Rm.Name, c.Pass.Field.Rm.Path, c.Pass.Field.Rm.Yes)
+	case "pass notes <name>", "pass notes show <name>":
+		return cli.RunPassNotes(ctx, c.Pass.Notes.Show.Scope, c.Pass.Notes.Show.Name)
+	case "pass notes set <name>", "pass notes set <name> <text>":
+		return cli.RunPassNotesSet(ctx, cli.PassNotesSetOpts{
+			Item:  c.Pass.Notes.Set.Name,
+			Scope: c.Pass.Notes.Set.Scope,
+			Text:  c.Pass.Notes.Set.Text,
+			// The <text> form means a positional was supplied — including an
+			// explicit "", which clears the note instead of opening $EDITOR.
+			HasText: kctx.Command() == "pass notes set <name> <text>",
+		})
+	case "pass notes rm <name>":
+		return cli.RunPassNotesRemove(ctx, c.Pass.Notes.Rm.Scope, c.Pass.Notes.Rm.Name, c.Pass.Notes.Rm.Yes)
 	case "pass section add <name> <path>":
 		return cli.RunPassSectionAdd(ctx, c.Pass.Section.Add.Scope, c.Pass.Section.Add.Name, c.Pass.Section.Add.Path)
 	case "pass totp add <name> <uri>":

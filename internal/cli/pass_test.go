@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -56,6 +57,263 @@ func TestPassSummaryRowsDoNotExposeFieldValues(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("summary JSON missing %q:\n%s", want, got)
 		}
+	}
+}
+
+// notesTestItem builds an item carrying one ordinary field, so the tests below
+// can tell the notes block apart from the field table.
+func notesTestItem(t *testing.T) *passitem.Item {
+	t.Helper()
+	item := passitem.New("GitHub", nil)
+	user, err := passitem.NewStringField(passitem.FieldText, "octocat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := item.SetField("username", user); err != nil {
+		t.Fatal(err)
+	}
+	return item
+}
+
+func TestPassNotesRoundTripAndShowRendersOnce(t *testing.T) {
+	item := notesTestItem(t)
+	if err := setPassNotes(item, "recovery contact: ops@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if got := item.Notes(); got != "recovery contact: ops@example.com" {
+		t.Fatalf("Notes() = %q", got)
+	}
+
+	var buf bytes.Buffer
+	renderPassItem(&buf, item, "work", false)
+	out := buf.String()
+	if n := strings.Count(out, "ops@example.com"); n != 1 {
+		t.Fatalf("note text rendered %d times, want 1:\n%s", n, out)
+	}
+	// The note must not also appear as a row in the field table, which is the
+	// only place a "text" type column is printed.
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, passitem.NotesFieldName) && strings.Contains(line, passitem.FieldText) {
+			t.Fatalf("notes listed as an ordinary field:\n%s", out)
+		}
+	}
+	if !strings.Contains(out, "\n  notes\n") {
+		t.Fatalf("missing notes heading:\n%s", out)
+	}
+	if !strings.Contains(out, "  username") {
+		t.Fatalf("ordinary fields disappeared:\n%s", out)
+	}
+}
+
+func TestPassNotesMultilineStaysIndented(t *testing.T) {
+	item := notesTestItem(t)
+	if err := setPassNotes(item, "line one\nline two\n\nline four"); err != nil {
+		t.Fatal(err)
+	}
+	if got := item.Notes(); got != "line one\nline two\n\nline four" {
+		t.Fatalf("multi-line note round-trip = %q", got)
+	}
+
+	var buf bytes.Buffer
+	renderPassItem(&buf, item, "work", false)
+	lines := strings.Split(buf.String(), "\n")
+	head := -1
+	for i, line := range lines {
+		if line == "  notes" {
+			head = i
+			break
+		}
+	}
+	if head < 0 {
+		t.Fatalf("no notes heading:\n%s", buf.String())
+	}
+	want := []string{"    line one", "    line two", "", "    line four"}
+	got := lines[head+1 : head+1+len(want)]
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("notes body line %d = %q, want %q\nfull output:\n%s", i, got[i], want[i], buf.String())
+		}
+	}
+}
+
+func TestPassNotesRemoveLeavesNoField(t *testing.T) {
+	item := notesTestItem(t)
+	if err := setPassNotes(item, "temporary"); err != nil {
+		t.Fatal(err)
+	}
+	if err := setPassNotes(item, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := item.Notes(); got != "" {
+		t.Fatalf("Notes() after removal = %q", got)
+	}
+	for _, f := range item.Fields {
+		if strings.EqualFold(f.Name, passitem.NotesFieldName) {
+			t.Fatalf("notes field survived removal: %+v", item.Fields)
+		}
+	}
+	raw, err := json.Marshal(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), `"notes"`) {
+		t.Fatalf("removed note still on the wire: %s", raw)
+	}
+
+	var buf bytes.Buffer
+	renderPassItem(&buf, item, "work", false)
+	if strings.Contains(buf.String(), "notes") {
+		t.Fatalf("show still renders a notes block:\n%s", buf.String())
+	}
+}
+
+func TestPassNotesEmptyValueRemovesTheNote(t *testing.T) {
+	item := notesTestItem(t)
+	// An item that never had a note stays note-free rather than gaining an
+	// empty field, so `pass add` can pass the flag through unconditionally.
+	if err := setPassNotes(item, ""); err != nil {
+		t.Fatal(err)
+	}
+	if len(item.Fields) != 1 {
+		t.Fatalf("empty note added a field: %+v", item.Fields)
+	}
+	// Whitespace-only input is equivalent to empty.
+	if err := setPassNotes(item, "kept"); err != nil {
+		t.Fatal(err)
+	}
+	if err := setPassNotes(item, "  \n\t\n"); err != nil {
+		t.Fatal(err)
+	}
+	if got := item.Notes(); got != "" {
+		t.Fatalf("whitespace-only note = %q, want removal", got)
+	}
+}
+
+func TestPassNotesIgnoresNotesFieldInsideSection(t *testing.T) {
+	item := notesTestItem(t)
+	nested, err := passitem.NewStringField(passitem.FieldText, "belongs to the section")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := item.SetField("Recovery/notes", nested); err != nil {
+		t.Fatal(err)
+	}
+	if got := item.Notes(); got != "" {
+		t.Fatalf("nested notes leaked into Notes(): %q", got)
+	}
+
+	// The nested field must stay in the field table, and no notes block may
+	// appear for it.
+	var buf bytes.Buffer
+	renderPassItem(&buf, item, "work", false)
+	out := buf.String()
+	if !strings.Contains(out, "Recovery/notes") {
+		t.Fatalf("nested notes field dropped from the field list:\n%s", out)
+	}
+	if strings.Contains(out, "\n  notes\n") {
+		t.Fatalf("nested notes rendered as the item note:\n%s", out)
+	}
+
+	// Setting and removing the item's note must leave the nested field alone.
+	if err := setPassNotes(item, "top level"); err != nil {
+		t.Fatal(err)
+	}
+	if err := setPassNotes(item, ""); err != nil {
+		t.Fatal(err)
+	}
+	f, err := item.Field("Recovery/notes")
+	if err != nil {
+		t.Fatalf("nested notes field removed: %v", err)
+	}
+	if got, err := passitem.StringValue(*f); err != nil || got != "belongs to the section" {
+		t.Fatalf("nested notes value = %q, %v", got, err)
+	}
+}
+
+func TestPassNotesListedFieldsKeepsNestedNotes(t *testing.T) {
+	item := notesTestItem(t)
+	nested, err := passitem.NewStringField(passitem.FieldText, "section note")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := item.SetField("Recovery/notes", nested); err != nil {
+		t.Fatal(err)
+	}
+	if err := setPassNotes(item, "item note"); err != nil {
+		t.Fatal(err)
+	}
+	listed := passListedFields(item)
+	for _, f := range listed {
+		if strings.EqualFold(f.Name, passitem.NotesFieldName) {
+			t.Fatalf("top-level notes field still listed: %+v", listed)
+		}
+	}
+	if len(listed) != 2 { // username + Recovery section
+		t.Fatalf("listed fields = %d, want 2: %+v", len(listed), listed)
+	}
+}
+
+func TestEditPassNotesUsesEditorAndKeepsTempFilePrivate(t *testing.T) {
+	dir := t.TempDir()
+	modeOut := filepath.Join(dir, "mode")
+	pathOut := filepath.Join(dir, "path")
+	script := filepath.Join(dir, "fake-editor.sh")
+	// The fake editor records the buffer's path and permissions, then edits it
+	// the way a real editor would.
+	body := "#!/bin/sh\n" +
+		"printf '%s' \"$1\" > " + pathOut + "\n" +
+		"ls -l \"$1\" | cut -c1-10 > " + modeOut + "\n" +
+		"printf 'appended\\n' >> \"$1\"\n"
+	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EDITOR", script)
+	t.Setenv("VISUAL", "")
+
+	got, err := editPassNotes("seed line\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "seed line\nappended" {
+		t.Fatalf("edited note = %q", got)
+	}
+
+	mode, err := os.ReadFile(modeOut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(mode)) != "-rw-------" {
+		t.Fatalf("temp buffer mode = %q, want -rw-------", strings.TrimSpace(string(mode)))
+	}
+	tmpPath, err := os.ReadFile(pathOut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(strings.TrimSpace(string(tmpPath))); !os.IsNotExist(err) {
+		t.Fatalf("temp buffer %q survived the edit: %v", tmpPath, err)
+	}
+}
+
+func TestEditPassNotesFallsBackToVisualAndRemovesBufferOnFailure(t *testing.T) {
+	dir := t.TempDir()
+	pathOut := filepath.Join(dir, "path")
+	script := filepath.Join(dir, "failing-editor.sh")
+	body := "#!/bin/sh\nprintf '%s' \"$1\" > " + pathOut + "\nexit 3\n"
+	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EDITOR", "")
+	t.Setenv("VISUAL", script)
+
+	if _, err := editPassNotes("seed"); err == nil {
+		t.Fatal("a failing editor should abort the edit")
+	}
+	tmpPath, err := os.ReadFile(pathOut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(strings.TrimSpace(string(tmpPath))); !os.IsNotExist(err) {
+		t.Fatalf("temp buffer %q survived a failed edit: %v", tmpPath, err)
 	}
 }
 
