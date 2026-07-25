@@ -71,6 +71,27 @@ func (s *Session) setTypedSecret(
 	requireMissing bool,
 	expectedType string,
 ) error {
+	// JSON-encode the typed payload so it survives CBOR's `any`
+	// round-trip without surprising type coercion.
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("set typed: marshal payload: %w", err)
+	}
+	return s.writeTypedSecretPayload(ctx, scopeID, name, secretType, string(raw), requireMissing, expectedType)
+}
+
+// writeTypedSecretPayload is the shared typed-secret write. `payload` is
+// stored verbatim as SecretRecord.Payload — callers that hold a Go value
+// encode it first (setTypedSecret), callers that already hold the stored
+// representation (RestoreSecretVersion) pass it through unchanged so a
+// round-trip cannot double-encode it.
+func (s *Session) writeTypedSecretPayload(
+	ctx context.Context,
+	scopeID, name, secretType string,
+	payload any,
+	requireMissing bool,
+	expectedType string,
+) error {
 	scopeID, err := s.resolveScopeID(scopeID)
 	if err != nil {
 		return err
@@ -120,19 +141,13 @@ func (s *Session) setTypedSecret(
 	if sid == "" {
 		sid = "s_" + ulid.Make().String()
 	}
-	// JSON-encode the typed payload so it survives CBOR's `any`
-	// round-trip without surprising type coercion.
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("set typed: marshal payload: %w", err)
-	}
 	body := &proto.SecretBody{
 		ID: sid,
 		Record: &proto.SecretRecord{
 			Name:          name,
 			Type:          secretType,
 			SchemaVersion: 1,
-			Payload:       string(raw),
+			Payload:       payload,
 			Tags:          map[string]string{},
 		},
 	}
@@ -314,7 +329,15 @@ func (s *Session) removeTypedSecret(ctx context.Context, scopeID, name, expected
 // helper undoes that opaquely so callers don't have to switch on the
 // concrete `any` type.
 func (r *TypedRecord) PayloadJSON() ([]byte, error) {
-	switch p := r.Payload.(type) {
+	return payloadJSON(r.Payload)
+}
+
+// payloadJSON is the shared decode of a stored SecretRecord.Payload back into
+// the JSON bytes the typed setters wrote. Kept separate from TypedRecord so
+// history entries (which hold a *proto.SecretRecord, not a TypedRecord) use
+// exactly the same rules.
+func payloadJSON(payload any) ([]byte, error) {
+	switch p := payload.(type) {
 	case string:
 		return []byte(p), nil
 	case []byte:
