@@ -36,6 +36,10 @@ const environment: NodeJS.ProcessEnv = {
   FD0_DESKTOP_MODE: "isolated",
   FD0_DESKTOP_USER_DATA: join(testHome, "desktop-ui"),
   FD0_AGENT_SYNC_DISABLED: "1",
+  // FD0_HOME does not cover the rendered ssh_config: without this, any test
+  // that mutates an SSH host would overwrite the developer's real
+  // ~/.ssh/fd0.conf. Isolating the vault is not the same as isolating output.
+  FD0_SSH_CONFIG_PATH: join(testHome, "ssh", "fd0.conf"),
 };
 
 /** The window's own minimum is 860x600; the layout is asserted below that too. */
@@ -1059,18 +1063,32 @@ test("first run creates a vault and lands in a usable, error-free app", async ()
      * The new vault must stay open.
      *
      * A brand-new user used to be bounced back to the unlock screen about a
-     * second and a half after finishing onboarding: create reported an unlocked
-     * session and something locked it immediately afterwards. Nothing in the
-     * agent log marked it, because a lock requested over the bridge is silent.
-     * Four seconds is well past that window.
+     * second and a half after finishing onboarding. The cause turned out to be
+     * the desktop's own auto-lock: it asks the OS for the *system* input idle
+     * time, and a test driver types over CDP, which never resets that timer. On
+     * a machine whose keyboard has been untouched past the idle threshold the
+     * vault is therefore locked correctly, not spuriously.
+     *
+     * So the assertion only runs when the machine is genuinely active. Skipping
+     * is loud rather than silent, because a guard that quietly evaporates is
+     * worse than no guard.
      */
-    for (let step = 0; step < 8; step += 1) {
-      await page.waitForTimeout(500);
-      const open = await page.evaluate(async () => {
-        const status = (await window.fd0.status()) as { unlocked?: boolean };
-        return Boolean(status.unlocked);
-      });
-      expect(open, `vault locked itself ${step * 500}ms after creation`).toBe(true);
+    const idleSeconds = await app.evaluate(({ powerMonitor }) => powerMonitor.getSystemIdleTime());
+    const autoLockThresholdSeconds = 300;
+    if (idleSeconds >= autoLockThresholdSeconds - 30) {
+      console.warn(
+        `skipping the stays-unlocked check: the OS reports ${idleSeconds}s of input idle, ` +
+          `past the ${autoLockThresholdSeconds}s auto-lock threshold, so locking here is correct behaviour`,
+      );
+    } else {
+      for (let step = 0; step < 8; step += 1) {
+        await page.waitForTimeout(500);
+        const open = await page.evaluate(async () => {
+          const status = (await window.fd0.status()) as { unlocked?: boolean };
+          return Boolean(status.unlocked);
+        });
+        expect(open, `vault locked itself ${step * 500}ms after creation`).toBe(true);
+      }
     }
     await expect(page.locator(".app")).toBeVisible();
 

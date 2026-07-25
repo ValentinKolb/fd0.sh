@@ -88,6 +88,7 @@ The Electron test launches real temporary fd0 agents and vaults. It covers rende
 ## Security invariants
 
 - Development and tests require `FD0_DESKTOP_MODE=isolated`, a non-production `FD0_HOME`, an exact marker, a dedicated `FD0_SSH_SOCK`, and `FD0_AGENT_SYNC_DISABLED=1`.
+- They also require `FD0_SSH_CONFIG_PATH`. `FD0_HOME` isolates the vault but not what fd0 writes out of it: every mutating `fd0 ssh` command re-renders `~/.ssh/fd0.conf`, so without this an isolated run still overwrites the developer's real ssh_config.
 - Packaged builds use `FD0_DESKTOP_MODE=system` and bundled `fd0`, `fd0-agent`, and bridge binaries.
 - IPC channels and bridge methods are explicit allowlists with strict decoding and 1 MiB frame limits.
 - Renderer navigation, new windows, permissions, and network connections are denied.
