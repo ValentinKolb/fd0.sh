@@ -1,6 +1,7 @@
 package passitem
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -176,5 +177,172 @@ func TestNewFileFieldStoresOnlySafeBasename(t *testing.T) {
 	}
 	if _, err := NewFileField(`nested\key.pem`, "", []byte("key")); err == nil {
 		t.Fatal("platform-alternate separator should be rejected")
+	}
+}
+
+// TestNotesReservedField covers notes as a reserved top-level text field.
+func TestNotesReservedField(t *testing.T) {
+	t.Run("set, read, round trip", func(t *testing.T) {
+		item := New("GitHub", nil)
+		if err := item.SetNotes("Konsole nur über VPN.\nBackup-Codes im Safe."); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := json.Marshal(item)
+		if err != nil {
+			t.Fatal(err)
+		}
+		back, err := Decode(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := back.Notes(); got != item.Notes() {
+			t.Fatalf("notes round trip: got %q, want %q", got, item.Notes())
+		}
+	})
+
+	t.Run("stored as an ordinary text field so old clients keep it", func(t *testing.T) {
+		item := New("GitHub", nil)
+		if err := item.SetNotes("hello"); err != nil {
+			t.Fatal(err)
+		}
+		if len(item.Fields) != 1 {
+			t.Fatalf("expected one field, got %d", len(item.Fields))
+		}
+		if item.Fields[0].Type != FieldText || item.Fields[0].Name != NotesFieldName {
+			t.Fatalf("notes stored as %s/%q, want %s/%q",
+				item.Fields[0].Type, item.Fields[0].Name, FieldText, NotesFieldName)
+		}
+	})
+
+	t.Run("empty removes the field entirely", func(t *testing.T) {
+		item := New("GitHub", nil)
+		if err := item.SetNotes("hello"); err != nil {
+			t.Fatal(err)
+		}
+		if err := item.SetNotes(""); err != nil {
+			t.Fatal(err)
+		}
+		if len(item.Fields) != 0 {
+			t.Fatalf("empty notes must leave no field, got %d", len(item.Fields))
+		}
+		raw, _ := json.Marshal(item)
+		if bytes.Contains(raw, []byte(NotesFieldName)) {
+			t.Fatalf("empty notes must not appear on the wire: %s", raw)
+		}
+	})
+
+	t.Run("a nested notes field is not the item's notes", func(t *testing.T) {
+		item, err := Decode([]byte(`{"title":"GitHub","fields":[
+			{"type":"section","name":"Server","fields":[
+				{"type":"text","name":"notes","value":"gehört zum Abschnitt"}]}]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := item.Notes(); got != "" {
+			t.Fatalf("nested notes must not be claimed as the item's notes, got %q", got)
+		}
+	})
+
+	t.Run("an oversized note is rejected, not written", func(t *testing.T) {
+		item := &Item{Title: "GitHub"}
+		err := item.SetNotes(strings.Repeat("a", MaxValueBytes+1))
+		if err == nil {
+			t.Fatal("a note past MaxValueBytes must be rejected by SetNotes")
+		}
+		// Without this the note is stored and only fails later, on decode.
+		raw, marshalErr := json.Marshal(item)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		if _, decErr := Decode(raw); decErr == nil {
+			t.Fatal("the rejected note must not have produced a decodable item")
+		}
+	})
+
+	t.Run("writing notes stamps the item, a no-op removal does not", func(t *testing.T) {
+		item := &Item{Title: "GitHub"}
+		if err := item.SetNotes("erste"); err != nil {
+			t.Fatal(err)
+		}
+		stamped := item.Meta
+		if stamped == nil {
+			t.Fatal("SetNotes must stamp the item, as SetField does")
+		}
+		fresh := &Item{Title: "GitHub"}
+		if err := fresh.SetNotes(""); err != nil {
+			t.Fatal(err)
+		}
+		if fresh.Meta != nil {
+			t.Fatal("removing a note that never existed must not stamp the item")
+		}
+	})
+
+	t.Run("an item without notes decodes", func(t *testing.T) {
+		back, err := Decode([]byte(`{"title":"GitHub","fields":[]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if back.Notes() != "" {
+			t.Fatalf("notes should default to empty, got %q", back.Notes())
+		}
+	})
+}
+
+// TestUnknownKeysSurviveRoundTrip is the forward-compatibility guarantee: a
+// build that does not understand a key must not delete it when writing the item
+// back. Without this, upgrading one client silently destroys data written by a
+// newer one.
+func TestUnknownKeysSurviveRoundTrip(t *testing.T) {
+	const future = `{
+		"title": "GitHub",
+		"urls": ["https://github.com"],
+		"colour": "amber",
+		"attachments": [{"id": "a1"}],
+		"fields": [
+			{"type": "secret", "name": "password", "value": "x", "autofillHint": "current-password"}
+		],
+		"meta": {"revision": 3}
+	}`
+
+	item, err := Decode([]byte(future))
+	if err != nil {
+		t.Fatalf("an item with unknown keys must still decode: %v", err)
+	}
+
+	// A normal edit by this build.
+	item.Title = "GitHub (edited)"
+
+	out, err := json.Marshal(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var back map[string]any
+	if err := json.Unmarshal(out, &back); err != nil {
+		t.Fatal(err)
+	}
+	if back["colour"] != "amber" {
+		t.Fatalf("unknown top-level key was dropped: %s", out)
+	}
+	if _, ok := back["attachments"]; !ok {
+		t.Fatalf("unknown top-level array was dropped: %s", out)
+	}
+	if back["title"] != "GitHub (edited)" {
+		t.Fatalf("known key was not updated: %s", out)
+	}
+
+	fields, ok := back["fields"].([]any)
+	if !ok || len(fields) != 1 {
+		t.Fatalf("fields malformed: %s", out)
+	}
+	first, ok := fields[0].(map[string]any)
+	if !ok {
+		t.Fatalf("field malformed: %s", out)
+	}
+	if first["autofillHint"] != "current-password" {
+		t.Fatalf("unknown key inside a field was dropped: %s", out)
+	}
+	if first["name"] != "password" {
+		t.Fatalf("known field key was lost: %s", out)
 	}
 }

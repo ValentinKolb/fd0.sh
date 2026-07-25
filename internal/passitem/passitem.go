@@ -38,6 +38,20 @@ const (
 	DefaultDigits = 6
 	DefaultPeriod = 30
 	DefaultAlgo   = "SHA1"
+
+	// NotesFieldName is the reserved name of the item's free-text note.
+	//
+	// Notes are stored as an ordinary top-level text field rather than as a new
+	// top-level property or a new field type, because both of those break older
+	// clients. Measured against the pre-notes binary: an unknown top-level key
+	// is silently dropped when an old client writes the item back, and an
+	// unknown field *type* makes it refuse to decode the item at all. A plain
+	// text field round-trips through every client that has ever existed, and
+	// old clients even display it.
+	//
+	// Newer clients treat the name as reserved and give it a dedicated editor;
+	// that is a UI guarantee, not a wire guarantee.
+	NotesFieldName = "notes"
 )
 
 type Item struct {
@@ -45,6 +59,16 @@ type Item struct {
 	URLs   []string       `json:"urls,omitempty"`
 	Fields []Field        `json:"fields,omitempty"`
 	Meta   map[string]any `json:"meta,omitempty"`
+
+	// unknown carries keys this build does not understand.
+	//
+	// Without it, an older client that reads an item written by a newer one and
+	// saves it back silently deletes whatever it could not model. Measured
+	// against the pre-notes binary, that is exactly what happened. Keeping the
+	// raw keys and writing them back makes every future additive schema change
+	// safe in both directions, so a change like this only ever has to be made
+	// once.
+	unknown map[string]json.RawMessage
 }
 
 type Field struct {
@@ -53,6 +77,89 @@ type Field struct {
 	Value  json.RawMessage `json:"value,omitempty"`
 	Fields []Field         `json:"fields,omitempty"`
 	Meta   map[string]any  `json:"meta,omitempty"`
+
+	// See Item.unknown — fields gain keys over time too.
+	unknown map[string]json.RawMessage
+}
+
+// itemWire and fieldWire exist only to borrow the struct tags without
+// re-entering the custom marshallers below.
+type itemWire Item
+type fieldWire Field
+
+// splitKnown decodes raw into target and returns every key that target did not
+// claim, so they can be written back untouched.
+func splitKnown(raw []byte, target any, known []string) (map[string]json.RawMessage, error) {
+	if err := json.Unmarshal(raw, target); err != nil {
+		return nil, err
+	}
+	var all map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &all); err != nil {
+		return nil, err
+	}
+	for _, key := range known {
+		delete(all, key)
+	}
+	if len(all) == 0 {
+		return nil, nil
+	}
+	return all, nil
+}
+
+// mergeUnknown re-emits value together with the keys it did not understand.
+func mergeUnknown(value any, unknown map[string]json.RawMessage) ([]byte, error) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	if len(unknown) == 0 {
+		return encoded, nil
+	}
+	var merged map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &merged); err != nil {
+		return nil, err
+	}
+	for key, raw := range unknown {
+		// A key this build now understands always wins over the carried copy.
+		if _, claimed := merged[key]; claimed {
+			continue
+		}
+		merged[key] = raw
+	}
+	return json.Marshal(merged)
+}
+
+var itemKnownKeys = []string{"title", "urls", "fields", "meta"}
+var fieldKnownKeys = []string{"type", "name", "value", "fields", "meta"}
+
+func (i *Item) UnmarshalJSON(raw []byte) error {
+	var wire itemWire
+	unknown, err := splitKnown(raw, &wire, itemKnownKeys)
+	if err != nil {
+		return err
+	}
+	*i = Item(wire)
+	i.unknown = unknown
+	return nil
+}
+
+func (i Item) MarshalJSON() ([]byte, error) {
+	return mergeUnknown(itemWire(i), i.unknown)
+}
+
+func (f *Field) UnmarshalJSON(raw []byte) error {
+	var wire fieldWire
+	unknown, err := splitKnown(raw, &wire, fieldKnownKeys)
+	if err != nil {
+		return err
+	}
+	*f = Field(wire)
+	f.unknown = unknown
+	return nil
+}
+
+func (f Field) MarshalJSON() ([]byte, error) {
+	return mergeUnknown(fieldWire(f), f.unknown)
 }
 
 type TOTPValue struct {
@@ -668,4 +775,64 @@ func atoiDefault(s string, def int) int {
 		return def
 	}
 	return n
+}
+
+// Notes returns the item's free-text note, or "" when it has none.
+//
+// Only a top-level text field counts. A field of the same name nested inside a
+// section belongs to that section and is left alone.
+func (i *Item) Notes() string {
+	for index := range i.Fields {
+		field := &i.Fields[index]
+		if field.Type != FieldText || !strings.EqualFold(field.Name, NotesFieldName) {
+			continue
+		}
+		value, err := StringValue(*field)
+		if err != nil {
+			return ""
+		}
+		return value
+	}
+	return ""
+}
+
+// SetNotes writes the item's free-text note, creating, updating or removing the
+// reserved field as needed. Passing "" removes it so an empty note leaves no
+// trace on the wire.
+//
+// Like SetField and RemoveField it stamps the item and validates, so a note that
+// pushes the item past MaxValueBytes or MaxItemBytes is rejected here rather
+// than being written and then failing to decode on the way back out. Removing a
+// note that was never there changes nothing and so does not stamp the item.
+func (i *Item) SetNotes(notes string) error {
+	notes = strings.TrimRight(notes, " \t\n\r")
+	for index := range i.Fields {
+		field := &i.Fields[index]
+		if field.Type != FieldText || !strings.EqualFold(field.Name, NotesFieldName) {
+			continue
+		}
+		if notes == "" {
+			i.Fields = append(i.Fields[:index], i.Fields[index+1:]...)
+			i.Touch()
+			return i.Validate()
+		}
+		raw, err := json.Marshal(notes)
+		if err != nil {
+			return fmt.Errorf("pass item: notes: %w", err)
+		}
+		field.Value = raw
+		i.Touch()
+		return i.Validate()
+	}
+	if notes == "" {
+		return nil
+	}
+	raw, err := json.Marshal(notes)
+	if err != nil {
+		return fmt.Errorf("pass item: notes: %w", err)
+	}
+	// Appended last so it reads as a footer, matching how it is rendered.
+	i.Fields = append(i.Fields, Field{Type: FieldText, Name: NotesFieldName, Value: raw})
+	i.Touch()
+	return i.Validate()
 }
