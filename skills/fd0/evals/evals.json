@@ -24,6 +24,12 @@
       "prompt": "Schreib mir ein Deploy-Skript das `STAGING_API_KEY` aus fd0 holt und damit `fly deploy` ausführt. Im CI.",
       "expected_output": "Produces a bash script. Uses `fd0 get --raw STAGING_API_KEY` (the --raw flag is important to avoid trailing newlines). Handles the unlock requirement (mentions that the agent must be running in CI, or uses FD0_HOME). Does not echo or log the secret. Does not pipe through unsafe shell interpolation. May mention that running fd0 in CI requires the vault + agent to be set up there.",
       "files": []
+    },
+    {
+      "id": "edit-existing-item",
+      "prompt": "Der SSH-Host prod-db in fd0 hat den falschen Port, der muss auf 2222. Tags, Key-Bindung und die Description sollen bleiben wie sie sind.",
+      "expected_output": "Uses `fd0 ssh edit prod-db --port 2222`. Does NOT suggest `fd0 ssh add prod-db ... --force` or an rm+add cycle: --force replaces the record outright and would reset tags, key binding and description, and rm+add would also lose the item's history. May mention that the same `edit`/`rename`/`move`/`history` verbs exist on pass, key, kube and talos.",
+      "files": []
     }
   ]
 }

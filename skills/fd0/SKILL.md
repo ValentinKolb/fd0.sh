@@ -1,7 +1,7 @@
 ---
 name: fd0
 description: >-
-  Use this skill whenever the user — or an agent acting on the user's behalf — needs to store, fetch, share, or organize secrets with the fd0 CLI (`fd0 init`, `fd0 set`, `fd0 get`, `fd0 sync`, `fd0 scope ...`, `fd0 card ...`), use fd0 as a password manager (`fd0 pass ...`), manage SSH keys and hosts (`fd0 key ...`, `fd0 ssh ...`), or manage Talos Linux / Kubernetes credentials (`fd0 talos ...`, `fd0 kube ...`). Trigger on any of these phrasings even when the user does not name fd0 explicitly — "store a deploy key", "save this API token", "fetch my DB password", "share a credential with bob", "add bob to the work scope", "rotate access", "set up my passphrase", "vault locked", "lock failed", "sync errored", "open my password manager", "store a login", "copy my GitHub password", "add a TOTP code", "attach a recovery key file", "generate an ssh key", "share ssh access with the team", "connect to the prod box", "store the talosconfig", "share the kubeconfig", "bootstrap a talos cluster". Also trigger when an agent in the middle of another task needs to inject a credential into a script or deploy step — `fd0 get NAME` or `fd0 pass field get ITEM FIELD --raw` is the canonical retrieval path. Do NOT trigger for hosting or operating the fd0-server; that is a separate concern documented in this project's docs/HOSTING.md.
+  Use this skill whenever the user — or an agent acting on the user's behalf — needs to store, fetch, share, or organize secrets with the fd0 CLI (`fd0 init`, `fd0 secret set`, `fd0 secret get`, `fd0 sync`, `fd0 scope ...`, `fd0 card ...`), use fd0 as a password manager (`fd0 pass ...`), manage SSH keys and hosts (`fd0 key ...`, `fd0 ssh ...`), or manage Talos Linux / Kubernetes credentials (`fd0 talos ...`, `fd0 kube ...`). Trigger on any of these phrasings even when the user does not name fd0 explicitly — "store a deploy key", "save this API token", "fetch my DB password", "share a credential with bob", "add bob to the work scope", "rotate access", "set up my passphrase", "vault locked", "lock failed", "sync errored", "open my password manager", "store a login", "copy my GitHub password", "add a TOTP code", "attach a recovery key file", "generate an ssh key", "share ssh access with the team", "connect to the prod box", "store the talosconfig", "share the kubeconfig", "bootstrap a talos cluster". Also trigger when an agent in the middle of another task needs to inject a credential into a script or deploy step — `fd0 secret get NAME` or `fd0 pass field get ITEM FIELD --raw` is the canonical retrieval path. Do NOT trigger for hosting or operating the fd0-server; that is a separate concern documented in this project's docs/HOSTING.md.
 ---
 
 # fd0 — Zero-knowledge secrets CLI
@@ -17,11 +17,11 @@ Map the user's intent to the right command before typing anything:
 | User intent | Command |
 |---|---|
 | First-time setup on a fresh device | `fd0 init` then `fd0 unlock` |
-| Store a credential | `fd0 set NAME VALUE [--scope LABEL]` |
-| Retrieve a credential to stdout | `fd0 get NAME [--scope LABEL]` |
-| Retrieve to clipboard, auto-clear | `fd0 copy NAME [--clear-after=30s]` |
-| List secrets | `fd0 ls` |
-| Forget a credential | `fd0 rm NAME` (writes a tombstone; rotate leaked credentials externally) |
+| Store a credential | `fd0 secret set NAME VALUE [--scope LABEL]` |
+| Retrieve a credential to stdout | `fd0 secret get NAME [--scope LABEL]` |
+| Retrieve to clipboard, auto-clear | `fd0 secret copy NAME [--clear-after=30s]` |
+| List secrets | `fd0 secret ls` (`--json` for machines) |
+| Forget a credential | `fd0 secret rm NAME` (writes a tombstone; rotate leaked credentials externally) |
 | Open the password-manager UI | `fd0 pass` (or `fd0 pass QUERY`) |
 | Create a login item | `fd0 pass add NAME --url URL [--scope LABEL]` |
 | Add username/password fields | `fd0 pass field set NAME username VALUE`; `fd0 pass field set NAME password --secret --generate` |
@@ -30,6 +30,7 @@ Map the user's intent to the right command before typing anything:
 | Show a pass item safely | `fd0 pass show NAME` (masked by default; `--reveal` only when explicitly needed) |
 | Store a passkey field | `fd0 pass field set NAME passkey VALUE --type passkey` |
 | Add or print TOTP | `fd0 pass totp add NAME 'otpauth://...'`; `fd0 pass totp code NAME` |
+| Read or write an item's note | `fd0 pass notes NAME`; `fd0 pass notes set NAME [TEXT]`; `fd0 pass notes rm NAME` |
 | Attach a small key/recovery file | `fd0 pass file add NAME PATH [FIELD]` (32 KiB max per file) |
 | Export an attached file | `fd0 pass file export NAME FIELD --out PATH` |
 | Organize related secrets | `fd0 scope create --label LABEL` |
@@ -57,10 +58,42 @@ Map the user's intent to the right command before typing anything:
 | Store a kubeconfig | `fd0 kube add NAME --from-config ~/.kube/config` (or per-field `--server/--ca-file/...`) |
 | Fetch a fresh kubeconfig from Talos | `fd0 talos kubeconfig CTX` (needs `talosctl`) |
 | Render + merge kubeconfig | `fd0 kube sync --merge` |
+| Change one field on any item | `fd0 <module> edit NAME --flag VALUE` — only what you pass changes |
+| Rename any item | `fd0 <module> rename OLD NEW` |
+| Move any item to another scope | `fd0 <module> move NAME --to-scope LABEL` |
+| See an item's earlier versions | `fd0 <module> history NAME` (newest first) |
+| Undo a bad change | `fd0 <module> history restore NAME SEQ` |
 
 Every command except `fd0 sync` is local. `sync` is the only one that touches the network. The `pass`/`key`/`ssh`/`talos`/`kube` families all store their material as ordinary scope-shared secrets, so sharing a password item, SSH key, host alias, or talosconfig with a teammate is the same `scope add-member` flow.
 
-`add`, `new`, and `move` across feature families refuse to overwrite an existing name by default — pass `--force` to overwrite knowingly.
+`add` and `new` refuse an existing name by default. `--force` does not merge — it **replaces the record outright**, so every field the command did not pass goes back to its default. To change one field and leave the rest alone, use `<module> edit` instead. fd0 says so at both points: the duplicate error names the `edit` command, and a forced overwrite warns before it happens.
+
+## One grammar for every module
+
+`secret`, `pass`, `ssh`, `key`, `kube` and `talos` all take the same verbs, so knowing one module means knowing all of them:
+
+```
+fd0 <module> add NAME ...        create; refuses an existing name
+fd0 <module> edit NAME --flag V  change only the fields you name
+fd0 <module> show NAME           human-readable, secrets masked
+fd0 <module> list                (aliases: ls)
+fd0 <module> rename OLD NEW      rename in place
+fd0 <module> move NAME --to-scope L
+fd0 <module> rm NAME             tombstone
+fd0 <module> history NAME        versions, newest first
+fd0 <module> history restore NAME SEQ
+```
+
+`list` takes `--json` on every module, with the same key style throughout (`name`, `scope`, `scopeId`, …) and `[]` rather than `null` when empty. Secret material is never included — `key list --json` carries the fingerprint and the authorized_keys line, never the private half.
+
+Plain secrets are `fd0 secret ...`. The older top-level spellings (`fd0 get`, `fd0 set`, `fd0 rm`, `fd0 ls`, `fd0 copy`) still work and always will, but no longer appear in `--help`; prefer the `secret` form in anything you write down.
+
+Two properties worth relying on:
+
+- **`edit` is a patch, `add --force` is a replace.** `edit --port 2222` leaves tags, description and key binding alone. Passing an empty value clears that one field (`--jump ""`), which is why "not given" and "set to empty" are different things. An edit that changes nothing writes nothing, so it does not burn a revision.
+- **Restore writes forward.** `history restore` adds a new version carrying the old content rather than rewinding the chain, so the history stays append-only and the restore is itself auditable.
+
+Module-specific commands sit alongside these, not instead of them: `pass field/notes/totp/file`, `ssh connect/tag`, `kube sync`, `talos secrets`.
 
 ## Mental model
 
@@ -106,18 +139,18 @@ The setting is local to the current device in `~/.fd0/config.toml` under `[auth]
 
 ```
 fd0 scope create --label work
-fd0 set DEPLOY_KEY "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxx" --scope work
-fd0 set DB_PASSWORD - --scope work          # `-` (positional, not a flag) reads VALUE from stdin
+fd0 secret set DEPLOY_KEY "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxx" --scope work
+fd0 secret set DB_PASSWORD - --scope work   # `-` (positional, not a flag) reads VALUE from stdin
                                             # — hides the secret from shell history and from `ps`
-fd0 get DEPLOY_KEY --scope work             # plaintext to stdout
-fd0 copy DEPLOY_KEY --clear-after=30s       # clipboard, auto-cleared
-fd0 ls                                       # names across all scopes
+fd0 secret get DEPLOY_KEY --scope work      # plaintext to stdout
+fd0 secret copy DEPLOY_KEY --clear-after=30s # clipboard, auto-cleared
+fd0 secret ls                               # names across all scopes
 fd0 sync                                     # push the new event(s)
 ```
 
 Without `--scope`, fd0 looks up the secret across all scopes. If the name exists in exactly one scope it succeeds; if it is ambiguous it errors.
 
-When fetching for a non-interactive context (e.g. CI script substitution, automation), prefer `fd0 get NAME --raw` — `--raw` strips trailing newlines that would otherwise pollute environment-variable assignments.
+When fetching for a non-interactive context (e.g. CI script substitution, automation), prefer `fd0 secret get NAME --raw` — `--raw` strips trailing newlines that would otherwise pollute environment-variable assignments.
 
 ## Password manager
 
@@ -177,7 +210,7 @@ The card-exchange flow has three steps. The two humans must verify safety number
 **Alice creates a scope and writes some secrets** (her side):
 ```
 fd0 scope create --label deploy
-fd0 set GITHUB_TOKEN "ghp_..." --scope deploy
+fd0 secret set GITHUB_TOKEN "ghp_..." --scope deploy
 fd0 sync
 ```
 
@@ -273,7 +306,7 @@ These are not negotiable. The skill is useless and dangerous without them.
 1. **Never** echo, log, store-in-variable, or paste-to-clipboard a passphrase. Pipe through stdin (`printf '%s\n' "$pass" | fd0 ...`) only in trusted scripts that the user explicitly authored. Important: fd0 has **no `--stdin` flag** — it reads from stdin automatically when stdin is not a TTY. Do not invent `fd0 unlock --stdin` or similar; the pipe alone is the contract.
 2. **Never** set `FD0_AUTO_PIN=1` without the user's explicit consent. The TOFU prompt exists so a MITM cannot silently pin its own key.
 3. **Never** dump `~/.fd0/vault.enc` or `~/.fd0/chains/` to a remote location for "debugging" — they contain ciphertext but their existence + size + chain tip is metadata.
-4. When `fd0 copy` runs, mention the auto-clear time (`--clear-after`) so the user does not assume the clipboard is permanent.
+4. When `fd0 secret copy` runs, mention the auto-clear time (`--clear-after`) so the user does not assume the clipboard is permanent.
 5. Prefer `fd0 pass copy` over `fd0 pass show --reveal` for passwords/TOTP/secrets. Use `--reveal`, `pass field get`, or `pass file export` only when plaintext output is explicitly needed and keep it out of logs.
 6. Confirm before `fd0 rm`, `fd0 pass rm`, `fd0 pass field rm`, `fd0 scope leave`, `fd0 auth rm`, and `fd0 recovery import` — each one is destructive or irreversible without a backup.
 7. When the user has not run `fd0 recovery export`, prompt them to do it before any operation that could lose `super_priv` (re-init, device migration, `auth rm` of the last method).
