@@ -177,7 +177,10 @@ func trustedContacts(pinned map[string]proto.PinnedIdentity, members [][]byte) [
 	return contacts
 }
 
-func scopeMembers(pinned map[string]proto.PinnedIdentity, members [][]byte, self []byte) []ScopeMember {
+// trustedLabelIndex maps a pinned super_pub to its contact label. When two
+// labels pin the same key the alphabetically first wins, so the mapping is
+// deterministic regardless of Go's map iteration order.
+func trustedLabelIndex(pinned map[string]proto.PinnedIdentity) map[string]string {
 	labels := make([]string, 0, len(pinned))
 	for label := range pinned {
 		labels = append(labels, label)
@@ -193,7 +196,29 @@ func scopeMembers(pinned map[string]proto.PinnedIdentity, members [][]byte, self
 			}
 		}
 	}
+	return trusted
+}
 
+// memberDisplayLabel resolves one public key to a display name using the same
+// rules as scopeMembers: self is "You", a pinned contact gets its label, and
+// anything else stays "Unknown member" — qualified by a SHORT fingerprint so
+// two unknown authors are distinguishable without ever rendering a full
+// fingerprint (which users could mistake for a verified identity).
+func memberDisplayLabel(trusted map[string]string, key, self []byte) string {
+	if len(key) != 32 {
+		return "Unknown member"
+	}
+	if bytes.Equal(key, self) {
+		return "You"
+	}
+	if label, ok := trusted[string(key)]; ok {
+		return label
+	}
+	return "Unknown member (" + shortFingerprint(key) + ")"
+}
+
+func scopeMembers(pinned map[string]proto.PinnedIdentity, members [][]byte, self []byte) []ScopeMember {
+	trusted := trustedLabelIndex(pinned)
 	result := make([]ScopeMember, 0, len(members))
 	for _, member := range members {
 		if len(member) != 32 {

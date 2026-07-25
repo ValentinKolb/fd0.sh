@@ -242,6 +242,7 @@ func (s *Service) Handle(ctx context.Context, method string, raw json.RawMessage
 			Mode:     s.Mode,
 			Capabilities: []string{
 				"status", "unlock", "lock", "inventory", "item-detail",
+				"item-history", "item-version", "item-restore",
 				"field-value", "pass-save", "secret-save", "ssh-host-save",
 				"ssh-key-generate", "config-import", "item-remove", "scope-create",
 				"scope-share", "scope-members", "identity-cards",
@@ -355,6 +356,24 @@ func (s *Service) Handle(ctx context.Context, method string, raw json.RawMessage
 			return nil, err
 		}
 		return s.itemDetail(ctx, params)
+	case "item.history":
+		var params ItemHistoryParams
+		if err := decodeParams(raw, &params); err != nil {
+			return nil, err
+		}
+		return s.itemHistory(ctx, params)
+	case "item.version":
+		var params ItemVersionParams
+		if err := decodeParams(raw, &params); err != nil {
+			return nil, err
+		}
+		return s.itemVersion(ctx, params)
+	case "item.restore":
+		var params ItemRestoreParams
+		if err := decodeParams(raw, &params); err != nil {
+			return nil, err
+		}
+		return s.itemRestore(ctx, params)
 	case "field.value":
 		var params FieldValueParams
 		if err := decodeParams(raw, &params); err != nil {

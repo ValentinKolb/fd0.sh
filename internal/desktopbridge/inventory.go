@@ -90,9 +90,15 @@ type FileView struct {
 	Size int    `json:"size"`
 }
 
+// FieldValueParams addresses one field of one record. Seq is optional: when
+// nil the live record is read (unchanged behaviour); when set the same reveal
+// runs against that historical version. There is deliberately no second
+// reveal path — limits, masking and field resolution must not be able to
+// drift between "now" and "then".
 type FieldValueParams struct {
 	RecordRef
-	Path string `json:"path"`
+	Path string  `json:"path"`
+	Seq  *uint64 `json:"seq,omitempty"`
 }
 
 type FieldValueResult struct {
@@ -339,11 +345,31 @@ func detailFields(record cli.TypedRecord, rawMode bool) ([]FieldView, error) {
 		if err != nil {
 			return nil, err
 		}
-		fields := make([]FieldView, 0, len(item.Fields)+1)
-		if len(item.URLs) > 0 {
-			fields = append(fields, FieldView{Name: "Website", Path: "$url", Type: "url", Value: item.URLs[0], Copyable: true, Section: "Login"})
+		fields := make([]FieldView, 0, len(item.Fields)+len(item.URLs))
+		// Every URL is shown, not just the first. The editor lets you add rows
+		// and the vault stores them all, so surfacing one here would hide the
+		// rest and make them look lost.
+		for index, url := range item.URLs {
+			name := "Website"
+			if index > 0 {
+				name = "Website (alternative)"
+			}
+			fields = append(fields, FieldView{
+				Name: name, Path: urlPath(index), Type: "url",
+				Value: url, Copyable: true, Section: "Login",
+			})
 		}
-		fields = append(fields, passFieldViews(item.Fields, "", "Login")...)
+		// The reserved notes field is rendered on its own at the end rather than
+		// inline, so it reads as a footnote about the item instead of as one more
+		// credential. It is still an ordinary field underneath.
+		body, notes := splitReservedNotes(item.Fields)
+		fields = append(fields, passFieldViews(body, "", "Login")...)
+		if notes != "" {
+			fields = append(fields, FieldView{
+				Name: "Notes", Path: passitem.NotesFieldName, Type: "notes",
+				Value: notes, Copyable: true, Section: "Notes",
+			})
+		}
 		return fields, nil
 	case sshhost.TypeHost:
 		var wire sshhost.JSON
@@ -457,9 +483,9 @@ func (s *Service) fieldValue(ctx context.Context, params FieldValueParams) (Fiel
 		return FieldValueResult{}, mapDomainError(err)
 	}
 	defer session.Close()
-	record, err := session.GetTypedSecret(params.ScopeID, params.Name)
+	record, err := historicalRecordFor(session, params.RecordRef, params.Seq)
 	if err != nil {
-		return FieldValueResult{}, mapDomainError(err)
+		return FieldValueResult{}, err
 	}
 	raw, err := record.PayloadJSON()
 	if err != nil {
@@ -482,8 +508,11 @@ func (s *Service) fieldValue(ctx context.Context, params FieldValueParams) (Fiel
 		if err != nil {
 			return FieldValueResult{}, err
 		}
-		if params.Path == "$url" && len(item.URLs) > 0 {
-			return FieldValueResult{Value: item.URLs[0]}, nil
+		if index, ok := urlIndex(params.Path); ok {
+			if index >= len(item.URLs) {
+				return FieldValueResult{}, fail("not_found", "That field no longer exists.", "Refresh the item.", false)
+			}
+			return FieldValueResult{Value: item.URLs[index]}, nil
 		}
 		field, err := item.Field(params.Path)
 		if err != nil {
@@ -546,6 +575,12 @@ func (s *Service) fieldAttachment(ctx context.Context, params FieldValueParams) 
 	}
 	if strings.TrimSpace(params.Path) == "" {
 		return nil, fail("validation", "File field path is required.", "", false)
+	}
+	if params.Seq != nil {
+		// Attachments share FieldValueParams with field.value. Reject an
+		// explicit version rather than silently handing back the CURRENT
+		// attachment for a historical request.
+		return nil, fail("unsupported", "Attachments cannot be opened from an earlier version.", "Restore that version first, then save the file.", false)
 	}
 	session, err := cli.Open(ctx)
 	if err != nil {
@@ -642,4 +677,49 @@ func metaString(meta map[string]any, key string) string {
 func metaBool(meta map[string]any, key string) bool {
 	value, _ := meta[key].(bool)
 	return value
+}
+
+// urlPath names the synthetic path for the URL at index. The first keeps the
+// bare "$url" it has always had, so anything already holding that path — a
+// pinned copy action, a stored reference — keeps working.
+func urlPath(index int) string {
+	if index == 0 {
+		return "$url"
+	}
+	return "$url:" + strconv.Itoa(index)
+}
+
+// urlIndex is the inverse of urlPath. The second result is false for anything
+// that is not a URL path, including a real field that merely starts with "$url".
+func urlIndex(path string) (int, bool) {
+	if path == "$url" {
+		return 0, true
+	}
+	rest, ok := strings.CutPrefix(path, "$url:")
+	if !ok {
+		return 0, false
+	}
+	index, err := strconv.Atoi(rest)
+	if err != nil || index < 1 {
+		return 0, false
+	}
+	return index, true
+}
+
+// splitReservedNotes separates the item's reserved top-level notes field from
+// the fields that render inline. A field of the same name inside a section
+// belongs to that section and is left where it is.
+func splitReservedNotes(fields []passitem.Field) ([]passitem.Field, string) {
+	body := make([]passitem.Field, 0, len(fields))
+	notes := ""
+	for _, field := range fields {
+		if notes == "" && field.Type == passitem.FieldText && strings.EqualFold(field.Name, passitem.NotesFieldName) {
+			if value, err := passitem.StringValue(field); err == nil {
+				notes = value
+				continue
+			}
+		}
+		body = append(body, field)
+	}
+	return body, notes
 }
