@@ -311,6 +311,63 @@ func RunPassRemove(ctx context.Context, scopeID, name string, yes bool) error {
 	return nil
 }
 
+// PassEditOpts patches an item's own attributes. Fields are deliberately not
+// here: `pass field set` already edits them by path, and a field can hold a
+// secret, a TOTP seed or a file, which no flat flag could express.
+type PassEditOpts struct {
+	Name  string
+	Scope string
+	Title *string
+	URLs  *[]string
+}
+
+// RunPassEdit changes only the attributes the user named, leaving the rest
+// alone.
+func RunPassEdit(ctx context.Context, o PassEditOpts) error {
+	name, err := normalizePassName(o.Name)
+	if err != nil {
+		return err
+	}
+	return EditItem(ctx, KindPass, o.Scope, name,
+		decodePassRecord,
+		func(item *passitem.Item) (bool, error) {
+			changed := false
+			setString(&item.Title, o.Title, &changed)
+			setStrings(&item.URLs, o.URLs, &changed)
+			if changed {
+				// Every other mutator stamps the item, so revision and
+				// updated_at stay meaningful for this path too.
+				item.Touch()
+			}
+			return changed, nil
+		},
+		func(item *passitem.Item) error { return item.Validate() },
+		func(item *passitem.Item) (string, any) { return passitem.TypePassItem, item.Marshal() },
+	)
+}
+
+// RunPassRename renames a pass item.
+//
+// The stored payload is left alone: Title is a separate, separately editable
+// attribute that merely defaults to the name at creation time, so rewriting it
+// here would silently discard a title the user chose.
+func RunPassRename(ctx context.Context, scopeID, oldName, newName string, force bool) error {
+	oldName, err := normalizePassName(oldName)
+	if err != nil {
+		return err
+	}
+	newName, err = normalizePassName(newName)
+	if err != nil {
+		return err
+	}
+	s, err := Open(ctx)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	return s.RenameItem(ctx, KindPass, scopeID, oldName, newName, force, nil)
+}
+
 func RunPassSectionAdd(ctx context.Context, scopeID, itemName, path string) error {
 	s, rec, item, err := openPassItem(ctx, scopeID, itemName)
 	if err != nil {
@@ -821,13 +878,13 @@ func GeneratePassword(length int) (string, error) {
 }
 
 type passRow struct {
-	ScopeID string         `json:"scope_id"`
+	ScopeID string         `json:"scopeId"`
 	Name    string         `json:"name"`
 	Item    *passitem.Item `json:"item"`
 }
 
 type passSummaryRow struct {
-	ScopeID string             `json:"scope_id"`
+	ScopeID string             `json:"scopeId"`
 	Scope   string             `json:"scope"`
 	Name    string             `json:"name"`
 	Title   string             `json:"title"`
@@ -849,7 +906,7 @@ func passSummaryRows(s *Session, rows []passRow) []passSummaryRow {
 	for i, row := range rows {
 		out[i] = passSummaryRow{
 			ScopeID: row.ScopeID,
-			Scope:   scopeName(s, row.ScopeID),
+			Scope:   scopeLabelOf(s, row.ScopeID),
 			Name:    row.DisplayName(),
 			Title:   row.Item.Title,
 			URLs:    append([]string(nil), row.Item.URLs...),

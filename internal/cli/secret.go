@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -451,13 +452,38 @@ func RunSecretRemove(ctx context.Context, scopeID, name string, yes bool) error 
 	return nil
 }
 
+// secretListRow is the machine-readable shape of one secret in a listing.
+//
+// The value is deliberately absent: a listing says what exists, reading it is
+// `fd0 secret get`. Keeping the row explicit rather than marshalling
+// SecretEntry means a field added to the internal struct cannot leak into a
+// public interface by accident.
+type secretListRow struct {
+	Name    string `json:"name"`
+	Type    string `json:"type"`
+	Scope   string `json:"scope,omitempty"`
+	ScopeID string `json:"scopeId"`
+}
+
 // RunSecretList prints every secret across every scope.
-func RunSecretList(ctx context.Context) error {
+func RunSecretList(ctx context.Context, jsonOut bool) error {
 	entries, s, err := CollectAllSecrets(ctx)
 	if err != nil {
 		return err
 	}
 	defer s.Close()
+	if jsonOut {
+		rows := make([]secretListRow, 0, len(entries))
+		for _, e := range entries {
+			rows = append(rows, secretListRow{
+				Name:    e.Name,
+				Type:    e.Type,
+				Scope:   e.ScopeLabel,
+				ScopeID: e.ScopeID,
+			})
+		}
+		return json.NewEncoder(os.Stdout).Encode(rows)
+	}
 	if len(entries) == 0 {
 		fmt.Println("(no secrets)")
 		return nil
@@ -485,6 +511,18 @@ func scopeName(s *Session, scopeID string) string {
 		}
 	}
 	return shortScopeID(scopeID)
+}
+
+// scopeLabelOf returns a scope's bare label, for machine-readable output.
+//
+// Unlike scopeName it does not append "(s_abc…)": JSON rows carry the full
+// scope id in a field of its own, so the human disambiguator would only be
+// noise a consumer has to parse back out. Empty when the scope is unnamed.
+func scopeLabelOf(s *Session, scopeID string) string {
+	if s == nil {
+		return ""
+	}
+	return s.Body.Scopes[scopeID].Label
 }
 
 // shortScopeID renders e.g. "s_h72fyhrp…" from "s_h72fyhrpp6oq7olpc26r2sywti".

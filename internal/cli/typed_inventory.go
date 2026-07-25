@@ -38,10 +38,13 @@ var errDuplicateSecret = errors.New("typed inventory: name already in use")
 // fallthrough was the source of a silent-overwrite regression in the
 // original implementation.
 func ensureNoDuplicate(s *Session, scopeID, prefix, name string, force bool) error {
-	if force {
-		return nil
-	}
 	if scopeID == "" {
+		if force {
+			// Nothing to look up, and the caller has already said "replace".
+			// Preserves the pre-existing contract that --force never depends
+			// on a resolved scope.
+			return nil
+		}
 		return errors.New("ensureNoDuplicate: internal: empty scopeID — caller must resolve first")
 	}
 	r, err := s.GetTypedSecret(scopeID, prefix+name)
@@ -51,13 +54,49 @@ func ensureNoDuplicate(s *Session, scopeID, prefix, name string, force bool) err
 		if errors.Is(err, ErrTypedSecretNotFound) {
 			return nil
 		}
+		if force {
+			// A lookup failure must not block an explicit overwrite; the
+			// write itself will surface any real problem.
+			return nil
+		}
 		return err
 	}
 	if r == nil {
 		return nil
 	}
-	return fmt.Errorf("%w: %s%s in scope %s (pass --force to overwrite)",
-		errDuplicateSecret, prefix, name, scopeName(s, r.ScopeID))
+	if force {
+		// --force replaces the record outright: every field the command did
+		// not set goes back to its zero value. That is almost never what
+		// someone reaching for it wants, so say so rather than doing it
+		// quietly.
+		stderrln("⚠ replacing existing %s%s — fields you did not pass are reset%s",
+			prefix, name, forceWarning(prefix, name))
+		return nil
+	}
+	return fmt.Errorf("%w: %s%s in scope %s%s\n  to replace it outright:      add --force",
+		errDuplicateSecret, prefix, name, scopeName(s, r.ScopeID), editHint(prefix, name))
+}
+
+// editHint names the command that changes one field without touching the rest.
+// Derived from the kind table so it cannot drift from the real prefixes.
+func editHint(prefix, name string) string {
+	for _, kind := range itemKinds {
+		if kind.Prefix != "" && kind.Prefix == prefix {
+			return fmt.Sprintf("\n  to change individual fields: fd0 %s edit %s", kind.Command, name)
+		}
+	}
+	return ""
+}
+
+// forceWarning is the same hint phrased for an overwrite that is already
+// happening.
+func forceWarning(prefix, name string) string {
+	for _, kind := range itemKinds {
+		if kind.Prefix != "" && kind.Prefix == prefix {
+			return fmt.Sprintf(" — use `fd0 %s edit %s` to change one field instead", kind.Command, name)
+		}
+	}
+	return ""
 }
 
 // MaxConfigFile is the byte cap shared by every `--from-config`
@@ -152,7 +191,6 @@ func writeManagedFile(target string, data []byte, label string, count int) error
 	stderrln("✓ rendered %s (%d %s)", target, count, label)
 	return nil
 }
-
 
 // parentDir is defined in ssh.go; re-asserting here so importers can
 // follow the call graph. Kept as a local for now — promoting to a

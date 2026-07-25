@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -211,8 +212,24 @@ func storeTalosContext(ctx context.Context, s *Session, scopeID string, c *talos
 	return s.SetTypedSecret(ctx, scopeID, name, talosctx.TypeTalosContext, c.Marshal())
 }
 
+// talosListRow is the machine-readable shape of one context.
+//
+// The PKI — CA cert, client cert, client key — has no field here, so a listing
+// cannot emit it however the stored shape evolves. Role is the metadata answer
+// to "what can this cert do", which is why it exists in the record at all.
+type talosListRow struct {
+	Name        string   `json:"name"`
+	Endpoints   []string `json:"endpoints,omitempty"`
+	Nodes       []string `json:"nodes,omitempty"`
+	Role        string   `json:"role,omitempty"`
+	Description string   `json:"description,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
+	Scope       string   `json:"scope,omitempty"`
+	ScopeID     string   `json:"scopeId"`
+}
+
 // RunTalosList prints the configured talos contexts.
-func RunTalosList(ctx context.Context, scopeID string, anyTags, noTags []string) error {
+func RunTalosList(ctx context.Context, scopeID string, anyTags, noTags []string, jsonOut bool) error {
 	s, err := Open(ctx)
 	if err != nil {
 		return err
@@ -225,6 +242,22 @@ func RunTalosList(ctx context.Context, scopeID string, anyTags, noTags []string)
 	}
 	contexts = filterTalosContexts(contexts, anyTags, noTags)
 	talosctx.SortContexts(contexts)
+	if jsonOut {
+		rows := make([]talosListRow, 0, len(contexts))
+		for _, c := range contexts {
+			rows = append(rows, talosListRow{
+				Name:        c.Name,
+				Endpoints:   c.Endpoints,
+				Nodes:       c.Nodes,
+				Role:        c.Role,
+				Description: c.Description,
+				Tags:        c.Tags,
+				Scope:       scopeLabelOf(s, c.Scope),
+				ScopeID:     c.Scope,
+			})
+		}
+		return json.NewEncoder(os.Stdout).Encode(rows)
+	}
 	if len(contexts) == 0 {
 		stderrln("no talos contexts")
 		return nil
@@ -320,46 +353,75 @@ func RunTalosMove(ctx context.Context, name, fromScope, toScope string, force bo
 		return err
 	}
 	defer s.Close()
+	return s.MoveItem(ctx, KindTalos, name, fromScope, toScope, force)
+}
 
-	r, err := s.GetTypedSecret(fromScope, talosNamePrefix+name)
+// TalosEditOpts patches an existing talos context. The mTLS material (CA,
+// client cert, client key) is absent on purpose: it is issued together by the
+// cluster CA and only ever replaced as a set, by `fd0 talos add --force` or
+// `fd0 talos role-add`. Role stays editable because it is a label fd0 keeps for
+// `talos ls` — the privileges live in the cert, not in this string.
+type TalosEditOpts struct {
+	Name        string
+	Scope       string
+	Endpoints   *[]string
+	Nodes       *[]string
+	Role        *string
+	Description *string
+	Tags        *[]string
+}
+
+// RunTalosEdit changes only the fields the user named, leaving the rest alone.
+func RunTalosEdit(ctx context.Context, o TalosEditOpts) error {
+	if o.Name == "" {
+		return errors.New("talos edit: NAME required")
+	}
+	return EditItem(ctx, KindTalos, o.Scope, o.Name,
+		decodeTalosContext,
+		func(c *talosctx.TalosContext) (bool, error) {
+			changed := false
+			// Split the same way `talos add` does, so `--endpoint a,b` and
+			// `--endpoint a --endpoint b` keep meaning the same thing.
+			if o.Endpoints != nil {
+				next := talosctx.SplitEndpoints(*o.Endpoints)
+				setStrings(&c.Endpoints, &next, &changed)
+			}
+			if o.Nodes != nil {
+				next := talosctx.SplitEndpoints(*o.Nodes)
+				setStrings(&c.Nodes, &next, &changed)
+			}
+			setString(&c.Role, o.Role, &changed)
+			setString(&c.Description, o.Description, &changed)
+			setStrings(&c.Tags, o.Tags, &changed)
+			return changed, nil
+		},
+		func(c *talosctx.TalosContext) error { return c.Validate() },
+		func(c *talosctx.TalosContext) (string, any) { return talosctx.TypeTalosContext, c.Marshal() },
+	)
+}
+
+// RunTalosRename renames a talos context. The name is both the record name and
+// a field inside the payload — it becomes the YAML key under `contexts:` — so
+// the stored copy is rewritten to match.
+func RunTalosRename(ctx context.Context, scopeID, oldName, newName string, force bool) error {
+	s, err := Open(ctx)
 	if err != nil {
 		return err
 	}
-	c, err := decodeTalosContext(*r)
-	if err != nil {
-		return err
-	}
-	to, err := s.resolveScopeID(toScope)
-	if err != nil {
-		return err
-	}
-	if r.ScopeID == to {
-		return fmt.Errorf("source and destination scopes are the same: %s", scopeName(s, to))
-	}
-	// Destination preflight — without this, an existing context in
-	// the destination scope gets silently overwritten. Same bug
-	// class as the original T2 finding, just in the move path.
-	if err := ensureNoDuplicate(s, to, talosNamePrefix, name, force); err != nil {
-		return err
-	}
-	c.Scope = to
-	if err := storeTalosContext(ctx, s, to, c); err != nil {
-		return err
-	}
-	if err := s.RemoveTypedSecret(ctx, r.ScopeID, r.Name); err != nil {
-		// Destination write succeeded but the secret now lives in
-		// BOTH scopes. Tell the user the exact clean-up command —
-		// vague "re-run to clean up" is misleading (re-running the
-		// move command hits ensureNoDuplicate now and refuses).
-		return fmt.Errorf("moved talos %q to %s but failed to remove from %s: %w (clean up with: fd0 talos rm %s --scope %s)",
-			name, scopeName(s, to), scopeName(s, r.ScopeID), err, name, scopeName(s, r.ScopeID))
-	}
-	stderrln("✓ moved talos %q: %s → %s", name, scopeName(s, r.ScopeID), scopeName(s, to))
-	if err := renderAndAutoMergeTalos(s); err != nil {
-		return err
-	}
-	hintSyncForPeers()
-	return nil
+	defer s.Close()
+	return s.RenameItem(ctx, KindTalos, scopeID, oldName, newName, force,
+		func(payload []byte, name string) ([]byte, error) {
+			c, err := talosctx.Unmarshal(payload)
+			if err != nil {
+				return nil, err
+			}
+			c.Name = name
+			if err := c.Validate(); err != nil {
+				return nil, err
+			}
+			return json.Marshal(c.Marshal())
+		},
+	)
 }
 
 func RunTalosEnable(ctx context.Context, merge bool) error {

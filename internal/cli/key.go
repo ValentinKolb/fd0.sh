@@ -106,9 +106,25 @@ func RunKeyAdd(ctx context.Context, o KeyOpts) error {
 	return nil
 }
 
+// keyListRow is the machine-readable shape of one key.
+//
+// Public material only, by construction: the row has no field the private half
+// could be assigned to, so a listing cannot become an exfiltration path even if
+// sshkey.JSON grows. The private key leaves the vault through `fd0 get` and the
+// SSH agent, nowhere else.
+type keyListRow struct {
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	Fingerprint string `json:"fingerprint"`
+	PublicKey   string `json:"publicKey"`
+	Comment     string `json:"comment,omitempty"`
+	Scope       string `json:"scope,omitempty"`
+	ScopeID     string `json:"scopeId"`
+}
+
 // RunKeyList prints every fd0-managed SSH key. Filters by scope and
 // optionally a list of tags (AND semantics across multiple --tag).
-func RunKeyList(ctx context.Context, scopeID string, _ []string, _ []string) error {
+func RunKeyList(ctx context.Context, scopeID string, _ []string, _ []string, jsonOut bool) error {
 	// Tags aren't currently stored on key secrets — we keep the
 	// parameter for parity with `fd0 ssh ls` and future tagging.
 	s, err := Open(ctx)
@@ -127,6 +143,26 @@ func RunKeyList(ctx context.Context, scopeID string, _ []string, _ []string) err
 			continue
 		}
 		keys = append(keys, r)
+	}
+	if jsonOut {
+		rows := make([]keyListRow, 0, len(keys))
+		for _, r := range keys {
+			k, err := decodeKey(r)
+			if err != nil {
+				stderrln("  ! malformed key %q in scope %s: %v", r.Name, scopeName(s, r.ScopeID), err)
+				continue
+			}
+			rows = append(rows, keyListRow{
+				Name:        strings.TrimPrefix(r.Name, keyNamePrefix),
+				Type:        string(k.Type),
+				Fingerprint: k.Fingerprint(),
+				PublicKey:   k.AuthorizedKeyLine(),
+				Comment:     k.Comment,
+				Scope:       scopeLabelOf(s, r.ScopeID),
+				ScopeID:     r.ScopeID,
+			})
+		}
+		return json.NewEncoder(os.Stdout).Encode(rows)
 	}
 	if len(keys) == 0 {
 		stderrln("no keys")
@@ -211,37 +247,7 @@ func RunKeyMove(ctx context.Context, name, fromScope, toScope string, force bool
 		return err
 	}
 	defer s.Close()
-	r, err := s.GetTypedSecret(fromScope, keyNamePrefix+name)
-	if err != nil {
-		return err
-	}
-	k, err := decodeKey(*r)
-	if err != nil {
-		return err
-	}
-	dest, err := s.resolveScopeID(toScope)
-	if err != nil {
-		return err
-	}
-	if r.ScopeID == dest {
-		return fmt.Errorf("source and destination scopes are the same: %s", scopeName(s, dest))
-	}
-	if err := ensureNoDuplicate(s, dest, keyNamePrefix, name, force); err != nil {
-		return err
-	}
-	if err := s.SetTypedSecret(ctx, dest, r.Name, string(k.Type), k.Marshal()); err != nil {
-		return err
-	}
-	if err := s.RemoveTypedSecret(ctx, r.ScopeID, r.Name); err != nil {
-		return fmt.Errorf("moved key %q to %s but failed to remove from %s: %w (clean up with: fd0 key rm %s --scope %s)",
-			name, scopeName(s, dest), scopeName(s, r.ScopeID), err, name, scopeName(s, r.ScopeID))
-	}
-	stderrln("✓ moved key %q: %s → %s", name, scopeName(s, r.ScopeID), scopeName(s, dest))
-	if err := renderSSHWithSessionIfEnabled(s); err != nil {
-		stderrln("⚠ ssh render: %v", err)
-	}
-	hintSyncForPeers()
-	return nil
+	return s.MoveItem(ctx, KindKey, name, fromScope, toScope, force)
 }
 
 // CollectKeyEntries snapshots every available SSH key across every
@@ -289,6 +295,54 @@ func decodeKey(r TypedRecord) (*sshkey.Key, error) {
 		return nil, fmt.Errorf("decode key %q: %w", r.Name, err)
 	}
 	return sshkey.Unmarshal(j)
+}
+
+// KeyEditOpts patches an existing key. Only metadata is listed here: the
+// private material, its algorithm and the fingerprint derived from it are what
+// makes a key *that* key, so changing them would silently swap a different
+// credential under the same name rather than edit this one.
+type KeyEditOpts struct {
+	Name    string
+	Scope   string
+	Comment *string
+}
+
+// RunKeyEdit changes only the fields the user named, leaving the rest alone.
+func RunKeyEdit(ctx context.Context, o KeyEditOpts) error {
+	if o.Name == "" {
+		return errors.New("key edit: NAME required")
+	}
+	return EditItem(ctx, KindKey, o.Scope, o.Name,
+		decodeKey,
+		func(k *sshkey.Key) (bool, error) {
+			changed := false
+			setString(&k.Comment, o.Comment, &changed)
+			return changed, nil
+		},
+		func(k *sshkey.Key) error {
+			// The comment is printed verbatim as the tail of an
+			// authorized_keys line; a newline in it would forge a second
+			// entry in whatever file the user pastes the line into.
+			if strings.ContainsAny(k.Comment, "\n\r") {
+				return errors.New("key edit: comment cannot contain newlines")
+			}
+			return nil
+		},
+		func(k *sshkey.Key) (string, any) { return string(k.Type), k.Marshal() },
+	)
+}
+
+// RunKeyRename renames a key. Unlike a host, a key has no name inside its own
+// payload — the record name is the only name it has — so there is nothing to
+// retitle. Hosts referencing the old name keep pointing at it and the renderer
+// starts warning about the missing key until they are repointed.
+func RunKeyRename(ctx context.Context, scopeID, oldName, newName string, force bool) error {
+	s, err := Open(ctx)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	return s.RenameItem(ctx, KindKey, scopeID, oldName, newName, force, nil)
 }
 
 // PublicKeyAuthLine fetches one key and returns the authorized_keys

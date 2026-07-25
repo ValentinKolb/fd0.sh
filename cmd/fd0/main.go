@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/alecthomas/kong"
@@ -31,11 +32,7 @@ type rootCLI struct {
 	Lock     lockCmd     `cmd:"" help:"Lock the vault in the running agent."`
 	Agent    agentCmd    `cmd:"" help:"Manage the local fd0-agent process."`
 	Status   statusCmd   `cmd:"" help:"Show agent status."`
-	Get      getCmd      `cmd:"" help:"Print a secret to stdout. Interactive when called without NAME."`
-	Copy     copyCmd     `cmd:"" help:"Copy a secret to the clipboard with auto-clear."`
-	Set      setCmd      `cmd:"" help:"Add or update a secret."`
-	Rm       rmCmd       `cmd:"" help:"Remove a secret (writes a tombstone)."`
-	List     listCmd     `cmd:"" aliases:"ls" help:"List secrets."`
+	Secret   secretCmd   `cmd:"" help:"Manage plain string secrets."`
 	Scope    scopeCmd    `cmd:"" help:"Scope management."`
 	Sync     syncCmd     `cmd:"" help:"Sync with the fd0 server."`
 	Card     cardCmd     `cmd:"" help:"Identity card (export your super_pub for invites)."`
@@ -49,15 +46,95 @@ type rootCLI struct {
 	Kube     kubeCmd     `cmd:"" help:"Manage Kubernetes kubeconfig clusters (Talos, EKS, GKE, AKS, …)."`
 	Version  versionCmd  `cmd:"" help:"Print version and exit."`
 	Update   updateCmd   `cmd:"" help:"Update fd0 and fd0-agent from the latest client release."`
+
+	// Plain secrets predate the noun-per-module layout and were spelled
+	// `fd0 get/copy/set/rm/list`. Those spellings are in scripts, docs and
+	// muscle memory, so they keep working forever — but they are hidden, so
+	// help teaches only `fd0 secret …` and the modules read alike. Same types
+	// as the secretCmd fields: one grammar, two mount points.
+	Get  getCmd  `cmd:"" hidden:"" help:"Deprecated spelling of 'fd0 secret get'."`
+	Copy copyCmd `cmd:"" hidden:"" help:"Deprecated spelling of 'fd0 secret copy'."`
+	Set  setCmd  `cmd:"" hidden:"" help:"Deprecated spelling of 'fd0 secret set'."`
+	Rm   rmCmd   `cmd:"" hidden:"" help:"Deprecated spelling of 'fd0 secret rm'."`
+	List listCmd `cmd:"" aliases:"ls" hidden:"" help:"Deprecated spelling of 'fd0 secret list'."`
+}
+
+// stringListFlag is a repeatable string flag that also records whether it was
+// given at all — the list-valued half of the pointer-flag convention the edit
+// commands use.
+//
+// A bare *[]string looks like the right shape but is not: kong's pointer mapper
+// builds a fresh slice on every occurrence, so `--tag a --tag b` would keep only
+// "b". A command whose contract is "replace the whole list" must not silently
+// drop half of what the user typed. An empty value contributes nothing, which is
+// how the flag spells "clear it".
+type stringListFlag struct {
+	values []string
+	given  bool
+}
+
+func (f *stringListFlag) Decode(ctx *kong.DecodeContext) error {
+	var v string
+	if err := ctx.Scan.PopValueInto("string", &v); err != nil {
+		return err
+	}
+	f.given = true
+	if v != "" {
+		f.values = append(f.values, v)
+	}
+	return nil
+}
+
+// Ptr renders the flag as the *[]string the cli edit opts take: nil when the
+// flag never appeared, so "not given" stays distinct from "cleared".
+func (f *stringListFlag) Ptr() *[]string {
+	if !f.given {
+		return nil
+	}
+	return &f.values
+}
+
+// itemHistoryCmd is the version-history surface every item module exposes.
+// Declared once and embedded per module so the flags, arguments and help text
+// cannot drift apart between `fd0 ssh history` and `fd0 pass history`.
+type itemHistoryCmd struct {
+	Show    itemHistoryShowCmd    `cmd:"" default:"withargs" help:"List an item's versions, newest first."`
+	Restore itemHistoryRestoreCmd `cmd:"" help:"Restore the content of an earlier version."`
+}
+
+type itemHistoryShowCmd struct {
+	Name  string `arg:"" help:"Item name."`
+	Scope string `name:"scope" help:"Scope label or id."`
+	JSON  bool   `name:"json" help:"Machine-readable output."`
+}
+
+type itemHistoryRestoreCmd struct {
+	Name  string `arg:"" help:"Item name."`
+	Seq   uint64 `arg:"" help:"Sequence number, from the history listing."`
+	Scope string `name:"scope" help:"Scope label or id."`
 }
 
 // ───── key ────────────────────────────────────────────────────────────
 type keyCmd struct {
-	Add  keyAddCmd  `cmd:"" help:"Generate a new key, or import an existing one with --import."`
-	List keyListCmd `cmd:"" aliases:"ls" help:"List all keys across scopes."`
-	Show keyShowCmd `cmd:"" help:"Print a key's details, or just the public key with --pub."`
-	Rm   keyRmCmd   `cmd:"" help:"Remove a key (tombstone)."`
-	Move keyMoveCmd `cmd:"" help:"Move a key between scopes."`
+	Add     keyAddCmd      `cmd:"" help:"Generate a new key, or import an existing one with --import."`
+	Edit    keyEditCmd     `cmd:"" help:"Change metadata on an existing key."`
+	List    keyListCmd     `cmd:"" aliases:"ls" help:"List all keys across scopes."`
+	Show    keyShowCmd     `cmd:"" help:"Print a key's details, or just the public key with --pub."`
+	Rename  keyRenameCmd   `cmd:"" help:"Rename a key."`
+	Rm      keyRmCmd       `cmd:"" help:"Remove a key (tombstone)."`
+	Move    keyMoveCmd     `cmd:"" help:"Move a key between scopes."`
+	History itemHistoryCmd `cmd:"" help:"Show or restore earlier versions of a key."`
+}
+type keyEditCmd struct {
+	Name    string  `arg:"" help:"Key name."`
+	Comment *string `name:"comment" help:"Free-form comment."`
+	Scope   string  `name:"scope" help:"Scope label or id."`
+}
+type keyRenameCmd struct {
+	Name  string `arg:"" help:"Current key name."`
+	New   string `arg:"" name:"new-name" help:"New key name."`
+	Scope string `name:"scope" help:"Scope label or id."`
+	Force bool   `name:"force" help:"Overwrite an existing key with the new name."`
 }
 type keyAddCmd struct {
 	Name       string `arg:"" help:"Key name (no prefix)."`
@@ -70,6 +147,7 @@ type keyAddCmd struct {
 }
 type keyListCmd struct {
 	Scope string `name:"scope" help:"Scope label or id."`
+	JSON  bool   `name:"json" help:"Print JSON."`
 }
 type keyShowCmd struct {
 	Name  string `arg:"" help:"Key name."`
@@ -94,14 +172,38 @@ type sshCmd struct {
 	Disable sshDisableCmd `cmd:"" help:"Reverse the one-time setup."`
 	Sock    sshSockCmd    `cmd:"" help:"Print the agent socket path."`
 
-	Add  sshAddCmd  `cmd:"" help:"Add a host."`
-	List sshListCmd `cmd:"" aliases:"ls" help:"List hosts."`
-	Show sshShowCmd `cmd:"" help:"Show one host."`
-	Rm   sshRmCmd   `cmd:"" help:"Remove a host (tombstone)."`
-	Tag  sshTagCmd  `cmd:"" help:"Add or remove tags on a host."`
-	Move sshMoveCmd `cmd:"" help:"Move a host between scopes."`
+	Add     sshAddCmd      `cmd:"" help:"Add a host."`
+	Edit    sshEditCmd     `cmd:"" help:"Change fields on an existing host."`
+	List    sshListCmd     `cmd:"" aliases:"ls" help:"List hosts."`
+	Show    sshShowCmd     `cmd:"" help:"Show one host."`
+	Rename  sshRenameCmd   `cmd:"" help:"Rename a host."`
+	Rm      sshRmCmd       `cmd:"" help:"Remove a host (tombstone)."`
+	Tag     sshTagCmd      `cmd:"" help:"Add or remove tags on a host."`
+	Move    sshMoveCmd     `cmd:"" help:"Move a host between scopes."`
+	History itemHistoryCmd `cmd:"" help:"Show or restore earlier versions of a host."`
 
 	Connect sshConnectCmd `cmd:"" default:"withargs" help:"Connect to a host, or open the picker."`
+}
+
+type sshEditCmd struct {
+	Alias        string            `arg:"" help:"Host alias."`
+	Hostname     *string           `name:"hostname" help:"Hostname or address."`
+	User         *string           `name:"user" help:"SSH user."`
+	Port         *int              `name:"port" help:"SSH port."`
+	KeyName      *string           `name:"key" help:"Name of an fd0 key to bind."`
+	ProxyJump    *string           `name:"jump" help:"ProxyJump alias."`
+	Description  *string           `name:"description" help:"Free-form description."`
+	Tags         stringListFlag    `name:"tag" placeholder:"TAG" help:"Replace all tags (repeat for multiple)."`
+	Options      map[string]string `name:"opt" help:"Set a synchronized ssh_config option (repeatable)."`
+	ClearOptions bool              `name:"clear-opts" help:"Remove all synchronized options."`
+	Scope        string            `name:"scope" help:"Scope label or id."`
+}
+
+type sshRenameCmd struct {
+	Alias string `arg:"" help:"Current host alias."`
+	New   string `arg:"" name:"new-alias" help:"New host alias."`
+	Scope string `name:"scope" help:"Scope label or id."`
+	Force bool   `name:"force" help:"Overwrite an existing host with the new alias."`
 }
 
 type sshEnableCmd struct{}
@@ -128,6 +230,7 @@ type sshListCmd struct {
 	Scope string   `name:"scope" help:"Scope label or id."`
 	Tag   []string `name:"tag" help:"Filter by tag (AND across multiple)."`
 	NoTag []string `name:"no-tag" help:"Exclude hosts with this tag."`
+	JSON  bool     `name:"json" help:"Print JSON."`
 }
 type sshShowCmd struct {
 	Alias string `arg:"" help:"Host alias."`
@@ -160,10 +263,14 @@ type sshConnectCmd struct {
 type passCmd struct {
 	Browse   passBrowseCmd   `cmd:"" default:"withargs" help:"Open the interactive pass browser."`
 	Add      passAddCmd      `cmd:"" help:"Create a pass item."`
+	Edit     passEditCmd     `cmd:"" help:"Change an item's title or URLs."`
 	Find     passFindCmd     `cmd:"" help:"Find pass items by title or URL."`
 	List     passListCmd     `cmd:"" aliases:"ls" help:"List pass items."`
 	Show     passShowCmd     `cmd:"" help:"Show a pass item with secrets masked by default."`
+	Rename   passRenameCmd   `cmd:"" help:"Rename a pass item."`
 	Rm       passRmCmd       `cmd:"" help:"Remove a pass item."`
+	Move     passMoveCmd     `cmd:"" help:"Move a pass item between scopes."`
+	History  itemHistoryCmd  `cmd:"" help:"Show or restore earlier versions of a pass item."`
 	Copy     passCopyCmd     `cmd:"" help:"Copy a field value, secret, or current TOTP code."`
 	Generate passGenerateCmd `cmd:"" help:"Generate a password without storing it."`
 	Field    passFieldCmd    `cmd:"" help:"Set, get, or remove fields by slash path."`
@@ -172,6 +279,13 @@ type passCmd struct {
 	TOTP     passTOTPCmd     `cmd:"" name:"totp" help:"Manage or print TOTP fields."`
 	File     passFileCmd     `cmd:"" help:"Attach or export small files."`
 }
+type passMoveCmd struct {
+	Name    string `arg:"" help:"Item name."`
+	From    string `name:"scope" help:"Source scope label or id."`
+	ToScope string `name:"to-scope" required:"" help:"Destination scope label or id."`
+	Force   bool   `name:"force" help:"Overwrite an item of the same name in the destination."`
+}
+
 type passBrowseCmd struct {
 	Query      string `arg:"" optional:"" help:"Initial search query."`
 	Scope      string `name:"scope" help:"Scope label or id."`
@@ -183,6 +297,18 @@ type passAddCmd struct {
 	Scope string   `name:"scope" help:"Scope label or id."`
 	Force bool     `name:"force" help:"Overwrite an existing pass item with the same name."`
 	Notes string   `name:"notes" help:"Free-text note to store on the new item."`
+}
+type passEditCmd struct {
+	Name  string         `arg:"" help:"Item name."`
+	Title *string        `name:"title" help:"Display title."`
+	URL   stringListFlag `name:"url" placeholder:"URL" help:"Replace all URLs (repeat for multiple)."`
+	Scope string         `name:"scope" help:"Scope label or id."`
+}
+type passRenameCmd struct {
+	Name  string `arg:"" help:"Current item name."`
+	New   string `arg:"" name:"new-name" help:"New item name."`
+	Scope string `name:"scope" help:"Scope label or id."`
+	Force bool   `name:"force" help:"Overwrite an existing pass item with the new name."`
 }
 type passFindCmd struct {
 	Query string `arg:"" optional:"" help:"Text to match against title and URLs."`
@@ -310,10 +436,13 @@ type talosCmd struct {
 	Disable talosDisableCmd `cmd:"" help:"Disable automatic talosconfig refresh after fd0 sync."`
 	Add     talosAddCmd     `cmd:"" help:"Import an existing talosconfig context (or one from --from-config)."`
 	New     talosNewCmd     `cmd:"" help:"Day-0: generate cluster PKI + talosconfig from scratch (calls talosctl)."`
+	Edit    talosEditCmd    `cmd:"" help:"Change fields on an existing talos context."`
 	List    talosListCmd    `cmd:"" aliases:"ls" help:"List talos contexts."`
 	Show    talosShowCmd    `cmd:"" help:"Show one talos context."`
+	Rename  talosRenameCmd  `cmd:"" help:"Rename a talos context."`
 	Rm      talosRmCmd      `cmd:"" help:"Remove a talos context (tombstone)."`
 	Move    talosMoveCmd    `cmd:"" help:"Move a talos context between scopes."`
+	History itemHistoryCmd  `cmd:"" help:"Show or restore earlier versions of a context."`
 
 	Sync       talosSyncCmd       `cmd:"" help:"Re-render ~/.talos/config.fd0 (and merge with --merge)."`
 	RoleAdd    talosRoleAddCmd    `cmd:"" name:"role-add" help:"Mint a role-scoped client cert via talosctl + store it."`
@@ -356,10 +485,26 @@ type talosNewCmd struct {
 	Force       bool     `name:"force" help:"Overwrite an existing stored cluster with the same name (destructive — see talos secrets export first)."`
 }
 
+type talosEditCmd struct {
+	Name        string         `arg:"" help:"Context name."`
+	Endpoint    stringListFlag `name:"endpoint" placeholder:"ENDPOINT" help:"Replace all endpoints (repeat or comma-separate)."`
+	Node        stringListFlag `name:"node" placeholder:"NODE" help:"Replace all default node targets (repeat or comma-separate)."`
+	Role        *string        `name:"role" help:"Cert role label (os:admin / os:operator / os:reader / …)."`
+	Description *string        `name:"description" help:"Free-form description."`
+	Tag         stringListFlag `name:"tag" placeholder:"TAG" help:"Replace all tags (repeat for multiple)."`
+	Scope       string         `name:"scope" help:"Scope label or id."`
+}
+type talosRenameCmd struct {
+	Name  string `arg:"" help:"Current context name."`
+	New   string `arg:"" name:"new-name" help:"New context name."`
+	Scope string `name:"scope" help:"Scope label or id."`
+	Force bool   `name:"force" help:"Overwrite an existing context with the new name."`
+}
 type talosListCmd struct {
 	Scope string   `name:"scope" help:"Scope label or id."`
 	Tag   []string `name:"tag" help:"Filter by tag (AND)."`
 	NoTag []string `name:"no-tag" help:"Exclude tag."`
+	JSON  bool     `name:"json" help:"Print JSON."`
 }
 type talosShowCmd struct {
 	Name  string `arg:"" help:"Context name."`
@@ -418,10 +563,13 @@ type kubeCmd struct {
 	Enable  kubeEnableCmd  `cmd:"" help:"Enable automatic kubeconfig refresh after fd0 sync."`
 	Disable kubeDisableCmd `cmd:"" help:"Disable automatic kubeconfig refresh after fd0 sync."`
 	Add     kubeAddCmd     `cmd:"" help:"Add a kubeconfig cluster."`
+	Edit    kubeEditCmd    `cmd:"" help:"Change fields on an existing kubeconfig."`
 	List    kubeListCmd    `cmd:"" aliases:"ls" help:"List kubeconfig clusters."`
 	Show    kubeShowCmd    `cmd:"" help:"Show one kubeconfig."`
+	Rename  kubeRenameCmd  `cmd:"" help:"Rename a kubeconfig."`
 	Rm      kubeRmCmd      `cmd:"" help:"Remove a kubeconfig (tombstone)."`
 	Move    kubeMoveCmd    `cmd:"" help:"Move a kubeconfig between scopes."`
+	History itemHistoryCmd `cmd:"" help:"Show or restore earlier versions of a cluster."`
 	Sync    kubeSyncCmd    `cmd:"" help:"Re-render ~/.kube/config.fd0 (and merge with --merge)."`
 }
 type kubeEnableCmd struct {
@@ -447,10 +595,25 @@ type kubeAddCmd struct {
 	Scope                 string   `name:"scope" help:"Scope."`
 	Force                 bool     `name:"force" help:"Overwrite an existing kubeconfig with the same name."`
 }
+type kubeEditCmd struct {
+	Name        string         `arg:"" help:"Cluster name."`
+	Server      *string        `name:"server" help:"https://host:6443"`
+	Namespace   *string        `name:"namespace" help:"Default namespace."`
+	Description *string        `name:"description" help:"Free-form description."`
+	Tag         stringListFlag `name:"tag" placeholder:"TAG" help:"Replace all tags (repeat for multiple)."`
+	Scope       string         `name:"scope" help:"Scope."`
+}
+type kubeRenameCmd struct {
+	Name  string `arg:"" help:"Current cluster name."`
+	New   string `arg:"" name:"new-name" help:"New cluster name."`
+	Scope string `name:"scope" help:"Scope."`
+	Force bool   `name:"force" help:"Overwrite an existing kubeconfig with the new name."`
+}
 type kubeListCmd struct {
 	Scope string   `name:"scope" help:"Scope."`
 	Tag   []string `name:"tag" help:"Filter by tag (AND)."`
 	NoTag []string `name:"no-tag" help:"Exclude tag."`
+	JSON  bool     `name:"json" help:"Print JSON."`
 }
 type kubeShowCmd struct {
 	Name  string `arg:"" help:"Cluster name."`
@@ -509,7 +672,37 @@ type rmCmd struct {
 	Scope string `name:"scope" help:"Scope label or id."`
 	Yes   bool   `name:"yes" short:"y" help:"Do not prompt before removing."`
 }
-type listCmd struct{}
+type listCmd struct {
+	JSON bool `name:"json" help:"Print JSON."`
+}
+
+// ───── secret ─────────────────────────────────────────────────────────
+// The verb commands are the very structs the hidden legacy top-level
+// spellings use, so `fd0 get` and `fd0 secret get` cannot grow different
+// flags. Rename/move/history come from the same shared surfaces every other
+// module embeds.
+type secretCmd struct {
+	Get     getCmd          `cmd:"" help:"Print a secret to stdout. Interactive when called without NAME."`
+	Copy    copyCmd         `cmd:"" help:"Copy a secret to the clipboard with auto-clear."`
+	Set     setCmd          `cmd:"" help:"Add or update a secret."`
+	List    listCmd         `cmd:"" aliases:"ls" help:"List secrets."`
+	Rename  secretRenameCmd `cmd:"" help:"Rename a secret."`
+	Rm      rmCmd           `cmd:"" help:"Remove a secret (writes a tombstone)."`
+	Move    secretMoveCmd   `cmd:"" help:"Move a secret between scopes."`
+	History itemHistoryCmd  `cmd:"" help:"Show or restore earlier versions of a secret."`
+}
+type secretRenameCmd struct {
+	Name  string `arg:"" help:"Current secret name."`
+	New   string `arg:"" name:"new-name" help:"New secret name."`
+	Scope string `name:"scope" help:"Scope label or id."`
+	Force bool   `name:"force" help:"Overwrite an existing secret with the new name."`
+}
+type secretMoveCmd struct {
+	Name    string `arg:"" help:"Secret name."`
+	From    string `name:"scope" help:"Source scope label or id."`
+	ToScope string `name:"to-scope" required:"" help:"Destination scope label or id."`
+	Force   bool   `name:"force" help:"Overwrite an existing secret with the same name in the destination."`
+}
 
 type scopeCmd struct {
 	Create       scopeCreateCmd       `cmd:"" help:"Create a new scope."`
@@ -670,12 +863,20 @@ func maybeAutoUnlock(kctx *kong.Context, c *rootCLI) error {
 }
 
 func commandNeedsUnlockedVault(command string) bool {
+	// The `secret ` forms and the hidden legacy spellings are the same
+	// commands, so fold them together before asking rather than listing each
+	// verb twice and risking one half going stale.
+	command = legacySecretSpelling(command)
 	switch command {
 	case "get", "get <name>",
 		"copy", "copy <name>",
 		"set <name> <value>",
 		"rm <name>",
 		"list", "ls",
+		"secret rename <name> <new-name>",
+		"secret move <name>",
+		"secret history <name>", "secret history show <name>",
+		"secret history restore <name> <seq>",
 		"scope create",
 		"scope list", "scope ls",
 		"scope members", "scope members <scope>",
@@ -694,8 +895,10 @@ func commandNeedsUnlockedVault(command string) bool {
 		"auth add",
 		"auth rm <id>",
 		"key add <name>",
+		"key edit <name>",
 		"key list", "key ls",
 		"key show <name>",
+		"key rename <name> <new-name>",
 		"key rm <name>",
 		"key move <name>",
 		"ssh add <alias>", "ssh add <alias> <conn>",
@@ -703,13 +906,28 @@ func commandNeedsUnlockedVault(command string) bool {
 		"ssh show <alias>",
 		"ssh rm <alias>",
 		"ssh tag <alias>",
+		"ssh edit <alias>",
+		"ssh rename <alias> <new-alias>",
 		"ssh move <alias>",
+		"key history <name>", "key history show <name>",
+		"key history restore <name> <seq>",
+		"ssh history <name>", "ssh history show <name>",
+		"ssh history restore <name> <seq>",
+		"pass history <name>", "pass history show <name>",
+		"pass history restore <name> <seq>",
+		"kube history <name>", "kube history show <name>",
+		"kube history restore <name> <seq>",
+		"talos history <name>", "talos history show <name>",
+		"talos history restore <name> <seq>",
+		"pass move <name>",
 		"ssh", "ssh connect", "ssh connect <alias>", "ssh connect <alias> <cmd>",
 		"pass", "pass <query>", "pass browse", "pass browse <query>",
 		"pass add <name>",
+		"pass edit <name>",
 		"pass find", "pass find <query>",
 		"pass list", "pass ls",
 		"pass show <name>",
+		"pass rename <name> <new-name>",
 		"pass rm <name>",
 		"pass copy <name>", "pass copy <name> <field>",
 		"pass field set <name> <path>", "pass field set <name> <path> <value>",
@@ -727,8 +945,10 @@ func commandNeedsUnlockedVault(command string) bool {
 		"talos enable",
 		"talos add", "talos add <name>",
 		"talos new <name>",
+		"talos edit <name>",
 		"talos list", "talos ls",
 		"talos show <name>",
+		"talos rename <name> <new-name>",
 		"talos rm <name>",
 		"talos move <name>",
 		"talos sync",
@@ -739,8 +959,10 @@ func commandNeedsUnlockedVault(command string) bool {
 		"talos secrets list", "talos secrets ls",
 		"kube enable",
 		"kube add", "kube add <name>",
+		"kube edit <name>",
 		"kube list", "kube ls",
 		"kube show <name>",
+		"kube rename <name> <new-name>",
 		"kube rm <name>",
 		"kube move <name>",
 		"kube sync":
@@ -750,9 +972,39 @@ func commandNeedsUnlockedVault(command string) bool {
 	}
 }
 
+// legacySecretSpelling maps `secret <verb>` onto the equivalent hidden
+// top-level spelling, and leaves everything else alone.
+//
+// The two spellings are the same command, but kong parses them into two
+// separate copies of the same structs. Reducing one to the other lets a single
+// dispatch arm serve both, which is the only way they cannot drift.
+// `secret rename/move/history` have no legacy form and pass through untouched.
+func legacySecretSpelling(command string) string {
+	rest, ok := strings.CutPrefix(command, "secret ")
+	if !ok {
+		return command
+	}
+	switch rest {
+	case "get", "get <name>",
+		"copy", "copy <name>",
+		"set <name> <value>",
+		"rm <name>",
+		"list", "ls":
+		return rest
+	default:
+		return command
+	}
+}
+
 func dispatch(kctx *kong.Context, c *rootCLI) error {
 	ctx := context.Background()
-	switch kctx.Command() {
+	command := legacySecretSpelling(kctx.Command())
+	if command != kctx.Command() {
+		// Reduced to its legacy spelling: read the flags kong actually filled.
+		c.Get, c.Copy, c.Set, c.Rm, c.List =
+			c.Secret.Get, c.Secret.Copy, c.Secret.Set, c.Secret.Rm, c.Secret.List
+	}
+	switch command {
 	case "init":
 		return cli.RunInit(ctx)
 	case "unlock":
@@ -780,7 +1032,28 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 	case "rm <name>":
 		return cli.RunSecretRemove(ctx, c.Rm.Scope, c.Rm.Name, c.Rm.Yes)
 	case "list", "ls":
-		return cli.RunSecretList(ctx)
+		return cli.RunSecretList(ctx, c.List.JSON)
+	case "secret rename <name> <new-name>":
+		s, err := cli.Open(ctx)
+		if err != nil {
+			return err
+		}
+		defer s.Close()
+		// nil retitle: a plain secret's payload is the value, with no name
+		// inside it to keep in step.
+		return s.RenameItem(ctx, cli.KindSecret, c.Secret.Rename.Scope,
+			c.Secret.Rename.Name, c.Secret.Rename.New, c.Secret.Rename.Force, nil)
+	case "secret move <name>":
+		s, err := cli.Open(ctx)
+		if err != nil {
+			return err
+		}
+		defer s.Close()
+		return s.MoveItem(ctx, cli.KindSecret, c.Secret.Move.Name, c.Secret.Move.From, c.Secret.Move.ToScope, c.Secret.Move.Force)
+	case "secret history <name>", "secret history show <name>":
+		return cli.RunItemHistory(ctx, cli.KindSecret, c.Secret.History.Show.Scope, c.Secret.History.Show.Name, c.Secret.History.Show.JSON)
+	case "secret history restore <name> <seq>":
+		return cli.RunItemRestore(ctx, cli.KindSecret, c.Secret.History.Restore.Scope, c.Secret.History.Restore.Name, c.Secret.History.Restore.Seq)
 	case "scope create":
 		return cli.RunScopeCreate(ctx, c.Scope.Create.Label)
 	case "scope list", "scope ls":
@@ -853,10 +1126,18 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 			Passphrase: c.Key.Add.Passphrase,
 			Force:      c.Key.Add.Force,
 		})
+	case "key edit <name>":
+		return cli.RunKeyEdit(ctx, cli.KeyEditOpts{
+			Name:    c.Key.Edit.Name,
+			Scope:   c.Key.Edit.Scope,
+			Comment: c.Key.Edit.Comment,
+		})
 	case "key list", "key ls":
-		return cli.RunKeyList(ctx, c.Key.List.Scope, nil, nil)
+		return cli.RunKeyList(ctx, c.Key.List.Scope, nil, nil, c.Key.List.JSON)
 	case "key show <name>":
 		return cli.RunKeyShow(ctx, c.Key.Show.Scope, c.Key.Show.Name, c.Key.Show.Pub)
+	case "key rename <name> <new-name>":
+		return cli.RunKeyRename(ctx, c.Key.Rename.Scope, c.Key.Rename.Name, c.Key.Rename.New, c.Key.Rename.Force)
 	case "key rm <name>":
 		return cli.RunKeyRemove(ctx, c.Key.Rm.Scope, c.Key.Rm.Name, c.Key.Rm.Yes)
 	case "key move <name>":
@@ -888,13 +1169,56 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 			Force:       c.Ssh.Add.Force,
 		})
 	case "ssh list", "ssh ls":
-		return cli.RunHostList(ctx, c.Ssh.List.Scope, c.Ssh.List.Tag, c.Ssh.List.NoTag)
+		return cli.RunHostList(ctx, c.Ssh.List.Scope, c.Ssh.List.Tag, c.Ssh.List.NoTag, c.Ssh.List.JSON)
 	case "ssh show <alias>":
 		return cli.RunHostShow(ctx, c.Ssh.Show.Scope, c.Ssh.Show.Alias)
 	case "ssh rm <alias>":
 		return cli.RunHostRemove(ctx, c.Ssh.Rm.Scope, c.Ssh.Rm.Alias, c.Ssh.Rm.Yes)
 	case "ssh tag <alias>":
 		return cli.RunHostTag(ctx, c.Ssh.Tag.Scope, c.Ssh.Tag.Alias, c.Ssh.Tag.Add, c.Ssh.Tag.Remove)
+	case "ssh edit <alias>":
+		return cli.RunHostEdit(ctx, cli.HostEditOpts{
+			Alias:        c.Ssh.Edit.Alias,
+			Scope:        c.Ssh.Edit.Scope,
+			Hostname:     c.Ssh.Edit.Hostname,
+			User:         c.Ssh.Edit.User,
+			Port:         c.Ssh.Edit.Port,
+			KeyName:      c.Ssh.Edit.KeyName,
+			ProxyJump:    c.Ssh.Edit.ProxyJump,
+			Description:  c.Ssh.Edit.Description,
+			Tags:         c.Ssh.Edit.Tags.Ptr(),
+			Options:      c.Ssh.Edit.Options,
+			ClearOptions: c.Ssh.Edit.ClearOptions,
+		})
+	case "ssh rename <alias> <new-alias>":
+		return cli.RunHostRename(ctx, c.Ssh.Rename.Scope, c.Ssh.Rename.Alias, c.Ssh.Rename.New, c.Ssh.Rename.Force)
+	case "key history <name>", "key history show <name>":
+		return cli.RunItemHistory(ctx, cli.KindKey, c.Key.History.Show.Scope, c.Key.History.Show.Name, c.Key.History.Show.JSON)
+	case "key history restore <name> <seq>":
+		return cli.RunItemRestore(ctx, cli.KindKey, c.Key.History.Restore.Scope, c.Key.History.Restore.Name, c.Key.History.Restore.Seq)
+	case "ssh history <name>", "ssh history show <name>":
+		return cli.RunItemHistory(ctx, cli.KindHost, c.Ssh.History.Show.Scope, c.Ssh.History.Show.Name, c.Ssh.History.Show.JSON)
+	case "ssh history restore <name> <seq>":
+		return cli.RunItemRestore(ctx, cli.KindHost, c.Ssh.History.Restore.Scope, c.Ssh.History.Restore.Name, c.Ssh.History.Restore.Seq)
+	case "pass history <name>", "pass history show <name>":
+		return cli.RunItemHistory(ctx, cli.KindPass, c.Pass.History.Show.Scope, c.Pass.History.Show.Name, c.Pass.History.Show.JSON)
+	case "pass history restore <name> <seq>":
+		return cli.RunItemRestore(ctx, cli.KindPass, c.Pass.History.Restore.Scope, c.Pass.History.Restore.Name, c.Pass.History.Restore.Seq)
+	case "kube history <name>", "kube history show <name>":
+		return cli.RunItemHistory(ctx, cli.KindKube, c.Kube.History.Show.Scope, c.Kube.History.Show.Name, c.Kube.History.Show.JSON)
+	case "kube history restore <name> <seq>":
+		return cli.RunItemRestore(ctx, cli.KindKube, c.Kube.History.Restore.Scope, c.Kube.History.Restore.Name, c.Kube.History.Restore.Seq)
+	case "talos history <name>", "talos history show <name>":
+		return cli.RunItemHistory(ctx, cli.KindTalos, c.Talos.History.Show.Scope, c.Talos.History.Show.Name, c.Talos.History.Show.JSON)
+	case "talos history restore <name> <seq>":
+		return cli.RunItemRestore(ctx, cli.KindTalos, c.Talos.History.Restore.Scope, c.Talos.History.Restore.Name, c.Talos.History.Restore.Seq)
+	case "pass move <name>":
+		s, err := cli.Open(ctx)
+		if err != nil {
+			return err
+		}
+		defer s.Close()
+		return s.MoveItem(ctx, cli.KindPass, c.Pass.Move.Name, c.Pass.Move.From, c.Pass.Move.ToScope, c.Pass.Move.Force)
 	case "ssh move <alias>":
 		return cli.RunHostMove(ctx, c.Ssh.Move.Alias, c.Ssh.Move.From, c.Ssh.Move.ToScope, c.Ssh.Move.Force)
 
@@ -916,12 +1240,21 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 			Force: c.Pass.Add.Force,
 			Notes: c.Pass.Add.Notes,
 		})
+	case "pass edit <name>":
+		return cli.RunPassEdit(ctx, cli.PassEditOpts{
+			Name:  c.Pass.Edit.Name,
+			Scope: c.Pass.Edit.Scope,
+			Title: c.Pass.Edit.Title,
+			URLs:  c.Pass.Edit.URL.Ptr(),
+		})
 	case "pass find", "pass find <query>":
 		return cli.RunPassFind(ctx, c.Pass.Find.Scope, c.Pass.Find.Query, c.Pass.Find.URL, c.Pass.Find.JSON)
 	case "pass list", "pass ls":
 		return cli.RunPassList(ctx, c.Pass.List.Scope, c.Pass.List.JSON)
 	case "pass show <name>":
 		return cli.RunPassShow(ctx, c.Pass.Show.Scope, c.Pass.Show.Name, c.Pass.Show.Reveal, c.Pass.Show.JSON)
+	case "pass rename <name> <new-name>":
+		return cli.RunPassRename(ctx, c.Pass.Rename.Scope, c.Pass.Rename.Name, c.Pass.Rename.New, c.Pass.Rename.Force)
 	case "pass rm <name>":
 		return cli.RunPassRemove(ctx, c.Pass.Rm.Scope, c.Pass.Rm.Name, c.Pass.Rm.Yes)
 	case "pass copy <name>", "pass copy <name> <field>":
@@ -1013,10 +1346,22 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 			Tags:        c.Talos.New.Tag,
 			Force:       c.Talos.New.Force,
 		})
+	case "talos edit <name>":
+		return cli.RunTalosEdit(ctx, cli.TalosEditOpts{
+			Name:        c.Talos.Edit.Name,
+			Scope:       c.Talos.Edit.Scope,
+			Endpoints:   c.Talos.Edit.Endpoint.Ptr(),
+			Nodes:       c.Talos.Edit.Node.Ptr(),
+			Role:        c.Talos.Edit.Role,
+			Description: c.Talos.Edit.Description,
+			Tags:        c.Talos.Edit.Tag.Ptr(),
+		})
 	case "talos list", "talos ls":
-		return cli.RunTalosList(ctx, c.Talos.List.Scope, c.Talos.List.Tag, c.Talos.List.NoTag)
+		return cli.RunTalosList(ctx, c.Talos.List.Scope, c.Talos.List.Tag, c.Talos.List.NoTag, c.Talos.List.JSON)
 	case "talos show <name>":
 		return cli.RunTalosShow(ctx, c.Talos.Show.Scope, c.Talos.Show.Name)
+	case "talos rename <name> <new-name>":
+		return cli.RunTalosRename(ctx, c.Talos.Rename.Scope, c.Talos.Rename.Name, c.Talos.Rename.New, c.Talos.Rename.Force)
 	case "talos rm <name>":
 		return cli.RunTalosRemove(ctx, c.Talos.Rm.Scope, c.Talos.Rm.Name, c.Talos.Rm.Yes)
 	case "talos move <name>":
@@ -1074,10 +1419,21 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 			Scope:                 c.Kube.Add.Scope,
 			Force:                 c.Kube.Add.Force,
 		})
+	case "kube edit <name>":
+		return cli.RunKubeEdit(ctx, cli.KubeEditOpts{
+			Name:        c.Kube.Edit.Name,
+			Scope:       c.Kube.Edit.Scope,
+			Server:      c.Kube.Edit.Server,
+			Namespace:   c.Kube.Edit.Namespace,
+			Description: c.Kube.Edit.Description,
+			Tags:        c.Kube.Edit.Tag.Ptr(),
+		})
 	case "kube list", "kube ls":
-		return cli.RunKubeList(ctx, c.Kube.List.Scope, c.Kube.List.Tag, c.Kube.List.NoTag)
+		return cli.RunKubeList(ctx, c.Kube.List.Scope, c.Kube.List.Tag, c.Kube.List.NoTag, c.Kube.List.JSON)
 	case "kube show <name>":
 		return cli.RunKubeShow(ctx, c.Kube.Show.Scope, c.Kube.Show.Name)
+	case "kube rename <name> <new-name>":
+		return cli.RunKubeRename(ctx, c.Kube.Rename.Scope, c.Kube.Rename.Name, c.Kube.Rename.New, c.Kube.Rename.Force)
 	case "kube rm <name>":
 		return cli.RunKubeRemove(ctx, c.Kube.Rm.Scope, c.Kube.Rm.Name, c.Kube.Rm.Yes)
 	case "kube move <name>":
