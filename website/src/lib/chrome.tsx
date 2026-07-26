@@ -494,9 +494,13 @@ export const Footer = () => (
           <LogoMark size={18} />
           <span class="font-medium">fd0</span>
         </div>
+        {/* "Self-hosted" undersold it and contradicted the rest of the site:
+            the hosted instance is the default backend. What holds either way
+            is that the server cannot read anything. */}
         <p class="text-xs leading-relaxed max-w-xs">
-          Self-hosted secrets manager. Server stores ciphertext only;
-          membership rotates the per-scope key cryptographically.
+          Zero-knowledge secrets manager. Hosted or self-hosted, the server
+          stores ciphertext only; membership rotates the per-scope key
+          cryptographically.
         </p>
       </div>
       <div>
@@ -557,7 +561,7 @@ export const Footer = () => (
       style={`border-top:1px solid ${C.border};`}
     >
       <div>fd0.sh — Apache-2.0</div>
-      <div>self-hosted · no telemetry · no cloud</div>
+      <div>self-hostable · no telemetry · ciphertext only</div>
     </div>
   </footer>
 );
