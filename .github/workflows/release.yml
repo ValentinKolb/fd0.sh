@@ -2,7 +2,7 @@
 # the coordinated `fd0-v*` tag. Goreleaser produces:
 #   - per-platform tar.gz of fd0 + fd0-agent + fd0-server + fd0-witness
 #   - checksums.txt with sha256 per archive
-#   - checksums.txt.{sig,pem} for cosign verification (install.sh uses these)
+#   - checksums.txt.sigstore.json for cosign verification (install.sh uses it)
 #   - a GitHub Release at the actual tag (e.g. client-v0.0.5)
 #
 # .goreleaser.yaml strips the component prefix from the embedded
@@ -178,7 +178,6 @@ jobs:
           cat yubikey-checksums/*.sha256 >> checksums.txt
           sort -k2,2 checksums.txt -o checksums.txt
           cosign sign-blob --yes \
-            --output-signature checksums.txt.sig \
-            --output-certificate checksums.txt.pem \
+            --bundle checksums.txt.sigstore.json \
             checksums.txt
-          gh release upload "v${semver}" checksums.txt checksums.txt.sig checksums.txt.pem --repo "${GITHUB_REPOSITORY}" --clobber
+          gh release upload "v${semver}" checksums.txt checksums.txt.sigstore.json --repo "${GITHUB_REPOSITORY}" --clobber

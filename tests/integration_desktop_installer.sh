@@ -80,8 +80,7 @@ EOF
       shasum -a 256 fd0_linux_arm64.tar.gz | awk '{print $1 "  " $2}'
     fi
   ) > "$release/checksums.txt"
-  printf 'test signature\n' > "$release/checksums.txt.sig"
-  printf 'client-v%s\n' "$version" > "$release/checksums.txt.pem"
+  printf 'client-v%s\n' "$version" > "$release/checksums.txt.sigstore.json"
 }
 make_client_release 0.1.0
 make_client_release 0.0.9
@@ -118,8 +117,7 @@ EOF
       shasum -a 256 fd0_linux_arm64.tar.gz | awk '{print $1 "  " $2}'
     fi
   ) > "$release/checksums.txt"
-  printf 'test signature\n' > "$release/checksums.txt.sig"
-  printf 'client-v%s\n' "$version" > "$release/checksums.txt.pem"
+  printf 'client-v%s\n' "$version" > "$release/checksums.txt.sigstore.json"
 }
 make_traversal_client_release
 
