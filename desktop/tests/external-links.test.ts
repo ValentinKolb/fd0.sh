@@ -16,7 +16,7 @@ describe("trustedItemURL", () => {
 describe("supportLink", () => {
   test("maps only fixed support destinations", () => {
     expect(supportLink("docs")).toBe("https://fd0.sh/docs");
-    expect(supportLink("issues")).toBe("https://github.com/ValentinKolb/fd0.sh/issues");
+    expect(supportLink("issues")).toBe("https://github.com/k2b-dev/fd0.sh/issues");
     expect(() => supportLink("other" as "docs")).toThrow();
   });
 });

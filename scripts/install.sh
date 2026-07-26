@@ -14,7 +14,7 @@
 # Windows: not yet built by the release pipeline. The fd0 client is
 # pure Go and would cross-compile, but the AF_UNIX agent socket and
 # %LOCALAPPDATA% path conventions have not been validated. Track at
-# https://github.com/ValentinKolb/fd0.sh/issues.
+# https://github.com/k2b-dev/fd0.sh/issues.
 #
 # Installs `fd0` and `fd0-agent` into ~/.local/bin (default) or
 # /usr/local/bin (--system), seeds ~/.fd0/config.toml if absent,
@@ -31,7 +31,7 @@
 set -eu
 
 # ─── defaults ────────────────────────────────────────────────────────────
-REPO="ValentinKolb/fd0.sh"
+REPO="k2b-dev/fd0.sh"
 RELEASE_BASE="${FD0_RELEASE_BASE:-https://github.com/${REPO}/releases}"
 API_BASE="${FD0_API_BASE:-https://api.github.com/repos/${REPO}}"
 PREFIX="${HOME}/.local/bin"
@@ -344,7 +344,7 @@ IDENTITY_TAG=$(printf '%s' "$RELEASE_TAG" | sed 's/\./\\./g')
 "$COSIGN" verify-blob \
     --certificate            "$TMP/checksums.txt.pem" \
     --signature              "$TMP/checksums.txt.sig" \
-    --certificate-identity-regexp "^https://github\\.com/ValentinKolb/fd0\\.sh/\\.github/workflows/release\\.yml@refs/tags/${IDENTITY_TAG}$" \
+    --certificate-identity-regexp "^https://github\\.com/k2b-dev/fd0\\.sh/\\.github/workflows/release\\.yml@refs/tags/${IDENTITY_TAG}$" \
     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
     "$TMP/checksums.txt" >/dev/null 2>&1 \
     || die "cosign verification failed — refusing to install"

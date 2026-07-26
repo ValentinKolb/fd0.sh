@@ -205,7 +205,7 @@ case "$tag" in
   client-v*|fd0-v*) workflow=release ;;
   *) exit 9 ;;
 esac
-expected="^https://github\\.com/ValentinKolb/fd0\\.sh/\\.github/workflows/${workflow}\\.yml@refs/tags/${escaped_tag}$"
+expected="^https://github\\.com/k2b-dev/fd0\\.sh/\\.github/workflows/${workflow}\\.yml@refs/tags/${escaped_tag}$"
 [ "$identity" = "$expected" ] || exit 9
 EOF
 chmod +x "$FAKE_BIN/uname" "$FAKE_BIN/hdiutil" "$FAKE_BIN/ditto" "$FAKE_BIN/codesign" "$FAKE_BIN/spctl" "$FAKE_BIN/cosign"

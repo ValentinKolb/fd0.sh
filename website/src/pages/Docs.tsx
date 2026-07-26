@@ -392,12 +392,12 @@ $ fd0 update --flavor=yubikey`}</Box>
       key" or "share the prod password with bob" as fd0 work, and reach for
       the right command instead of guessing at one.
     </P>
-    <Box>{`$ bunx skills add ValentinKolb/fd0.sh`}</Box>
+    <Box>{`$ bunx skills add k2b-dev/fd0.sh`}</Box>
     <P>
       The installer copies <Code>skills/fd0/</Code> into your agent's skill
       directory — usually <Code>~/.claude/skills/fd0/</Code>. The skill loads
       on the next session. If your runtime uses npm rather than Bun,{" "}
-      <Code>npx skills add ValentinKolb/fd0.sh</Code> does the same thing, and
+      <Code>npx skills add k2b-dev/fd0.sh</Code> does the same thing, and
       copying the directory by hand works just as well.
     </P>
     <Note>
@@ -937,7 +937,7 @@ $ docker compose up -d`}</Box>
       <Code>4048</Code>.
       Put your own TLS terminator in front before pointing real clients at it.
       Use{" "}
-      <Link href="https://github.com/ValentinKolb/fd0.sh/blob/main/docs/HOSTING.md">
+      <Link href="https://github.com/k2b-dev/fd0.sh/blob/main/docs/HOSTING.md">
         the production hosting runbook
       </Link>{" "}
       for backup, TLS, metrics, witness, and key-rotation details.

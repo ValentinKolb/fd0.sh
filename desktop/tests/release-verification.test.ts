@@ -48,7 +48,7 @@ describe("desktop release selection", () => {
 describe("desktop release authentication", () => {
   test("binds the certificate identity to the exact workflow and tag", () => {
     expect(desktopReleaseIdentity("desktop-v1.2.3")).toBe(
-      "^https://github\\.com/ValentinKolb/fd0\\.sh/\\.github/workflows/release-desktop\\.yml@refs/tags/desktop-v1\\.2\\.3$",
+      "^https://github\\.com/k2b-dev/fd0\\.sh/\\.github/workflows/release-desktop\\.yml@refs/tags/desktop-v1\\.2\\.3$",
     );
     expect(() => desktopReleaseIdentity("desktop-v1.2.3/../../main")).toThrow();
   });

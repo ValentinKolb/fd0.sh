@@ -102,7 +102,7 @@ const OverviewBody = () => (
       constructions, on-disk layout, sync protocol, transparency log,
       and threat model. The canonical text lives in{" "}
       <a
-        href="https://github.com/ValentinKolb/fd0.sh/tree/main/docs"
+        href="https://github.com/k2b-dev/fd0.sh/tree/main/docs"
         style={`color:${C.acc};`}
       >
         docs/*.md
@@ -146,7 +146,7 @@ const OverviewBody = () => (
         ["THREATS", "Catalogue · mitigations · residual risks"],
       ].map(([k, sub]) => (
         <a
-          href={`https://github.com/ValentinKolb/fd0.sh/blob/main/docs/${k}.md`}
+          href={`https://github.com/k2b-dev/fd0.sh/blob/main/docs/${k}.md`}
           class="p-4"
           style={`background:${C.bg};border:1px solid ${C.border};`}
         >
@@ -177,7 +177,7 @@ const OverviewBody = () => (
         ["CRYPTO_AUDIT", "Internal review of the composition"],
       ].map(([k, sub]) => (
         <a
-          href={`https://github.com/ValentinKolb/fd0.sh/blob/main/docs/${k}.md`}
+          href={`https://github.com/k2b-dev/fd0.sh/blob/main/docs/${k}.md`}
           class="p-4"
           style={`background:${C.bg};border:1px solid ${C.border};`}
         >

@@ -57,7 +57,7 @@ export function selectDesktopRelease(payload: unknown, allowPrerelease: boolean)
     return [{
       tag: value.tag_name,
       version: match[1]!,
-      feedURL: `https://github.com/ValentinKolb/fd0.sh/releases/download/${encodeURIComponent(value.tag_name)}/`,
+      feedURL: `https://github.com/k2b-dev/fd0.sh/releases/download/${encodeURIComponent(value.tag_name)}/`,
     }];
   });
   releases.sort((left, right) => compareSemver(right.version, left.version));
@@ -66,7 +66,7 @@ export function selectDesktopRelease(payload: unknown, allowPrerelease: boolean)
 
 export function desktopReleaseIdentity(tag: string): string {
   if (!desktopTagPattern.test(tag)) throw new Error(`Invalid fd0 Desktop release tag: ${tag}`);
-  const identity = `https://github.com/ValentinKolb/fd0.sh/.github/workflows/release-desktop.yml@refs/tags/${tag}`;
+  const identity = `https://github.com/k2b-dev/fd0.sh/.github/workflows/release-desktop.yml@refs/tags/${tag}`;
   return `^${identity.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`;
 }
 

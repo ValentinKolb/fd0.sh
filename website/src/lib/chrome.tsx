@@ -126,7 +126,7 @@ export const Nav = (p: { current?: NavKey }) => {
         {link("spec", "/spec", "Spec")}
         {link("witness", "/witness", "Witness")}
         <a
-          href="https://github.com/ValentinKolb/fd0.sh"
+          href="https://github.com/k2b-dev/fd0.sh"
           class="hidden md:inline transition-colors"
           style={`color:${C.dim};`}
         >
@@ -317,12 +317,12 @@ export const SPEC_NAV: {
   link?: string;
 }[] = [
   { key: "overview", href: "/spec", label: "Overview", hex: "0x00", glyph: "◇" },
-  { key: "wire", href: "/spec/wire", label: "Wire format", hex: "0x01", glyph: "⌬", link: "https://github.com/ValentinKolb/fd0.sh/blob/main/docs/PROTOCOL.md" },
-  { key: "crypto", href: "/spec/crypto", label: "Cryptography", hex: "0x02", glyph: "⚛", link: "https://github.com/ValentinKolb/fd0.sh/blob/main/docs/PROTOCOL.md#1-primitives" },
-  { key: "storage", href: "/spec/storage", label: "Storage", hex: "0x03", glyph: "▢", link: "https://github.com/ValentinKolb/fd0.sh/blob/main/docs/STORAGE.md" },
-  { key: "sync", href: "/spec/sync", label: "Sync protocol", hex: "0x04", glyph: "⇄", link: "https://github.com/ValentinKolb/fd0.sh/blob/main/docs/API.md" },
-  { key: "translog", href: "/spec/translog", label: "Transparency log", hex: "0x05", glyph: "⊞", link: "https://github.com/ValentinKolb/fd0.sh/blob/main/docs/TRANSLOG.md" },
-  { key: "threats", href: "/spec/threats", label: "Threat model", hex: "0x06", glyph: "⚠", link: "https://github.com/ValentinKolb/fd0.sh/blob/main/docs/THREATS.md" },
+  { key: "wire", href: "/spec/wire", label: "Wire format", hex: "0x01", glyph: "⌬", link: "https://github.com/k2b-dev/fd0.sh/blob/main/docs/PROTOCOL.md" },
+  { key: "crypto", href: "/spec/crypto", label: "Cryptography", hex: "0x02", glyph: "⚛", link: "https://github.com/k2b-dev/fd0.sh/blob/main/docs/PROTOCOL.md#1-primitives" },
+  { key: "storage", href: "/spec/storage", label: "Storage", hex: "0x03", glyph: "▢", link: "https://github.com/k2b-dev/fd0.sh/blob/main/docs/STORAGE.md" },
+  { key: "sync", href: "/spec/sync", label: "Sync protocol", hex: "0x04", glyph: "⇄", link: "https://github.com/k2b-dev/fd0.sh/blob/main/docs/API.md" },
+  { key: "translog", href: "/spec/translog", label: "Transparency log", hex: "0x05", glyph: "⊞", link: "https://github.com/k2b-dev/fd0.sh/blob/main/docs/TRANSLOG.md" },
+  { key: "threats", href: "/spec/threats", label: "Threat model", hex: "0x06", glyph: "⚠", link: "https://github.com/k2b-dev/fd0.sh/blob/main/docs/THREATS.md" },
 ];
 
 export const SpecLayout = (p: { current: SpecKey; title: string; children: any }) => {
@@ -543,13 +543,13 @@ export const Footer = () => (
           Project
         </div>
         <div class="flex flex-col gap-1.5 text-xs">
-          <a href="https://github.com/ValentinKolb/fd0.sh" class="hover:text-white">
+          <a href="https://github.com/k2b-dev/fd0.sh" class="hover:text-white">
             GitHub
           </a>
-          <a href="https://github.com/ValentinKolb/fd0.sh/blob/main/LICENSE" class="hover:text-white">
+          <a href="https://github.com/k2b-dev/fd0.sh/blob/main/LICENSE" class="hover:text-white">
             Apache-2.0 licence
           </a>
-          <a href="https://github.com/ValentinKolb/fd0.sh/releases" class="hover:text-white">
+          <a href="https://github.com/k2b-dev/fd0.sh/releases" class="hover:text-white">
             Releases
           </a>
           <a href="/impressum" class="hover:text-white">Impressum</a>

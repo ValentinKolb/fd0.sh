@@ -25,7 +25,7 @@ export async function fetchStableDesktopReleases(
   const releases: DesktopReleaseFeedItem[] = [];
   for (let page = 1; page <= maxPages; page++) {
     const response = await fetcher(
-      `https://api.github.com/repos/ValentinKolb/fd0.sh/releases?per_page=${pageSize}&page=${page}`,
+      `https://api.github.com/repos/k2b-dev/fd0.sh/releases?per_page=${pageSize}&page=${page}`,
       {
         headers: {
           Accept: "application/vnd.github+json",

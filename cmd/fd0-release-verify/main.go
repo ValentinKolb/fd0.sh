@@ -19,7 +19,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "usage: fd0-release-verify --bundle FILE --tag desktop-vX.Y.Z MANIFEST\n")
 		os.Exit(2)
 	}
-	identity := "https://github.com/ValentinKolb/fd0.sh/.github/workflows/release-desktop.yml@refs/tags/" + *tag
+	identity := "https://github.com/k2b-dev/fd0.sh/.github/workflows/release-desktop.yml@refs/tags/" + *tag
 	if err := releaseverify.Verify(*bundlePath, flag.Arg(0), identity); err != nil {
 		fmt.Fprintf(os.Stderr, "fd0 release verification failed: %v\n", err)
 		os.Exit(1)

@@ -448,7 +448,7 @@ func fakeCosign(t *testing.T, accept bool) string {
 		exit = "0"
 	}
 	body := "#!/bin/sh\n" +
-		"printf '%s\\n' \"$*\" | grep -F '^https://github\\.com/ValentinKolb/fd0\\.sh/\\.github/workflows/release\\.yml@refs/tags/client-v0\\.9\\.0$' >/dev/null || exit 9\n" +
+		"printf '%s\\n' \"$*\" | grep -F '^https://github\\.com/k2b-dev/fd0\\.sh/\\.github/workflows/release\\.yml@refs/tags/client-v0\\.9\\.0$' >/dev/null || exit 9\n" +
 		"exit " + exit + "\n"
 	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
 		t.Fatal(err)

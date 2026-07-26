@@ -298,7 +298,7 @@ const ORG_JSONLD = {
       name: SITE_NAME,
       url: SITE_URL,
       logo: `${SITE_URL}/public/logo.svg`,
-      sameAs: ["https://github.com/ValentinKolb/fd0.sh"],
+      sameAs: ["https://github.com/k2b-dev/fd0.sh"],
     },
     {
       "@type": "SoftwareApplication",

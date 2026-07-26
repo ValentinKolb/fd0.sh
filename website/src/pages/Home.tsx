@@ -483,7 +483,7 @@ const Home = () => (
             Download fd0 Desktop →
           </Btn>
           <Btn href="#install">Install the CLI →</Btn>
-          <Btn href="https://github.com/ValentinKolb/fd0.sh" ghost>
+          <Btn href="https://github.com/k2b-dev/fd0.sh" ghost>
             <svg
               width="16"
               height="16"
@@ -557,7 +557,7 @@ ghp_xxxxxxxxxxxxxxxxxxxx`}</Shell>
         <PropertyCard
           label="Source"
           value="Apache-2.0"
-          sub="github.com/ValentinKolb/fd0.sh"
+          sub="github.com/k2b-dev/fd0.sh"
         />
       </div>
     </Section>

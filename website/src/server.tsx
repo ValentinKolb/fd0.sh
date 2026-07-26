@@ -190,7 +190,7 @@ const renderLlmsTxt = (): string =>
     ),
     "",
     "## Source",
-    "- [GitHub repository](https://github.com/ValentinKolb/fd0.sh): client, server, witness, website, protocol docs, and release workflows.",
+    "- [GitHub repository](https://github.com/k2b-dev/fd0.sh): client, server, witness, website, protocol docs, and release workflows.",
     "",
   ].join("\n");
 
@@ -242,12 +242,12 @@ const app = new Hono()
    * falls back to the filtered release list when the feed cannot be read.
    */
   .get("/download", async (c) => {
-    const fallback = "https://github.com/ValentinKolb/fd0.sh/releases?q=desktop-v&expanded=true";
+    const fallback = "https://github.com/k2b-dev/fd0.sh/releases?q=desktop-v&expanded=true";
     try {
       const releases = await fetchStableDesktopReleases();
       const newest = releases[0]?.tag_name;
       if (!newest) return c.redirect(fallback, 302);
-      return c.redirect(`https://github.com/ValentinKolb/fd0.sh/releases/tag/${newest}`, 302);
+      return c.redirect(`https://github.com/k2b-dev/fd0.sh/releases/tag/${newest}`, 302);
     } catch {
       return c.redirect(fallback, 302);
     }

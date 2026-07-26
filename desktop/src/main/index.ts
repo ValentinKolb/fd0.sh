@@ -250,7 +250,7 @@ async function resolveDesktopUpdateRelease(): Promise<DesktopRelease> {
   const payload: unknown[] = [];
   for (let page = 1; page <= 20; page++) {
     const response = await net.fetch(
-      `https://api.github.com/repos/ValentinKolb/fd0.sh/releases?per_page=100&page=${page}`,
+      `https://api.github.com/repos/k2b-dev/fd0.sh/releases?per_page=100&page=${page}`,
       { headers },
     );
     if (!response.ok) throw new Error(`GitHub release lookup failed with HTTP ${response.status}`);

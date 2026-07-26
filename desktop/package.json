@@ -165,7 +165,7 @@
     },
     "publish": [{
       "provider": "github",
-      "owner": "ValentinKolb",
+      "owner": "k2b-dev",
       "repo": "fd0.sh",
       "releaseType": "release"
     }]

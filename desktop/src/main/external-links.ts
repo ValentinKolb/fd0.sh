@@ -2,7 +2,7 @@ export type SupportLinkTarget = "docs" | "issues";
 
 const supportLinks: Record<SupportLinkTarget, string> = {
   docs: "https://fd0.sh/docs",
-  issues: "https://github.com/ValentinKolb/fd0.sh/issues",
+  issues: "https://github.com/k2b-dev/fd0.sh/issues",
 };
 
 export function supportLink(target: SupportLinkTarget): string {

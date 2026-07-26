@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	defaultUpdateRepo        = "ValentinKolb/fd0.sh"
+	defaultUpdateRepo        = "k2b-dev/fd0.sh"
 	defaultUpdateReleaseBase = "https://github.com/" + defaultUpdateRepo + "/releases"
 	defaultUpdateAPIBase     = "https://api.github.com/repos/" + defaultUpdateRepo
 	updateArchiveMaxBytes    = 128 << 20

@@ -3,7 +3,7 @@
 
 set -eu
 
-REPO="ValentinKolb/fd0.sh"
+REPO="k2b-dev/fd0.sh"
 RELEASE_BASE="${FD0_RELEASE_BASE:-https://github.com/${REPO}/releases}"
 DESKTOP_FEED="${FD0_DESKTOP_FEED_URL:-https://fd0.sh/api/desktop/releases}"
 VERSION="${FD0_DESKTOP_VERSION:-latest}"
@@ -351,7 +351,7 @@ IDENTITY_TAG=$(printf '%s' "$VERSION" | sed 's/\./\\./g')
 "$COSIGN" verify-blob \
     --certificate "$TMP/checksums.txt.pem" \
     --signature "$TMP/checksums.txt.sig" \
-    --certificate-identity-regexp "^https://github\\.com/ValentinKolb/fd0\\.sh/\\.github/workflows/release-desktop\\.yml@refs/tags/${IDENTITY_TAG}$" \
+    --certificate-identity-regexp "^https://github\\.com/k2b-dev/fd0\\.sh/\\.github/workflows/release-desktop\\.yml@refs/tags/${IDENTITY_TAG}$" \
     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
     "$TMP/checksums.txt" >/dev/null 2>&1 || die "Cosign verification failed"
 printf '✓ verified release manifest with Cosign\n'

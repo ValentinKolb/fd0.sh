@@ -307,7 +307,7 @@ $ curl -sS ${snap.witnessURL}/v1/observed/$(echo -n "${snap.serverURL}" | basenc
           <p class="text-sm leading-relaxed" style={`color:${C.dim};`}>
             Run your own witness:{" "}
             <a
-              href="https://github.com/ValentinKolb/fd0.sh/blob/main/docs/TRANSLOG.md#8"
+              href="https://github.com/k2b-dev/fd0.sh/blob/main/docs/TRANSLOG.md#8"
               style={`color:${C.acc};`}
             >
               docs/TRANSLOG.md §8

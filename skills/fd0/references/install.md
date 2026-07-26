@@ -46,7 +46,7 @@ Normal `fd0 update` preserves the installed flavor. A `yubikey` install stays on
 
 If `fd0` is not on PATH, the install script prints a one-line fix for the user's shell rc — read it back to them, do not invent your own.
 
-Windows: not yet built by the release pipeline. The binaries cross-compile but the agent's AF_UNIX socket is unvalidated. Track at https://github.com/ValentinKolb/fd0.sh/issues.
+Windows: not yet built by the release pipeline. The binaries cross-compile but the agent's AF_UNIX socket is unvalidated. Track at https://github.com/k2b-dev/fd0.sh/issues.
 
 ## fd0 Desktop
 
@@ -66,12 +66,12 @@ curl -fsSL https://fd0.sh/install-desktop | sh -s -- --uninstall
 
 ## This skill
 
-This skill lives at `skills/fd0/` inside the `ValentinKolb/fd0.sh` repository. The expected install path on the user's machine is `~/.claude/skills/fd0/` (or whatever skill directory their agent runtime reads from).
+This skill lives at `skills/fd0/` inside the `k2b-dev/fd0.sh` repository. The expected install path on the user's machine is `~/.claude/skills/fd0/` (or whatever skill directory their agent runtime reads from).
 
 ### Recommended — `bunx skills`
 
 ```bash
-bunx skills add ValentinKolb/fd0.sh
+bunx skills add k2b-dev/fd0.sh
 ```
 
 The installer clones the repo, finds the `skills/fd0/` directory, and copies it to the local skill directory. After install, the agent loads the SKILL.md on the next session start.
@@ -80,7 +80,7 @@ The installer clones the repo, finds the `skills/fd0/` directory, and copies it 
 
 ```bash
 # Clone the repo
-git clone https://github.com/ValentinKolb/fd0.sh.git /tmp/fd0.sh
+git clone https://github.com/k2b-dev/fd0.sh.git /tmp/fd0.sh
 
 # Copy the skill
 mkdir -p ~/.claude/skills
@@ -106,7 +106,7 @@ fd0 update
 # fd0 Desktop > Support > Check now
 
 # Update the skill (re-run the install)
-bunx skills add ValentinKolb/fd0.sh
+bunx skills add k2b-dev/fd0.sh
 ```
 
 Both product installers are idempotent. Use `fd0 update` only for CLI-only installations; Desktop-managed commands hand off to the app updater.
