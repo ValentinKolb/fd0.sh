@@ -235,6 +235,13 @@ test("runs the isolated desktop vault end to end", async () => {
     await expect.poll(async () => page.locator(".generated-value code").innerText()).toMatch(/^\d{8}$/);
     await page.getByRole("button", { name: "Support", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Support" })).toBeVisible();
+    // Support has to name who runs the background service, and a service that
+    // is serving must never be reported as needing a restart — the version of
+    // the app and the version of the service are allowed to differ.
+    const backgroundService = page.locator(".setting-group").filter({ hasText: "Background service" });
+    await expect(backgroundService.getByText(/^Running/)).toBeVisible();
+    await expect(page.getByText("The local service needs a restart")).toHaveCount(0);
+    await expect(page.getByText("Another program is running the fd0 service")).toHaveCount(0);
     await page.getByRole("button", { name: "Settings", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
     await railPasswords.click();

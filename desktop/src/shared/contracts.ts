@@ -10,7 +10,15 @@ export type BridgeErrorShape = {
 export type VaultStatus = {
   vaultExists: boolean;
   agentRunning: boolean;
-  agentMismatch?: boolean;
+  /**
+   * Set only when the running background service genuinely cannot serve this
+   * app — a different release version is not such a case. The reason is one
+   * sentence written for the user.
+   */
+  agentIncompatible?: boolean;
+  agentIncompatibleReason?: string;
+  /** Who started the running service: this app, or anything else. */
+  agentStartedBy?: "desktop" | "external";
   unlocked: boolean;
   unlockedSince?: number;
   version?: string;
@@ -290,7 +298,8 @@ export type DiagnosticsSnapshot = {
     running?: boolean;
     version?: string;
     flavor?: string;
-    mismatch?: boolean;
+    startedBy?: "desktop" | "external";
+    incompatible?: boolean;
   };
   vault: {
     exists?: boolean;

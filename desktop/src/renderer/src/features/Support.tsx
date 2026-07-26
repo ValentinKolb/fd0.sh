@@ -79,19 +79,37 @@ export function Support(props: Record<string, never>): JSX.Element {
       });
   }
 
+  function recheckService(): void {
+    void vault.checkLockState();
+    void refreshDiagnostics();
+  }
+
   const problems = createMemo<Problem[]>(() => {
     const status = vault.status();
     if (!status) return [];
     const list: Problem[] = [];
 
-    if (status.agentMismatch) {
+    // Only a service this app genuinely cannot talk to is a problem. A service
+    // from another release is not: see the Background service section below.
+    if (status.agentIncompatible && status.agentStartedBy === "desktop") {
       list.push({
         short: "the local service needs a restart",
         title: "The local service needs a restart",
-        detail:
-          "fd0 and the service that holds your vault are running different versions. Restarting locks the vault once — nothing stored is lost.",
+        detail: `${status.agentIncompatibleReason ?? "This app cannot use the running service."} Restarting locks the vault once — nothing stored is lost.`,
         actionLabel: "Restart local service",
         run: restartService,
+      });
+    }
+
+    // Not ours to restart: the fix is in the terminal that started it, so the
+    // button here only re-checks rather than pretending this app can act.
+    if (status.agentIncompatible && status.agentStartedBy !== "desktop") {
+      list.push({
+        short: "another program runs the service fd0 needs",
+        title: "Another program is running the fd0 service",
+        detail: `${status.agentIncompatibleReason ?? "This app cannot use the running service."} fd0 Desktop does not stop a service it did not start. Run \`fd0 agent stop\` in the terminal you started it from, then check again.`,
+        actionLabel: "Check again",
+        run: recheckService,
       });
     }
 
@@ -136,16 +154,63 @@ export function Support(props: Record<string, never>): JSX.Element {
 
   const serviceValue = createMemo(() => {
     const status = vault.status();
-    if (status?.agentMismatch) return "Needs restart";
+    if (status?.agentIncompatible) return "Unusable";
     return status?.agentRunning ? "Running" : "Stopped";
+  });
+
+  /**
+   * Who owns the fd0 background service.
+   *
+   * Exactly one service serves a vault, and it is just as normal for the fd0
+   * command line to have started it as for this app to have. That used to be
+   * invisible — and reported as a version mismatch — so this section names the
+   * owner, the version it reports, and says plainly when a difference is fine.
+   */
+  const serviceHeadline = createMemo(() => {
+    const status = vault.status();
+    if (!status?.agentRunning) return "Not running";
+    if (status.agentIncompatible) return "Running, but this app cannot use it";
+    return status.agentStartedBy === "desktop"
+      ? "Running — started by fd0 Desktop"
+      : "Running — started outside fd0 Desktop";
+  });
+
+  const serviceDetail = createMemo(() => {
+    const status = vault.status();
+    if (!status?.agentRunning) {
+      return "fd0 starts the service when you unlock. It holds your keys while the vault is unlocked, and the fd0 command line uses the same one.";
+    }
+    const reason = status.agentIncompatibleReason ?? "This app cannot use the running service.";
+    if (status.agentIncompatible) {
+      return status.agentStartedBy === "desktop"
+        ? `${reason} Restart the local service to replace it.`
+        : `${reason} fd0 Desktop does not stop a service it did not start. Run \`fd0 agent stop\` in the terminal you started it from, then check again.`;
+    }
+    if (status.agentStartedBy === "desktop") {
+      return "This app started it and keeps it running. The fd0 command line shares the same service.";
+    }
+    const different = status.version && status.expectedVersion && status.version !== status.expectedVersion;
+    return "Something else started it — most likely `fd0 unlock` in a terminal. fd0 Desktop shares that service instead of replacing it, so your terminal session stays unlocked."
+      + (different
+        ? ` It reports ${status.version}, this app is ${status.expectedVersion}: different versions are fine as long as both speak the same service protocol, and these do.`
+        : "");
+  });
+
+  const serviceBuild = createMemo(() => {
+    const status = vault.status();
+    if (!status?.agentRunning) return "";
+    const flavor = status.flavor === "yubikey" ? "YubiKey build" : "standard build";
+    return `${status.version || "unknown version"} · ${flavor}`;
   });
 
   const versionValue = createMemo(() => {
     const status = vault.status();
-    const version = status?.expectedVersion || status?.version || "Development";
+    // This app's own version and build. The background service reports its own
+    // below, and the two are allowed to differ.
+    const version = status?.expectedVersion || "Development";
     // The YubiKey variant changes which unlock methods exist, so it belongs
     // next to the version rather than in a row of its own.
-    return status?.flavor === "yubikey" ? `${version} · YubiKey support` : version;
+    return status?.expectedFlavor === "yubikey" ? `${version} · YubiKey support` : version;
   });
 
   const syncValue = createMemo(() => {
@@ -283,6 +348,19 @@ export function Support(props: Record<string, never>): JSX.Element {
               <span>Recovery file</span>
               <strong>{vault.status()?.readiness?.recoveryVerifiedAt ? "Verified" : "Not set up"}</strong>
             </div>
+          </div>
+        </section>
+
+        <section class="setting-group">
+          <h2 class="eyebrow">Background service</h2>
+          <div class="setting-row setting-static">
+            <div>
+              <strong>{serviceHeadline()}</strong>
+              <small>{serviceDetail()}</small>
+            </div>
+            <Show when={serviceBuild()}>
+              <span class="setting-value">{serviceBuild()}</span>
+            </Show>
           </div>
         </section>
 

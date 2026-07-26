@@ -180,6 +180,11 @@ function runPackagedRelay(): number | null {
       ...runtimeEnvironment(),
       FD0_DESKTOP_MANAGED: "1",
       FD0_DESKTOP_APP: process.env.APPIMAGE || process.execPath,
+      // Only the agent relay — the systemd unit's ExecStart — is this app
+      // starting a service of its own. An agent that `fd0 unlock` happens to
+      // spawn through the CLI relay belongs to that shell session, and marking
+      // it as ours would licence this app to stop it.
+      ...(relay.binary === "fd0-agent" ? { FD0_AGENT_STARTED_BY: "desktop" } : {}),
     },
     stdio: "inherit",
   });
@@ -731,7 +736,7 @@ async function diagnosticSnapshot(): Promise<DiagnosticsSnapshot> {
   );
   const healthy = startupStatus.state === "ready"
     && Boolean(status?.agentRunning)
-    && !status?.agentMismatch
+    && !status?.agentIncompatible
     && effectiveSyncState.state !== "error"
     && updateState.state !== "error"
     && (!status?.vaultExists || Boolean(status.readiness?.firstSyncAt && status.readiness?.recoveryVerifiedAt));
@@ -758,7 +763,8 @@ async function diagnosticSnapshot(): Promise<DiagnosticsSnapshot> {
       running: status?.agentRunning,
       version: status?.version,
       flavor: status?.flavor,
-      mismatch: status?.agentMismatch,
+      startedBy: status?.agentStartedBy,
+      incompatible: status?.agentIncompatible,
     },
     vault: {
       exists: status?.vaultExists,
@@ -1196,20 +1202,55 @@ function registerIPC(client: BridgeSupervisor): void {
   });
 }
 
+/**
+ * Makes sure an fd0 background service is serving this vault before an unlock.
+ *
+ * There is exactly one agent per FD0_HOME. If the user already unlocked from a
+ * terminal, that agent owns the socket and our login item / systemd unit cannot
+ * start a second one — by design. So this checks first and starts the service
+ * only when nothing is serving: a running, usable agent is simply used, whoever
+ * started it. Startup must not fail because our service could not start while a
+ * working agent is present.
+ */
 async function ensureManagedAgent(client: BridgeSupervisor): Promise<void> {
   if (!nativeAgentManaged) return;
-  await agentLifecycle.assertReady(await agentLifecycle.ensureRunning());
   let status = await client.request<VaultStatus>("vault.status", {});
-  if (status.agentRunning && status.agentMismatch) {
+  if (usableAgent(status)) return;
+  if (status.agentRunning) {
+    // Running but unusable. Ours to restart — or someone else's to leave alone.
+    if (status.agentStartedBy !== "desktop") throw new Error(agentBlockedMessage(status));
     await agentLifecycle.restart();
+  } else {
+    await agentLifecycle.assertReady(await agentLifecycle.ensureRunning());
   }
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
     status = await client.request<VaultStatus>("vault.status", {});
-    if (status.agentRunning && !status.agentMismatch) return;
+    if (usableAgent(status)) return;
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
   }
-  throw new Error("The fd0 background service did not become ready");
+  throw new Error(agentBlockedMessage(status));
+}
+
+function usableAgent(status: VaultStatus): boolean {
+  return status.agentRunning && !status.agentIncompatible;
+}
+
+/**
+ * Names the actual obstacle. Sending someone to repair this app's service is
+ * useless — and alarming — when the real situation is that another program is
+ * running a perfectly healthy service of its own.
+ */
+function agentBlockedMessage(status: VaultStatus): string {
+  if (!status.agentRunning) {
+    return "The fd0 background service did not start. Open Support and repair the local service.";
+  }
+  const reason = status.agentIncompatibleReason ?? "It reports a state this app cannot work with.";
+  if (status.agentStartedBy === "desktop") {
+    return `The fd0 background service restarted but this app still cannot use it. ${reason}`;
+  }
+  return `Another program started the fd0 background service for this vault and this app cannot use it. ${reason}`
+    + " fd0 Desktop does not stop a service it did not start: run `fd0 agent stop` in the terminal you started it from, then try again.";
 }
 
 function mimeForExtension(extension: string): string {

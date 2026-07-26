@@ -15,5 +15,13 @@
   </dict>
   <key>ProcessType</key>
   <string>Background</string>
+  <!-- Marks the agent started by this service as one fd0 Desktop supervises, so
+       the app can tell it apart from an agent the user started in a terminal —
+       which it must never stop. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>FD0_AGENT_STARTED_BY</key>
+    <string>desktop</string>
+  </dict>
 </dict>
 </plist>
