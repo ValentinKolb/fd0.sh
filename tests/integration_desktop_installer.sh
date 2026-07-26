@@ -61,7 +61,8 @@ make_client_release() {
   version=$1
   release="$BASE/releases/download/v$version"
   staging="$BASE/client-$version"
-  mkdir -p "$release" "$staging"
+  yubikey_staging="$BASE/client-$version-yubikey"
+  mkdir -p "$release" "$staging" "$yubikey_staging"
   cat > "$staging/fd0" <<EOF
 #!/bin/sh
 if [ "\${1:-}" = version ]; then printf 'fd0 $version standard\\n'; fi
@@ -71,13 +72,23 @@ EOF
 printf 'fd0-agent $version\\n'
 EOF
   chmod +x "$staging/fd0" "$staging/fd0-agent"
+  cat > "$yubikey_staging/fd0" <<EOF
+#!/bin/sh
+if [ "\${1:-}" = version ]; then printf 'fd0 $version yubikey\\n'; fi
+EOF
+  cat > "$yubikey_staging/fd0-agent" <<EOF
+#!/bin/sh
+printf 'fd0-agent $version yubikey\\n'
+EOF
+  chmod +x "$yubikey_staging/fd0" "$yubikey_staging/fd0-agent"
   tar -czf "$release/fd0_linux_arm64.tar.gz" -C "$staging" fd0 fd0-agent
+  tar -czf "$release/fd0_yubikey_linux_arm64.tar.gz" -C "$yubikey_staging" fd0 fd0-agent
   (
     cd "$release"
     if command -v sha256sum >/dev/null 2>&1; then
-      sha256sum fd0_linux_arm64.tar.gz
+      sha256sum fd0_linux_arm64.tar.gz fd0_yubikey_linux_arm64.tar.gz
     else
-      shasum -a 256 fd0_linux_arm64.tar.gz | awk '{print $1 "  " $2}'
+      shasum -a 256 fd0_linux_arm64.tar.gz fd0_yubikey_linux_arm64.tar.gz | awk '{print $1 "  " $2}'
     fi
   ) > "$release/checksums.txt"
   printf 'client-v%s\n' "$version" > "$release/checksums.txt.sigstore.json"
@@ -219,6 +230,39 @@ run_installer() {
     sh "$ROOT/scripts/install-desktop.sh"
 }
 
+run_interactive() {
+  local answers=$1
+  shift
+  INTERACTIVE_ANSWERS="$answers" python3 - "$@" <<'PY'
+import errno
+import os
+import pty
+import sys
+
+answers = os.environ.pop("INTERACTIVE_ANSWERS").encode()
+pid, master = pty.fork()
+if pid == 0:
+    os.execvp(sys.argv[1], sys.argv[1:])
+
+os.write(master, answers)
+output = bytearray()
+while True:
+    try:
+        chunk = os.read(master, 4096)
+    except OSError as error:
+        if error.errno == errno.EIO:
+            break
+        raise
+    if not chunk:
+        break
+    output.extend(chunk)
+
+_, status = os.waitpid(pid, 0)
+sys.stdout.buffer.write(output)
+raise SystemExit(os.waitstatus_to_exitcode(status))
+PY
+}
+
 MAC_HOME="$BASE/mac-home"
 run_installer "$MAC_HOME" Darwin >/dev/null
 test "$(cat "$MAC_HOME/Applications/fd0.app/Contents/version")" = "desktop app"
@@ -273,15 +317,81 @@ FD0_COSIGN_BIN="$FAKE_BIN/cosign" \
   sh "$ROOT/scripts/install.sh" --desktop --version=0.1.0 --yes >/dev/null
 test "$(HOME="$MAIN_HOME" "$MAIN_HOME/.local/bin/fd0" version)" = "fd0 0.1.0 standard"
 
-CLIENT_HOME="$BASE/client-home"
-CLIENT_PREFIX="$CLIENT_HOME/bin"
-HOME="$CLIENT_HOME" \
+INTERACTIVE_DESKTOP_HOME="$BASE/interactive-desktop-home"
+INTERACTIVE_DESKTOP_OUTPUT=$(HOME="$INTERACTIVE_DESKTOP_HOME" \
+  TEST_UNAME_S=Linux \
+  TEST_UNAME_M=arm64 \
+  PATH="$FAKE_BIN:$PATH" \
+  FD0_DESKTOP_INSTALL_URL="file://$ROOT/scripts/install-desktop.sh" \
+  FD0_RELEASE_BASE="file://$BASE/releases" \
+  FD0_COSIGN_BIN="$FAKE_BIN/cosign" \
+    run_interactive $'\n\n' sh "$ROOT/scripts/install.sh" --version=0.1.0)
+printf '%s\n' "$INTERACTIVE_DESKTOP_OUTPUT" | grep -Fq "What would you like to install?"
+printf '%s\n' "$INTERACTIVE_DESKTOP_OUTPUT" | grep -Fq "Select [1]:"
+test "$(HOME="$INTERACTIVE_DESKTOP_HOME" "$INTERACTIVE_DESKTOP_HOME/.local/bin/fd0" version)" = "fd0 0.1.0 standard"
+
+INTERACTIVE_YUBIKEY_HOME="$BASE/interactive-yubikey-home"
+INTERACTIVE_YUBIKEY_PREFIX="$INTERACTIVE_YUBIKEY_HOME/bin"
+INTERACTIVE_YUBIKEY_OUTPUT=$(HOME="$INTERACTIVE_YUBIKEY_HOME" \
+  TEST_UNAME_S=Linux \
+  TEST_UNAME_M=arm64 \
+  PATH="$FAKE_BIN:$PATH" \
+  FD0_RELEASE_BASE="file://$BASE/releases" \
+  FD0_COSIGN_BIN="$FAKE_BIN/cosign" \
+    run_interactive $'2\ny\n\n' sh "$ROOT/scripts/install.sh" \
+      --prefix="$INTERACTIVE_YUBIKEY_PREFIX" --version=0.1.0)
+printf '%s\n' "$INTERACTIVE_YUBIKEY_OUTPUT" | grep -Fq "Include YubiKey support? [y/N]"
+test "$("$INTERACTIVE_YUBIKEY_PREFIX/fd0" version)" = "fd0 0.1.0 yubikey"
+
+INTERACTIVE_UPDATE_HOME="$BASE/interactive-update-home"
+INTERACTIVE_UPDATE_PREFIX="$INTERACTIVE_UPDATE_HOME/bin"
+HOME="$INTERACTIVE_UPDATE_HOME" \
 TEST_UNAME_S=Linux \
 TEST_UNAME_M=arm64 \
 PATH="$FAKE_BIN:$PATH" \
 FD0_RELEASE_BASE="file://$BASE/releases" \
 FD0_COSIGN_BIN="$FAKE_BIN/cosign" \
-  sh "$ROOT/scripts/install.sh" --prefix="$CLIENT_PREFIX" --version=0.1.0 --yes >/dev/null
+  sh "$ROOT/scripts/install.sh" --prefix="$INTERACTIVE_UPDATE_PREFIX" \
+    --version=0.0.9 --yubikey --yes >/dev/null
+if HOME="$INTERACTIVE_UPDATE_HOME" \
+  TEST_UNAME_S=Linux \
+  TEST_UNAME_M=arm64 \
+  PATH="$FAKE_BIN:$PATH" \
+  FD0_RELEASE_BASE="file://$BASE/releases" \
+  FD0_COSIGN_BIN="$FAKE_BIN/cosign" \
+    run_interactive $'\n\nn\n' sh "$ROOT/scripts/install.sh" \
+      --prefix="$INTERACTIVE_UPDATE_PREFIX" --version=0.1.0 >"$BASE/rejected-update-output"; then
+  echo "interactive client update ignored a rejected confirmation" >&2
+  exit 1
+fi
+grep -Fq "Select [2]:" "$BASE/rejected-update-output"
+grep -Fq "Include YubiKey support? [Y/n]" "$BASE/rejected-update-output"
+grep -Fq "proceed with upgrade? [Y/n]" "$BASE/rejected-update-output"
+test "$("$INTERACTIVE_UPDATE_PREFIX/fd0" version)" = "fd0 0.0.9 yubikey"
+
+HOME="$INTERACTIVE_UPDATE_HOME" \
+TEST_UNAME_S=Linux \
+TEST_UNAME_M=arm64 \
+PATH="$FAKE_BIN:$PATH" \
+FD0_RELEASE_BASE="file://$BASE/releases" \
+FD0_COSIGN_BIN="$FAKE_BIN/cosign" \
+  run_interactive $'\n\n\n' sh "$ROOT/scripts/install.sh" \
+    --prefix="$INTERACTIVE_UPDATE_PREFIX" --version=0.1.0 >/dev/null
+test "$("$INTERACTIVE_UPDATE_PREFIX/fd0" version)" = "fd0 0.1.0 yubikey"
+
+CLIENT_HOME="$BASE/client-home"
+CLIENT_PREFIX="$CLIENT_HOME/bin"
+NONINTERACTIVE_OUTPUT=$(HOME="$CLIENT_HOME" \
+TEST_UNAME_S=Linux \
+TEST_UNAME_M=arm64 \
+PATH="$FAKE_BIN:$PATH" \
+FD0_RELEASE_BASE="file://$BASE/releases" \
+FD0_COSIGN_BIN="$FAKE_BIN/cosign" \
+  sh "$ROOT/scripts/install.sh" --prefix="$CLIENT_PREFIX" --version=0.1.0 --yes)
+if printf '%s\n' "$NONINTERACTIVE_OUTPUT" | grep -Fq "What would you like to install?"; then
+  echo "--yes unexpectedly opened the product selection prompt" >&2
+  exit 1
+fi
 test "$("$CLIENT_PREFIX/fd0" version)" = "fd0 0.1.0 standard"
 
 LATEST_HOME="$BASE/latest-client-home"

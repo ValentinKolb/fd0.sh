@@ -941,17 +941,15 @@ $ fd0 sync`}
           </div>
         </div>
         <div class="text-xs mt-3 leading-relaxed max-w-2xl" style={`color:${C.dim};`}>
-          Installs <span style={`color:${C.acc};`}>fd0</span> and{" "}
-          <span style={`color:${C.acc};`}>fd0-agent</span> to{" "}
-          <span style={`color:${C.acc};`}>~/.local/bin</span>.
-          Requires <span style={`color:${C.acc};`}>cosign</span> and
-          authenticates the SHA-256 manifest against the exact release
-          workflow and tag. Add{" "}
-          <span style={`color:${C.acc};`}>--system</span> to install into{" "}
-          <span style={`color:${C.acc};`}>/usr/local/bin</span>,{" "}
-          <span style={`color:${C.acc};`}>--yubikey</span> for the PIV
-          flavor, or <span style={`color:${C.acc};`}>--desktop</span> for one
-          signed app bundle that also owns the CLI and agent. Prefer a{" "}
+          Asks whether to install{" "}
+          <span style={`color:${C.acc};`}>fd0 Desktop</span> or the CLI and
+          agent. The CLI path also offers YubiKey support. Run the same command
+          to update; the current choice stays selected and the installer asks
+          before changing anything. Explicit{" "}
+          <span style={`color:${C.acc};`}>--desktop</span>,{" "}
+          <span style={`color:${C.acc};`}>--flavor</span>, and{" "}
+          <span style={`color:${C.acc};`}>--yes</span> flags remain available
+          for scripted installs. Prefer a{" "}
           <a href={DESKTOP_RELEASE_URL} style={`color:${C.acc};`}>
             downloaded DMG or AppImage
           </a>{" "}
