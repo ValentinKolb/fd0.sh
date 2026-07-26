@@ -125,6 +125,15 @@ func (s *Service) listInventory(ctx context.Context) (InventoryResult, error) {
 	}
 	defer session.Close()
 
+	// A vault written by the retired v1 compactor cannot be replayed until
+	// its scope history is restored from the server. Do it here, before the
+	// first read, so opening the app migrates and then loads rather than
+	// showing a failure the user has no way to act on. No-op (and no network
+	// traffic) for every vault that does not need it.
+	if err := session.MigrateLegacyScopeChains(ctx); err != nil {
+		return InventoryResult{}, mapDomainError(err)
+	}
+
 	result := InventoryResult{
 		Counts: map[string]int{"all": 0, "password": 0, "ssh": 0, "kubernetes": 0, "talos": 0, "secret": 0, "favorite": 0},
 	}

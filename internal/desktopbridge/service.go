@@ -1518,6 +1518,26 @@ func mapDomainError(err error) error {
 	if err == nil {
 		return nil
 	}
+	// Legacy-format vaults come first: they are the one failure a user can
+	// hit on a completely healthy install, and the generic fallback ("fd0
+	// could not complete that action") tells them nothing. Both cases below
+	// leave local state untouched, which is why both say so.
+	if errors.Is(err, cli.ErrLegacyScopeHistoryNeedsServer) {
+		return fail(
+			"legacy_history_repair_offline",
+			"This vault was saved by an older version of fd0 and needs a one-time repair from your fd0 server before its items can be opened.",
+			"Connect this device to the internet and open Sync to finish the repair. Nothing on this device has been changed, so it is safe to try again.",
+			true,
+		)
+	}
+	if errors.Is(err, cli.ErrLegacyScopeHistoryUnverifiable) {
+		return fail(
+			"legacy_history_repair_blocked",
+			"This vault was saved by an older version of fd0, but the history your fd0 server returned does not match the history this device already trusts.",
+			"Run `fd0 sync` from the command line to reconcile the difference, then reopen fd0. Nothing on this device has been changed.",
+			false,
+		)
+	}
 	if errors.Is(err, cli.ErrAgentLocked) {
 		return fail("locked", "Your vault is locked.", "Unlock fd0 to continue.", false)
 	}

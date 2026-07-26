@@ -321,11 +321,34 @@ func (s *Session) replayAndCheckScope(scopeID string) (*chain.ScopeState, error)
 // replayObservedAndCheckScope is replayAndCheckScope with an optional
 // per-version observer threaded into replay. Every check below is the same
 // code both entry points run — the observer only watches.
+//
+// Lazy legacy migration: a chain written by the retired v1 compactor fails
+// replay with chain.ErrScopeHistoryNonContiguous. That rejection is correct
+// and stays, but it is not the end of the story — if (and only if) the file
+// carries the compactor's exact signature, scope_migrate.go can restore the
+// missing span from the server and prove the result against the vault's own
+// sealed tip. So we try once, then re-run the SAME replay. The retry is a
+// full re-verification, not a bypass: nothing is exposed that ReplayScope
+// did not accept.
 func (s *Session) replayObservedAndCheckScope(scopeID string, observe chain.SecretObserver) (*chain.ScopeState, error) {
 	st, err := replayScopeObservedViaAgent(
 		s.Paths.ScopeChain(proto.MustParseScopeID(scopeID)),
 		s.UserSuperPub, s.UserX25519Pub, s.Agent, observe,
 	)
+	if err != nil && errors.Is(err, chain.ErrScopeHistoryNonContiguous) {
+		migrated, mErr := s.migrateLegacyScopeOnRead(scopeID)
+		if mErr != nil {
+			// The actionable "old vault, needs a one-time repair" error
+			// replaces the raw non-contiguity text.
+			return nil, mErr
+		}
+		if migrated {
+			st, err = replayScopeObservedViaAgent(
+				s.Paths.ScopeChain(proto.MustParseScopeID(scopeID)),
+				s.UserSuperPub, s.UserX25519Pub, s.Agent, observe,
+			)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}

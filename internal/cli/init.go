@@ -274,6 +274,14 @@ func RunUnlock(ctx context.Context, agentBin, method string) error {
 		return friendlyUnlockError(err)
 	}
 	fmt.Fprintf(os.Stderr, "✓ vault unlocked (%s)\n", chosen.MethodType)
+	// A vault written by the retired v1 compactor is unreadable until its
+	// scope history is restored from the server. Do it here so the user
+	// never has to know it happened; a failure is a warning, never a failed
+	// unlock (the vault is unlocked either way, and every read path retries
+	// the migration on its own).
+	if err := MigrateLegacyScopesAfterUnlock(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "warn: %v\n", err)
+	}
 	if shouldHintInteractiveFirstSync(paths.Config, ur) {
 		fmt.Fprintln(os.Stderr, "  run `fd0 sync` once to verify and pin the server; background sync resumes after that")
 	}

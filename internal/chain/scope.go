@@ -138,6 +138,25 @@ func ReplayScopeObserved(
 	if err != nil {
 		return nil, err
 	}
+	return ReplayScopeEvents(events, ownSuperPub, ownX25519Pub, opener, observe)
+}
+
+// ReplayScopeEvents is ReplayScopeObserved over an already-decoded event
+// slice. ReplayScopeObserved is a thin wrapper around it, so the two share
+// one verification loop — a candidate history held in memory is checked by
+// exactly the same code that checks a file, and there is no second, weaker
+// replay to drift out of sync.
+//
+// The legacy-history migration (cli.Session.MigrateLegacyScopeChains) uses
+// this to replay a server-supplied candidate BEFORE anything is written to
+// disk: the candidate has to replay to the tip the vault already binds, and
+// that has to be provable without first committing it.
+func ReplayScopeEvents(
+	events []*proto.ScopeEvent,
+	ownSuperPub, ownX25519Pub []byte,
+	opener Opener,
+	observe SecretObserver,
+) (*ScopeState, error) {
 	if len(events) == 0 {
 		return nil, nil
 	}
