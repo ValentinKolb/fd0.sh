@@ -17,7 +17,9 @@ import {
   DocsOverview,
   DocsConcepts,
   DocsInstall,
+  DocsDesktop,
   DocsCli,
+  DocsPass,
   DocsSsh,
   DocsTalos,
   DocsSync,
@@ -27,7 +29,6 @@ import {
   DocsTroubleshooting,
 } from "./pages/Docs";
 import Home from "./pages/Home";
-import Impressum from "./pages/Impressum";
 import {
   SpecOverview,
   SpecWire,
@@ -41,6 +42,7 @@ import Witness from "./pages/Witness";
 import { fetchStableDesktopReleases } from "./lib/desktop-releases";
 
 const VERSION = process.env.FD0_WEBSITE_VERSION ?? "dev";
+const IMPRESSUM_URL = "https://impressum.valentin-kolb.com";
 const METRICS_TOKEN = (process.env.FD0_WEBSITE_METRICS_TOKEN ?? "").trim();
 const installScriptPath = (name: "install.sh" | "install-desktop.sh"): string =>
   process.env.NODE_ENV === "production"
@@ -76,6 +78,7 @@ const m = {
 };
 const metricPaths = new Set([
   ...SEO_ROUTES.map((route) => route.path),
+  "/impressum",
   "/health",
   "/version",
   "/metrics",
@@ -88,6 +91,7 @@ const metricPaths = new Set([
   "/install-desktop.sh",
   "/files/compose.yml",
   "/api/desktop/releases",
+  "/download",
 ]);
 export const metricPathLabel = (path: string): string => {
   if (metricPaths.has(path)) return path;
@@ -228,6 +232,26 @@ const app = new Hono()
       api_version: "v1",
     }),
   )
+  /*
+   * One click to the newest desktop build.
+   *
+   * GitHub's own /releases/latest returns the most recent release of ANY kind,
+   * and this repo tags client-v* and desktop-v* into the same feed — so a CLI
+   * release landing after a desktop one would send people to a page with no
+   * app on it. This resolves the newest stable desktop-v* tag instead, and
+   * falls back to the filtered release list when the feed cannot be read.
+   */
+  .get("/download", async (c) => {
+    const fallback = "https://github.com/ValentinKolb/fd0.sh/releases?q=desktop-v&expanded=true";
+    try {
+      const releases = await fetchStableDesktopReleases();
+      const newest = releases[0]?.tag_name;
+      if (!newest) return c.redirect(fallback, 302);
+      return c.redirect(`https://github.com/ValentinKolb/fd0.sh/releases/tag/${newest}`, 302);
+    } catch {
+      return c.redirect(fallback, 302);
+    }
+  })
   .get("/api/desktop/releases", async (c) => {
     try {
       const releases = await fetchStableDesktopReleases();
@@ -308,7 +332,9 @@ const app = new Hono()
   .get("/docs", ...DocsOverview)
   .get("/docs/concepts", ...DocsConcepts)
   .get("/docs/install", ...DocsInstall)
+  .get("/docs/desktop", ...DocsDesktop)
   .get("/docs/cli", ...DocsCli)
+  .get("/docs/pass", ...DocsPass)
   .get("/docs/ssh", ...DocsSsh)
   .get("/docs/talos", ...DocsTalos)
   .get("/docs/sync", ...DocsSync)
@@ -324,7 +350,10 @@ const app = new Hono()
   .get("/spec/translog", ...SpecTranslog)
   .get("/spec/threats", ...SpecThreats)
   .get("/witness", ...Witness)
-  .get("/impressum", ...Impressum)
+  // The legal notice is maintained in one place for every site the same
+  // provider runs. Temporary (302) rather than permanent so the route can
+  // come back here without fighting a cached redirect.
+  .get("/impressum", (c) => c.redirect(IMPRESSUM_URL, 302))
   // Error handlers — designed pages instead of plaintext.
   .notFound(async (c) => {
     const res = await renderHTML(() => <ErrorPage content={errorPresets[404]} />);

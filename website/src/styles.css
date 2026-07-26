@@ -118,6 +118,27 @@
     color: inherit;
   }
 
+  /* Every interactive element gets the same visible focus ring. The
+     default UA outline is invisible on #0b0d0c, and several controls
+     here are bordered <a>s that otherwise show nothing at all when
+     tabbed to. :focus-visible so mouse clicks stay quiet. */
+  a:focus-visible,
+  button:focus-visible,
+  summary:focus-visible,
+  [tabindex]:focus-visible {
+    outline: 2px solid #ffb000;
+    outline-offset: 3px;
+  }
+
+  /* Headlines wrap on meaning, not on the last word falling off a
+     cliff. Capped at h1–h3 so body copy keeps normal (cheaper)
+     line breaking. */
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+  }
+
   * {
     scrollbar-width: thin;
     scrollbar-color: rgba(255, 176, 0, 0.32) rgba(232, 230, 224, 0.04);
@@ -215,9 +236,12 @@
  *   dim     comments, prompts          — background voice
  *   fg      everything else            — neutral payload
  */
+/* Comments and prompts carry instructions ("# Alice exports her card"),
+ * so they have to clear WCAG AA body text on #0b0d0c. #6b6960 measured
+ * 3.55:1; #807e74 measures 4.77:1 and keeps the same warm-grey family. */
 .hl-comment,
 .hl-prompt {
-  color: #6b6960;
+  color: #807e74;
 }
 .hl-string {
   color: #a3c97a;
@@ -247,6 +271,46 @@
   overflow-x: auto;
   max-width: 100%;
   min-width: 0;
+}
+
+/* Digits that sit in a column — step numbers, sequence labels, the
+ * property strip — need fixed advance widths or "01"/"02" visibly
+ * shift against each other. Scoped rather than global so prose keeps
+ * proportional figures. */
+.fd0-tnum {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+/* ─── buttons ────────────────────────────────────────────────────────
+ * The three variants carry their colours inline (so the C constants
+ * stay the single source of truth); only the hover/active states,
+ * which inline styles cannot express, live here. */
+.fd0-btn {
+  text-decoration: none;
+}
+.fd0-btn-primary:hover {
+  background: #ffc23a !important;
+  border-color: #ffc23a !important;
+}
+.fd0-btn-secondary:hover {
+  border-color: rgba(255, 176, 0, 0.45) !important;
+  color: #fff;
+}
+.fd0-btn-ghost:hover {
+  color: #e8e6e0 !important;
+  text-decoration: underline;
+  text-decoration-color: rgba(255, 176, 0, 0.6);
+  text-underline-offset: 4px;
+}
+
+/* Inline mono runs in prose get the same ligature kill as .shell blocks.
+ * Without it Geist Mono composes `--` into a long dash that visually
+ * swallows the space in front of it: "takes --json" reads as
+ * "takes—json". Flags have to look the way they type. */
+.fd0-mono {
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "calt" 0;
 }
 
 /* ─── mobile horizontal-overflow safety net ────────────────────────

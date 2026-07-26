@@ -7,7 +7,13 @@
 
 import { setPageSeo, ssr } from "../../config";
 import { Shell } from "../lib/shell";
-import { C, FONT_MONO, DocsLayout } from "../lib/chrome";
+import {
+  C,
+  FONT_MONO,
+  DocsLayout,
+  Shot,
+  DESKTOP_RELEASE_URL,
+} from "../lib/chrome";
 
 const H2 = (p: { children: any; id?: string }) => (
   <h2 id={p.id} class="text-xl md:text-[1.45rem] font-medium mt-12 mb-4">
@@ -22,7 +28,9 @@ const P = (p: { children: any }) => (
 );
 
 const Code = (p: { children: any }) => (
-  <span style={`color:${C.acc};font-family:${FONT_MONO};`}>{p.children}</span>
+  <span class="fd0-mono" style={`color:${C.acc};font-family:${FONT_MONO};`}>
+    {p.children}
+  </span>
 );
 
 const Box = (p: { children: any }) => (
@@ -55,7 +63,7 @@ const Cmd = (p: { signature: string; body: any; example?: string }) => (
     style={`background:${C.bgRaised};border:1px solid ${C.border};`}
   >
     <div
-      class="text-[14px] font-medium mb-2"
+      class="text-[14px] font-medium mb-2 fd0-mono"
       style={`color:${C.acc};font-family:${FONT_MONO};`}
     >
       {p.signature}
@@ -71,6 +79,29 @@ const Cmd = (p: { signature: string; body: any; example?: string }) => (
         <Shell>{p.example}</Shell>
       </div>
     ) : null}
+  </div>
+);
+
+/**
+ * Primary download call to action. Used at the top of the Desktop page and
+ * in the install flow — the two places a reader who came for the app looks
+ * first.
+ */
+const DownloadCta = (p: { note: any }) => (
+  <div
+    class="p-5 mb-6 flex flex-col gap-3"
+    style={`background:${C.bgRaised};border:1px solid ${C.acc}55;`}
+  >
+    <a
+      href={DESKTOP_RELEASE_URL}
+      class="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium self-start"
+      style={`background:${C.acc};color:#0a0a0a;border:1px solid ${C.acc};`}
+    >
+      Download fd0 Desktop →
+    </a>
+    <div class="text-[13px] leading-relaxed" style={`color:${C.dim};`}>
+      {p.note}
+    </div>
   </div>
 );
 
@@ -104,8 +135,10 @@ const OverviewBody = () => (
 
     <TileGrid>
       <Tile href="/docs/install" title="Start here" body="Install the client, create a vault, store the first secret, and sync." />
+      <Tile href="/docs/desktop" title="Desktop app" body="Download fd0 Desktop for macOS or Linux and see what the app holds." />
       <Tile href="/docs/concepts" title="Concepts" body="The small vocabulary used by every fd0 command." />
-      <Tile href="/docs/cli" title="Daily use" body="Secrets, scopes, cards, membership, and local health checks." />
+      <Tile href="/docs/cli" title="Daily use" body="One grammar for every module, plus scopes, sharing, and health checks." />
+      <Tile href="/docs/pass" title="Passwords" body="Login items, TOTP, passkeys, attachments, and the interactive browser." />
       <Tile href="/docs/ssh" title="SSH" body="Scope-shared SSH keys and host aliases through fd0-agent." />
       <Tile href="/docs/talos" title="Talos and Kube" body="Store, render, merge, and share Talos and Kubernetes configs." />
       <Tile href="/docs/sync" title="Sync" body="What sync sends, what it verifies, and how automatic refresh works." />
@@ -118,9 +151,14 @@ const OverviewBody = () => (
 $ fd0 init
 $ fd0 unlock
 $ fd0 scope create --label work
-$ fd0 set DEPLOY_KEY "ghp_xxxxxxxxxxxxxxxxxxxx" --scope work
+$ fd0 secret set DEPLOY_KEY "ghp_xxxxxxxxxxxxxxxxxxxx" --scope work
 $ fd0 sync
-$ fd0 get DEPLOY_KEY --scope work`}</Box>
+$ fd0 secret get DEPLOY_KEY --scope work`}</Box>
+    <P>
+      Prefer a window? <Link href="/docs/desktop">fd0 Desktop</Link> covers the
+      same vault on macOS and Linux, and the installer can put the app, the
+      CLI, and the agent on the machine in one step.
+    </P>
 
     <H2>Where details live</H2>
     <P>
@@ -229,32 +267,29 @@ const ConceptsBody = () => {
 const InstallBody = () => (
   <>
     <P>
-      Install the fd0 client on each machine that should hold secrets. The
-      hosted service at fd0.sh is the default backend; self-hosted clients use
-      the same binary with a different <Code>[sync].server</Code>.
+      Install fd0 on each machine that should hold secrets. The hosted service
+      at fd0.sh is the default backend; self-hosted clients use the same
+      binaries with a different <Code>[sync].server</Code>.
+    </P>
+    <P>
+      There are two ways in, and they are not exclusive. Take{" "}
+      <Link href="/docs/desktop">fd0 Desktop</Link> if you want the app — the
+      installer can hand it the <Code>fd0</Code> and <Code>fd0-agent</Code>{" "}
+      commands too. Take the CLI alone on servers and machines where a window
+      would never open.
     </P>
 
-    <H2>Install Cosign</H2>
-    <Box>{`$ brew install cosign   # macOS or Linuxbrew
-$ cosign version`}</Box>
-    <P>
-      The CLI-only installer requires <Link href="https://docs.sigstore.dev/cosign/system_config/installation/">Cosign</Link>{" "}
-      to authenticate release manifests. The Desktop installer downloads an
-      exact pinned verifier when needed, so Desktop users do not install
-      release tools manually.
-    </P>
-    <H2>Install the client</H2>
-    <Box>{`$ curl -fsSL https://fd0.sh/install | sh
-$ fd0 version
-fd0 <version> standard`}</Box>
-    <P>
-      The installer picks Linux or macOS, amd64 or arm64, verifies SHA-256,
-      authenticates the manifest against the exact fd0 release workflow and
-      tag with Cosign, and writes <Code>fd0</Code> plus{" "}
-      <Code>fd0-agent</Code> to <Code>~/.local/bin</Code>. Use{" "}
-      <Code>--system</Code> to install into <Code>/usr/local/bin</Code>.
-    </P>
-    <H2>Install fd0 Desktop</H2>
+    <H2 id="desktop">Install fd0 Desktop</H2>
+    <DownloadCta
+      note={
+        <>
+          Signed DMGs for macOS and AppImage, DEB, and RPM builds for Linux, on
+          x64 and arm64. Downloading the DMG or AppImage directly installs the
+          app and its bundled agent; it does not claim the{" "}
+          <Code>fd0</Code> command. Use the script below when it should.
+        </>
+      }
+    />
     <Box>{`$ curl -fsSL https://fd0.sh/install | sh -s -- --desktop`}</Box>
     <P>
       This installs one versioned bundle containing fd0 Desktop, the CLI, and
@@ -264,16 +299,54 @@ fd0 <version> standard`}</Box>
       Talos contexts through the same local agent.
     </P>
     <P>
-      A DMG copied into <Code>/Applications</Code> or a directly launched
-      AppImage installs the GUI and its bundled service without taking ownership
-      of shell command paths. Use the script when Desktop should also provide
-      the <Code>fd0</Code> and <Code>fd0-agent</Code> commands.
+      The desktop installer verifies SHA-256 for every install and always
+      authenticates the release manifest. If Cosign is missing it downloads a
+      pinned Cosign 3.0.6 binary and checks its hard-coded hash first, so you
+      do not install release tooling by hand. On macOS it also verifies the app
+      signature and the Gatekeeper assessment before replacing anything.
     </P>
-    <Box>{`$ curl -fsSL https://fd0.sh/install-desktop | sh -s -- --uninstall`}</Box>
+    <Box>{`$ curl -fsSL https://fd0.sh/install-desktop | sh -s -- --system
+$ curl -fsSL https://fd0.sh/install-desktop | sh -s -- --version=desktop-v1.2.3
+$ curl -fsSL https://fd0.sh/install-desktop | sh -s -- --uninstall`}</Box>
     <P>
-      Uninstall removes the app and its managed command wrappers. Existing
-      standalone fd0 commands are restored when present. It does not remove{" "}
-      <Code>~/.fd0</Code> or your vault data.
+      <Code>--system</Code> installs for every user —{" "}
+      <Code>/Applications</Code> on macOS, <Code>/usr/local/bin</Code> on
+      Linux — instead of the per-user default.{" "}
+      <Code>--version=desktop-vX.Y.Z</Code> pins a release, and going backwards
+      also needs <Code>--allow-downgrade</Code>. <Code>--uninstall</Code>{" "}
+      removes the app and its managed command wrappers and restores any
+      standalone <Code>fd0</Code> commands it displaced. It does not remove{" "}
+      <Code>~/.fd0</Code> or your vault data. Add <Code>-y</Code> to skip the
+      confirmation prompt.
+    </P>
+
+    <H2>Install the CLI</H2>
+    <Box>{`$ brew install cosign   # macOS or Linuxbrew
+$ cosign version`}</Box>
+    <P>
+      The CLI-only installer requires <Link href="https://docs.sigstore.dev/cosign/system_config/installation/">Cosign</Link>{" "}
+      to authenticate release manifests. Install it first.
+    </P>
+    <Box>{`$ curl -fsSL https://fd0.sh/install | sh
+$ fd0 version
+fd0 <version> standard`}</Box>
+    <P>
+      The installer picks Linux or macOS, amd64 or arm64, verifies SHA-256,
+      authenticates the manifest against the exact fd0 release workflow and
+      tag with Cosign, and writes <Code>fd0</Code> plus{" "}
+      <Code>fd0-agent</Code> to <Code>~/.local/bin</Code>. It doubles as the
+      upgrade path: it detects an existing install, prints{" "}
+      <Code>current → new</Code>, and asks before touching anything.
+    </P>
+    <P>
+      <Code>--system</Code> installs into <Code>/usr/local/bin</Code> and{" "}
+      <Code>--prefix=DIR</Code> installs anywhere else.{" "}
+      <Code>--version=vX.Y.Z</Code> pins a release (with{" "}
+      <Code>--allow-downgrade</Code> to move backwards),{" "}
+      <Code>--flavor=auto|standard|yubikey</Code> chooses the build,{" "}
+      <Code>--yubikey</Code> is the shortcut for the PIV one, and{" "}
+      <Code>-y</Code> answers the upgrade prompt. <Code>FD0_VERSION</Code> and{" "}
+      <Code>FD0_FLAVOR</Code> do the same from the environment.
     </P>
     <H2>Install the YubiKey flavor</H2>
     <Box>{`$ curl -fsSL https://fd0.sh/install | sh -s -- --yubikey
@@ -312,11 +385,33 @@ $ fd0 update --flavor=yubikey`}</Box>
       socket path has not been validated on Windows.
     </Note>
 
+    <H2>Teach your coding agent about fd0</H2>
+    <P>
+      fd0 ships an agent skill in the same repository. Installing it lets
+      Claude Code and other skill-aware runtimes recognise "save this deploy
+      key" or "share the prod password with bob" as fd0 work, and reach for
+      the right command instead of guessing at one.
+    </P>
+    <Box>{`$ bunx skills add ValentinKolb/fd0.sh`}</Box>
+    <P>
+      The installer copies <Code>skills/fd0/</Code> into your agent's skill
+      directory — usually <Code>~/.claude/skills/fd0/</Code>. The skill loads
+      on the next session. If your runtime uses npm rather than Bun,{" "}
+      <Code>npx skills add ValentinKolb/fd0.sh</Code> does the same thing, and
+      copying the directory by hand works just as well.
+    </P>
+    <Note>
+      The skill covers the whole surface — vaults and scopes, the password
+      manager, SSH, Kubernetes and Talos, sharing, recovery and the failure
+      modes worth knowing. It carries no secrets and needs no access to your
+      vault; it only teaches the agent which command to run.
+    </Note>
+
     <H2>Create a vault</H2>
     <Box>{`$ fd0 init
 $ fd0 unlock
 $ fd0 scope create --label work
-$ fd0 set API_TOKEN "secret-value" --scope work
+$ fd0 secret set API_TOKEN "secret-value" --scope work
 $ fd0 sync`}</Box>
     <P>
       <Code>fd0 init</Code> creates your identity and seals the vault under a
@@ -337,6 +432,210 @@ EOF`}</Box>
   </>
 );
 
+const DesktopBody = () => (
+  <>
+    <P>
+      fd0 Desktop is the app for the same vault the CLI uses. It runs on macOS
+      and Linux, keeps every item type in one searchable list, and reaches the
+      vault through the local agent rather than around it.
+    </P>
+
+    <DownloadCta
+      note={
+        <>
+          Signed DMGs for macOS and AppImage, DEB, and RPM builds for Linux, on
+          x64 and arm64. macOS releases are Developer ID signed and notarized;
+          every release ships a Cosign-signed checksum manifest.
+        </>
+      }
+    />
+    <P>
+      To let the app own the <Code>fd0</Code> and <Code>fd0-agent</Code>{" "}
+      commands as well, install it with the script instead. Full flags are on{" "}
+      <Link href="/docs/install#desktop">the install page</Link>.
+    </P>
+    <Box>{`$ curl -fsSL https://fd0.sh/install | sh -s -- --desktop`}</Box>
+
+    <H2>What the app holds</H2>
+    <P>
+      Everything <Code>fd0</Code> stores, in the same scopes, on the same
+      chains:
+    </P>
+    <div class="mb-6">
+      {[
+        [
+          "Passwords",
+          "Login items with typed fields — text, secret, TOTP with a live countdown, passkeys stored as data, and file attachments. Sections group fields inside one item.",
+        ],
+        [
+          "General secrets",
+          "The plain name-and-value records behind fd0 secret set, editable in the same detail pane.",
+        ],
+        [
+          "SSH keys and hosts",
+          "Host, user, port, notes, and the key each host authenticates with. The agent serves those keys over the standard ssh-agent protocol.",
+        ],
+        [
+          "Kubeconfigs and Talos contexts",
+          "Cluster credentials alongside everything else, rendered to disk by the same sync that pulls them.",
+        ],
+        [
+          "Sharing",
+          "Move an item into a shared scope and the scope's members get it on their next sync. Removing a member rotates the scope key.",
+        ],
+        [
+          "History",
+          "Each item keeps its earlier versions and can be restored to one of them.",
+        ],
+      ].map(([term, text]) => (
+        <div
+          class="grid sm:grid-cols-[11rem_1fr] gap-x-6 gap-y-1 py-3"
+          style={`border-top:1px solid ${C.border};`}
+        >
+          <div class="text-sm font-medium" style={`color:${C.acc};`}>
+            {term}
+          </div>
+          <div class="text-[15px] leading-relaxed" style={`color:${C.dim};`}>
+            {text}
+          </div>
+        </div>
+      ))}
+    </div>
+
+    <H2>The app, screen by screen</H2>
+    <div class="grid gap-5 mb-6">
+    </div>
+
+    <H2>How it reaches your secrets</H2>
+    <P>
+      The window you see has no Node.js, no filesystem access, no network
+      access, and no direct connection to the agent socket. It talks to the
+      Electron main process over a typed, allowlisted channel, which talks to a
+      versioned Go bridge, which talks to <Code>fd0-agent</Code> — the same
+      long-lived key holder the CLI uses. Clipboard writes, attachment exports,
+      recovery files, and external links all cross a native handler.
+    </P>
+    <Note>
+      A packaged app defaults to <Code>~/.fd0</Code>, so the app and the CLI
+      share one vault on the machine. Startup failures land in a recovery
+      screen with retry, service repair, and redacted diagnostics — they never
+      reset a vault.
+    </Note>
+
+    <H2>Update and remove</H2>
+    <P>
+      Desktop updates itself from Support inside the app. In a
+      desktop-managed installation <Code>fd0 update</Code> points at that
+      updater instead of writing into the signed bundle. Before installing an
+      update, Desktop stops the running agent so the app, CLI, and agent cannot
+      drift apart.
+    </P>
+    <Box>{`$ curl -fsSL https://fd0.sh/install-desktop | sh -s -- --uninstall`}</Box>
+    <P>
+      Uninstalling removes the app and the command wrappers it owns and
+      restores any standalone <Code>fd0</Code> commands it displaced. Your
+      vault in <Code>~/.fd0</Code> is left alone. DEB and RPM installs are
+      removed by the system package manager instead.
+    </P>
+  </>
+);
+
+const PassBody = () => (
+  <>
+    <P>
+      <Code>fd0 pass</Code> is the password manager. An item is a title, a set
+      of URLs, an optional note, and typed fields. It is stored like every
+      other fd0 record, so a login is shared, synced, and revoked exactly the
+      way a secret or an SSH key is — through its scope.
+    </P>
+
+    <H2>Field types</H2>
+    <div class="mb-6">
+      {[
+        ["text", "Plain values shown as-is: usernames, account ids, backup addresses."],
+        ["secret", "Masked in output. Reveal or copy it explicitly."],
+        ["totp", "An otpauth:// URI. fd0 prints or copies the current code."],
+        ["passkey", "Passkey material stored as data, so it syncs and shares with the item."],
+        ["file", "A small attached file — a recovery key, a certificate."],
+        ["section", "A named group. Fields under it use a slash path, like Recovery/code-1."],
+      ].map(([term, text]) => (
+        <div
+          class="grid sm:grid-cols-[7rem_1fr] gap-x-6 gap-y-1 py-3"
+          style={`border-top:1px solid ${C.border};`}
+        >
+          <div
+            class="text-sm font-medium"
+            style={`color:${C.acc};font-family:${FONT_MONO};`}
+          >
+            {term}
+          </div>
+          <div class="text-[15px] leading-relaxed" style={`color:${C.dim};`}>
+            {text}
+          </div>
+        </div>
+      ))}
+    </div>
+
+    <H2>Create an item</H2>
+    <Box>{`$ fd0 pass add github --url https://github.com --scope work
+$ fd0 pass field set github username ada@example.com
+$ fd0 pass field set github password --secret --generate --length 32
+$ fd0 pass totp add github "otpauth://totp/GitHub:ada@example.com?secret=..."`}</Box>
+    <P>
+      <Code>--generate</Code> creates the value without it ever appearing in
+      your shell history. To pass a value you already have without recording
+      it either, use <Code>-</Code> and pipe it in:{" "}
+      <Code>fd0 pass field set github password - --secret</Code>.
+    </P>
+    <Cmd signature="fd0 pass add <name> [--url URL] [--notes TEXT] [--scope <scope>]" body="Create an item. Repeat --url for several matching URLs. The command refuses an existing name; --force replaces the whole record rather than merging." />
+    <Cmd signature="fd0 pass field set <name> <path> [value] [--secret|--type text|secret|passkey] [--generate] [--length N]" body="Set one field. The path is a plain name, or section/name for a field inside a section." />
+    <Cmd signature="fd0 pass section add <name> <path>" body="Add a section so related fields can be grouped under one path." />
+    <Cmd signature="fd0 pass totp add <name> <otpauth-uri> [--field <path>]" body="Store a TOTP URI. It lands in the totp field unless you name another one." />
+    <Cmd signature="fd0 pass file add <name> <file> [<path>] [--mime <type>]" body="Attach a small file as a field. The field takes the file's basename unless you give a path." />
+    <Cmd signature="fd0 pass edit <name> [--title <title>] [--url <url>]" body="Change the title or replace the URL list. Fields are edited with pass field set." />
+
+    <H2>Read it back</H2>
+    <Box>{`$ fd0 pass                         # interactive browser
+$ fd0 pass github                  # browser, pre-filtered
+$ fd0 pass copy github             # password to the clipboard, auto-cleared
+$ fd0 pass totp code github
+$ fd0 pass show github             # secrets masked
+$ fd0 pass list --json`}</Box>
+    <P>
+      Bare <Code>fd0 pass</Code> opens the interactive browser; it needs a
+      terminal, and it tells you to use <Code>pass list</Code> or{" "}
+      <Code>pass show</Code> when there is not one. Secrets stay masked in the
+      browser until you use the shortcut it shows you.
+    </P>
+    <Cmd signature="fd0 pass show <name> [--reveal] [--json]" body="Print one item. Secrets are masked; --reveal prints them, --json prints the decrypted item." />
+    <Cmd signature="fd0 pass copy <name> [<field>] [--clear-after 30s]" body="Copy a field to the clipboard and clear it again. Without a field it copies the password; on a TOTP field it copies the current code." />
+    <Cmd signature="fd0 pass field get <name> <path> [--raw]" body="Print one field value to stdout. --raw drops the trailing newline, which is what scripts want." />
+    <Cmd signature="fd0 pass find [<query>] [--url <url>] [--json]" body="Match items by title or URL. --url is the browser-and-autofill lookup." />
+    <Cmd signature="fd0 pass file export <name> <path> [--out <file>]" body="Write an attached file back to disk. It refuses to overwrite unless you pass --force." />
+    <Cmd signature="fd0 pass notes show|set|rm <name>" body="Read, replace, or remove the item's free-text note." />
+    <Cmd signature="fd0 pass generate [--length 32] [--raw]" body="Generate a password without storing anything." />
+
+    <H2>Everything else is the shared grammar</H2>
+    <P>
+      <Code>pass</Code> takes the same verbs as every other module —{" "}
+      <Code>list</Code>, <Code>rename</Code>, <Code>move</Code>,{" "}
+      <Code>rm</Code>, and <Code>history</Code>. See{" "}
+      <Link href="/docs/cli">the CLI reference</Link> for the full set.
+    </P>
+    <Box>{`$ fd0 pass rename github github-work
+$ fd0 pass move github --to-scope personal
+$ fd0 pass history show github
+$ fd0 pass history restore github 3
+$ fd0 pass rm github`}</Box>
+    <Note>
+      Prefer <Code>fd0 pass copy</Code> over <Code>--reveal</Code> for
+      passwords and TOTP codes. Reveal, <Code>field get</Code>, and{" "}
+      <Code>file export</Code> put plaintext where your terminal, your history,
+      and your logs can see it.
+    </Note>
+  </>
+);
+
 const CliBody = () => (
   <>
     <P>
@@ -345,12 +644,81 @@ const CliBody = () => (
       <Code>on_unlock = true</Code>.
     </P>
 
-    <H2>Secrets</H2>
-    <Cmd signature="fd0 set <NAME> <value> [--scope <scope>]" body="Store a string secret in a scope. Without --scope, fd0 uses the only live scope, asks interactively, or requires --scope in non-interactive use." />
-    <Cmd signature="fd0 get [<NAME>] [--scope <scope>]" body="Print a secret. Without a name, fd0 opens the interactive picker." />
-    <Cmd signature="fd0 copy <NAME> [--clear-after=30s]" body="Copy a secret to the clipboard and clear it after the timeout." />
-    <Cmd signature="fd0 ls" body="List visible secret names across scopes. Values stay encrypted until you request one." />
-    <Cmd signature="fd0 rm <NAME> [--scope <scope>]" body="Write a tombstone for a secret. The old event remains audit history." />
+    <H2>One grammar for every module</H2>
+    <P>
+      Six modules hold items: <Code>secret</Code>, <Code>pass</Code>,{" "}
+      <Code>ssh</Code>, <Code>key</Code>, <Code>kube</Code>, and{" "}
+      <Code>talos</Code>. They take the same verbs, so learning one teaches the
+      rest.
+    </P>
+    <Box>{`$ fd0 <module> add <name> ...              # create; refuses an existing name
+$ fd0 <module> edit <name> --flag value    # change only the fields you name
+$ fd0 <module> show <name>                 # human-readable, secrets masked
+$ fd0 <module> list                        # alias: ls
+$ fd0 <module> rename <name> <new-name>
+$ fd0 <module> move <name> --to-scope <scope>
+$ fd0 <module> rm <name>                   # tombstone
+$ fd0 <module> history show <name>         # versions, newest first
+$ fd0 <module> history restore <name> <seq>`}</Box>
+    <P>
+      <Code>list</Code> takes <Code>--json</Code> on every module, with the
+      same key names throughout and <Code>[]</Code> rather than{" "}
+      <Code>null</Code> when empty. Secret material is never in that output —{" "}
+      <Code>fd0 key list --json</Code> carries the fingerprint and the
+      authorized_keys line, never the private half.
+    </P>
+    <P>
+      <Code>edit</Code> patches; <Code>add --force</Code> replaces. An edit
+      leaves every field you did not name alone, and passing an empty value
+      clears exactly that one field. A forced add rewrites the whole record, so
+      anything the command did not carry returns to its default. An edit that
+      changes nothing writes nothing and does not burn a revision.
+    </P>
+    <P>
+      Restore writes forward. <Code>history restore</Code> appends a new
+      version carrying the old content instead of rewinding the chain, so the
+      history stays append-only and the undo is itself auditable.
+    </P>
+    <P>
+      Module-specific commands sit alongside the shared verbs, not instead of
+      them: <Code>pass field/notes/totp/file</Code>,{" "}
+      <Code>ssh connect/tag/enable</Code>, <Code>kube sync</Code>,{" "}
+      <Code>talos secrets</Code>.
+    </P>
+
+    <H2>Plain secrets</H2>
+    <P>
+      A plain secret is a name and a value. Everything richer belongs to one of
+      the other modules.
+    </P>
+    <Cmd signature="fd0 secret set <NAME> <value> [--scope <scope>]" body="Store a string secret in a scope. Use - as the value to read it from stdin. Without --scope, fd0 uses the only live scope, asks interactively, or requires --scope in non-interactive use." />
+    <Cmd signature="fd0 secret get [<NAME>] [--raw] [--scope <scope>]" body="Print a secret. Without a name, fd0 opens the interactive picker. --raw drops the trailing newline." />
+    <Cmd signature="fd0 secret copy <NAME> [--clear-after=30s]" body="Copy a secret to the clipboard and clear it after the timeout." />
+    <Cmd signature="fd0 secret list [--json] [--all]" body="List plain secret names across scopes. --all also lists records owned by other modules — hosts, keys, pass items, clusters. Values stay encrypted until you request one." />
+    <Cmd signature="fd0 secret rm <NAME> [--scope <scope>]" body="Write a tombstone for a secret. The old event remains audit history." />
+    <P>
+      Each module owns its own records, and the secret commands say so rather
+      than acting on someone else's:
+    </P>
+    <Box>{`$ fd0 secret rm host:prod
+✗ "host:prod" is a host, not a plain secret
+  use: fd0 ssh rm prod`}</Box>
+    <Note>
+      The older top-level spellings — <Code>fd0 get</Code>,{" "}
+      <Code>fd0 set</Code>, <Code>fd0 rm</Code>, <Code>fd0 ls</Code>, and{" "}
+      <Code>fd0 copy</Code> — still work and will keep working. They no longer
+      appear in <Code>--help</Code>. Prefer the <Code>fd0 secret</Code> form in
+      anything you write down.
+    </Note>
+
+    <H2>Item history</H2>
+    <P>
+      Every module keeps earlier versions of its items. The listing gives you
+      the sequence numbers restore takes.
+    </P>
+    <Box>{`$ fd0 secret history show DEPLOY_KEY
+$ fd0 secret history restore DEPLOY_KEY 4
+$ fd0 ssh history show prod-db --json`}</Box>
 
     <H2>Scopes and sharing</H2>
     <P>
@@ -368,7 +736,7 @@ $ fd0 sync
 
 # Bob discovers the scope on his next sync.
 $ fd0 sync
-$ fd0 ls`}</Box>
+$ fd0 secret list`}</Box>
     <Cmd signature="fd0 card export" body="Print your signed card and safety number. Share the card over any channel; verify the safety number over a trusted channel." />
     <Cmd signature="fd0 card import <fd0://card/...> --label <name>" body="Pin another identity under a local label." />
     <Cmd signature="fd0 scope add-member <label> --scope <scope>" body="Grant a pinned card access to the scope." />
@@ -743,6 +1111,24 @@ export const DocsInstall = ssr(async (c) => {
   return () => (
     <DocsLayout current="install" title="Install and start" kicker="First run">
       <InstallBody />
+    </DocsLayout>
+  );
+});
+
+export const DocsDesktop = ssr(async (c) => {
+  setPageSeo(c, "docsDesktop");
+  return () => (
+    <DocsLayout current="desktop" title="fd0 Desktop" kicker="macOS and Linux">
+      <DesktopBody />
+    </DocsLayout>
+  );
+});
+
+export const DocsPass = ssr(async (c) => {
+  setPageSeo(c, "docsPass");
+  return () => (
+    <DocsLayout current="pass" title="Passwords" kicker="Password manager">
+      <PassBody />
     </DocsLayout>
   );
 });

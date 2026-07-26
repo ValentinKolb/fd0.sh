@@ -29,7 +29,9 @@ const Para = (p: { children: any }) => (
 );
 
 const Term = (p: { children: any }) => (
-  <span style={`color:${C.acc};font-family:${FONT_MONO};`}>{p.children}</span>
+  <span class="fd0-mono" style={`color:${C.acc};font-family:${FONT_MONO};`}>
+    {p.children}
+  </span>
 );
 
 const Code = (p: { children: string; title?: string }) => (
@@ -142,6 +144,37 @@ const OverviewBody = () => (
         ["STORAGE", "Vault layout · chain files · atomic writes"],
         ["TRANSLOG", "Tree heads · witness · equivocation"],
         ["THREATS", "Catalogue · mitigations · residual risks"],
+      ].map(([k, sub]) => (
+        <a
+          href={`https://github.com/ValentinKolb/fd0.sh/blob/main/docs/${k}.md`}
+          class="p-4"
+          style={`background:${C.bg};border:1px solid ${C.border};`}
+        >
+          <div
+            class="text-sm font-medium mb-1"
+            style={`color:${C.acc};font-family:${FONT_MONO};`}
+          >
+            {k}.md
+          </div>
+          <div class="text-xs" style={`color:${C.dim};`}>
+            {sub}
+          </div>
+        </a>
+      ))}
+    </div>
+
+    <SubHead>Engineering references</SubHead>
+    <Para>
+      Four more documents ship in the same directory. They describe how the
+      implementation is hosted, replicated, measured, and reviewed — useful,
+      but not normative for the protocol.
+    </Para>
+    <div class="grid sm:grid-cols-2 gap-3 mt-4">
+      {[
+        ["HOSTING", "How fd0.sh itself is run · operator reference"],
+        ["REPLICATION", "Single-primary design · DR backup"],
+        ["BENCH", "Baselines for translog, replay, unlock"],
+        ["CRYPTO_AUDIT", "Internal review of the composition"],
       ].map(([k, sub]) => (
         <a
           href={`https://github.com/ValentinKolb/fd0.sh/blob/main/docs/${k}.md`}
