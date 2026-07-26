@@ -65,7 +65,7 @@ Map the user's intent to the right command before typing anything:
 | Fetch a fresh kubeconfig from Talos | `fd0 talos kubeconfig CTX` (needs `talosctl`) |
 | Render + merge kubeconfig | `fd0 kube sync --merge` |
 | Merge kube/talos into the standard config on every sync | `fd0 kube enable --merge`; `fd0 talos enable --merge` (`disable` reverses it) |
-| Change one field on any item | `fd0 <module> edit NAME --flag VALUE` — only what you pass changes |
+| Change one field on any item | `fd0 <module> edit NAME --flag VALUE` — only what you pass changes (for `secret`, use `set`) |
 | Rename any item | `fd0 <module> rename OLD NEW` |
 | Move any item to another scope | `fd0 <module> move NAME --to-scope LABEL` |
 | See an item's earlier versions | `fd0 <module> history NAME` (newest first) |
@@ -90,6 +90,22 @@ fd0 <module> rm NAME             tombstone
 fd0 <module> history NAME        versions, newest first
 fd0 <module> history restore NAME SEQ
 ```
+
+One exception: **`secret` has no `edit`** — a plain secret is a single value, so `fd0 secret set NAME VALUE` is both the create and the update. Everything else in the list applies to it.
+
+Which flags each `edit` accepts (all also take `--scope`):
+
+| Module | Editable |
+|---|---|
+| `pass` | `--title`, `--url` (repeat; replaces the list) |
+| `ssh` | `--hostname`, `--user`, `--port`, `--key`, `--jump`, `--description`, `--tag` (repeat; replaces), `--opt KEY=VALUE`, `--clear-opts` |
+| `key` | `--comment` (key material and type are immutable) |
+| `kube` | `--server`, `--namespace`, `--description`, `--tag` (repeat; replaces) |
+| `talos` | `--endpoint`, `--node` (both repeat; replace), `--role`, `--description`, `--tag` |
+
+Credentials are deliberately not editable: `kube edit` cannot touch the CA, client cert/key or token, and `talos edit` cannot touch the CA/crt/key. Replace those by re-importing with `add --force`.
+
+To change a pass item's fields rather than its title or URLs, use `pass field set|rm`, `pass notes`, `pass section add`, `pass totp add` and `pass file add`.
 
 `list` takes `--json` on every module, with the same key style throughout (`name`, `scope`, `scopeId`, …) and `[]` rather than `null` when empty. Secret material is never included — `key list --json` carries the fingerprint and the authorized_keys line, never the private half.
 
