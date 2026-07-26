@@ -413,14 +413,20 @@ func TestMigrateLegacyScopeChainRefusesToDropLocalOnlyEvents(t *testing.T) {
 }
 
 // Non-legacy shapes are never migrated, even when the server would happily
-// serve a replacement: a mid-history gap has no benign explanation.
+// serve a replacement.
+//
+// A gap is not the discriminator — repeated compaction leaves several, and a
+// production vault carried five. What separates compaction from tampering is
+// that compaction only ever DROPS events, leaving the surviving links intact.
+// A broken link with no gap means an event was substituted, and re-fetching
+// would paper over exactly that.
 func TestMigrateLegacyScopeChainIgnoresNonLegacyShapes(t *testing.T) {
 	f := newLegacyFixture(t, 5)
-	midGap := append([]proto.ScopeEvent{}, f.fullChain[:3]...)
-	midGap = append(midGap, f.fullChain[4:]...)
-	raws := make([][]byte, 0, len(midGap))
-	for i := range midGap {
-		raw, err := proto.Marshal(&midGap[i])
+	tampered := append([]proto.ScopeEvent{}, f.fullChain...)
+	tampered[2].SignedPrefix.PrevHash = bytes.Repeat([]byte{0x11}, 32)
+	raws := make([][]byte, 0, len(tampered))
+	for i := range tampered {
+		raw, err := proto.Marshal(&tampered[i])
 		if err != nil {
 			t.Fatal(err)
 		}
