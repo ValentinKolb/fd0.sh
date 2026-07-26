@@ -157,3 +157,69 @@ func TestWipeOpenResultClearsRejectedUnlockMaterial(t *testing.T) {
 		}
 	}
 }
+
+// Status carries the two facts a client needs to decide whether it can use this
+// agent and whether it may stop it. Neither is the release version.
+func TestStatusReportsProtocolAndLauncher(t *testing.T) {
+	t.Setenv(StartedByEnv, StartedByDesktop)
+	s := newLifecycleTestServer(t, time.Hour, time.Hour)
+	s.cfg.StartedBy = StartedByFromEnv()
+	st := s.handleStatus().Status
+	if st.Protocol != ProtocolVersion {
+		t.Fatalf("protocol=%d want %d", st.Protocol, ProtocolVersion)
+	}
+	if st.StartedBy != StartedByDesktop {
+		t.Fatalf("started by=%q want %q", st.StartedBy, StartedByDesktop)
+	}
+
+	// An agent must not be able to describe itself as something a client would
+	// recognise as its own.
+	t.Setenv(StartedByEnv, "definitely-fd0-desktop")
+	if got := StartedByFromEnv(); got != "" {
+		t.Fatalf("unknown launcher survived as %q", got)
+	}
+}
+
+func TestSpawnAsMarksTheChildAndSpawnDoesNot(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "fake-agent")
+	// Always writes a line, so "the child has not run yet" cannot be mistaken
+	// for "the child ran without the marker".
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf 'started_by=[%s]\\n' \"$"+StartedByEnv+"\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name      string
+		parentEnv string
+		startedBy string
+		want      string
+	}{
+		{name: "marked", startedBy: StartedByDesktop, want: "started_by=[" + StartedByDesktop + "]\n"},
+		{name: "unmarked", want: "started_by=[]\n"},
+		// A CLI spawn inside a marked process must not inherit ownership.
+		{name: "inherited marker dropped", parentEnv: StartedByDesktop, want: "started_by=[]\n"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.parentEnv != "" {
+				t.Setenv(StartedByEnv, tt.parentEnv)
+			}
+			log := filepath.Join(dir, tt.name+".log")
+			if err := SpawnAs(script, log, tt.startedBy); err != nil {
+				t.Fatal(err)
+			}
+			// Generous on purpose: this deadline is only ever reached when the
+			// marker is genuinely wrong, while a short one turns "the child
+			// has not been scheduled yet" into a failure under parallel load.
+			deadline := time.Now().Add(15 * time.Second)
+			for time.Now().Before(deadline) {
+				data, err := os.ReadFile(log)
+				if err == nil && string(data) == tt.want {
+					return
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			data, _ := os.ReadFile(log)
+			t.Fatalf("child environment=%q want %q", data, tt.want)
+		})
+	}
+}

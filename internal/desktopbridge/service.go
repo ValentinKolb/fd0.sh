@@ -52,9 +52,16 @@ type HandshakeResult struct {
 }
 
 type StatusResult struct {
-	VaultExists       bool                `json:"vaultExists"`
-	AgentRunning      bool                `json:"agentRunning"`
-	AgentMismatch     bool                `json:"agentMismatch,omitempty"`
+	VaultExists  bool `json:"vaultExists"`
+	AgentRunning bool `json:"agentRunning"`
+	// AgentIncompatible is set only when the running agent genuinely cannot
+	// serve this app (see inspectAgent); a different release version is not
+	// such a case. AgentIncompatibleReason is one sentence, fit to display.
+	AgentIncompatible       bool   `json:"agentIncompatible,omitempty"`
+	AgentIncompatibleReason string `json:"agentIncompatibleReason,omitempty"`
+	// AgentStartedBy is agentStartedByDesktop or agentStartedByExternal while
+	// an agent runs, and empty otherwise.
+	AgentStartedBy    string              `json:"agentStartedBy,omitempty"`
 	Unlocked          bool                `json:"unlocked"`
 	UnlockedSince     int64               `json:"unlockedSince,omitempty"`
 	Version           string              `json:"version,omitempty"`
@@ -690,7 +697,11 @@ func (s *Service) status() (StatusResult, error) {
 	result.Yubikey = status.YubikeyEnabled
 	result.IdleTimeoutMillis = status.IdleTimeoutMillis
 	result.MaxLifetimeMillis = status.MaxLifetimeMillis
-	result.AgentMismatch = !s.agentCompatible(status)
+	result.AgentStartedBy = agentStartedBy(status)
+	if use := s.inspectAgent(status); !use.compatible {
+		result.AgentIncompatible = true
+		result.AgentIncompatibleReason = use.reason
+	}
 	return result, nil
 }
 
@@ -734,17 +745,123 @@ func (s *Service) exportRecoveryFile(ctx context.Context, path string, passphras
 	return map[string]bool{"saved": true, "verified": true}, nil
 }
 
-func (s *Service) agentCompatible(status *agent.StatusResp) bool {
+// Values of StatusResult.AgentStartedBy.
+const (
+	agentStartedByDesktop  = "desktop"
+	agentStartedByExternal = "external"
+)
+
+// agentUsability answers "can this app work with the agent that currently
+// serves this home", plus the reason when it cannot, phrased for the user.
+type agentUsability struct {
+	compatible bool
+	reason     string
+}
+
+// inspectAgent applies the compatibility rule.
+//
+// Compatibility means "can serve", not "same release string". There is exactly
+// one agent per FD0_HOME, and on any machine with a separately installed CLI it
+// is perfectly normal for that agent to come from a different release than the
+// desktop app — they are shipped and updated independently. Comparing release
+// versions therefore declared healthy setups broken forever, and the app then
+// tried to restart an agent it could not replace.
+//
+// Two things actually decide it:
+//
+//   - Protocol. agent.ProtocolVersion covers the op codes and frame shapes the
+//     two sides exchange, and is bumped only when an old peer would misread a
+//     reply. Agents built before the field report 0, and every one of those
+//     releases speaks protocol 1, so 0 is read as 1.
+//   - Flavor. A standard-flavor agent has no PIV support compiled in and truly
+//     cannot unlock a YubiKey vault, so a YubiKey build cannot borrow one. The
+//     other direction is fine: a yubikey agent does everything a standard one
+//     does, so a standard app is happy with it.
+//
+// The release version is carried for display and diagnostics only.
+func (s *Service) inspectAgent(status *agent.StatusResp) agentUsability {
 	if status == nil {
-		return false
+		return agentUsability{reason: "The fd0 background service did not report its status."}
 	}
-	if s.ExpectedVersion != "" && s.ExpectedVersion != "dev" && status.Version != s.ExpectedVersion {
-		return false
+	protocol := status.Protocol
+	if protocol == 0 {
+		protocol = 1
 	}
-	if s.ExpectedFlavor != "" && buildinfo.NormalizeFlavor(status.Flavor) != buildinfo.NormalizeFlavor(s.ExpectedFlavor) {
-		return false
+	if protocol != agent.ProtocolVersion {
+		return agentUsability{reason: fmt.Sprintf(
+			"The running service speaks fd0 service protocol %d and this app speaks %d.", protocol, agent.ProtocolVersion)}
 	}
-	return true
+	if buildinfo.NormalizeFlavor(s.ExpectedFlavor) == buildinfo.FlavorYubikey &&
+		buildinfo.NormalizeFlavor(status.Flavor) != buildinfo.FlavorYubikey {
+		return agentUsability{reason: "The running service was built without YubiKey support, so it cannot unlock a YubiKey vault."}
+	}
+	return agentUsability{compatible: true}
+}
+
+// agentStartedBy reports whether this app started the running agent. Anything
+// that does not say "desktop" — including agents older than the field — counts
+// as external, because ownership is what licenses stopping a process and this
+// app must never assume ownership it cannot prove.
+func agentStartedBy(status *agent.StatusResp) string {
+	if status != nil && status.StartedBy == agent.StartedByDesktop {
+		return agentStartedByDesktop
+	}
+	return agentStartedByExternal
+}
+
+// Both sentinels block stopping the running agent. They differ only in what
+// this app can honestly say about it.
+var (
+	errForeignAgent  = errors.New("desktop bridge: the running agent was started by another program")
+	errUnprovenAgent = errors.New("desktop bridge: the running agent did not report who started it")
+)
+
+// stopOwnAgent stops the agent only when this app started it. A shell-started
+// agent holds the keys of that shell session; terminating it would lock the
+// user out of their own terminal, which is never this app's call — no matter
+// which button in this app was pressed. Unprovable ownership fails closed:
+// `fd0 agent stop` remains the way out, and it needs no answer from the agent.
+func stopOwnAgent(paths fdhome.Paths) error {
+	client := agent.NewClient(paths.AgentSock)
+	if client.IsRunning() {
+		status, err := client.Status()
+		if err != nil {
+			return errUnprovenAgent
+		}
+		if agentStartedBy(status) != agentStartedByDesktop {
+			return errForeignAgent
+		}
+	}
+	return stopDesktopAgent(paths)
+}
+
+// notOurAgentError phrases a refusal to stop somebody else's agent. missed says
+// what this app therefore could not do; action says what the user can do.
+func notOurAgentError(err error, missed, action string) error {
+	cause := "Another program started the fd0 background service."
+	if errors.Is(err, errUnprovenAgent) {
+		cause = "The fd0 background service is running but did not report who started it."
+	}
+	return fail(
+		"agent_not_ours",
+		cause+" fd0 Desktop does not stop a service it did not start, so it cannot "+missed+".",
+		action,
+		true,
+	)
+}
+
+// unusableAgentError explains a running-but-unusable agent and, crucially,
+// points at the program that owns it instead of at this app's repair button.
+func unusableAgentError(use agentUsability, startedBy string) error {
+	if startedBy == agentStartedByDesktop {
+		return fail("agent_incompatible", use.reason, "Restart the local service from Support.", true)
+	}
+	return fail(
+		"agent_incompatible_foreign",
+		"Another program started the fd0 background service for this vault, and this app cannot use it. "+use.reason,
+		"fd0 Desktop does not stop a service it did not start. Run `fd0 agent stop` in the terminal you started it from, then try again.",
+		true,
+	)
 }
 
 func authMethodSummaries(paths fdhome.Paths) ([]AuthMethodSummary, error) {
@@ -897,13 +1014,11 @@ func (s *Service) unlock(ctx context.Context, selector string, passphrase, pin [
 	client := agent.NewClient(paths.AgentSock)
 	if client.IsRunning() {
 		if current, err := client.Status(); err == nil {
-			if !s.agentCompatible(current) {
-				if os.Getenv("FD0_AGENT_MANAGED") == "1" {
-					return StatusResult{}, fail("agent_incompatible", "The running fd0 service does not match this app version.", "Restart fd0 from Support.", true)
-				}
-				if err := stopDesktopAgent(paths); err != nil {
-					return StatusResult{}, fail("agent_restart_failed", "fd0 could not replace an incompatible local agent.", "Open Support and restart the local service.", true)
-				}
+			// Coexist with whoever got here first. A running agent is the
+			// user's unlocked session — replacing it, as this used to do on a
+			// version difference, silently logs their shell out of fd0.
+			if use := s.inspectAgent(current); !use.compatible {
+				return StatusResult{}, unusableAgentError(use, agentStartedBy(current))
 			}
 			if current.Unlocked {
 				return s.status()
@@ -953,11 +1068,8 @@ func (s *Service) unlock(ctx context.Context, selector string, passphrase, pin [
 		if os.Getenv("FD0_AGENT_MANAGED") == "1" {
 			return StatusResult{}, fail("agent_unavailable", "The fd0 background service is not running.", "Open Support and repair the local service.", true)
 		}
-		if err := agent.Spawn(s.AgentBin, paths.AgentLog); err != nil {
-			return StatusResult{}, mapDomainError(err)
-		}
-		if err := agent.WaitReady(paths.AgentSock, 5*time.Second); err != nil {
-			return StatusResult{}, mapDomainError(err)
+		if err := s.startOwnAgent(paths); err != nil {
+			return StatusResult{}, err
 		}
 	}
 	_, err = client.Unlock(paths.Vault, paths.UserChain, method.MethodType, credential)
@@ -1015,7 +1127,11 @@ func (s *Service) prepareUpdate() (map[string]bool, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := stopDesktopAgent(paths); err != nil {
+	if err := stopOwnAgent(paths); err != nil {
+		if errors.Is(err, errForeignAgent) || errors.Is(err, errUnprovenAgent) {
+			return nil, notOurAgentError(err, "stop it for the update",
+				"Run `fd0 agent stop` in the terminal you started it from, then install the update.")
+		}
 		return nil, fail("agent_stop_failed", "fd0 could not stop the current agent for the update.", "Close other fd0 commands and try again.", true)
 	}
 	return map[string]bool{"ok": true}, nil
@@ -1026,16 +1142,29 @@ func (s *Service) restartAgent() (StatusResult, error) {
 	if err != nil {
 		return StatusResult{}, err
 	}
-	if err := stopDesktopAgent(paths); err != nil {
+	if err := stopOwnAgent(paths); err != nil {
+		if errors.Is(err, errForeignAgent) || errors.Is(err, errUnprovenAgent) {
+			return StatusResult{}, notOurAgentError(err, "restart it now",
+				"Run `fd0 agent stop` in the terminal you started it from; fd0 starts its own service the next time you unlock.")
+		}
 		return StatusResult{}, fail("agent_restart_failed", "fd0 could not restart the local service.", "Close other fd0 commands and try again.", true)
 	}
-	if err := agent.Spawn(s.AgentBin, paths.AgentLog); err != nil {
-		return StatusResult{}, mapDomainError(err)
-	}
-	if err := agent.WaitReady(paths.AgentSock, 5*time.Second); err != nil {
-		return StatusResult{}, mapDomainError(err)
+	if err := s.startOwnAgent(paths); err != nil {
+		return StatusResult{}, err
 	}
 	return s.status()
+}
+
+// startOwnAgent starts an agent for this home and marks it as ours, which is
+// what later allows stopOwnAgent to tell it apart from a shell-started one.
+func (s *Service) startOwnAgent(paths fdhome.Paths) error {
+	if err := agent.SpawnAs(s.AgentBin, paths.AgentLog, agent.StartedByDesktop); err != nil {
+		return mapDomainError(err)
+	}
+	if err := agent.WaitReady(paths.AgentSock, 5*time.Second); err != nil {
+		return mapDomainError(err)
+	}
+	return nil
 }
 
 func stopDesktopAgent(paths fdhome.Paths) error {

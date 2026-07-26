@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -128,8 +129,18 @@ func main() {
 		Version:            version,
 		Flavor:             buildinfo.Flavor,
 		YubikeyEnabled:     buildinfo.YubikeyEnabled,
+		StartedBy:          agent.StartedByFromEnv(),
 	})
 	if err != nil {
+		// The home is already served — by the user's shell session, or by a
+		// service that won the race. One agent per home is the rule and it
+		// still holds; we simply have nothing left to do. Exiting 0 says that
+		// to launchd (KeepAlive/SuccessfulExit) and systemd (Restart=on-failure)
+		// so neither respawns us into the same conflict every few seconds.
+		if errors.Is(err, agent.ErrAlreadyServing) {
+			log.Info("fd0-agent: nothing to do", "reason", err)
+			return
+		}
 		log.Error("listen", "err", err)
 		os.Exit(1)
 	}

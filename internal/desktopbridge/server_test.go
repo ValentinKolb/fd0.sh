@@ -10,8 +10,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/valentinkolb/fd0.sh/internal/agent"
+	"github.com/valentinkolb/fd0.sh/internal/buildinfo"
 	"github.com/valentinkolb/fd0.sh/internal/chain"
 	"github.com/valentinkolb/fd0.sh/internal/cli"
 	"github.com/valentinkolb/fd0.sh/internal/crypto"
@@ -460,24 +462,139 @@ func TestYubikeyPINMode(t *testing.T) {
 }
 
 func TestAgentCompatibility(t *testing.T) {
-	service := &Service{ExpectedVersion: "1.2.3", ExpectedFlavor: "yubikey"}
+	yubikey := &Service{ExpectedVersion: "1.2.3", ExpectedFlavor: "yubikey"}
+	standard := &Service{ExpectedVersion: "1.2.3", ExpectedFlavor: "standard"}
 	tests := []struct {
-		name   string
-		status *agent.StatusResp
-		want   bool
+		name    string
+		service *Service
+		status  *agent.StatusResp
+		want    bool
 	}{
-		{name: "matching", status: &agent.StatusResp{Version: "1.2.3", Flavor: "yubikey"}, want: true},
-		{name: "different version", status: &agent.StatusResp{Version: "1.2.2", Flavor: "yubikey"}},
-		{name: "different flavor", status: &agent.StatusResp{Version: "1.2.3", Flavor: "standard"}},
-		{name: "legacy metadata", status: &agent.StatusResp{}},
-		{name: "missing status"},
+		{name: "matching", service: yubikey, status: &agent.StatusResp{Protocol: 1, Version: "1.2.3", Flavor: "yubikey"}, want: true},
+		// A separately installed CLI always carries its own release string.
+		{name: "different release version", service: yubikey, status: &agent.StatusResp{Protocol: 1, Version: "client-v0.12.0", Flavor: "yubikey"}, want: true},
+		// Agents that predate the protocol field all speak protocol 1.
+		{name: "legacy metadata", service: standard, status: &agent.StatusResp{}, want: true},
+		{name: "newer protocol", service: standard, status: &agent.StatusResp{Protocol: agent.ProtocolVersion + 1}},
+		{name: "standard agent cannot serve a yubikey build", service: yubikey, status: &agent.StatusResp{Protocol: 1, Flavor: "standard"}},
+		{name: "yubikey agent serves a standard build", service: standard, status: &agent.StatusResp{Protocol: 1, Flavor: "yubikey"}, want: true},
+		{name: "missing status", service: standard},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := service.agentCompatible(tt.status); got != tt.want {
-				t.Fatalf("agentCompatible()=%v want %v", got, tt.want)
+			use := tt.service.inspectAgent(tt.status)
+			if use.compatible != tt.want {
+				t.Fatalf("compatible=%v want %v (reason %q)", use.compatible, tt.want, use.reason)
+			}
+			if use.compatible == (use.reason != "") {
+				t.Fatalf("compatible=%v with reason %q", use.compatible, use.reason)
 			}
 		})
+	}
+}
+
+// A CLI-started agent from another release must be used as it is: not
+// restarted, not stopped, not reported as a problem. This is the everyday
+// setup of anyone who installs the fd0 CLI and fd0 Desktop separately.
+func TestAgentStartedElsewhereIsUsedNotReplaced(t *testing.T) {
+	// Not t.TempDir(): its path carries the test name, and a Unix socket path
+	// is capped near 104 bytes.
+	home, err := os.MkdirTemp("", "fd0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	t.Setenv("FD0_HOME", home)
+	t.Setenv("FD0_SSH_SOCK", filepath.Join(home, "ssh.sock"))
+	paths, err := fdhome.Resolve()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := paths.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	// Started by something other than the desktop app (no StartedBy marker)
+	// and built from a different release than the app below.
+	server, err := agent.Listen(paths, agent.Config{
+		IdleTimeout: time.Hour,
+		MaxLifetime: time.Hour,
+		Version:     "client-v0.12.0",
+		Flavor:      buildinfo.Flavor,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = server.Serve(ctx) }()
+	defer server.Close()
+	client := agent.NewClient(paths.AgentSock)
+	if err := agent.WaitReady(paths.AgentSock, 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+
+	service := &Service{
+		Home:            home,
+		AgentBin:        filepath.Join(home, "fd0-agent-that-must-not-run"),
+		Mode:            "system",
+		ExpectedVersion: "0.1.0",
+		ExpectedFlavor:  buildinfo.Flavor,
+	}
+	status, err := service.status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.AgentRunning || status.AgentIncompatible {
+		t.Fatalf("status=%+v, want a running, compatible agent", status)
+	}
+	if status.AgentStartedBy != agentStartedByExternal || status.Version != "client-v0.12.0" {
+		t.Fatalf("status=%+v, want an external agent reporting its own version", status)
+	}
+
+	// Unlocking must go past the compatibility gate and reach the vault (there
+	// is none here) instead of replacing the agent. AgentBin does not exist, so
+	// any attempt to start a replacement would fail loudly.
+	if _, err := service.unlock(context.Background(), "", []byte("passphrase"), nil); err == nil {
+		t.Fatal("expected a vault error")
+	} else {
+		var methodErr *methodError
+		if !errors.As(err, &methodErr) || methodErr.bridge.Code != "vault_invalid" {
+			t.Fatalf("unlock err=%v, want vault_invalid", err)
+		}
+	}
+
+	// The one button that stops an agent must refuse for a foreign one.
+	if _, err := service.restartAgent(); err == nil {
+		t.Fatal("expected a refusal to restart a foreign agent")
+	} else {
+		var methodErr *methodError
+		if !errors.As(err, &methodErr) || methodErr.bridge.Code != "agent_not_ours" {
+			t.Fatalf("restart err=%v, want agent_not_ours", err)
+		}
+	}
+
+	if !client.IsRunning() {
+		t.Fatal("the agent this app did not start was terminated")
+	}
+	if _, err := os.Stat(paths.AgentPID); err != nil {
+		t.Fatalf("agent pid file was removed: %v", err)
+	}
+}
+
+func TestUnusableAgentPointsAtItsOwner(t *testing.T) {
+	use := agentUsability{reason: "The running service was built without YubiKey support."}
+	var foreign, own *methodError
+	if !errors.As(unusableAgentError(use, agentStartedByExternal), &foreign) {
+		t.Fatal("expected a method error")
+	}
+	if !errors.As(unusableAgentError(use, agentStartedByDesktop), &own) {
+		t.Fatal("expected a method error")
+	}
+	if !strings.Contains(foreign.bridge.Action, "fd0 agent stop") || strings.Contains(foreign.bridge.Action, "Support") {
+		t.Fatalf("foreign action=%q", foreign.bridge.Action)
+	}
+	if !strings.Contains(own.bridge.Action, "Support") {
+		t.Fatalf("own action=%q", own.bridge.Action)
 	}
 }
 

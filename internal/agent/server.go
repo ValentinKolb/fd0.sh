@@ -32,6 +32,10 @@ type Config struct {
 	Version        string
 	Flavor         string
 	YubikeyEnabled bool
+	// StartedBy is reported verbatim in StatusResp so clients can tell an
+	// agent they supervise from one somebody else started. Use
+	// StartedByFromEnv to fill it.
+	StartedBy string
 	// Scheduler is optional. When set, the agent runs auto-sync per its
 	// configuration and triggers an immediate sync after every unlock.
 	Scheduler *Scheduler
@@ -44,6 +48,14 @@ type Config struct {
 	// unlocks with a clean error.
 	NewYubikeyResolver func(pin []byte) vault.MethodResolver
 }
+
+// ErrAlreadyServing reports that another fd0-agent already owns this home's
+// socket, so this process did not start and did not touch anything. It is a
+// classification of the refusal below, never a licence to override it: a
+// supervisor that only wants *an* agent for the home (the desktop service, a
+// systemd unit) can treat it as "nothing to do" instead of a failure, and so
+// stop respawning itself into the same conflict.
+var ErrAlreadyServing = errors.New("agent: another agent is already serving this home")
 
 // Server is the running agent. Construct with Listen.
 type Server struct {
@@ -95,7 +107,7 @@ func Listen(paths fdhome.Paths, cfg Config) (*Server, error) {
 	// mlocked, plus duplicate-state confusion). Detect via PID file +
 	// liveness check; only proceed if the prior agent is truly gone.
 	if alive, oldPID := isPriorAgentAlive(paths.AgentPID); alive {
-		return nil, fmt.Errorf("agent: already running as pid %d (delete %s if you're sure it's dead)", oldPID, paths.AgentPID)
+		return nil, fmt.Errorf("%w (pid %d; delete %s if you're sure it's dead)", ErrAlreadyServing, oldPID, paths.AgentPID)
 	}
 	// SECURITY (codex audit 🔴 server.go:82): if the PID file is
 	// missing/corrupt/stale BUT an old agent is still listening
@@ -104,8 +116,8 @@ func Listen(paths fdhome.Paths, cfg Config) (*Server, error) {
 	// (still holding super_priv mlocked) AND starting a duplicate.
 	// Probe the socket; fail if anything answers.
 	if probeAgentSocket(paths.AgentSock) {
-		return nil, fmt.Errorf("agent: another process is listening on %s but %s is missing/stale; remove the socket only if you're sure no agent is running",
-			paths.AgentSock, paths.AgentPID)
+		return nil, fmt.Errorf("%w: a process is listening on %s but %s is missing/stale; remove the socket only if you're sure no agent is running",
+			ErrAlreadyServing, paths.AgentSock, paths.AgentPID)
 	}
 	// Stale socket from a crashed agent: safe to unlink (no listener).
 	_ = os.Remove(paths.AgentSock)
@@ -368,6 +380,8 @@ func (s *Server) handleStatus() *Response {
 	defer s.mu.Unlock()
 	st := &StatusResp{
 		Unlocked:          s.superPriv != nil,
+		Protocol:          ProtocolVersion,
+		StartedBy:         s.cfg.StartedBy,
 		Version:           s.cfg.Version,
 		Flavor:            s.cfg.Flavor,
 		YubikeyEnabled:    s.cfg.YubikeyEnabled,

@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 
 	"github.com/valentinkolb/fd0.sh/internal/crypto"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
@@ -24,6 +25,38 @@ import (
 
 // MaxFrame caps a single wire frame.
 const MaxFrame = 1 << 20
+
+// ProtocolVersion identifies this request/response contract — the op codes and
+// the shape of the frames above — and is the only compatibility signal clients
+// may use. It is deliberately not the release version: the CLI and the desktop
+// app are installed and updated separately, so two different release strings
+// serving the same protocol is the normal case, not a fault. Bump this only
+// when an existing op changes meaning or an old client would misread a reply;
+// purely additive fields do not need it.
+//
+// Agents built before this field existed report 0. Every such release speaks
+// protocol 1, so clients MUST read an absent/zero value as 1.
+const ProtocolVersion = 1
+
+const (
+	// StartedByEnv marks who launched an fd0-agent process. It exists so a
+	// client can tell "the agent I supervise" from "an agent somebody else
+	// started" — the only thing that licenses stopping the process.
+	StartedByEnv = "FD0_AGENT_STARTED_BY"
+	// StartedByDesktop is set by fd0 Desktop's background service (and by the
+	// desktop bridge in development) on the agents it starts itself.
+	StartedByDesktop = "desktop"
+)
+
+// StartedByFromEnv reads StartedByEnv and keeps only values this build knows.
+// An unknown value is dropped rather than echoed: the result is shown to users,
+// and an agent must never be able to describe itself as something it is not.
+func StartedByFromEnv() string {
+	if os.Getenv(StartedByEnv) == StartedByDesktop {
+		return StartedByDesktop
+	}
+	return ""
+}
 
 // Op codes. Ints (small CBOR encoding) keep frames tight.
 const (
@@ -148,10 +181,16 @@ type UnlockResp struct {
 
 // StatusResp reports current state. SuperPub is empty when locked.
 type StatusResp struct {
-	Unlocked          bool   `cbor:"unlocked"`
-	SinceUnix         int64  `cbor:"since,omitempty"`
-	UserSuperPub      []byte `cbor:"user_super_pub,omitempty"`
-	ActiveMethodID    string `cbor:"active_method_id,omitempty"`
+	Unlocked       bool   `cbor:"unlocked"`
+	SinceUnix      int64  `cbor:"since,omitempty"`
+	UserSuperPub   []byte `cbor:"user_super_pub,omitempty"`
+	ActiveMethodID string `cbor:"active_method_id,omitempty"`
+	// Protocol is ProtocolVersion; 0 means an agent that predates the field
+	// and is read as 1. Version below is informational only.
+	Protocol int `cbor:"protocol,omitempty"`
+	// StartedBy is StartedByDesktop when fd0 Desktop started this agent, and
+	// empty for every other launcher (a shell, a CLI unlock, an old build).
+	StartedBy         string `cbor:"started_by,omitempty"`
 	Version           string `cbor:"version,omitempty"`
 	Flavor            string `cbor:"flavor,omitempty"`
 	YubikeyEnabled    bool   `cbor:"yubikey_enabled,omitempty"`
