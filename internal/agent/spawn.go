@@ -16,6 +16,14 @@ import (
 // We deliberately do NOT auto-spawn on every CLI call: per the design, an
 // inactive agent yields an error "run fd0 unlock first".
 func Spawn(binPath, logPath string) error {
+	return SpawnAs(binPath, logPath, "")
+}
+
+// SpawnAs is Spawn plus an ownership marker: startedBy (StartedByDesktop, or
+// empty) is placed in the child's environment and echoed back in its status, so
+// a supervisor can later recognise the agent it started and — just as
+// important — recognise one it did not.
+func SpawnAs(binPath, logPath, startedBy string) error {
 	if binPath == "" {
 		p, err := exec.LookPath("fd0-agent")
 		if err != nil {
@@ -25,6 +33,7 @@ func Spawn(binPath, logPath string) error {
 	}
 	cmd := exec.Command(binPath)
 	cmd.Stdin = nil
+	cmd.Env = agentEnv(startedBy)
 	// SECURITY (codex audit 🟡 spawn.go:26): close the log file in
 	// the parent after Start() so the parent's FD count stays
 	// clean. The child inherits via Stdout/Stderr; the parent's
@@ -50,6 +59,24 @@ func Spawn(binPath, logPath string) error {
 	}
 	go func() { _ = cmd.Wait() }()
 	return nil
+}
+
+// agentEnv gives the child the caller's ownership marker — and only that one.
+// An inherited marker is dropped first, so an unmarked spawn always produces an
+// agent that describes itself as unowned rather than borrowing our ancestry.
+func agentEnv(startedBy string) []string {
+	current := os.Environ()
+	env := make([]string, 0, len(current)+1)
+	for _, entry := range current {
+		if strings.HasPrefix(entry, StartedByEnv+"=") {
+			continue
+		}
+		env = append(env, entry)
+	}
+	if startedBy != "" {
+		env = append(env, StartedByEnv+"="+startedBy)
+	}
+	return env
 }
 
 // WaitReady polls the agent socket until it answers Status or timeout elapses.

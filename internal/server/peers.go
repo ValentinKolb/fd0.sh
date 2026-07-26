@@ -15,16 +15,21 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/valentinkolb/fd0.sh/internal/canon"
+	"github.com/valentinkolb/fd0.sh/internal/httpguard"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
 	"github.com/valentinkolb/fd0.sh/internal/server/store"
 	"github.com/valentinkolb/fd0.sh/internal/translog"
 )
+
+var peerHTTPClient = &http.Client{
+	CheckRedirect: httpguard.RejectRedirect,
+	Timeout:       10 * time.Second,
+}
 
 // canonicalisePeers normalises every FD0_PEERS entry through
 // canon.ParseURL so the resolver and the peers-table key both see the
@@ -59,28 +64,29 @@ func canonicalisePeers(raw []string) ([]string, error) {
 // (store.IsPeerPub), and a TOFU pin survives restarts, so without this an
 // operator could never withdraw a replica's access by editing config.
 // Run once on boot — config changes already require a restart.
-func (s *Server) prunePeers(ctx context.Context) {
+func (s *Server) prunePeers(ctx context.Context) error {
 	configured := map[string]bool{}
-	if canon, err := canonicalisePeers(s.cfg.Peers); err == nil {
-		for _, u := range canon {
-			configured[u] = true
-		}
+	canonical, err := canonicalisePeers(s.cfg.Peers)
+	if err != nil {
+		return fmt.Errorf("canonicalize configured peers: %w", err)
+	}
+	for _, u := range canonical {
+		configured[u] = true
 	}
 	peers, err := s.store.ListPeers(ctx)
 	if err != nil {
-		s.log.Warn("prune peers: list failed", "err", err)
-		return
+		return fmt.Errorf("list peers: %w", err)
 	}
 	for _, p := range peers {
 		if configured[p.URL] {
 			continue
 		}
 		if err := s.store.DeletePeer(ctx, p.URL); err != nil {
-			s.log.Warn("prune peers: delete failed", "url", p.URL, "err", err)
-			continue
+			return fmt.Errorf("delete unconfigured peer %s: %w", p.URL, err)
 		}
 		s.log.Info("revoked replication authorization for unconfigured peer", "url", p.URL)
 	}
+	return nil
 }
 
 // runPeerResolver loops every PeerResolveInterval, fetching each peer's
@@ -127,7 +133,7 @@ func (s *Server) resolveOnePeer(ctx context.Context, url string) error {
 	if err != nil {
 		return err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := peerHTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("fetch: %w", err)
 	}
@@ -135,7 +141,7 @@ func (s *Server) resolveOnePeer(ctx context.Context, url string) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("status %s", resp.Status)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	body, err := httpguard.ReadBody(resp.Body, 64*1024)
 	if err != nil {
 		return fmt.Errorf("read: %w", err)
 	}

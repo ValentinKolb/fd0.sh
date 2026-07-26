@@ -48,6 +48,50 @@ type TypedRecord struct {
 // because we need to set a custom Type and we want a single round-trip
 // per call. Most of the bookkeeping is shared verbatim.
 func (s *Session) SetTypedSecret(ctx context.Context, scopeID, name, secretType string, payload any) error {
+	return s.setTypedSecret(ctx, scopeID, name, secretType, payload, false, "")
+}
+
+// CreateTypedSecret writes only when no current record uses name.
+func (s *Session) CreateTypedSecret(ctx context.Context, scopeID, name, secretType string, payload any) error {
+	return s.setTypedSecret(ctx, scopeID, name, secretType, payload, true, "")
+}
+
+// UpdateTypedSecret writes only when name currently has expectedType.
+func (s *Session) UpdateTypedSecret(ctx context.Context, scopeID, name, expectedType, secretType string, payload any) error {
+	if expectedType == "" {
+		return errors.New("typed secret: expected type required")
+	}
+	return s.setTypedSecret(ctx, scopeID, name, secretType, payload, false, expectedType)
+}
+
+func (s *Session) setTypedSecret(
+	ctx context.Context,
+	scopeID, name, secretType string,
+	payload any,
+	requireMissing bool,
+	expectedType string,
+) error {
+	// JSON-encode the typed payload so it survives CBOR's `any`
+	// round-trip without surprising type coercion.
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("set typed: marshal payload: %w", err)
+	}
+	return s.writeTypedSecretPayload(ctx, scopeID, name, secretType, string(raw), requireMissing, expectedType)
+}
+
+// writeTypedSecretPayload is the shared typed-secret write. `payload` is
+// stored verbatim as SecretRecord.Payload — callers that hold a Go value
+// encode it first (setTypedSecret), callers that already hold the stored
+// representation (RestoreSecretVersion) pass it through unchanged so a
+// round-trip cannot double-encode it.
+func (s *Session) writeTypedSecretPayload(
+	ctx context.Context,
+	scopeID, name, secretType string,
+	payload any,
+	requireMissing bool,
+	expectedType string,
+) error {
 	scopeID, err := s.resolveScopeID(scopeID)
 	if err != nil {
 		return err
@@ -83,20 +127,19 @@ func (s *Session) SetTypedSecret(ctx context.Context, scopeID, name, secretType 
 	}
 	// Find existing id by name; mint a new one otherwise.
 	var sid string
+	var current *proto.SecretRecord
 	for id, cur := range st.SecretIndex {
 		if cur.Record != nil && cur.Record.Name == name {
 			sid = id
+			current = cur.Record
 			break
 		}
 	}
+	if err := checkTypedWriteTarget(name, current, requireMissing, expectedType); err != nil {
+		return err
+	}
 	if sid == "" {
 		sid = "s_" + ulid.Make().String()
-	}
-	// JSON-encode the typed payload so it survives CBOR's `any`
-	// round-trip without surprising type coercion.
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("set typed: marshal payload: %w", err)
 	}
 	body := &proto.SecretBody{
 		ID: sid,
@@ -104,7 +147,7 @@ func (s *Session) SetTypedSecret(ctx context.Context, scopeID, name, secretType 
 			Name:          name,
 			Type:          secretType,
 			SchemaVersion: 1,
-			Payload:       string(raw),
+			Payload:       payload,
 			Tags:          map[string]string{},
 		},
 	}
@@ -124,6 +167,19 @@ func (s *Session) SetTypedSecret(ctx context.Context, scopeID, name, secretType 
 		return err
 	}
 	return nil
+}
+
+func checkTypedWriteTarget(name string, current *proto.SecretRecord, requireMissing bool, expectedType string) error {
+	switch {
+	case current != nil && requireMissing:
+		return fmt.Errorf("typed secret %q already exists", name)
+	case current != nil && expectedType != "" && current.Type != expectedType:
+		return fmt.Errorf("typed secret %q has type %q, want %q", name, current.Type, expectedType)
+	case current == nil && expectedType != "":
+		return fmt.Errorf("typed secret %q not found", name)
+	default:
+		return nil
+	}
 }
 
 // ListTypedSecrets enumerates every secret of the given Type across
@@ -206,6 +262,20 @@ func (s *Session) GetTypedSecret(scopeID, name string) (*TypedRecord, error) {
 // Inlined here rather than calling RunSecretRemove so we don't have
 // to reopen the session.
 func (s *Session) RemoveTypedSecret(ctx context.Context, scopeID, name string) error {
+	return s.removeTypedSecret(ctx, scopeID, name, "")
+}
+
+// RemoveTypedSecretOfType tombstones a record only when its current type
+// matches expectedType. This binds rename cleanup to the object that the caller
+// validated instead of letting an untrusted old name delete another record.
+func (s *Session) RemoveTypedSecretOfType(ctx context.Context, scopeID, name, expectedType string) error {
+	if expectedType == "" {
+		return errors.New("typed secret: expected type required")
+	}
+	return s.removeTypedSecret(ctx, scopeID, name, expectedType)
+}
+
+func (s *Session) removeTypedSecret(ctx context.Context, scopeID, name, expectedType string) error {
 	scopeID, err := s.resolveScopeID(scopeID)
 	if err != nil {
 		return err
@@ -220,6 +290,9 @@ func (s *Session) RemoveTypedSecret(ctx context.Context, scopeID, name string) e
 			continue
 		}
 		if cur.Record.Name == name {
+			if expectedType != "" && cur.Record.Type != expectedType {
+				return fmt.Errorf("typed secret %q has type %q, want %q", name, cur.Record.Type, expectedType)
+			}
 			sid = id
 			break
 		}
@@ -256,7 +329,15 @@ func (s *Session) RemoveTypedSecret(ctx context.Context, scopeID, name string) e
 // helper undoes that opaquely so callers don't have to switch on the
 // concrete `any` type.
 func (r *TypedRecord) PayloadJSON() ([]byte, error) {
-	switch p := r.Payload.(type) {
+	return payloadJSON(r.Payload)
+}
+
+// payloadJSON is the shared decode of a stored SecretRecord.Payload back into
+// the JSON bytes the typed setters wrote. Kept separate from TypedRecord so
+// history entries (which hold a *proto.SecretRecord, not a TypedRecord) use
+// exactly the same rules.
+func payloadJSON(payload any) ([]byte, error) {
+	switch p := payload.(type) {
 	case string:
 		return []byte(p), nil
 	case []byte:

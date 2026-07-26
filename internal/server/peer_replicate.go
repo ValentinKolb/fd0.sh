@@ -57,7 +57,7 @@ type peerChainResp struct {
 // the server_pub binding, minus the nonce/replay table (idempotent GET).
 func (s *Server) verifyPeerSig(r *http.Request) ([]byte, int, error) {
 	if s.rl != nil {
-		if d := s.rl.AcquireAuthAttempt(clientIP(r)); !d.Allow {
+		if d := s.rl.AcquireAuthAttempt(s.clientIP(r)); !d.Allow {
 			return nil, http.StatusTooManyRequests, rateLimitedError{retry: d.Retry}
 		}
 	}

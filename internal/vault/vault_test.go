@@ -70,9 +70,8 @@ func TestVaultRoundtrip(t *testing.T) {
 }
 
 // TestAddWrapIdempotentOnRetry verifies the crash-recovery property of
-// AddWrap: if a previous `auth add` was interrupted between the AddWrap
-// vault write and the chain.AppendUser, retrying must not error even
-// though the wrap is already on disk.
+// AddWrap: if a previous authorized write reached disk but the command did
+// not finish, retrying must not error even though the wrap is already there.
 func TestAddWrapIdempotentOnRetry(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "vault.enc")

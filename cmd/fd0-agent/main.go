@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -91,7 +92,13 @@ func main() {
 	serverOverride := os.Getenv("FD0_SERVER")
 	var sched *agent.Scheduler
 	onUnlock := cfg.Sync.OnUnlockEnabled()
-	if interval := cfg.SyncIntervalDuration(); interval > 0 || onUnlock {
+	interval := cfg.SyncIntervalDuration()
+	if os.Getenv("FD0_AGENT_SYNC_DISABLED") == "1" {
+		onUnlock = false
+		interval = 0
+		log.Info("agent: automatic sync disabled by environment")
+	}
+	if interval > 0 || onUnlock {
 		sched = agent.NewScheduler(agent.SchedulerConfig{
 			Interval: interval,
 			OnUnlock: onUnlock,
@@ -122,8 +129,18 @@ func main() {
 		Version:            version,
 		Flavor:             buildinfo.Flavor,
 		YubikeyEnabled:     buildinfo.YubikeyEnabled,
+		StartedBy:          agent.StartedByFromEnv(),
 	})
 	if err != nil {
+		// The home is already served — by the user's shell session, or by a
+		// service that won the race. One agent per home is the rule and it
+		// still holds; we simply have nothing left to do. Exiting 0 says that
+		// to launchd (KeepAlive/SuccessfulExit) and systemd (Restart=on-failure)
+		// so neither respawns us into the same conflict every few seconds.
+		if errors.Is(err, agent.ErrAlreadyServing) {
+			log.Info("fd0-agent: nothing to do", "reason", err)
+			return
+		}
 		log.Error("listen", "err", err)
 		os.Exit(1)
 	}
@@ -203,6 +220,9 @@ func resolveDuration(flagOrEnv, configValue string, fallback time.Duration, name
 	d, err := time.ParseDuration(pick)
 	if err != nil {
 		return 0, fmt.Errorf("%s %q: %w", name, pick, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("%s %q: duration must be greater than zero", name, pick)
 	}
 	return d, nil
 }

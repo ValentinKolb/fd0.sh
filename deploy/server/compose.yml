@@ -52,6 +52,8 @@ services:
       # FD0_RATELIMIT_WRITES_PER_MIN: "60"
       # FD0_RATELIMIT_BYTES_PER_MIN: "33554432"
       # FD0_RATELIMIT_REGISTER_PER_HOUR: "5"
+      # Trust X-Forwarded-For only from the exact reverse-proxy network.
+      # FD0_TRUSTED_PROXY_CIDRS: "10.20.0.5/32"
     volumes:
       - fd0-server-data:/data
 

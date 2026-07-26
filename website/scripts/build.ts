@@ -15,7 +15,7 @@
 
 process.env.NODE_ENV = "production";
 
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from "fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from "fs";
 import tailwindPlugin from "bun-plugin-tailwind";
 import { copyFonts } from "./copy-fonts";
 
@@ -114,6 +114,15 @@ if (!existsSync(`${DIST_PUBLIC}/files/compose.yml`)) {
   console.error("missing public file: dist/public/files/compose.yml");
   process.exit(1);
 }
+for (const script of ["install.sh", "install-desktop.sh"]) {
+  const source = `../scripts/${script}`;
+  if (!existsSync(source)) {
+    console.error(`missing installer source: ${source}`);
+    process.exit(1);
+  }
+  copyFileSync(source, `${DIST_PUBLIC}/${script}`);
+}
+console.log(`✓ install: immutable installer scripts → ${DIST_PUBLIC}/`);
 
 // ─── fonts ─────────────────────────────────────────────────────────
 //
@@ -146,7 +155,15 @@ if (!existsSync(`${DIST_PUBLIC}/files/compose.yml`)) {
     console.error(`production SSR HTML contains dev marker(s): ${found.join(", ")}`);
     process.exit(1);
   }
+  const installResponse = await server.default.fetch(new Request("http://fd0.local/install"));
+  const installedScript = await installResponse.text();
+  const sourceScript = await Bun.file("../scripts/install.sh").text();
+  if (installResponse.status !== 200 || installedScript !== sourceScript) {
+    console.error("production /install does not serve the installer embedded at build time");
+    process.exit(1);
+  }
   console.log("✓ ssr:    production HTML has no dev client");
+  console.log("✓ install: production route serves the embedded installer");
 }
 
 // ─── done ──────────────────────────────────────────────────────────

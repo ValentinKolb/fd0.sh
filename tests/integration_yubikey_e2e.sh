@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration_isolation.sh"
+fd0_test_require_isolation
 
 # YubiKey end-to-end multi-user integration test.
 #
@@ -129,7 +131,7 @@ CA() { env FD0_HOME="$HOME_CA" FD0_SSH_SOCK="$HOME_CA/ssh.sock" FD0_AGENT_BIN="$
 
 CA_lock() {
     # Lock Carol's vault via the agent (clears super_priv from mlocked
-    # memory). DO NOT pkill fd0-agent — that would also kill Alice's
+    # memory). Do not use broad process matching — that would also kill Alice's
     # and Bob's agents on this same machine, breaking their sync ops.
     CA lock >/dev/null 2>&1 || true
 }

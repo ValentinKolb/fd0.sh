@@ -1,0 +1,441 @@
+name: release-desktop
+
+on:
+  push:
+    tags:
+      - "desktop-v*"
+
+permissions:
+  attestations: write
+  contents: write
+  id-token: write
+
+concurrency:
+  group: release-desktop-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+
+      - name: install desktop dependencies
+        working-directory: desktop
+        run: bun install --frozen-lockfile
+
+      - name: enforce release supply-chain policy
+        run: |
+          bash scripts/check-release-policy.sh
+          cd desktop
+          bun audit
+
+      - name: test Go packages
+        run: go test ./...
+
+      - name: test desktop app
+        working-directory: desktop
+        run: |
+          bun run typecheck
+          bun run test:e2e
+
+      - name: test desktop installer
+        run: bash tests/run_isolated_integration.sh tests/integration_desktop_installer.sh
+
+  macos:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+            builder_arch: arm64
+          - runner: macos-15-intel
+            arch: x64
+            builder_arch: x64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+
+      - name: validate release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#desktop-v}"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: require Apple signing credentials
+        env:
+          CSC_LINK: ${{ secrets.MACOS_CERTIFICATE }}
+          CSC_KEY_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          for name in CSC_LINK CSC_KEY_PASSWORD APPLE_API_KEY_P8 APPLE_API_KEY_ID APPLE_API_ISSUER; do
+            test -n "${!name}" || { echo "::error::missing required secret $name"; exit 1; }
+          done
+          printf '%s' "$APPLE_API_KEY_P8" | base64 -D > "$RUNNER_TEMP/AuthKey.p8"
+          chmod 600 "$RUNNER_TEMP/AuthKey.p8"
+
+      - name: install desktop dependencies
+        working-directory: desktop
+        run: bun install --frozen-lockfile
+
+      - name: set package version
+        working-directory: desktop
+        run: npm pkg set version="${{ steps.version.outputs.version }}"
+
+      - name: build signed and notarized app
+        working-directory: desktop
+        env:
+          FD0_DESKTOP_VERSION: ${{ steps.version.outputs.version }}
+          FD0_DESKTOP_FLAVOR: yubikey
+          CSC_LINK: ${{ secrets.MACOS_CERTIFICATE }}
+          CSC_KEY_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY: ${{ runner.temp }}/AuthKey.p8
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          bun run build
+          bunx electron-builder --mac dmg zip --${{ matrix.builder_arch }} --publish never
+          mv dist/latest-mac.yml "dist/${{ matrix.arch }}-mac.yml"
+
+      - name: verify macOS bundle
+        working-directory: desktop
+        shell: bash
+        run: |
+          set -euo pipefail
+          app=$(find dist -type d -name fd0.app -print -quit)
+          test -n "$app"
+          test "$("$app/Contents/Resources/bin/fd0" version)" = "fd0 ${{ steps.version.outputs.version }} yubikey"
+          test "$("$app/Contents/Resources/bin/fd0-agent" --version)" = "fd0-agent ${{ steps.version.outputs.version }} yubikey"
+          test "$("$app/Contents/MacOS/fd0" --fd0-cli-relay version)" = "fd0 ${{ steps.version.outputs.version }} yubikey"
+          "$app/Contents/MacOS/fd0" --fd0-cli-relay update --check | grep -Fq "managed by fd0 Desktop"
+          codesign --verify --deep --strict "$app"
+          spctl --assess --type execute "$app"
+          xcrun stapler validate "$app"
+
+      - name: upload macOS artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: desktop-macos-${{ matrix.arch }}
+          if-no-files-found: error
+          path: |
+            desktop/dist/*.dmg
+            desktop/dist/*.zip
+            desktop/dist/*.blockmap
+            desktop/dist/${{ matrix.arch }}-mac.yml
+
+  linux:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: x64
+            builder_arch: x64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            builder_arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+
+      - name: install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libpcsclite-dev rpm
+
+      - name: validate release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#desktop-v}"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: install desktop dependencies
+        working-directory: desktop
+        run: bun install --frozen-lockfile
+
+      - name: set package version
+        working-directory: desktop
+        run: npm pkg set version="${{ steps.version.outputs.version }}"
+
+      - name: build Linux packages
+        working-directory: desktop
+        env:
+          FD0_DESKTOP_VERSION: ${{ steps.version.outputs.version }}
+          FD0_DESKTOP_FLAVOR: yubikey
+          FD0_DESKTOP_PCSC_LIB: /usr/lib/${{ matrix.arch == 'x64' && 'x86_64-linux-gnu' || 'aarch64-linux-gnu' }}/libpcsclite.so.1
+        run: |
+          bun run build
+          bunx electron-builder --linux AppImage deb rpm --${{ matrix.builder_arch }} --publish never
+
+      - name: verify Linux bundle
+        working-directory: desktop
+        shell: bash
+        run: |
+          set -euo pipefail
+          app=$(find dist -maxdepth 1 -type f -name '*.AppImage' -print -quit)
+          deb=$(find dist -maxdepth 1 -type f -name '*.deb' -print -quit)
+          rpm_package=$(find dist -maxdepth 1 -type f -name '*.rpm' -print -quit)
+          test -n "$app" && test -n "$deb" && test -n "$rpm_package"
+          test "$("$app" --fd0-cli-relay version)" = "fd0 ${{ steps.version.outputs.version }} yubikey"
+          "$app" --fd0-cli-relay update --check | grep -Fq "managed by fd0 Desktop"
+          "$app" --appimage-extract >/dev/null
+          test -x squashfs-root/resources/bin/fd0-release-verify
+          test -f squashfs-root/resources/runtime/libpcsclite.so.1
+          test -f squashfs-root/resources/runtime/libpcsclite-LICENSE.txt
+          LD_LIBRARY_PATH="$PWD/squashfs-root/resources/runtime" \
+            ldd squashfs-root/resources/bin/fd0-agent | tee /tmp/fd0-agent-ldd.txt
+          if grep -Fq "not found" /tmp/fd0-agent-ldd.txt; then
+            exit 1
+          fi
+          rm -rf squashfs-root
+          dpkg-deb -f "$deb" Depends | grep -Fq libpcsclite1
+          rpm -qp --requires "$rpm_package" | grep -Fq pcsc-lite-libs
+
+      - name: upload Linux artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: desktop-linux-${{ matrix.arch }}
+          if-no-files-found: error
+          path: |
+            desktop/dist/*.AppImage
+            desktop/dist/*.deb
+            desktop/dist/*.rpm
+            desktop/dist/*.blockmap
+            desktop/dist/latest-linux*.yml
+
+  linux-clean-machine:
+    needs: linux
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: x64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: desktop-linux-${{ matrix.arch }}
+          path: release
+
+      - name: run AppImage without host FUSE2, PCSC, or Cosign
+        shell: bash
+        run: |
+          set -euo pipefail
+          app=$(find release -maxdepth 1 -type f -name '*.AppImage' -print -quit)
+          chmod +x "$app"
+          test "$("$app" --fd0-cli-relay version)" = "fd0 ${GITHUB_REF_NAME#desktop-v} yubikey"
+          test "$("$app" --fd0-agent-relay --version)" = "fd0-agent ${GITHUB_REF_NAME#desktop-v} yubikey"
+          {
+            echo "native AppImage: pass"
+            echo "architecture: ${{ matrix.arch }}"
+            echo "runner: ${{ matrix.runner }}"
+          } > "linux-clean-${{ matrix.arch }}.txt"
+
+      - name: smoke AppImage on clean distributions
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$PWD/release"
+          app=$(basename "$(find release -maxdepth 1 -type f -name '*.AppImage' -print -quit)")
+          ubuntu="ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90"
+          rocky="rockylinux:9@sha256:d7be1c094cc5845ee815d4632fe377514ee6ebcf8efaed6892889657e5ddaaa6"
+          debian="debian:13-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd"
+          deb_runtime="libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 libatspi2.0-0 libuuid1 libgbm1 libasound2t64 libcups2t64 libdbus-1-3 libxkbcommon0"
+          rpm_runtime="gtk3 libnotify nss libXScrnSaver libXtst at-spi2-core libuuid mesa-libgbm alsa-lib cups-libs dbus-libs libxkbcommon"
+
+          for image in "$ubuntu" "$debian"; do
+            docker run --rm -e APPIMAGE_EXTRACT_AND_RUN=1 -v "$root:/release:ro" "$image" \
+              sh -ec "apt-get update >/dev/null
+                apt-get install -y --no-install-recommends $deb_runtime >/dev/null
+                ! dpkg-query -W libpcsclite1 >/dev/null 2>&1
+                ! dpkg-query -W libfuse2 >/dev/null 2>&1
+                ! command -v cosign >/dev/null 2>&1
+                /release/$app --fd0-cli-relay version
+                /release/$app --fd0-agent-relay --version"
+            echo "$image: pass" >> "linux-clean-${{ matrix.arch }}.txt"
+          done
+
+          docker run --rm -e APPIMAGE_EXTRACT_AND_RUN=1 -v "$root:/release:ro" "$ubuntu" \
+            sh -ec "apt-get update >/dev/null
+              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $deb_runtime >/dev/null
+              ! dpkg-query -W libpcsclite1 >/dev/null 2>&1
+              mkdir -m 700 /tmp/fd0-smoke
+              cd /tmp/fd0-smoke
+              /release/$app --appimage-extract >/dev/null
+              export LD_LIBRARY_PATH=\$PWD/squashfs-root/resources/runtime
+              export FD0_HOME=\$PWD/home
+              export FD0_SSH_SOCK=\$PWD/ssh.sock
+              export FD0_AGENT_BIN=\$PWD/squashfs-root/resources/bin/fd0-agent
+              export FD0_BIN=\$PWD/squashfs-root/resources/bin/fd0
+              printf 'release-smoke-pass\\nrelease-smoke-pass\\n' | \$FD0_BIN init >/dev/null
+              printf 'release-smoke-pass\\n' | \$FD0_BIN unlock >/dev/null
+              \$FD0_BIN agent status
+              \$FD0_BIN agent stop >/dev/null"
+          echo "passphrase vault without host PCSC: pass" >> "linux-clean-${{ matrix.arch }}.txt"
+
+          docker run --rm -e APPIMAGE_EXTRACT_AND_RUN=1 -v "$root:/release:ro" "$rocky" \
+            sh -ec "dnf install -y $rpm_runtime >/dev/null
+              ! rpm -q pcsc-lite-libs >/dev/null 2>&1
+              ! rpm -q fuse-libs >/dev/null 2>&1
+              ! command -v cosign >/dev/null 2>&1
+              /release/$app --fd0-cli-relay version
+              /release/$app --fd0-agent-relay --version"
+          echo "$rocky: pass" >> "linux-clean-${{ matrix.arch }}.txt"
+
+      - name: verify native package dependency ownership
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$PWD/release"
+          deb=$(basename "$(find release -maxdepth 1 -type f -name '*.deb' -print -quit)")
+          rpm=$(basename "$(find release -maxdepth 1 -type f -name '*.rpm' -print -quit)")
+          docker run --rm -v "$root:/release:ro" \
+            "ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90" \
+            sh -ec "apt-get update >/dev/null
+              DEBIAN_FRONTEND=noninteractive apt-get install -y /release/$deb >/dev/null
+              test -e /usr/lib/*/libpcsclite.so.1
+              apt-get remove -y fd0-desktop >/dev/null
+              test ! -e /opt/fd0"
+          docker run --rm -v "$root:/release:ro" \
+            "rockylinux:9@sha256:d7be1c094cc5845ee815d4632fe377514ee6ebcf8efaed6892889657e5ddaaa6" \
+            sh -ec "dnf install -y gtk3 libnotify nss libXScrnSaver libXtst xdg-utils at-spi2-core libuuid mesa-libgbm alsa-lib cups-libs dbus-libs libxkbcommon >/dev/null
+              dnf install -y /release/$rpm >/dev/null
+              ldconfig -p | grep -q libpcsclite.so.1
+              dnf remove -y fd0-desktop >/dev/null
+              test ! -e /opt/fd0"
+          echo "deb/rpm ownership: pass" >> "linux-clean-${{ matrix.arch }}.txt"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-linux-clean-${{ matrix.arch }}
+          path: linux-clean-${{ matrix.arch }}.txt
+
+  release:
+    needs: [macos, linux, linux-clean-machine]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: desktop-*
+          path: release
+          merge-multiple: true
+
+      - name: create atomic release metadata
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#desktop-v}"
+          assets=$(find release -maxdepth 1 -type f -printf '%f\n' | sort | jq -R . | jq -s .)
+          jq -n \
+            --arg schema "fd0.desktop-release.v1" \
+            --arg tag "$RELEASE_TAG" \
+            --arg version "$version" \
+            --arg source_sha "$SOURCE_SHA" \
+            --argjson assets "$assets" \
+            '{
+              schema:$schema,
+              tag:$tag,
+              version:$version,
+              channel:"stable",
+              source_sha:$source_sha,
+              platforms:{
+                macos:{architectures:["arm64","x64"],packages:["dmg","zip"]},
+                linux:{architectures:["arm64","x64"],packages:["AppImage","deb","rpm"]}
+              },
+              assets:$assets
+            }' \
+            > release/desktop-release.json
+
+      - uses: sigstore/cosign-installer@ba7bc0a3fef59531c69a25acd34668d6d3fe6f22 # v4.1.0
+
+      - name: create artifact SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          path: release
+          format: spdx-json
+          output-file: release/fd0-desktop.spdx.json
+
+      - name: sign artifact manifest
+        working-directory: release
+        run: |
+          set -euo pipefail
+          find . -maxdepth 1 -type f ! -name 'checksums.txt*' -printf '%f\n' | sort | while read -r file; do
+            sha256sum "$file"
+          done > checksums.txt
+          cosign sign-blob --yes \
+            --bundle checksums.txt.sigstore.json \
+            --output-signature checksums.txt.sig \
+            --output-certificate checksums.txt.pem \
+            checksums.txt
+
+      - name: verify signed manifest with embedded verifier
+        run: |
+          go run ./cmd/fd0-release-verify \
+            --bundle release/checksums.txt.sigstore.json \
+            --tag "$GITHUB_REF_NAME" \
+            release/checksums.txt
+
+      - name: attest release artifacts
+        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+        with:
+          subject-path: release/*
+
+      - name: publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#desktop-v}"
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || \
+            gh release create "$GITHUB_REF_NAME" --title "fd0 Desktop $version" --generate-notes --draft
+          gh release upload "$GITHUB_REF_NAME" release/* --clobber
+          gh release edit "$GITHUB_REF_NAME" --draft=false

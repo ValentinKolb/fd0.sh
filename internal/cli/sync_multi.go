@@ -39,10 +39,7 @@ func ResolvePrimary(flagServer string) (string, error) {
 	return cfg.Sync.ResolvedServer()
 }
 
-// RunSyncPrimary is the single-primary sync entry point: resolve the one
-// primary, run a sync against it, and — on success — compact the local
-// chain (safe because that one server is the sole authority and now holds
-// the tip).
+// RunSyncPrimary is the single-primary sync entry point.
 func RunSyncPrimary(ctx context.Context, flagServer string) error {
 	server, err := ResolvePrimary(flagServer)
 	if err != nil {
@@ -51,7 +48,6 @@ func RunSyncPrimary(ctx context.Context, flagServer string) error {
 	if err := RunSync(ctx, server); err != nil {
 		return err
 	}
-	_ = CompactScopes(ctx)
 	refreshEnabledProjections(ctx)
 	return nil
 }

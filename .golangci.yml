@@ -71,8 +71,23 @@ linters:
         - G703  # path traversal — mitigated by ValidScopeID
         - G704  # SSRF — server URL is the SSRF target by design (pinned)
         - G705  # XSS — fd0 returns CBOR not HTML
+    staticcheck:
+      checks:
+        - all
+        # ST and QF checks are documentation/style rewrites, not bug classes.
+        # Keep them out without obscuring correctness-oriented SA/S checks.
+        - -ST*
+        - -QF1001
+        - -QF1002
+        - -QF1008
   exclusions:
     rules:
+      # libsodium sealed boxes use XSalsa20 by protocol definition. Replacing
+      # this compatibility primitive would change the wire format.
+      - path: internal/crypto/sealedbox\.go
+        text: golang.org/x/crypto/salsa20/salsa.*is deprecated
+        linters:
+          - staticcheck
       # Test helpers commonly use `_ = ...` for ignored returns.
       - path: _test\.go
         linters:

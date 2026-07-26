@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -26,7 +27,7 @@ import (
 )
 
 const (
-	defaultUpdateRepo        = "ValentinKolb/fd0.sh"
+	defaultUpdateRepo        = "k2b-dev/fd0.sh"
 	defaultUpdateReleaseBase = "https://github.com/" + defaultUpdateRepo + "/releases"
 	defaultUpdateAPIBase     = "https://api.github.com/repos/" + defaultUpdateRepo
 	updateArchiveMaxBytes    = 128 << 20
@@ -36,15 +37,16 @@ const (
 var ErrUpdateAvailable = errors.New("fd0 update available")
 
 type UpdateOptions struct {
-	CurrentVersion string
-	CurrentFlavor  string
-	Version        string
-	Flavor         string
-	Prefix         string
-	System         bool
-	CheckOnly      bool
-	Yes            bool
-	NoVerify       bool
+	CurrentVersion   string
+	CurrentFlavor    string
+	ManagedByDesktop bool
+	Version          string
+	Flavor           string
+	Prefix           string
+	System           bool
+	CheckOnly        bool
+	Yes              bool
+	AllowDowngrade   bool
 
 	APIBase     string
 	ReleaseBase string
@@ -54,6 +56,7 @@ type UpdateOptions struct {
 	GOOS        string
 	GOARCH      string
 	Executable  string
+	cosignPath  string
 }
 
 type updateRelease struct {
@@ -72,13 +75,17 @@ type updateTarget struct {
 type installedClient struct {
 	Version string
 	Flavor  string
+	Present bool
 }
 
 type semver struct {
-	major int
-	minor int
-	patch int
+	major      int
+	minor      int
+	patch      int
+	prerelease []string
 }
+
+var semverPattern = regexp.MustCompile(`^([0-9]+)\.([0-9]+)\.([0-9]+)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$`)
 
 type stagedUpdateBinary struct {
 	name   string
@@ -93,6 +100,11 @@ func RunUpdate(ctx context.Context, opts UpdateOptions) error {
 	}
 	if opts.Stderr == nil {
 		opts.Stderr = os.Stderr
+	}
+	if opts.ManagedByDesktop || os.Getenv("FD0_DESKTOP_MANAGED") == "1" {
+		fmt.Fprintln(opts.Stdout, "fd0 is managed by fd0 Desktop.")
+		fmt.Fprintln(opts.Stdout, "Open fd0 Desktop > Support > Check now to update the app, CLI, and agent together.")
+		return nil
 	}
 	if opts.HTTPClient == nil {
 		opts.HTTPClient = &http.Client{Timeout: 30 * time.Second}
@@ -123,7 +135,7 @@ func RunUpdate(ctx context.Context, opts UpdateOptions) error {
 	if err != nil {
 		return err
 	}
-	current, err := detectInstalledFD0(ctx, prefix, opts.CurrentVersion, opts.CurrentFlavor)
+	current, err := detectInstalledFD0(prefix, opts.Executable, opts.CurrentVersion, opts.CurrentFlavor)
 	if err != nil {
 		return err
 	}
@@ -146,8 +158,15 @@ func RunUpdate(ctx context.Context, opts UpdateOptions) error {
 	archiveName := updateArchiveName(targetFlavor, platform)
 	relation, comparable := compareVersionStrings(current.Version, target.Version)
 	sameFlavor := current.Flavor == targetFlavor
+	if comparable && relation > 0 && (opts.Version == "latest" || !opts.AllowDowngrade) {
+		return fmt.Errorf(
+			"update: refusing downgrade from %s to %s; select an explicit version and pass --allow-downgrade",
+			current.Version,
+			target.Version,
+		)
+	}
 	if opts.CheckOnly {
-		printUpdatePlan(opts.Stdout, prefix, current.Version, current.Flavor, target.Version, targetFlavor, target.DisplayTag, archiveName, "check", false, false)
+		printUpdatePlan(opts.Stdout, prefix, current, target.Version, targetFlavor, target.DisplayTag, archiveName, "check")
 		if comparable && relation >= 0 && sameFlavor {
 			fmt.Fprintln(opts.Stdout, "fd0 is up to date")
 			return nil
@@ -160,20 +179,24 @@ func RunUpdate(ctx context.Context, opts UpdateOptions) error {
 		return nil
 	}
 	action := "update"
-	if current.Version == "" {
+	if !current.Present {
 		action = "install"
 	} else if comparable && relation > 0 {
 		action = "downgrade"
 	} else if comparable && relation == 0 && !sameFlavor {
 		action = "switch flavor"
 	}
-	cosignEnabled := !opts.NoVerify && commandExists("cosign")
-	printUpdatePlan(opts.Stdout, prefix, current.Version, current.Flavor, target.Version, targetFlavor, target.DisplayTag, archiveName, action, cosignEnabled, !opts.NoVerify)
-	if action == "downgrade" && !opts.Yes {
-		if err := confirmUpdate(false, fmt.Sprintf("Downgrade fd0 from %s %s to %s %s?", current.Version, current.Flavor, target.Version, targetFlavor)); err != nil {
-			return err
-		}
-	} else if !opts.Yes {
+	cosignPath := opts.cosignPath
+	if cosignPath == "" {
+		cosignPath, err = exec.LookPath("cosign")
+	} else {
+		cosignPath, err = exec.LookPath(cosignPath)
+	}
+	if err != nil {
+		return errors.New("update: cosign is required to authenticate fd0 releases; install cosign and retry")
+	}
+	printUpdatePlan(opts.Stdout, prefix, current, target.Version, targetFlavor, target.DisplayTag, archiveName, action)
+	if !opts.Yes {
 		if err := confirmUpdate(false, fmt.Sprintf("Proceed with fd0 %s to %s %s?", action, target.Version, targetFlavor)); err != nil {
 			return err
 		}
@@ -183,7 +206,7 @@ func RunUpdate(ctx context.Context, opts UpdateOptions) error {
 	if err != nil {
 		return fmt.Errorf("update: create temp dir: %w", err)
 	}
-	defer os.RemoveAll(tmp)
+	defer func() { _ = os.RemoveAll(tmp) }()
 	base := strings.TrimRight(opts.ReleaseBase, "/") + "/download/" + target.DownloadTag
 	archivePath := filepath.Join(tmp, archiveName)
 	fmt.Fprintf(opts.Stderr, "fetch %s\n", base+"/"+archiveName)
@@ -206,14 +229,10 @@ func RunUpdate(ctx context.Context, opts UpdateOptions) error {
 		return fmt.Errorf("update: sha256 mismatch for %s", archiveName)
 	}
 	fmt.Fprintln(opts.Stderr, "verified sha256 manifest")
-	if cosignEnabled {
-		if err := verifyChecksumsWithCosign(ctx, opts.HTTPClient, base, tmp, checksums); err != nil {
-			return err
-		}
-		fmt.Fprintln(opts.Stderr, "verified cosign signature")
-	} else if !opts.NoVerify {
-		fmt.Fprintln(opts.Stderr, "warn: cosign not installed; verified sha256 manifest only")
+	if err := verifyChecksumsWithCosign(ctx, opts.HTTPClient, base, tmp, checksums, cosignPath, target.DisplayTag); err != nil {
+		return err
 	}
+	fmt.Fprintln(opts.Stderr, "verified cosign signature")
 	extractDir := filepath.Join(tmp, "extract")
 	if err := os.Mkdir(extractDir, 0o700); err != nil {
 		return err
@@ -274,15 +293,28 @@ func resolveUpdatePrefix(opts UpdateOptions) (string, error) {
 	return filepath.Dir(exe), nil
 }
 
-func detectInstalledFD0(ctx context.Context, prefix, fallbackVersion, fallbackFlavor string) (installedClient, error) {
+func detectInstalledFD0(prefix, executable, fallbackVersion, fallbackFlavor string) (installedClient, error) {
 	path := filepath.Join(prefix, "fd0")
 	if st, err := os.Stat(path); err == nil && st.Mode().IsRegular() && st.Mode()&0o111 != 0 {
-		cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		defer cancel()
-		out, err := exec.CommandContext(cctx, path, "version").Output()
-		if err == nil {
-			return parseFD0VersionOutput(string(out)), nil
+		if executable == "" {
+			executable, _ = os.Executable()
 		}
+		if executable != "" {
+			if current, statErr := os.Stat(executable); statErr == nil && os.SameFile(st, current) {
+				return installedClient{
+					Version: normalizeVersionNumber(fallbackVersion),
+					Flavor:  buildinfo.NormalizeFlavor(fallbackFlavor),
+					Present: true,
+				}, nil
+			}
+		}
+		// Do not execute an arbitrary pre-existing target before release
+		// verification. Its exact build is unknown; --flavor can select a
+		// non-default artifact explicitly for custom prefixes.
+		return installedClient{
+			Flavor:  buildinfo.NormalizeFlavor(fallbackFlavor),
+			Present: true,
+		}, nil
 	}
 	if fallbackVersion == "dev" {
 		return installedClient{Flavor: buildinfo.NormalizeFlavor(fallbackFlavor)}, nil
@@ -290,22 +322,8 @@ func detectInstalledFD0(ctx context.Context, prefix, fallbackVersion, fallbackFl
 	return installedClient{
 		Version: normalizeVersionNumber(fallbackVersion),
 		Flavor:  buildinfo.NormalizeFlavor(fallbackFlavor),
+		Present: true,
 	}, nil
-}
-
-func parseFD0VersionOutput(out string) installedClient {
-	fields := strings.Fields(out)
-	if len(fields) >= 2 && fields[0] == "fd0" {
-		flavor := buildinfo.FlavorStandard
-		if len(fields) >= 3 {
-			flavor = buildinfo.NormalizeFlavor(fields[2])
-		}
-		return installedClient{
-			Version: normalizeVersionNumber(fields[1]),
-			Flavor:  flavor,
-		}
-	}
-	return installedClient{Flavor: buildinfo.FlavorStandard}
 }
 
 func resolveUpdateFlavor(requested, installed, fallback string) (string, error) {
@@ -341,6 +359,7 @@ func latestClientReleaseTarget(ctx context.Context, hc *http.Client, apiBase str
 	if err := json.Unmarshal(body, &releases); err != nil {
 		return updateTarget{}, fmt.Errorf("update: parse releases API: %w", err)
 	}
+	best := updateTarget{}
 	for _, r := range releases {
 		if r.Draft || r.Prerelease {
 			continue
@@ -353,9 +372,18 @@ func latestClientReleaseTarget(ctx context.Context, hc *http.Client, apiBase str
 		if err != nil {
 			return updateTarget{}, err
 		}
-		return target, nil
+		if best.Version == "" {
+			best = target
+			continue
+		}
+		if relation, comparable := compareVersionStrings(target.Version, best.Version); comparable && relation > 0 {
+			best = target
+		}
 	}
-	return updateTarget{}, errors.New("update: no client release found")
+	if best.Version == "" {
+		return updateTarget{}, errors.New("update: no client release found")
+	}
+	return best, nil
 }
 
 func explicitUpdateTarget(v string) (updateTarget, error) {
@@ -407,13 +435,18 @@ func canonicalClientReleaseTag(v string) string {
 
 func releaseVersionNumber(tag string) string {
 	tag = strings.TrimSpace(tag)
+	version := ""
 	if strings.HasPrefix(tag, "client-v") {
-		return normalizeVersionNumber(strings.TrimPrefix(tag, "client-v"))
+		version = strings.TrimPrefix(tag, "client-v")
+	} else if strings.HasPrefix(tag, "fd0-v") {
+		version = strings.TrimPrefix(tag, "fd0-v")
+	} else {
+		version = strings.TrimPrefix(tag, "v")
 	}
-	if strings.HasPrefix(tag, "fd0-v") {
-		return normalizeVersionNumber(strings.TrimPrefix(tag, "fd0-v"))
+	if _, ok := parseSemver(version); !ok {
+		return ""
 	}
-	return normalizeVersionNumber(strings.TrimPrefix(tag, "v"))
+	return version
 }
 
 func normalizeVersionNumber(v string) string {
@@ -440,25 +473,86 @@ func compareVersionStrings(a, b string) (int, bool) {
 		return compareInt(av.minor, bv.minor), true
 	case av.patch != bv.patch:
 		return compareInt(av.patch, bv.patch), true
-	default:
+	case len(av.prerelease) == 0 && len(bv.prerelease) == 0:
 		return 0, true
+	case len(av.prerelease) == 0:
+		return 1, true
+	case len(bv.prerelease) == 0:
+		return -1, true
 	}
+	count := min(len(av.prerelease), len(bv.prerelease))
+	for i := range count {
+		aID, bID := av.prerelease[i], bv.prerelease[i]
+		if aID == bID {
+			continue
+		}
+		aNumeric := isNumericIdentifier(aID)
+		bNumeric := isNumericIdentifier(bID)
+		switch {
+		case aNumeric && bNumeric:
+			return compareNumericIdentifier(aID, bID), true
+		case aNumeric:
+			return -1, true
+		case bNumeric:
+			return 1, true
+		case aID < bID:
+			return -1, true
+		default:
+			return 1, true
+		}
+	}
+	return compareInt(len(av.prerelease), len(bv.prerelease)), true
 }
 
 func parseSemver(v string) (semver, bool) {
-	parts := strings.Split(v, ".")
-	if len(parts) != 3 {
+	match := semverPattern.FindStringSubmatch(v)
+	if match == nil {
 		return semver{}, false
 	}
 	nums := [3]int{}
-	for i, p := range parts {
+	for i, p := range match[1:4] {
 		n, err := strconv.Atoi(p)
 		if err != nil || n < 0 {
 			return semver{}, false
 		}
 		nums[i] = n
 	}
-	return semver{major: nums[0], minor: nums[1], patch: nums[2]}, true
+	var prerelease []string
+	if match[4] != "" {
+		prerelease = strings.Split(match[4], ".")
+	}
+	return semver{major: nums[0], minor: nums[1], patch: nums[2], prerelease: prerelease}, true
+}
+
+func isNumericIdentifier(value string) bool {
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return value != ""
+}
+
+func compareNumericIdentifier(a, b string) int {
+	a = strings.TrimLeft(a, "0")
+	b = strings.TrimLeft(b, "0")
+	if a == "" {
+		a = "0"
+	}
+	if b == "" {
+		b = "0"
+	}
+	if len(a) != len(b) {
+		return compareInt(len(a), len(b))
+	}
+	switch {
+	case a < b:
+		return -1
+	case a > b:
+		return 1
+	default:
+		return 0
+	}
 }
 
 func compareInt(a, b int) int {
@@ -471,24 +565,21 @@ func compareInt(a, b int) int {
 	return 0
 }
 
-func printUpdatePlan(w io.Writer, prefix, currentVersion, currentFlavor, targetVersion, targetFlavor, targetTag, archiveName, action string, cosignEnabled, cosignWanted bool) {
+func printUpdatePlan(w io.Writer, prefix string, current installedClient, targetVersion, targetFlavor, targetTag, archiveName, action string) {
 	fmt.Fprintln(w, "fd0 update")
 	fmt.Fprintf(w, "  target:  %s\n", prefix)
-	if currentVersion != "" {
-		fmt.Fprintf(w, "  current: %s %s\n", currentVersion, currentFlavor)
+	if current.Version != "" {
+		fmt.Fprintf(w, "  current: %s %s\n", current.Version, current.Flavor)
+	} else if current.Present {
+		fmt.Fprintln(w, "  current: unknown (existing target was not executed)")
 	}
 	fmt.Fprintf(w, "  new:     %s %s (%s)\n", targetVersion, targetFlavor, targetTag)
 	fmt.Fprintf(w, "  archive: %s\n", archiveName)
 	fmt.Fprintf(w, "  action:  %s\n", action)
-	switch {
-	case action == "check":
+	if action == "check" {
 		fmt.Fprintln(w, "  verify:  not used in --check")
-	case cosignEnabled:
+	} else {
 		fmt.Fprintln(w, "  verify:  sha256 + cosign")
-	case cosignWanted:
-		fmt.Fprintln(w, "  verify:  sha256; cosign unavailable")
-	default:
-		fmt.Fprintln(w, "  verify:  sha256 only (--no-verify)")
 	}
 }
 
@@ -598,7 +689,7 @@ func sha256File(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func verifyChecksumsWithCosign(ctx context.Context, hc *http.Client, base, tmp string, checksums []byte) error {
+func verifyChecksumsWithCosign(ctx context.Context, hc *http.Client, base, tmp string, checksums []byte, cosignPath, releaseTag string) error {
 	checksumPath := filepath.Join(tmp, "checksums.txt")
 	if err := os.WriteFile(checksumPath, checksums, 0o600); err != nil {
 		return err
@@ -613,10 +704,12 @@ func verifyChecksumsWithCosign(ctx context.Context, hc *http.Client, base, tmp s
 	}
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(cctx, "cosign", "verify-blob",
+	cmd := exec.CommandContext(cctx, cosignPath, "verify-blob",
 		"--certificate", pemPath,
 		"--signature", sigPath,
-		"--certificate-identity-regexp", "^https://github.com/"+defaultUpdateRepo+"/",
+		"--certificate-identity-regexp", "^"+regexp.QuoteMeta(
+			"https://github.com/"+defaultUpdateRepo+"/.github/workflows/release.yml@refs/tags/"+releaseTag,
+		)+"$",
 		"--certificate-oidc-issuer", "https://token.actions.githubusercontent.com",
 		checksumPath,
 	)
@@ -624,11 +717,6 @@ func verifyChecksumsWithCosign(ctx context.Context, hc *http.Client, base, tmp s
 		return fmt.Errorf("update: cosign verification failed: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
-}
-
-func commandExists(name string) bool {
-	_, err := exec.LookPath(name)
-	return err == nil
 }
 
 func extractClientBinaries(archivePath, dst string) error {
@@ -641,7 +729,7 @@ func extractClientBinaries(archivePath, dst string) error {
 	if err != nil {
 		return fmt.Errorf("update: open archive: %w", err)
 	}
-	defer gz.Close()
+	defer func() { _ = gz.Close() }()
 	tr := tar.NewReader(gz)
 	want := map[string]bool{"fd0": false, "fd0-agent": false}
 	for {
@@ -656,7 +744,7 @@ func extractClientBinaries(archivePath, dst string) error {
 		if _, ok := want[name]; !ok {
 			continue
 		}
-		if h.Typeflag != tar.TypeReg && h.Typeflag != tar.TypeRegA {
+		if h.Typeflag != tar.TypeReg {
 			return fmt.Errorf("update: archive entry %s is not a regular file", h.Name)
 		}
 		if h.Size <= 0 || h.Size > updateArchiveMaxBytes {
@@ -690,6 +778,9 @@ func extractClientBinaries(archivePath, dst string) error {
 }
 
 func installClientBinaries(srcDir, prefix string) error {
+	// The caller-selected prefix contains executables, not secret material;
+	// conventional user and system binary directories require traversal.
+	// #nosec G301 -- executable installation directories conventionally use 0755.
 	if err := os.MkdirAll(prefix, 0o755); err != nil {
 		return fmt.Errorf("update: create install dir %s: %w", prefix, err)
 	}

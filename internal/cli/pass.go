@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -26,6 +27,17 @@ type PassAddOpts struct {
 	URL   []string
 	Scope string
 	Force bool
+	Notes string
+}
+
+type PassNotesSetOpts struct {
+	Item  string
+	Scope string
+	// Text is the note supplied as a positional argument. HasText
+	// distinguishes "no argument given" (read stdin or open $EDITOR) from an
+	// explicit empty argument (clear the note).
+	Text    string
+	HasText bool
 }
 
 type PassFieldSetOpts struct {
@@ -65,6 +77,13 @@ func RunPassAdd(ctx context.Context, o PassAddOpts) error {
 		return err
 	}
 	item := passitem.New(name, o.URL)
+	// SetNotes is a no-op for "", so the flag stays optional.
+	if err := item.SetNotes(o.Notes); err != nil {
+		return err
+	}
+	if err := item.Validate(); err != nil {
+		return err
+	}
 	if err := s.SetTypedSecret(ctx, scope, passNamePrefix+name, passitem.TypePassItem, item.Marshal()); err != nil {
 		return err
 	}
@@ -216,15 +235,63 @@ func RunPassShow(ctx context.Context, scopeID, name string, reveal, jsonOut bool
 		enc.SetIndent("", "  ")
 		return enc.Encode(item)
 	}
-	fmt.Printf("%s  [scope: %s]\n", item.Title, scopeName(s, rec.ScopeID))
-	for _, u := range item.URLs {
-		fmt.Printf("  url       %s\n", u)
-	}
-	if len(item.Fields) > 0 {
-		fmt.Println()
-		printPassFields(item.Fields, "", reveal)
-	}
+	renderPassItem(os.Stdout, item, scopeName(s, rec.ScopeID), reveal)
 	return nil
+}
+
+// renderPassItem writes the human-readable `pass show` body.
+//
+// It takes a writer instead of printing directly so the layout — in
+// particular the notes block — is testable without capturing os.Stdout.
+func renderPassItem(w io.Writer, item *passitem.Item, scopeLabel string, reveal bool) {
+	fmt.Fprintf(w, "%s  [scope: %s]\n", item.Title, scopeLabel)
+	for _, u := range item.URLs {
+		fmt.Fprintf(w, "  url       %s\n", u)
+	}
+	// The reserved note is rendered as its own trailing block, so it must not
+	// also appear in the field list.
+	if fields := passListedFields(item); len(fields) > 0 {
+		fmt.Fprintln(w)
+		printPassFields(w, fields, "", reveal)
+	}
+	printPassNotes(w, item.Notes())
+}
+
+// passListedFields returns the fields `pass show` tabulates: everything except
+// the reserved top-level notes field. A field of the same name inside a section
+// belongs to that section and stays in the list.
+func passListedFields(item *passitem.Item) []passitem.Field {
+	out := make([]passitem.Field, 0, len(item.Fields))
+	for _, f := range item.Fields {
+		if isPassNotesField(f) {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+// isPassNotesField reports whether f is the reserved note field. Callers must
+// only apply it to the item's top-level fields.
+func isPassNotesField(f passitem.Field) bool {
+	return f.Type == passitem.FieldText && strings.EqualFold(f.Name, passitem.NotesFieldName)
+}
+
+// printPassNotes writes the trailing notes block, indented one level deeper
+// than the heading so multi-line notes stay visually attached to it.
+func printPassNotes(w io.Writer, notes string) {
+	if notes == "" {
+		return
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "  %s\n", passitem.NotesFieldName)
+	for _, line := range strings.Split(notes, "\n") {
+		if line == "" {
+			fmt.Fprintln(w)
+			continue
+		}
+		fmt.Fprintf(w, "    %s\n", line)
+	}
 }
 
 func RunPassRemove(ctx context.Context, scopeID, name string, yes bool) error {
@@ -242,6 +309,63 @@ func RunPassRemove(ctx context.Context, scopeID, name string, yes bool) error {
 	stderrln("✓ pass item %q removed from %s", name, scopeName(s, rec.ScopeID))
 	hintSyncForPeers()
 	return nil
+}
+
+// PassEditOpts patches an item's own attributes. Fields are deliberately not
+// here: `pass field set` already edits them by path, and a field can hold a
+// secret, a TOTP seed or a file, which no flat flag could express.
+type PassEditOpts struct {
+	Name  string
+	Scope string
+	Title *string
+	URLs  *[]string
+}
+
+// RunPassEdit changes only the attributes the user named, leaving the rest
+// alone.
+func RunPassEdit(ctx context.Context, o PassEditOpts) error {
+	name, err := normalizePassName(o.Name)
+	if err != nil {
+		return err
+	}
+	return EditItem(ctx, KindPass, o.Scope, name,
+		decodePassRecord,
+		func(item *passitem.Item) (bool, error) {
+			changed := false
+			setString(&item.Title, o.Title, &changed)
+			setStrings(&item.URLs, o.URLs, &changed)
+			if changed {
+				// Every other mutator stamps the item, so revision and
+				// updated_at stay meaningful for this path too.
+				item.Touch()
+			}
+			return changed, nil
+		},
+		func(item *passitem.Item) error { return item.Validate() },
+		func(item *passitem.Item) (string, any) { return passitem.TypePassItem, item.Marshal() },
+	)
+}
+
+// RunPassRename renames a pass item.
+//
+// The stored payload is left alone: Title is a separate, separately editable
+// attribute that merely defaults to the name at creation time, so rewriting it
+// here would silently discard a title the user chose.
+func RunPassRename(ctx context.Context, scopeID, oldName, newName string, force bool) error {
+	oldName, err := normalizePassName(oldName)
+	if err != nil {
+		return err
+	}
+	newName, err = normalizePassName(newName)
+	if err != nil {
+		return err
+	}
+	s, err := Open(ctx)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	return s.RenameItem(ctx, KindPass, scopeID, oldName, newName, force, nil)
 }
 
 func RunPassSectionAdd(ctx context.Context, scopeID, itemName, path string) error {
@@ -359,6 +483,166 @@ func RunPassFieldRemove(ctx context.Context, scopeID, itemName, path string, yes
 	}
 	stderrln("✓ field %q removed from %s", path, item.Title)
 	hintSyncForPeers()
+	return nil
+}
+
+// RunPassNotes prints the item's note to stdout. An item without a note prints
+// nothing and succeeds, so `fd0 pass notes x` is safe to pipe.
+func RunPassNotes(ctx context.Context, scopeID, itemName string) error {
+	s, _, item, err := openPassItem(ctx, scopeID, itemName)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	notes := item.Notes()
+	if notes == "" {
+		return nil
+	}
+	fmt.Println(notes)
+	return nil
+}
+
+func RunPassNotesSet(ctx context.Context, o PassNotesSetOpts) error {
+	s, rec, item, err := openPassItem(ctx, o.Scope, o.Item)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	notes := o.Text
+	if !o.HasText {
+		// No positional: piped input when stdin is redirected, otherwise the
+		// user's editor pre-loaded with the current note.
+		if IsTTY(os.Stdin) {
+			notes, err = editPassNotes(item.Notes())
+		} else {
+			notes, err = readStdinTrimOneNewline("pass notes set")
+		}
+		if err != nil {
+			return err
+		}
+	}
+	if err := applyPassNotes(ctx, s, rec, item, notes); err != nil {
+		return err
+	}
+	if item.Notes() == "" {
+		stderrln("✓ note removed from %s", item.Title)
+	} else {
+		stderrln("✓ note set on %s", item.Title)
+	}
+	hintSyncForPeers()
+	return nil
+}
+
+func RunPassNotesRemove(ctx context.Context, scopeID, itemName string, yes bool) error {
+	s, rec, item, err := openPassItem(ctx, scopeID, itemName)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	if item.Notes() == "" {
+		return fmt.Errorf("%s has no note", item.Title)
+	}
+	if err := confirmDanger(yes, fmt.Sprintf("Remove the note from %s?", item.Title)); err != nil {
+		return err
+	}
+	if err := applyPassNotes(ctx, s, rec, item, ""); err != nil {
+		return err
+	}
+	stderrln("✓ note removed from %s", item.Title)
+	hintSyncForPeers()
+	return nil
+}
+
+// setPassNotes applies notes to item and readies it for persistence.
+//
+// SetNotes, unlike SetField, neither bumps item metadata nor re-validates, so
+// both happen here — without Validate an over-long note would be written and
+// then refuse to decode on the way back out.
+func setPassNotes(item *passitem.Item, notes string) error {
+	// SetNotes stamps and validates on its own, as SetField does.
+	return item.SetNotes(notes)
+}
+
+// applyPassNotes writes notes onto item and persists it through the same
+// SetTypedSecret path every other pass mutation uses.
+func applyPassNotes(ctx context.Context, s *Session, rec *TypedRecord, item *passitem.Item, notes string) error {
+	if err := setPassNotes(item, notes); err != nil {
+		return err
+	}
+	return s.SetTypedSecret(ctx, rec.ScopeID, rec.Name, passitem.TypePassItem, item.Marshal())
+}
+
+// editPassNotes opens the user's editor on initial and returns what they saved.
+//
+// The note is plaintext, so the scratch file is created 0600 by os.CreateTemp
+// (O_EXCL, in $TMPDIR — per-user on macOS) and removed on every exit path,
+// including a failed or aborted editor run.
+func editPassNotes(initial string) (string, error) {
+	f, err := os.CreateTemp("", "fd0-notes-*.txt")
+	if err != nil {
+		return "", fmt.Errorf("pass notes set: temp file: %w", err)
+	}
+	path := f.Name()
+	defer func() { _ = os.Remove(path) }()
+	// CreateTemp already uses 0600; restate it so a permissive umask or a
+	// future change to that default cannot widen the plaintext note.
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		return "", fmt.Errorf("pass notes set: temp file: %w", err)
+	}
+	// Seed with exactly one trailing newline so line-oriented editors do not
+	// report a missing final newline; the result is trimmed again below.
+	seed := strings.TrimRight(initial, "\n")
+	if seed != "" {
+		seed += "\n"
+	}
+	if _, err := io.WriteString(f, seed); err != nil {
+		_ = f.Close()
+		return "", fmt.Errorf("pass notes set: temp file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return "", fmt.Errorf("pass notes set: temp file: %w", err)
+	}
+	if err := runEditor(path); err != nil {
+		return "", err
+	}
+	buf, err := os.ReadFile(path) // #nosec G304 -- path is our own os.CreateTemp file.
+	if err != nil {
+		return "", fmt.Errorf("pass notes set: read editor buffer: %w", err)
+	}
+	return strings.TrimRight(string(buf), "\n"), nil
+}
+
+// runEditor runs $EDITOR (then $VISUAL, then vi) on path.
+//
+// The editor string is split on whitespace rather than handed to a shell, so
+// "code --wait" works while nothing in the value can be interpreted as shell
+// syntax.
+func runEditor(path string) error {
+	editor := ""
+	for _, key := range []string{"EDITOR", "VISUAL"} {
+		if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+			editor = v
+			break
+		}
+	}
+	if editor == "" {
+		editor = "vi"
+	}
+	argv := strings.Fields(editor)
+	if len(argv) == 0 {
+		return errors.New("pass notes set: empty editor command")
+	}
+	// #nosec G204,G702 -- $EDITOR/$VISUAL is local user configuration, no less
+	// trusted than the fd0 binary itself, and the only appended argument is our
+	// own os.CreateTemp path. No shell is involved, so the value cannot expand.
+	cmd := exec.Command(argv[0], append(argv[1:], path)...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("pass notes set: editor %q: %w", editor, err)
+	}
 	return nil
 }
 
@@ -494,18 +778,69 @@ func RunPassFileExport(ctx context.Context, scopeID, itemName, path, out string,
 	if err != nil {
 		return err
 	}
-	if out == "" {
-		out = file.Name
+	out, err = passFileExportPath(file.Name, out)
+	if err != nil {
+		return err
 	}
-	if !force {
-		if _, err := os.Stat(out); err == nil {
-			return fmt.Errorf("%s exists (pass --force to overwrite)", out)
-		}
-	}
-	if err := os.WriteFile(out, data, 0o600); err != nil {
+	if err := writePassFileExport(out, data, force); err != nil {
 		return err
 	}
 	stderrln("✓ wrote %s (%d bytes)", out, len(data))
+	return nil
+}
+
+func passFileExportPath(storedName, out string) (string, error) {
+	name, err := passitem.SafeFileName(storedName)
+	if err != nil {
+		return "", fmt.Errorf("pass file export: unsafe stored file name: %w", err)
+	}
+	if out != "" {
+		return out, nil
+	}
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("pass file export: current directory: %w", err)
+	}
+	target := filepath.Join(dir, name)
+	rel, err := filepath.Rel(dir, target)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("pass file export: stored file name escapes destination")
+	}
+	return target, nil
+}
+
+func writePassFileExport(path string, data []byte, force bool) error {
+	if force {
+		if err := writeFileAtomic(path, data, 0o600); err != nil {
+			return fmt.Errorf("pass file export %s: %w", path, err)
+		}
+		return nil
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		if os.IsExist(err) {
+			return fmt.Errorf("%s exists (pass --force to overwrite)", path)
+		}
+		return fmt.Errorf("pass file export %s: %w", path, err)
+	}
+	complete := false
+	defer func() {
+		if !complete {
+			_ = os.Remove(path)
+		}
+	}()
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("pass file export %s: %w", path, err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("pass file export %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("pass file export %s: %w", path, err)
+	}
+	complete = true
 	return nil
 }
 
@@ -543,13 +878,13 @@ func GeneratePassword(length int) (string, error) {
 }
 
 type passRow struct {
-	ScopeID string         `json:"scope_id"`
+	ScopeID string         `json:"scopeId"`
 	Name    string         `json:"name"`
 	Item    *passitem.Item `json:"item"`
 }
 
 type passSummaryRow struct {
-	ScopeID string             `json:"scope_id"`
+	ScopeID string             `json:"scopeId"`
 	Scope   string             `json:"scope"`
 	Name    string             `json:"name"`
 	Title   string             `json:"title"`
@@ -571,7 +906,7 @@ func passSummaryRows(s *Session, rows []passRow) []passSummaryRow {
 	for i, row := range rows {
 		out[i] = passSummaryRow{
 			ScopeID: row.ScopeID,
-			Scope:   scopeName(s, row.ScopeID),
+			Scope:   scopeLabelOf(s, row.ScopeID),
 			Name:    row.DisplayName(),
 			Title:   row.Item.Title,
 			URLs:    append([]string(nil), row.Item.URLs...),
@@ -719,15 +1054,15 @@ func hostForMatch(raw string) string {
 	return strings.ToLower(u.Hostname())
 }
 
-func printPassFields(fields []passitem.Field, prefix string, reveal bool) {
+func printPassFields(w io.Writer, fields []passitem.Field, prefix string, reveal bool) {
 	for _, f := range fields {
 		path := f.Name
 		if prefix != "" {
 			path = prefix + "/" + f.Name
 		}
-		fmt.Printf("  %-28s %-8s %s\n", path, f.Type, passitem.FieldValueSummary(f, reveal))
+		fmt.Fprintf(w, "  %-28s %-8s %s\n", path, f.Type, passitem.FieldValueSummary(f, reveal))
 		if f.Type == passitem.FieldSection {
-			printPassFields(f.Fields, path, reveal)
+			printPassFields(w, f.Fields, path, reveal)
 		}
 	}
 }

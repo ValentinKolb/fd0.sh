@@ -14,9 +14,8 @@ import (
 //
 // Replay is the load-bearing client-side step: every CLI command
 // that touches a scope re-reads the chain file and re-verifies it.
-// We need to know how cost scales with chain length so we can
-// reason about "compaction kicks in at N" thresholds and tune the
-// CompactScope policy in STORAGE.md §5.
+// We need to know how cost scales with retained chain length and when
+// authenticated snapshot support becomes necessary.
 
 // buildScopeForBench writes a scope chain with `nSecrets` secret.set
 // events past genesis. Returns path + the inputs ReplayScope needs.

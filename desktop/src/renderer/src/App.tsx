@@ -1,0 +1,508 @@
+import { Show, createEffect, createSignal, onCleanup, onMount, type JSX } from "solid-js";
+import { IconArrowLeft } from "@tabler/icons-solidjs";
+import { hotkeys } from "@valentinkolb/stdlib/solid";
+import type { FieldView, ItemSummary, ScopeSummary } from "../../shared/contracts";
+import { PasswordGeneratorPanel } from "./components/PasswordGenerator";
+import { ShareVaultModal } from "./components/ShareVaultModal";
+import { CommandPalette, buildActions } from "./features/CommandPalette";
+import { CreateVaultModal, RecoveryExportModal } from "./features/EditorModals";
+import { ItemEditor, ItemTypePicker, emptyDraft, type ItemDraft } from "./features/ItemEditor";
+import { ItemDetail } from "./features/ItemDetail";
+import { ItemList } from "./features/ItemList";
+import { LargeType } from "./features/LargeType";
+import { Onboarding } from "./features/Onboarding";
+import { Rail } from "./features/Rail";
+import { Settings } from "./features/Settings";
+import { Shortcuts } from "./features/Shortcuts";
+import { StartupRecovery } from "./features/StartupRecovery";
+import { Support } from "./features/Support";
+import { Titlebar } from "./features/Titlebar";
+import { Unlock } from "./features/Unlock";
+import { toAppError } from "./lib/errors";
+import { VaultContext, createVaultStore } from "./lib/store";
+import { IconButton } from "./ui/Button";
+import { ErrorStack, SafetyBanner, Toasts } from "./ui/Notices";
+
+/** Below this width the list and the detail share one column. */
+const NARROW_BREAKPOINT = 720;
+
+function App(): JSX.Element {
+  const vault = createVaultStore();
+
+  const [paletteOpen, setPaletteOpen] = createSignal(false);
+  const [shortcutsOpen, setShortcutsOpen] = createSignal(false);
+  const [typePickerOpen, setTypePickerOpen] = createSignal(false);
+  const [draft, setDraft] = createSignal<ItemDraft | null>(null);
+  const [newVaultOpen, setNewVaultOpen] = createSignal(false);
+  const [recoveryOpen, setRecoveryOpen] = createSignal(false);
+  const [shareScope, setShareScope] = createSignal<ScopeSummary | null>(null);
+  const [largeType, setLargeType] = createSignal<{ field: FieldView; value: string } | null>(null);
+
+  const [narrow, setNarrow] = createSignal(window.innerWidth < NARROW_BREAKPOINT);
+  const [narrowPane, setNarrowPane] = createSignal<"list" | "detail">("list");
+
+  const showingItems = () => vault.mainView() === "items";
+
+  let pendingPassword = "";
+
+  /** Creating always starts by choosing a type, then opens the full editor. */
+  function openAddItem(prefilledPassword = ""): void {
+    pendingPassword = prefilledPassword;
+    setTypePickerOpen(true);
+  }
+
+  function defaultScopeId(): string {
+    const filtered = vault.filters().vault;
+    const scopes = vault.inventory().scopes;
+    return filtered && scopes.some((scope) => scope.id === filtered) ? filtered : scopes[0]?.id ?? "";
+  }
+
+  function openItem(item: ItemSummary): void {
+    vault.selectItem(item);
+    vault.setMainView("items");
+    if (narrow()) setNarrowPane("detail");
+  }
+
+  function openEditor(): void {
+    const item = vault.detail()?.item;
+    if (!item) return;
+    const ref = { scopeId: item.scopeId, name: item.recordName };
+    const failed = (cause: unknown) => vault.pushError(toAppError(cause, `fd0 could not open ${item.title} for editing`));
+
+    if (item.kind === "password") {
+      void window.fd0
+        .editPass(ref)
+        .then((input) => {
+          if (!input) return;
+          setDraft({
+            ...emptyDraft("password", input.scopeId),
+            recordName: input.recordName,
+            authorization: input.authorization,
+            title: input.item.title,
+            urls: input.item.urls ?? [],
+            fields: input.item.fields ?? [],
+          });
+        })
+        .catch(failed);
+      return;
+    }
+    if (item.kind === "secret") {
+      void window.fd0
+        .editSecret(ref)
+        .then((input) => {
+          if (!input) return;
+          setDraft({
+            ...emptyDraft("secret", input.scopeId),
+            recordName: input.oldName ?? input.name,
+            authorization: input.authorization,
+            title: input.name,
+            value: input.value,
+          });
+        })
+        .catch(failed);
+      return;
+    }
+    if (item.kind === "ssh" && item.badge === "SSH HOST") {
+      void window.fd0
+        .editSSHHost(ref)
+        .then((input) => {
+          if (!input) return;
+          setDraft({
+            ...emptyDraft("ssh", input.scopeId),
+            recordName: input.oldName ?? `host:${input.host.Alias}`,
+            authorization: input.authorization,
+            title: input.host.Alias,
+            host: {
+              hostname: input.host.Hostname,
+              user: input.host.User ?? "",
+              port: input.host.Port || 22,
+              keyName: input.host.KeyName ?? "",
+              jumpHost: input.host.ProxyJump ?? "",
+              notes: input.host.Description ?? "",
+            },
+          });
+        })
+        .catch(failed);
+    }
+  }
+
+  /**
+   * Large type opens as its own always-on-top window so the code stays readable
+   * while the user works in another app. The in-window modal remains the
+   * fallback for when that window cannot be created.
+   */
+  async function showLargeType(field: FieldView, value: string): Promise<void> {
+    try {
+      const result = await window.fd0.showLargeType(field.name, value);
+      if (result.window) return;
+    } catch {
+      // Fall through to the modal below rather than losing the request.
+    }
+    setLargeType({ field, value });
+  }
+
+  function shareVaultById(scopeId: string): void {
+    const scope = vault.inventory().scopes.find((candidate) => candidate.id === scopeId);
+    if (scope) setShareScope(scope);
+  }
+
+  const paletteActions = () =>
+    buildActions({
+      newItem: () => openAddItem(),
+      newVault: () => setNewVaultOpen(true),
+      lock: () => void vault.lock(),
+      sync: () => void vault.sync(),
+      openView: (view) => vault.setMainView(view),
+      filterType: (type) => vault.updateFilters({ view: "all", type: type as never }),
+      filterVault: (id) => vault.updateFilters({ vault: id }),
+      showFavorites: () => vault.updateFilters({ view: "favorites", type: "all" }),
+      exportRecovery: () => setRecoveryOpen(true),
+      shareVault: () => {
+        const scope = vault.inventory().scopes.find((candidate) => candidate.id === vault.filters().vault) ?? vault.inventory().scopes[0];
+        if (scope) setShareScope(scope);
+        else vault.warn("There is no vault to share yet", "Create a vault first.");
+      },
+      vaults: vault.inventory().scopes,
+    });
+
+  function anyOverlayOpen(): boolean {
+    return Boolean(
+      paletteOpen() ||
+        shortcutsOpen() ||
+        typePickerOpen() ||
+        draft() ||
+        newVaultOpen() ||
+        recoveryOpen() ||
+        shareScope() ||
+        largeType(),
+    );
+  }
+
+  createEffect(() => {
+    localStorage.setItem("fd0.compactRows", vault.compactRows() ? "1" : "0");
+  });
+
+  createEffect(() => {
+    void vault.loadDetail(vault.selectedItem());
+  });
+
+  onMount(() => {
+    let startupTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const observeStartup = async (): Promise<void> => {
+      const next = await window.fd0.startupStatus();
+      vault.setStartup(next);
+      if (next.state === "ready") {
+        await vault.refresh();
+        return;
+      }
+      if (next.state === "starting") startupTimer = setTimeout(() => void observeStartup(), 250);
+    };
+    void observeStartup().catch((cause) => {
+      vault.setStartup({ state: "error", message: cause instanceof Error ? cause.message : String(cause) });
+    });
+
+    const statusTimer = setInterval(() => {
+      if (vault.startup().state === "ready") void vault.checkLockState();
+    }, 10_000);
+
+    const refreshOnFocus = (): void => {
+      if (vault.startup().state === "ready") void vault.refresh();
+    };
+    window.addEventListener("focus", refreshOnFocus);
+
+    const onResize = (): void => {
+      setNarrow(window.innerWidth < NARROW_BREAKPOINT);
+    };
+    window.addEventListener("resize", onResize);
+
+    const shortcuts = hotkeys.create({
+      "mod+k": {
+        label: "Search and commands",
+        run: () => {
+          if (vault.status()?.unlocked) setPaletteOpen(true);
+        },
+        inInput: true,
+      },
+      "mod+f": {
+        label: "Search",
+        run: () => {
+          if (vault.status()?.unlocked) setPaletteOpen(true);
+        },
+        inInput: true,
+      },
+      "mod+n": {
+        label: "New item",
+        run: () => {
+          if (vault.status()?.unlocked) openAddItem();
+        },
+      },
+      "mod+,": {
+        label: "Settings",
+        run: () => {
+          if (vault.status()?.unlocked) vault.setMainView("settings");
+        },
+      },
+      "mod+/": {
+        label: "Shortcuts",
+        run: () => {
+          if (vault.status()?.unlocked) setShortcutsOpen(true);
+        },
+      },
+      "mod+shift+l": { label: "Lock", run: () => void vault.lock() },
+    });
+
+    const unsubscribe = window.fd0.onCommand((command) => {
+      if (command === "focus-search") setPaletteOpen(true);
+      if (command === "new-item") openAddItem();
+      if (command === "open-settings") vault.setMainView("settings");
+      if (command === "lock") void vault.lock();
+      if (command === "refresh") void vault.refresh();
+    });
+
+    onCleanup(() => {
+      shortcuts.dispose();
+      unsubscribe();
+      clearInterval(statusTimer);
+      if (startupTimer) clearTimeout(startupTimer);
+      window.removeEventListener("focus", refreshOnFocus);
+      window.removeEventListener("resize", onResize);
+      vault.disposeToasts();
+    });
+  });
+
+  return (
+    <VaultContext.Provider value={vault}>
+      <Show
+        when={vault.startup().state === "ready"}
+        fallback={
+          <StartupRecovery
+            status={vault.startup()}
+            onStatus={(next) => {
+              vault.setStartup(next);
+              if (next.state === "ready") void vault.refresh();
+            }}
+          />
+        }
+      >
+        <Show
+          when={!vault.loading()}
+          fallback={
+            <div class="boot-screen">
+              <div class="logo" aria-label="fd0">
+                <strong>fd0</strong>
+              </div>
+              <div class="boot-progress" role="status" aria-label="Starting fd0" />
+            </div>
+          }
+        >
+          <Show
+            when={vault.status()?.unlocked}
+            fallback={
+              <Show
+                when={vault.status()?.vaultExists !== false}
+                fallback={
+                  <Onboarding
+                    onCreated={(next) => {
+                      vault.setStatus(next);
+                      vault.clearErrors();
+                      void vault.refresh();
+                    }}
+                  />
+                }
+              >
+                <Unlock
+                  status={vault.status()}
+                  onUnlock={(next) => {
+                    vault.setStatus(next);
+                    vault.clearErrors();
+                    void vault.refresh();
+                  }}
+                />
+              </Show>
+            }
+          >
+            <div
+              classList={{
+                app: true,
+                "is-mac": window.fd0.platform === "darwin",
+                "is-narrow": narrow(),
+                "is-compact": vault.compactRows(),
+                [`pane-${narrowPane()}`]: narrow(),
+              }}
+            >
+              <Titlebar
+                onOpenPalette={() => setPaletteOpen(true)}
+                onCreateItem={() => openAddItem()}
+                onCreateVault={() => setNewVaultOpen(true)}
+                onShareVault={shareVaultById}
+              />
+
+              <Rail />
+
+              <main class="workspace">
+                <Show
+                  when={showingItems()}
+                  fallback={
+                    <>
+                      <Show when={vault.mainView() === "generator"}>
+                        <PasswordGeneratorPanel
+                          onNotify={(message, countdown) => vault.notify(message, countdown)}
+                          onError={(message) => vault.warn(message)}
+                          onSaveAsItem={(value) => openAddItem(value)}
+                        />
+                      </Show>
+                      <Show when={vault.mainView() === "support"}>
+                        <Support />
+                      </Show>
+                      <Show when={vault.mainView() === "settings"}>
+                        <Settings onExportRecovery={() => setRecoveryOpen(true)} onShowShortcuts={() => setShortcutsOpen(true)} />
+                      </Show>
+                    </>
+                  }
+                >
+                  <ItemList
+                    onCopyPassword={(item) => void vault.copyFromItem(item, "secret")}
+                    onCopyUsername={(item) => void vault.copyFromItem(item, "username")}
+                    onCreate={() => openAddItem()}
+                  />
+                  <div class="detail-pane">
+                    <Show when={narrow()}>
+                      <div class="detail-back">
+                        <IconButton label="Back to the list" onClick={() => setNarrowPane("list")}>
+                          <IconArrowLeft size={17} />
+                        </IconButton>
+                      </div>
+                    </Show>
+                    <ItemDetail onEdit={openEditor} onLargeType={(field, value) => void showLargeType(field, value)} />
+                  </div>
+                </Show>
+              </main>
+
+              <Show when={vault.needsRecovery() && !anyOverlayOpen()}>
+                <SafetyBanner
+                  title={
+                    vault.status()?.readiness?.firstSyncAt
+                      ? "Your vault has no backup yet"
+                      : "This device holds the only copy of your vault"
+                  }
+                  description={
+                    vault.status()?.readiness?.firstSyncAt
+                      ? "A recovery file restores your identity if you lose every device."
+                      : "Syncing uploads an encrypted copy. Until it succeeds, nothing else has your data."
+                  }
+                  actionLabel={vault.status()?.readiness?.firstSyncAt ? "Create recovery file" : "Sync now"}
+                  onAction={() => (vault.status()?.readiness?.firstSyncAt ? setRecoveryOpen(true) : void vault.sync())}
+                />
+              </Show>
+            </div>
+
+            <ErrorStack errors={vault.errors()} onDismiss={vault.dismissError} />
+            <Toasts toasts={vault.toasts()} />
+
+            <Show when={paletteOpen()}>
+              <CommandPalette
+                open
+                onClose={() => setPaletteOpen(false)}
+                actions={paletteActions()}
+                onOpenItem={openItem}
+                onCopyPassword={(item) => void vault.copyFromItem(item, "secret")}
+              />
+            </Show>
+
+            <Show when={shortcutsOpen()}>
+              <Shortcuts onClose={() => setShortcutsOpen(false)} />
+            </Show>
+
+            <Show when={typePickerOpen()}>
+              <ItemTypePicker
+                onClose={() => setTypePickerOpen(false)}
+                onPick={(kind) => {
+                  setTypePickerOpen(false);
+                  setDraft(emptyDraft(kind, defaultScopeId(), pendingPassword));
+                  pendingPassword = "";
+                }}
+              />
+            </Show>
+
+            <Show when={draft()}>
+              {(current) => (
+                <ItemEditor
+                  draft={current()}
+                  scopes={vault.inventory().scopes}
+                  onClose={() => setDraft(null)}
+                  onSaved={async (ref) => {
+                    const wasCreate = !current().recordName;
+                    setDraft(null);
+                    vault.notify(wasCreate ? "Item created" : "Changes saved");
+                    if (wasCreate && ref) {
+                      vault.updateFilters({ view: "all", type: "all" });
+                      vault.setQuery("");
+                    }
+                    await vault.refresh(ref);
+                    await vault.loadDetail(vault.selectedItem());
+                  }}
+                />
+              )}
+            </Show>
+
+            <Show when={newVaultOpen()}>
+              <CreateVaultModal
+                onClose={() => setNewVaultOpen(false)}
+                onSaved={async () => {
+                  setNewVaultOpen(false);
+                  vault.notify("Vault created");
+                  await vault.refresh();
+                }}
+              />
+            </Show>
+
+            <Show when={recoveryOpen()}>
+              <RecoveryExportModal
+                onClose={() => setRecoveryOpen(false)}
+                onSaved={() => {
+                  setRecoveryOpen(false);
+                  vault.notify("Recovery file saved and verified");
+                  void vault.refresh();
+                }}
+              />
+            </Show>
+
+            <Show when={shareScope()}>
+              {(scope) => (
+                <ShareVaultModal
+                  scope={scope()}
+                  onClose={() => setShareScope(null)}
+                  onNotify={(message) => vault.notify(message)}
+                  onChanged={async () => {
+                    await vault.refresh();
+                  }}
+                />
+              )}
+            </Show>
+
+            <Show when={largeType()}>
+              {(current) => (
+                <LargeType
+                  label={current().field.name}
+                  value={current().value}
+                  onClose={() => setLargeType(null)}
+                  onCopy={() => {
+                    const item = vault.detail()?.item;
+                    if (!item) return;
+                    void vault.copyField(
+                      { scopeId: item.scopeId, name: item.recordName, path: current().field.path },
+                      current().field.name,
+                    );
+                  }}
+                />
+              )}
+            </Show>
+          </Show>
+        </Show>
+      </Show>
+    </VaultContext.Provider>
+  );
+}
+
+export default App;

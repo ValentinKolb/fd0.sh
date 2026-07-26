@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -115,6 +116,7 @@ func RunScopeList(ctx context.Context) error {
 		if label == "" {
 			label = "(unnamed)"
 		}
+		label = terminalSafe(label)
 		fmt.Printf("%-20s  %-12s  oek=v%d  tip=%d\n", label, shortScopeID(id), sd.OEKs[len(sd.OEKs)-1].Version, sd.ChainTip.Seq)
 	}
 	return nil
@@ -128,6 +130,9 @@ func RunScopeList(ctx context.Context) error {
 // are preserved verbatim. This avoids leaking secrets into shell
 // history.
 func RunSecretSet(ctx context.Context, scopeID, name, value string) error {
+	if err := guardPlainSecret("set", name); err != nil {
+		return err
+	}
 	if value == "-" {
 		buf, err := io.ReadAll(os.Stdin)
 		if err != nil {
@@ -222,6 +227,9 @@ func RunSecretSet(ctx context.Context, scopeID, name, value string) error {
 //
 //	out=true (default) → print value to stdout
 func RunSecretGet(ctx context.Context, scopeID, name string) (string, error) {
+	if err := guardPlainSecret("get", name); err != nil {
+		return "", err
+	}
 	s, err := Open(ctx)
 	if err != nil {
 		return "", err
@@ -307,7 +315,40 @@ func secretToString(p any) string {
 // Returns chain.ErrRollback when the local chain is behind/diverged vs.
 // the vault binding.
 func (s *Session) replayAndCheckScope(scopeID string) (*chain.ScopeState, error) {
-	st, err := replayScopeViaAgent(s.Paths.ScopeChain(proto.MustParseScopeID(scopeID)), s.UserSuperPub, s.UserX25519Pub, s.Agent)
+	return s.replayObservedAndCheckScope(scopeID, nil)
+}
+
+// replayObservedAndCheckScope is replayAndCheckScope with an optional
+// per-version observer threaded into replay. Every check below is the same
+// code both entry points run — the observer only watches.
+//
+// Lazy legacy migration: a chain written by the retired v1 compactor fails
+// replay with chain.ErrScopeHistoryNonContiguous. That rejection is correct
+// and stays, but it is not the end of the story — if (and only if) the file
+// carries the compactor's exact signature, scope_migrate.go can restore the
+// missing span from the server and prove the result against the vault's own
+// sealed tip. So we try once, then re-run the SAME replay. The retry is a
+// full re-verification, not a bypass: nothing is exposed that ReplayScope
+// did not accept.
+func (s *Session) replayObservedAndCheckScope(scopeID string, observe chain.SecretObserver) (*chain.ScopeState, error) {
+	st, err := replayScopeObservedViaAgent(
+		s.Paths.ScopeChain(proto.MustParseScopeID(scopeID)),
+		s.UserSuperPub, s.UserX25519Pub, s.Agent, observe,
+	)
+	if err != nil && errors.Is(err, chain.ErrScopeHistoryNonContiguous) {
+		migrated, mErr := s.migrateLegacyScopeOnRead(scopeID)
+		if mErr != nil {
+			// The actionable "old vault, needs a one-time repair" error
+			// replaces the raw non-contiguity text.
+			return nil, mErr
+		}
+		if migrated {
+			st, err = replayScopeObservedViaAgent(
+				s.Paths.ScopeChain(proto.MustParseScopeID(scopeID)),
+				s.UserSuperPub, s.UserX25519Pub, s.Agent, observe,
+			)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -367,7 +408,7 @@ func CollectAllSecrets(ctx context.Context) ([]SecretEntry, *Session, error) {
 				continue
 			}
 			out = append(out, SecretEntry{
-				ScopeID: scopeID, ScopeLabel: sd.Label, ID: id,
+				ScopeID: scopeID, ScopeLabel: terminalSafe(sd.Label), ID: id,
 				Name: cur.Record.Name, Type: cur.Record.Type, Tags: cur.Record.Tags,
 			})
 		}
@@ -381,6 +422,9 @@ func CollectAllSecrets(ctx context.Context) ([]SecretEntry, *Session, error) {
 // SecretIndex[id].Record = nil) so subsequent reads return "not found" and
 // listings skip it.
 func RunSecretRemove(ctx context.Context, scopeID, name string, yes bool) error {
+	if err := guardPlainSecret("rm", name); err != nil {
+		return err
+	}
 	s, err := Open(ctx)
 	if err != nil {
 		return err
@@ -440,13 +484,57 @@ func RunSecretRemove(ctx context.Context, scopeID, name string, yes bool) error 
 	return nil
 }
 
+// secretListRow is the machine-readable shape of one secret in a listing.
+//
+// The value is deliberately absent: a listing says what exists, reading it is
+// `fd0 secret get`. Keeping the row explicit rather than marshalling
+// SecretEntry means a field added to the internal struct cannot leak into a
+// public interface by accident.
+type secretListRow struct {
+	Name    string `json:"name"`
+	Type    string `json:"type"`
+	Scope   string `json:"scope,omitempty"`
+	ScopeID string `json:"scopeId"`
+}
+
 // RunSecretList prints every secret across every scope.
-func RunSecretList(ctx context.Context) error {
+// RunSecretList lists plain secrets.
+//
+// Records owned by another module — hosts, keys, pass items, clusters, Talos
+// contexts — are left to that module's own list, so `fd0 secret ls` answers
+// "what secrets do I have" rather than dumping every record in the vault.
+// `--all` restores the unfiltered view for the rare case someone wants it.
+func RunSecretList(ctx context.Context, jsonOut, all bool) error {
 	entries, s, err := CollectAllSecrets(ctx)
 	if err != nil {
 		return err
 	}
 	defer s.Close()
+	if !all {
+		plain := make([]SecretEntry, 0, len(entries))
+		for _, e := range entries {
+			if _, owned := kindOwning(e.Name); !owned {
+				plain = append(plain, e)
+			}
+		}
+		hidden := len(entries) - len(plain)
+		entries = plain
+		if hidden > 0 && !jsonOut {
+			defer stderrln("\n(%d record(s) owned by other modules hidden; use --all to include them)", hidden)
+		}
+	}
+	if jsonOut {
+		rows := make([]secretListRow, 0, len(entries))
+		for _, e := range entries {
+			rows = append(rows, secretListRow{
+				Name:    e.Name,
+				Type:    e.Type,
+				Scope:   e.ScopeLabel,
+				ScopeID: e.ScopeID,
+			})
+		}
+		return json.NewEncoder(os.Stdout).Encode(rows)
+	}
 	if len(entries) == 0 {
 		fmt.Println("(no secrets)")
 		return nil
@@ -460,7 +548,7 @@ func RunSecretList(ctx context.Context) error {
 // scopeDisplay returns the scope label or a shortened scope_id.
 func scopeDisplay(e SecretEntry) string {
 	if e.ScopeLabel != "" {
-		return e.ScopeLabel
+		return terminalSafe(e.ScopeLabel)
 	}
 	return shortScopeID(e.ScopeID)
 }
@@ -470,10 +558,22 @@ func scopeDisplay(e SecretEntry) string {
 func scopeName(s *Session, scopeID string) string {
 	if s != nil {
 		if sd, ok := s.Body.Scopes[scopeID]; ok && sd.Label != "" {
-			return fmt.Sprintf("%s (%s)", sd.Label, shortScopeID(scopeID))
+			return fmt.Sprintf("%s (%s)", terminalSafe(sd.Label), shortScopeID(scopeID))
 		}
 	}
 	return shortScopeID(scopeID)
+}
+
+// scopeLabelOf returns a scope's bare label, for machine-readable output.
+//
+// Unlike scopeName it does not append "(s_abc…)": JSON rows carry the full
+// scope id in a field of its own, so the human disambiguator would only be
+// noise a consumer has to parse back out. Empty when the scope is unnamed.
+func scopeLabelOf(s *Session, scopeID string) string {
+	if s == nil {
+		return ""
+	}
+	return s.Body.Scopes[scopeID].Label
 }
 
 // shortScopeID renders e.g. "s_h72fyhrp…" from "s_h72fyhrpp6oq7olpc26r2sywti".
@@ -558,7 +658,7 @@ func (s *Session) promptScopePicker() (string, error) {
 		if label == "" {
 			label = "(unnamed)"
 		}
-		items = append(items, tuiPickerItem{ID: id, Label: label, Hint: id})
+		items = append(items, tuiPickerItem{ID: id, Label: terminalSafe(label), Hint: id})
 	}
 	res, err := runPicker("Scope?", items)
 	if err != nil {

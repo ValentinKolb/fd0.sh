@@ -111,6 +111,26 @@ func TestAdvCBORLimitsBoundDepthAndSize(t *testing.T) {
 	}
 }
 
+func TestCBORCanonicalizesAcceptedNonMinimalIntegers(t *testing.T) {
+	type value struct {
+		N uint64 `cbor:"n"`
+	}
+	// {"n": 0}, with zero encoded using one unnecessary payload byte.
+	nonMinimal := []byte{0xa1, 0x61, 'n', 0x18, 0x00}
+	var decoded value
+	if err := Unmarshal(nonMinimal, &decoded); err != nil {
+		t.Fatalf("well-formed non-minimal input should remain wire-compatible: %v", err)
+	}
+	canonical, err := Marshal(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []byte{0xa1, 0x61, 'n', 0x00}
+	if !bytes.Equal(canonical, want) {
+		t.Fatalf("canonical encoding mismatch: got %x want %x", canonical, want)
+	}
+}
+
 // TestAdvHTTPSignedInputBindsServerPub locks the cross-server replay
 // fix at the API level: every distinct server_pub MUST yield a
 // distinct signed input even when method/path/query/ts/nonce/body

@@ -145,7 +145,9 @@ Status legend:
 - **Mitigation** 🛡️: `mlock` on super_priv buffer (memguard);
   zeroization (`crypto.Wipe` with `runtime.KeepAlive` safeguard);
   agent runs as a separate process so CLI memory never holds the
-  raw priv.
+  raw priv. Lifecycle deadlines are checked before every IPC
+  operation. Status and rejected requests cannot extend idle time;
+  max-lifetime cannot be extended by activity.
 - **Code**: `internal/agent/server.go` mlocked buffers,
   `internal/crypto/wipe.go`, `internal/crypto/keys.go`
   `Ed25519Priv.Wipe`.
@@ -269,12 +271,17 @@ Status legend:
   "trusted home dir, mode 0700".
 - **Code**: `chain/file.go` appendBytes, `vault/vault.go` Save.
 
-#### T19 — Local audit gap after compaction
-- **Adversary**: not an attacker — operational consequence.
-- **Mitigation** 📋: compacted chain files drop superseded events
-  by design (`STORAGE.md` §5.4); the local prev_hash chain has gaps.
-  Audit-grade verification requires fetching from server with
-  `cursor=0`. Documented limit.
+#### T19 — Omitted events in local scope history
+- **Adversary**: A3.
+- **Mitigation** 🟢: v1 replay requires a contiguous sequence and
+  `prev_hash` chain. A retained real final event cannot hide an omitted
+  current secret. Sync also cross-checks the local final event against the
+  vault-bound tip. `fd0 sync` repairs files created by older compacting
+  clients from the pinned server's transparency-verified full history,
+  preserving local-only writes transactionally.
+- **Code**: `chain.ValidateScopeContinuity`, `chain.ReplayScope`,
+  `cli.repairNonContiguousScopes`; regression and isolated integration
+  tests cover rejection and repair.
 
 #### T20 — Bit-flipping of on-disk chain
 - **Adversary**: A3.
@@ -443,10 +450,18 @@ Status legend:
   endpoint returns true iff the witness has EVER archived
   multi-roots at any tree_size for the chain. Closes the
   historical-equivocation gap.
+- **Witness identity binding**: a fresh production witness requires
+  an explicit server public key obtained out of band. It checks the
+  persisted pin before any network request and refuses first contact
+  without an explicit pin. Self-signed first-contact TOFU is disabled
+  by default and exposed only as an unsafe development option, so an
+  attacker controlling the first connection cannot create an
+  apparently independent witness for its own server identity.
 - **Code**: `cli/witness_check.go` CrossCheckSTH +
   fetchEquivocationProbe, `witness/store.go` Insert +
   DetectEquivocationAt + DetectChainEquivocation,
-  `witness/http.go` handleEquivocation.
+  `witness/http.go` handleEquivocation,
+  `witness.Witness.EnsurePins`.
 - **Spec**: `TRANSLOG.md` §6.
 
 #### T36 — Server returns wrong consistency proof (forks history)

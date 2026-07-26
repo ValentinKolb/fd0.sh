@@ -5,6 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"time"
 
 	"github.com/valentinkolb/fd0.sh/internal/agent"
@@ -45,6 +49,9 @@ func RunAgentStatus(ctx context.Context) error {
 
 // RunAgentStop stops the fd0-agent process recorded by this FD0_HOME.
 func RunAgentStop(ctx context.Context) error {
+	if handled, err := runDesktopManagedAgentCommand(ctx, "stop"); handled {
+		return err
+	}
 	paths, err := fdhome.Resolve()
 	if err != nil {
 		return err
@@ -67,6 +74,9 @@ func RunAgentStop(ctx context.Context) error {
 // previous process held an unlocked vault and this invocation is interactive,
 // it prompts once to unlock the fresh process.
 func RunAgentRestart(ctx context.Context, agentBin string) error {
+	if handled, err := runDesktopManagedAgentCommand(ctx, "restart"); handled {
+		return err
+	}
 	paths, err := fdhome.Resolve()
 	if err != nil {
 		return err
@@ -91,6 +101,35 @@ func RunAgentRestart(ctx context.Context, agentBin string) error {
 		fmt.Fprintln(os.Stderr, "vault is locked; run `fd0 unlock`")
 	}
 	return nil
+}
+
+func runDesktopManagedAgentCommand(ctx context.Context, command string) (bool, error) {
+	if os.Getenv("FD0_DESKTOP_MANAGED") != "1" {
+		return false, nil
+	}
+	if strings.TrimSpace(os.Getenv("FD0_HOME")) != "" || os.Getenv("FD0_SSH_SOCK") != "" {
+		return false, nil
+	}
+	appPath := strings.TrimSpace(os.Getenv("FD0_DESKTOP_APP"))
+	if appPath == "" {
+		return true, errors.New("desktop-managed fd0 is missing FD0_DESKTOP_APP")
+	}
+	executable := appPath
+	if runtime.GOOS == "darwin" && strings.HasSuffix(strings.ToLower(appPath), ".app") {
+		executable = filepath.Join(appPath, "Contents", "MacOS", "fd0")
+	}
+	cmd := exec.CommandContext(ctx, executable, "--fd0-agent-service-"+command)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return true, fmt.Errorf("desktop agent %s: %w", command, err)
+	}
+	verb := "stopped"
+	if command == "restart" {
+		verb = "restarted"
+	}
+	fmt.Fprintf(os.Stderr, "✓ agent %s by fd0 Desktop\n", verb)
+	return true, nil
 }
 
 func stopAgentProcess(paths fdhome.Paths) (stopped, wasUnlocked bool, err error) {

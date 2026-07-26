@@ -372,18 +372,19 @@ func (s *HTTPServer) handleObserved(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := s.Store.Summary(r.Context())
+	rows, err := s.Store.SummaryForServer(r.Context(), serverURL)
 	if err != nil {
 		s.Log.Error("witness http: summary lookup failed", "err", err)
+		if errors.Is(err, ErrSummaryLimit) {
+			http.Error(w, "observed chain limit exceeded", http.StatusServiceUnavailable)
+			return
+		}
 		http.Error(w, "internal lookup error", http.StatusInternalServerError)
 		return
 	}
 
 	out := ObservedResponse{ServerURL: serverURL, Chains: []ObservedChain{}}
 	for _, row := range rows {
-		if row.ServerURL != serverURL {
-			continue
-		}
 		out.Chains = append(out.Chains, ObservedChain{
 			ChainID:                 row.ChainID,
 			MaxTreeSize:             row.MaxTreeSize,

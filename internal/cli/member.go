@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"os"
@@ -78,10 +79,29 @@ func RunScopeRemoveMember(ctx context.Context, scopeID, memberCardOrLabel string
 	if err != nil {
 		return err
 	}
-	scopeID, err = s.resolveScopeID(scopeID)
+	return removeScopeMember(s, scopeID, memberPub, yes)
+}
+
+// RunScopeRemoveMemberByPublicKey is the trusted desktop bridge path for
+// members that are visible in scope history but are not pinned locally.
+func RunScopeRemoveMemberByPublicKey(ctx context.Context, scopeID string, memberPub []byte) error {
+	if len(memberPub) != ed25519.PublicKeySize {
+		return fmt.Errorf("member public key must be %d bytes", ed25519.PublicKeySize)
+	}
+	s, err := Open(ctx)
 	if err != nil {
 		return err
 	}
+	defer s.Close()
+	return removeScopeMember(s, scopeID, append([]byte(nil), memberPub...), true)
+}
+
+func removeScopeMember(s *Session, scopeID string, memberPub []byte, yes bool) error {
+	resolvedScopeID, err := s.resolveScopeID(scopeID)
+	if err != nil {
+		return err
+	}
+	scopeID = resolvedScopeID
 	st, err := s.replayAndCheckScope(scopeID)
 	if err != nil {
 		return err
@@ -240,9 +260,10 @@ func RunScopeRename(ctx context.Context, scopeOrLabel, newLabel string) error {
 		return err
 	}
 	if old == "" {
-		fmt.Fprintf(os.Stderr, "✓ scope %s labeled '%s'\n", shortScopeID(scopeID), newLabel)
+		fmt.Fprintf(os.Stderr, "✓ scope %s labeled '%s'\n", shortScopeID(scopeID), terminalSafe(newLabel))
 	} else {
-		fmt.Fprintf(os.Stderr, "✓ scope renamed: '%s' → '%s' (%s)\n", old, newLabel, shortScopeID(scopeID))
+		fmt.Fprintf(os.Stderr, "✓ scope renamed: '%s' → '%s' (%s)\n",
+			terminalSafe(old), terminalSafe(newLabel), shortScopeID(scopeID))
 	}
 	hintSyncForPeers()
 	return nil

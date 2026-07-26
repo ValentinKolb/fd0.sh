@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,16 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
+
+func TestReplaceActiveRequiresMerge(t *testing.T) {
+	ctx := context.Background()
+	if err := RunKubeSync(ctx, false, true); err == nil || !strings.Contains(err.Error(), "requires --merge") {
+		t.Fatalf("kube replace-active without merge: %v", err)
+	}
+	if err := RunTalosSync(ctx, false, true); err == nil || !strings.Contains(err.Error(), "requires --merge") {
+		t.Fatalf("talos replace-active without merge: %v", err)
+	}
+}
 
 // The merge must preserve the user's existing entries that fd0 doesn't
 // model — most importantly kubeconfig exec / auth-provider auth used by
@@ -80,7 +91,7 @@ contexts:
 		t.Fatal(err)
 	}
 
-	if err := mergeKubeconfigFile(fd0Path, userPath); err != nil {
+	if err := mergeKubeconfigFile(fd0Path, userPath, false); err != nil {
 		t.Fatalf("merge: %v", err)
 	}
 
@@ -149,7 +160,7 @@ clusters:
 		t.Fatal(err)
 	}
 	before, _ := os.ReadFile(userPath)
-	err := mergeKubeconfigFile(fd0Path, userPath)
+	err := mergeKubeconfigFile(fd0Path, userPath, false)
 	if err == nil {
 		t.Fatal("expected merge to fail closed on malformed clusters, got nil")
 	}
@@ -183,7 +194,7 @@ contexts:
 		t.Fatal(err)
 	}
 	before, _ := os.ReadFile(userPath)
-	err := mergeTalosconfigFile(fd0Path, userPath)
+	err := mergeTalosconfigFile(fd0Path, userPath, false)
 	if err == nil {
 		t.Fatal("expected merge to fail closed on malformed contexts, got nil")
 	}
@@ -215,7 +226,7 @@ contexts:
 	if err := os.WriteFile(fd0Path, []byte(fd0YAML), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := mergeKubeconfigFile(fd0Path, userPath); err != nil {
+	if err := mergeKubeconfigFile(fd0Path, userPath, false); err != nil {
 		t.Fatalf("merge into missing file: %v", err)
 	}
 	out, err := os.ReadFile(userPath)
@@ -258,7 +269,7 @@ contexts:
 	if err := os.WriteFile(fd0Path, []byte(fd0YAML), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := mergeTalosconfigFile(fd0Path, userPath); err != nil {
+	if err := mergeTalosconfigFile(fd0Path, userPath, false); err != nil {
 		t.Fatalf("merge: %v", err)
 	}
 	merged, _ := os.ReadFile(userPath)
@@ -280,5 +291,106 @@ contexts:
 	// User's active context preserved (not overwritten by fd0).
 	if doc["context"] != "hand-rolled" {
 		t.Errorf("active context changed: %v", doc["context"])
+	}
+}
+
+func TestMergeKubeconfigProtectsActiveContextReferences(t *testing.T) {
+	dir := t.TempDir()
+	userPath := filepath.Join(dir, "config")
+	fd0Path := filepath.Join(dir, "config.fd0")
+	userYAML := `apiVersion: v1
+kind: Config
+current-context: prod
+clusters:
+- name: prod-cluster
+  cluster: {server: "https://local:6443"}
+users:
+- name: prod-user
+  user: {token: "local"}
+contexts:
+- name: prod
+  context: {cluster: prod-cluster, user: prod-user}
+`
+	fd0YAML := `apiVersion: v1
+kind: Config
+clusters:
+- name: prod-cluster
+  cluster: {server: "https://shared:6443"}
+users:
+- name: prod-user
+  user: {token: "shared"}
+contexts:
+- name: prod
+  context: {cluster: prod-cluster, user: prod-user}
+`
+	if err := os.WriteFile(userPath, []byte(userYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fd0Path, []byte(fd0YAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(userPath)
+	err := mergeKubeconfigFile(fd0Path, userPath, false)
+	if err == nil || !strings.Contains(err.Error(), "--replace-active") {
+		t.Fatalf("active collision must fail with explicit guidance, got %v", err)
+	}
+	after, _ := os.ReadFile(userPath)
+	if string(after) != string(before) {
+		t.Fatal("active kubeconfig changed despite collision refusal")
+	}
+
+	if err := mergeKubeconfigFile(fd0Path, userPath, true); err != nil {
+		t.Fatalf("explicit active replacement: %v", err)
+	}
+	if err := mergeKubeconfigFile(fd0Path, userPath, false); err != nil {
+		t.Fatalf("identical repeated merge must be idempotent: %v", err)
+	}
+	after, _ = os.ReadFile(userPath)
+	if !strings.Contains(string(after), "https://shared:6443") {
+		t.Fatal("explicit replacement did not install fd0 cluster")
+	}
+}
+
+func TestMergeTalosconfigProtectsActiveContext(t *testing.T) {
+	dir := t.TempDir()
+	userPath := filepath.Join(dir, "config")
+	fd0Path := filepath.Join(dir, "config.fd0")
+	userYAML := `context: prod
+contexts:
+  prod:
+    endpoints: ["10.0.0.1"]
+    ca: LOCAL
+`
+	fd0YAML := `context: prod
+contexts:
+  prod:
+    endpoints: ["10.0.0.2"]
+    ca: SHARED
+`
+	if err := os.WriteFile(userPath, []byte(userYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fd0Path, []byte(fd0YAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(userPath)
+	err := mergeTalosconfigFile(fd0Path, userPath, false)
+	if err == nil || !strings.Contains(err.Error(), "--replace-active") {
+		t.Fatalf("active collision must fail with explicit guidance, got %v", err)
+	}
+	after, _ := os.ReadFile(userPath)
+	if string(after) != string(before) {
+		t.Fatal("active talosconfig changed despite collision refusal")
+	}
+
+	if err := mergeTalosconfigFile(fd0Path, userPath, true); err != nil {
+		t.Fatalf("explicit active replacement: %v", err)
+	}
+	if err := mergeTalosconfigFile(fd0Path, userPath, false); err != nil {
+		t.Fatalf("identical repeated merge must be idempotent: %v", err)
+	}
+	after, _ = os.ReadFile(userPath)
+	if !strings.Contains(string(after), "10.0.0.2") {
+		t.Fatal("explicit replacement did not install fd0 Talos context")
 	}
 }

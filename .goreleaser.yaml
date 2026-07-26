@@ -104,7 +104,7 @@ changelog:
 
 release:
   github:
-    owner: ValentinKolb
+    owner: k2b-dev
     name: fd0.sh
   draft: false
   prerelease: auto

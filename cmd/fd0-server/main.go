@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"log/slog"
 	"net/http"
 	"os"
@@ -170,10 +171,11 @@ type cli struct {
 
 	// Rate limiting. Single-instance only. Negative values disable that
 	// specific class; --no-ratelimit (FD0_RATELIMIT=off) disables all.
-	NoRateLimit     bool `name:"no-ratelimit" help:"Disable rate limiting entirely." env:"FD0_RATELIMIT_OFF"`
-	WritesPerMin    int  `name:"writes-per-min" help:"Authenticated writes/min per identity." default:"60" env:"FD0_RATELIMIT_WRITES_PER_MIN"`
-	BytesPerMin     int  `name:"bytes-per-min" help:"Aggregate request body bytes/min per identity." default:"33554432" env:"FD0_RATELIMIT_BYTES_PER_MIN"`
-	RegisterPerHour int  `name:"register-per-hour" help:"POST /v1/users registrations/hour per IP." default:"5" env:"FD0_RATELIMIT_REGISTER_PER_HOUR"`
+	NoRateLimit       bool     `name:"no-ratelimit" help:"Disable rate limiting entirely." env:"FD0_RATELIMIT_OFF"`
+	WritesPerMin      int      `name:"writes-per-min" help:"Authenticated writes/min per identity." default:"60" env:"FD0_RATELIMIT_WRITES_PER_MIN"`
+	BytesPerMin       int      `name:"bytes-per-min" help:"Aggregate request body bytes/min per identity." default:"33554432" env:"FD0_RATELIMIT_BYTES_PER_MIN"`
+	RegisterPerHour   int      `name:"register-per-hour" help:"POST /v1/users registrations/hour per IP." default:"5" env:"FD0_RATELIMIT_REGISTER_PER_HOUR"`
+	TrustedProxyCIDRs []string `name:"trusted-proxy-cidrs" help:"CIDRs allowed to supply one X-Forwarded-For client IP." env:"FD0_TRUSTED_PROXY_CIDRS"`
 }
 
 // version is overwritten by goreleaser via `-ldflags="-X main.version=..."`.
@@ -209,6 +211,7 @@ func main() {
 		ReplicateFrom:       c.ReplicateFrom,
 		ReplicateInterval:   c.ReplicateInterval,
 		PeerResolveInterval: c.PeerResolveInterval,
+		TrustedProxyCIDRs:   c.TrustedProxyCIDRs,
 
 		RateLimitDisabled: c.NoRateLimit,
 		RateLimit: ratelimit.Config{
@@ -247,7 +250,8 @@ func main() {
 	errCh := make(chan error, 1)
 	go func() {
 		log.Info("fd0-server listening", "bind", c.Bind, "version", version,
-			"metrics_auth", boolWord(c.MetricsToken != ""))
+			"metrics_auth", boolWord(c.MetricsToken != ""),
+			"server_pub_hex", hex.EncodeToString(srv.Store().TranslogPub()))
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- err
 			return

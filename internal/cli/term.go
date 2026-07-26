@@ -6,13 +6,27 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
+	"unicode"
 
 	"golang.org/x/term"
 )
 
 // IsTTY returns true iff fd is an interactive terminal.
 func IsTTY(f *os.File) bool { return term.IsTerminal(int(f.Fd())) }
+
+// terminalSafe neutralizes control characters in untrusted display text while
+// preserving ordinary Unicode. Scope labels can be authored by another member
+// and must never become terminal instructions when rendered locally.
+func terminalSafe(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return '?'
+		}
+		return r
+	}, s)
+}
 
 var (
 	stdinOnce   sync.Once

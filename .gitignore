@@ -17,6 +17,7 @@ dist/
 build/
 target/
 out/
+/.build/
 
 # Go
 *.test
@@ -49,3 +50,11 @@ website/public/styles.css
 # scripts/copy-fonts.ts from node_modules on every dev/prod build.
 # Source of truth is @fontsource-variable/{geist,geist-mono}.
 website/public/fonts/
+
+# fd0 Desktop generated state
+desktop/node_modules/
+desktop/out/
+desktop/dist/
+desktop/.fallow/
+desktop/test-results/
+desktop/playwright-report/

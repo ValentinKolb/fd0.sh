@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration_isolation.sh"
+fd0_test_require_isolation
 
 # Translog (TRANSLOG.md §6.1) requires explicit opt-in for non-TTY pinning.
 # Tests run unattended → enable auto-pin so the first /sync can land the pin.
@@ -39,15 +41,15 @@ expect_eq() {
 }
 
 cleanup() {
-    pkill -f fd0-agent 2>/dev/null || true
+    fd0_test_stop_matching -f fd0-agent 2>/dev/null || true
     kill $SERVER_PID 2>/dev/null || true
     rm -rf "$HOME_A" "$HOME_B" "$SERVER_DB" "$SERVER_LOG" "$RECOVERY"
 }
 trap cleanup EXIT
 
 step "Setup"
-pkill -f fd0-server 2>/dev/null || true
-pkill -f fd0-agent  2>/dev/null || true
+fd0_test_stop_matching -f fd0-server 2>/dev/null || true
+fd0_test_stop_matching -f fd0-agent  2>/dev/null || true
 sleep 0.3
 rm -rf "$HOME_A" "$HOME_B" "$SERVER_DB" "$SERVER_LOG" "$RECOVERY"
 "$FD0_SERVER_BIN" --bind=":${SERVER_PORT}" --db="$SERVER_DB" --no-ratelimit > "$SERVER_LOG" 2>&1 &

@@ -122,7 +122,7 @@ func RunTalosNew(ctx context.Context, o TalosNewOpts) error {
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 	if err := os.Chmod(tmpDir, 0o700); err != nil {
 		return fmt.Errorf("chmod tmpdir: %w", err)
 	}
@@ -340,7 +340,7 @@ func RunTalosRoleAdd(ctx context.Context, o TalosRoleAddOpts) error {
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 	srcCfgPath := filepath.Join(tmpDir, "src.talosconfig")
 	srcBytes, _ := talosctx.Render(talosctx.RenderInput{
 		Contexts:      []*talosctx.TalosContext{src},
@@ -435,7 +435,7 @@ func RunTalosKubeconfig(ctx context.Context, contextName, scopeFlag string) erro
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 	if err := os.Chmod(tmpDir, 0o700); err != nil {
 		return fmt.Errorf("chmod tmpdir: %w", err)
 	}

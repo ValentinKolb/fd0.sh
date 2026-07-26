@@ -1,0 +1,318 @@
+import { For, Show, createEffect, createMemo, type JSX } from "solid-js";
+import { Dynamic } from "solid-js/web";
+import { IconCopy, IconKey, IconPlus, IconSearch, IconStar, IconUser, IconX } from "@tabler/icons-solidjs";
+import type { ItemSummary } from "../../../shared/contracts";
+import { kindIcon, kindMeta, kindTone } from "../lib/items";
+import { initials, plural, prettyURL } from "../lib/format";
+import { useVault } from "../lib/store";
+import { Button, IconButton } from "../ui/Button";
+import { Switch } from "../ui/Fields";
+
+/**
+ * The item column.
+ *
+ * Two things differ from the previous list. Active filters are shown as
+ * removable chips instead of being invisible, and each row carries its own copy
+ * action so the most common task never requires opening the detail pane.
+ */
+export function ItemList(props: {
+  onCopyPassword(item: ItemSummary): void;
+  onCopyUsername(item: ItemSummary): void;
+  onCreate(): void;
+}): JSX.Element {
+  const vault = useVault();
+  let listElement: HTMLDivElement | undefined;
+
+  const heading = createMemo(() => {
+    const filters = vault.filters();
+    if (filters.vault) {
+      const scope = vault.inventory().scopes.find((candidate) => candidate.id === filters.vault);
+      if (scope) return scope.label;
+    }
+    if (filters.view === "favorites") return "Favorites";
+    return kindMeta[filters.type].label;
+  });
+
+  const countLabel = createMemo(() => {
+    const shown = vault.visibleItems().length;
+    const total = vault.scopeTotal();
+    if (vault.query().trim()) return `${plural(shown, "match", "matches")}`;
+    if (vault.filters().vault && total > shown) return `${shown} of ${total}`;
+    return plural(shown, "item");
+  });
+
+  const chips = createMemo(() => {
+    const filters = vault.filters();
+    const output: Array<{ id: string; label: string; tone?: string; clear(): void }> = [];
+    if (filters.view === "favorites") output.push({ id: "view", label: "Favorites", clear: () => vault.updateFilters({ view: "all" }) });
+    if (filters.type !== "all") {
+      output.push({ id: "type", label: kindMeta[filters.type].label, clear: () => vault.updateFilters({ type: "all" }) });
+    }
+    if (filters.vault) {
+      const scope = vault.inventory().scopes.find((candidate) => candidate.id === filters.vault);
+      output.push({ id: "vault", label: scope?.label ?? "Vault", tone: "vault", clear: () => vault.updateFilters({ vault: "" }) });
+    }
+    if (vault.query().trim()) output.push({ id: "query", label: `“${vault.query().trim()}”`, clear: () => vault.setQuery("") });
+    return output;
+  });
+
+  // Keep the DOM selection in sync so arrow keys resume from the right place.
+  createEffect(() => {
+    const items = vault.visibleItems();
+    if (items.length === 0) {
+      if (vault.selectedID()) vault.setSelectedID("");
+      return;
+    }
+    if (!items.some((item) => item.id === vault.selectedID())) vault.setSelectedID(items[0]!.id);
+  });
+
+  function moveSelection(delta: number): void {
+    const items = vault.visibleItems();
+    if (items.length === 0) return;
+    const index = items.findIndex((item) => item.id === vault.selectedID());
+    const next = index < 0 ? 0 : Math.min(items.length - 1, Math.max(0, index + delta));
+    const target = items[next];
+    if (!target) return;
+    vault.selectItem(target);
+    queueMicrotask(() => {
+      listElement?.querySelector<HTMLElement>(`[data-item-id="${target.id}"]`)?.focus();
+    });
+  }
+
+  function onKeyDown(event: KeyboardEvent): void {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      moveSelection(1);
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      moveSelection(-1);
+      return;
+    }
+    if (event.key === "Home") {
+      event.preventDefault();
+      moveSelection(-vault.visibleItems().length);
+      return;
+    }
+    if (event.key === "End") {
+      event.preventDefault();
+      moveSelection(vault.visibleItems().length);
+      return;
+    }
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "c") {
+      const item = vault.selectedItem();
+      if (!item || item.kind !== "password") return;
+      event.preventDefault();
+      props.onCopyPassword(item);
+    }
+  }
+
+  return (
+    <section class="item-column" aria-label="Items">
+      <header class="column-header">
+        <div class="column-heading">
+          <h1>{heading()}</h1>
+          <span class="column-count">{countLabel()}</span>
+        </div>
+        <Show when={vault.filters().type === "secret"}>
+          <Switch
+            label="Show raw records"
+            checked={vault.rawSecrets()}
+            onChange={(value) => vault.setRawSecrets(value)}
+          />
+        </Show>
+      </header>
+
+      <Show when={chips().length > 0}>
+        <div class="chip-bar" aria-label="Active filters">
+          <For each={chips()}>
+            {(chip) => (
+              <button
+                type="button"
+                classList={{ chip: true, [`chip-${chip.tone ?? "default"}`]: true }}
+                onClick={chip.clear}
+                aria-label={`Remove filter ${chip.label}`}
+              >
+                <span>{chip.label}</span>
+                <IconX size={12} />
+              </button>
+            )}
+          </For>
+          <Show when={vault.activeFilterCount() + (vault.query().trim() ? 1 : 0) > 1}>
+            <button type="button" class="chip-clear" onClick={() => vault.resetFilters()}>
+              Clear all
+            </button>
+          </Show>
+        </div>
+      </Show>
+
+      <Show when={vault.rawSecrets() && vault.filters().type === "secret"}>
+        <p class="inline-note">
+          Showing every stored record as a raw secret. Editing and favorites are unavailable in this view.
+        </p>
+      </Show>
+
+      <div
+        class="item-list"
+        role="listbox"
+        aria-label={heading()}
+        tabindex={-1}
+        ref={listElement}
+        onKeyDown={onKeyDown}
+      >
+        <For each={vault.visibleItems()} fallback={<EmptyState onCreate={props.onCreate} />}>
+          {(item) => (
+            <ItemRow
+              item={item}
+              selected={item.id === vault.selectedID()}
+              compact={vault.compactRows()}
+              onSelect={() => vault.selectItem(item)}
+              onCopyPassword={() => props.onCopyPassword(item)}
+              onCopyUsername={() => props.onCopyUsername(item)}
+            />
+          )}
+        </For>
+      </div>
+    </section>
+  );
+}
+
+function ItemRow(props: {
+  item: ItemSummary;
+  selected: boolean;
+  compact: boolean;
+  onSelect(): void;
+  onCopyPassword(): void;
+  onCopyUsername(): void;
+}): JSX.Element {
+  const isPassword = () => props.item.kind === "password";
+  const subtitle = () => {
+    const raw = props.item.subtitle;
+    if (!raw) return kindMeta[props.item.kind].singular;
+    return /^https?:\/\//.test(raw) ? prettyURL(raw) : raw;
+  };
+
+  return (
+    <div
+      data-item-id={props.item.id}
+      classList={{ "item-row": true, "is-selected": props.selected, "is-compact": props.compact }}
+      role="option"
+      aria-selected={props.selected}
+      tabindex={props.selected ? 0 : -1}
+      onClick={props.onSelect}
+      onFocus={props.onSelect}
+      onKeyDown={(event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        props.onSelect();
+      }}
+    >
+      <span classList={{ "item-avatar": true, [kindTone(props.item.kind)]: true }} aria-hidden="true">
+        <Show when={isPassword()} fallback={<Dynamic component={kindIcon(props.item.kind)} size={16} strokeWidth={1.7} />}>
+          {initials(props.item.title)}
+        </Show>
+      </span>
+
+      <span class="item-copy">
+        <span class="item-title">
+          {props.item.title}
+          <Show when={props.item.favorite}>
+            <IconStar size={12} class="item-star" aria-label="Favorite" />
+          </Show>
+        </span>
+        <span class="item-subtitle">{subtitle()}</span>
+      </span>
+
+      {/* Quick actions: the reason a password manager exists is retrieving a
+          credential, and that should not require opening the item first. */}
+      <span class="item-actions">
+        <Show when={isPassword()}>
+          <IconButton
+            label={`Copy username for ${props.item.title}`}
+            size="sm"
+            tabIndex={props.selected ? 0 : -1}
+            onClick={(event) => {
+              event.stopPropagation();
+              props.onCopyUsername();
+            }}
+          >
+            <IconUser size={15} />
+          </IconButton>
+          <IconButton
+            label={`Copy password for ${props.item.title}`}
+            size="sm"
+            emphasis
+            tabIndex={props.selected ? 0 : -1}
+            onClick={(event) => {
+              event.stopPropagation();
+              props.onCopyPassword();
+            }}
+          >
+            <IconCopy size={15} />
+          </IconButton>
+        </Show>
+      </span>
+    </div>
+  );
+}
+
+/**
+ * Distinguishes an empty vault from a filtered-to-nothing list. The previous
+ * copy said "Try another search or filter" even on a brand-new vault where
+ * nothing had been searched or filtered.
+ */
+function EmptyState(props: { onCreate(): void }): JSX.Element {
+  const vault = useVault();
+  const searching = () => Boolean(vault.query().trim());
+  const filtered = () => vault.activeFilterCount() > 0;
+
+  return (
+    <Show
+      when={!vault.isEmptyVault()}
+      fallback={
+        <div class="empty-state">
+          <span class="empty-glyph tone-password">
+            <IconKey size={20} strokeWidth={1.6} />
+          </span>
+          <strong>Your vault is ready</strong>
+          <span>Save your first password. fd0 encrypts it on this device right away.</span>
+          <Button variant="primary" onClick={props.onCreate}>
+            <IconPlus size={15} />
+            Add your first password
+          </Button>
+        </div>
+      }
+    >
+      <Show
+        when={searching() || filtered()}
+        fallback={
+          <div class="empty-state">
+            <span class="empty-glyph tone-password">
+              <IconKey size={20} strokeWidth={1.6} />
+            </span>
+            <strong>Nothing here yet</strong>
+            <span>Items you add will appear in this list.</span>
+            <Button variant="primary" onClick={props.onCreate}>
+              <IconPlus size={15} />
+              Add an item
+            </Button>
+          </div>
+        }
+      >
+        <div class="empty-state">
+          <span class="empty-glyph">
+            <IconSearch size={20} strokeWidth={1.6} />
+          </span>
+          <strong>{searching() ? "No items match your search" : "No items match these filters"}</strong>
+          <span>
+            {searching()
+              ? "Check the spelling, or clear the search to see everything again."
+              : "Remove a filter to widen the list."}
+          </span>
+          <Button onClick={() => vault.resetFilters()}>Clear filters</Button>
+        </div>
+      </Show>
+    </Show>
+  );
+}

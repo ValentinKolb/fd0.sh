@@ -24,6 +24,7 @@ and engineering references.
 | --- | --- |
 | `fd0` | CLI for vault, scopes, secrets, cards, SSH, Talos, Kube, sync, and recovery. |
 | `fd0-agent` | Local Unix-socket daemon. Holds unlocked identity material in memory and serves signing/decrypt/ssh-agent requests. |
+| `fd0 Desktop` | Electron/Solid desktop client. Uses a hardened preload boundary and a versioned Go bridge to the same local agent. |
 | `fd0-server` | HTTP API and SQLite store for signed encrypted event chains. |
 | `fd0-witness` | Passive transparency-log observer. Archives signed tree heads and detects equivocation. |
 | `fd0-website` | The hosted documentation and product site at `fd0.sh`. |
@@ -46,6 +47,16 @@ Build the website separately:
 cd website
 bun install
 bun run build
+```
+
+Build and test the desktop app separately:
+
+```sh
+cd desktop
+bun install
+bun run typecheck
+bun test
+bun run test:e2e
 ```
 
 ## Test and lint
@@ -91,6 +102,7 @@ for one invocation.
 | `tests/` | Multi-user integration shell suite. |
 | `tools/` | Threat coverage and Semgrep guardrails. |
 | `website/` | fd0.sh site and user-facing documentation. |
+| `desktop/` | Hardened Electron shell, Solid renderer, packaging, and desktop tests. |
 | `skills/` | Agent skill for safe fd0 CLI use. |
 
 ## Technical references
@@ -99,9 +111,10 @@ for one invocation.
 | --- | --- |
 | [docs/PROTOCOL.md](./docs/PROTOCOL.md) | Cryptographic protocol, event formats, identities, scopes, vault, recovery. |
 | [docs/API.md](./docs/API.md) | HTTP API, authentication header, `/v1/sync`, status codes. |
-| [docs/STORAGE.md](./docs/STORAGE.md) | Server SQLite schema, client files, replay, compaction, backup rules. |
+| [docs/STORAGE.md](./docs/STORAGE.md) | Server SQLite schema, client files, replay, history repair, backup rules. |
 | [docs/TRANSLOG.md](./docs/TRANSLOG.md) | RFC 6962-style transparency log, STHs, witnesses, peer hints. |
 | [docs/THREATS.md](./docs/THREATS.md) | Canonical threat catalogue and code annotation coverage. |
+| [docs/CRYPTO_AUDIT.md](./docs/CRYPTO_AUDIT.md) | Defensive protocol and cryptographic-composition audit with invariant evidence. |
 | [docs/HOSTING.md](./docs/HOSTING.md) | Production hosting runbook. |
 | [docs/REPLICATION.md](./docs/REPLICATION.md) | Disaster-recovery replication model. |
 | [docs/BENCH.md](./docs/BENCH.md) | Performance baseline and benchmark method. |
@@ -114,6 +127,7 @@ Component tags use separate namespaces:
 - `server-vX.Y.Z` for `fd0-server`
 - `witness-vX.Y.Z` for `fd0-witness`
 - `website-vX.Y.Z` for `fd0-website`
+- `desktop-vX.Y.Z` for the signed desktop bundle, managed CLI, and agent
 - `fd0-vX.Y.Z` for coordinated wire-protocol bumps
 
 Client releases publish two install flavors:
@@ -122,6 +136,13 @@ Client releases publish two install flavors:
 | --- | --- | --- |
 | `standard` | `fd0_<os>_<arch>.tar.gz` | Default pure-Go client without YubiKey/PIV support. |
 | `yubikey` | `fd0_yubikey_<os>_<arch>.tar.gz` | Client with PIV support in both `fd0` and `fd0-agent`. |
+
+The CLI-only installer requires
+[Cosign](https://docs.sigstore.dev/cosign/system_config/installation/) on
+`PATH`. The Desktop installer bootstraps an exact, SHA-256-pinned Cosign
+version when needed; installed Desktop updates use the bundled fd0 verifier.
+Both paths authenticate the release manifest against the exact fd0 workflow
+and tag before installing an artifact.
 
 Install the default client:
 
@@ -139,7 +160,23 @@ fd0 version   # fd0 X.Y.Z yubikey
 
 `fd0 update` preserves the installed flavor. Use
 `fd0 update --flavor=yubikey` or `fd0 update --flavor=standard` only when
-switching deliberately.
+switching deliberately. An explicit older version also requires
+`--allow-downgrade`; resolving the latest release never permits a downgrade.
+
+Install the Desktop bundle, including its version-matched CLI and agent:
+
+```sh
+curl -fsSL https://fd0.sh/install | sh -s -- --desktop
+```
+
+Desktop-managed commands update from the app under **Support**, not through the
+CLI-only release channel. The installer preserves existing standalone
+`fd0` and `fd0-agent` commands and restores them on uninstall; vault data under
+`~/.fd0` is never removed.
+
+Dragging the DMG into `/Applications` or launching the AppImage directly
+installs only the GUI and its bundled service. Use the script when fd0 Desktop
+should also provide the `fd0` and `fd0-agent` shell commands.
 
 See [CHANGELOG.md](./CHANGELOG.md) for release history.
 

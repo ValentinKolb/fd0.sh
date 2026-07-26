@@ -82,6 +82,134 @@ func TestReplicatorRejectsForgedSTH(t *testing.T) {
 	}
 }
 
+func TestValidateReplicatedEventBindsChainAndSequence(t *testing.T) {
+	pub, priv, err := crypto.GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev, _, scopeID, err := chain.BuildScopeGenesis(chain.LocalSigner{Priv: priv}, pub.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cb, err := proto.Marshal(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := ev.PrevHashInput()
+	if err != nil {
+		t.Fatal(err)
+	}
+	chainID := "scope:" + scopeID.String()
+	stored := store.Event{
+		ChainID: chainID,
+		Seq:     0,
+		EventID: proto.EventID(input),
+		Kind:    ev.SignedPrefix.Kind,
+		CBOR:    cb,
+	}
+	if _, _, err := validateReplicatedEvent(chainID, 0, nil, stored); err != nil {
+		t.Fatalf("valid event rejected: %v", err)
+	}
+	if _, _, err := validateReplicatedEvent(chainID, 1, bytes.Repeat([]byte{1}, 32), stored); err == nil {
+		t.Fatal("sequence substitution accepted")
+	}
+
+	otherChain := "scope:" + proto.DeriveScopeID("other").String()
+	substituted := stored
+	substituted.ChainID = otherChain
+	if _, _, err := validateReplicatedEvent(otherChain, 0, nil, substituted); err == nil {
+		t.Fatal("chain substitution accepted")
+	}
+}
+
+func TestReplicatorRejectsSignedRootThatDoesNotCoverEvents(t *testing.T) {
+	ctx := context.Background()
+	pubA, privA, err := ed25519.GenerateKey(crand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := translog.SignServerInfo(privA, 1, "fake", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userPub, userPriv, err := crypto.GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev, _, scopeID, err := chain.BuildScopeGenesis(chain.LocalSigner{Priv: userPriv}, userPub.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cb, err := proto.Marshal(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := ev.PrevHashInput()
+	if err != nil {
+		t.Fatal(err)
+	}
+	chainID := "scope:" + scopeID.String()
+	sth, err := translog.SignSTH(privA, translog.TreeHead{
+		ChainID:   chainID,
+		TreeSize:  1,
+		RootHash:  bytes.Repeat([]byte{0x7f}, 32),
+		Timestamp: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	writeCBOR := func(w http.ResponseWriter, value any) {
+		body, err := proto.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = w.Write(body)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/server-info", func(w http.ResponseWriter, r *http.Request) {
+		writeCBOR(w, info)
+	})
+	mux.HandleFunc("/v1/chains", func(w http.ResponseWriter, r *http.Request) {
+		writeCBOR(w, map[string]any{"chains": []string{chainID}})
+	})
+	mux.HandleFunc("/v1/peer/chain", func(w http.ResponseWriter, r *http.Request) {
+		writeCBOR(w, peerChainResp{
+			Events: []peerEventWire{{
+				ChainID: chainID,
+				Seq:     0,
+				EventID: proto.EventID(input),
+				Kind:    ev.SignedPrefix.Kind,
+				CBOR:    cb,
+			}},
+			STH: &sth,
+		})
+	})
+	fake := httptest.NewServer(mux)
+	defer fake.Close()
+
+	replica, _ := newTestServer(t)
+	primaryURL, err := canon.ParseURL(fake.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &replicator{
+		primary: primaryURL,
+		store:   replica.Store(),
+		client:  fake.Client(),
+		log:     discardLog(),
+	}
+	_ = r.cycle(ctx)
+
+	events, err := replica.Store().BackupEvents(ctx, pubA, chainID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 0 {
+		t.Fatal("events were archived before their signed root was verified")
+	}
+}
+
 // TestReplicatorRefusesPrimaryIdentityRotation is the sensitivity test for
 // the TOFU pin on the primary's identity (review blind spot): once the
 // replica has pinned the primary's translog pubkey, a later cycle that

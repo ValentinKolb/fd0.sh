@@ -21,7 +21,7 @@ The server's operator can withhold service (denial), trigger replay-by-restore, 
 Every user holds an ed25519 `super_keypair`. The private half (`super_priv`) lives:
 
 1. **On disk** wrapped under the unlock passphrase (or YubiKey-PIV X25519 key), in `~/.fd0/vault.enc`.
-2. **In memory** mlocked inside `fd0-agent` after `fd0 unlock` runs. The agent zeroes it on `fd0 lock`, on the configured idle timeout, or on max-lifetime.
+2. **In memory** mlocked inside `fd0-agent` after `fd0 unlock` runs. The agent zeroes it on `fd0 lock`, on the configured idle timeout, or on max-lifetime. Status checks and rejected IPC requests do not extend the idle deadline; only successful protected operations do. Max-lifetime is absolute.
 3. **Optionally on a paper QR** or other off-host medium, via `fd0 recovery export`. The export is itself encrypted under a separate recovery passphrase.
 
 `super_priv` is the root of identity. Loss without a recovery export means the user cannot decrypt anything they wrote.
@@ -82,7 +82,7 @@ When you're using fd0 on behalf of the user:
 - A `pinned-key-mismatch` error is a SECURITY EVENT, not a transient. Stop, surface it, and require the user to verify the new fingerprint out of band before re-pinning. The fd0 prompt walks through this.
 - A `witness cross-check failed` error is also a security event. The server's STH is not what the witness saw. Stop and refer the user to the operator.
 - After `fd0 scope remove-member`, recommend rotating the underlying credentials externally. The cryptographic revocation only applies to FUTURE writes.
-- Removing a credential with `fd0 rm` writes a tombstone. The bytes do not vanish until the next compaction; tell the user to rotate the underlying credential if it was a real leak.
+- Removing a credential with `fd0 rm` writes a tombstone. v1 retains signed history locally and on the server; tell the user to rotate the underlying credential if it was a real leak.
 
 ## Why these guarantees matter
 

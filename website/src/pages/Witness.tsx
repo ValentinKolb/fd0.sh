@@ -221,10 +221,12 @@ const WitnessPage = (p: { snap: WitnessSnapshot }) => {
             class="mt-2 p-4 text-[13px] leading-[1.55]"
             style={`background:${C.bg};border:1px solid ${C.border};font-family:${FONT_MONO};`}
           >
-            <Shell>{`[witness]
-url    = "${snap.witnessURL}"
-pubkey = "${pubHex ?? "<pubkey here>"}"
-required = true`}</Shell>
+            <Shell>{`[[witness]]
+url = "${snap.witnessURL}"
+pub = "${pubHex ?? "<pubkey here>"}"
+
+[witness_policy]
+min_cosigns = 1`}</Shell>
           </div>
         </Card>
 
@@ -285,11 +287,14 @@ $ curl -sS ${snap.witnessURL}/v1/observed/$(echo -n "${snap.serverURL}" | basenc
             class="text-sm leading-relaxed mb-3"
             style={`color:${C.dim};`}
           >
-            With the witness pinned in your client and{" "}
+            Both tables matter. Listing a witness only makes it
+            available; cross-checking stays off until{" "}
             <span style={`color:${C.acc};font-family:${FONT_MONO};`}>
-              required = true
-            </span>
-            , every sync verifies the server's STH against this
+              min_cosigns
+            </span>{" "}
+            is at least 1. The default is 0, which disables it entirely,
+            so a config with the witness alone verifies nothing. With the
+            policy set, every sync verifies the server's STH against this
             witness's cosign. If the server ever publishes a fork — two
             distinct root hashes at the same tree_size — the witness
             flags equivocation and{" "}
@@ -302,7 +307,7 @@ $ curl -sS ${snap.witnessURL}/v1/observed/$(echo -n "${snap.serverURL}" | basenc
           <p class="text-sm leading-relaxed" style={`color:${C.dim};`}>
             Run your own witness:{" "}
             <a
-              href="https://github.com/ValentinKolb/fd0.sh/blob/main/docs/TRANSLOG.md#8"
+              href="https://github.com/k2b-dev/fd0.sh/blob/main/docs/TRANSLOG.md#8"
               style={`color:${C.acc};`}
             >
               docs/TRANSLOG.md §8

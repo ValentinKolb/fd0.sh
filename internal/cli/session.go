@@ -30,6 +30,16 @@ type Session struct {
 	UserX25519Pub []byte           // ed25519 → curve25519, derived once at Open
 	Body          *proto.VaultBody // body.SuperPriv is zeroed (held in agent)
 	UserState     *chain.UserState
+
+	// ctx is the context Open was called with. Kept so the lazy
+	// legacy-history migration (scope_migrate.go) inherits the caller's
+	// cancellation and deadline instead of inventing its own — the
+	// migration talks to the network from deep inside a read path that has
+	// no context of its own.
+	ctx context.Context
+	// legacyMigrationTried records the scopes this session has already
+	// attempted to migrate, so a read that keeps failing cannot loop.
+	legacyMigrationTried map[string]bool
 }
 
 // Open acquires the lock, connects to the agent, asks for the redacted body,
@@ -86,6 +96,7 @@ func Open(ctx context.Context) (*Session, error) {
 		UserSuperPub:  gb.UserSuperPub,
 		UserX25519Pub: xPub,
 		Body:          &body,
+		ctx:           ctx,
 	}
 	// Replay user chain and verify tip binding.
 	uctx, err := chain.ReplayUser(paths.UserChain)
@@ -166,6 +177,17 @@ func (s AgentSigner) Sign(payload []byte) ([]byte, error) {
 // (LoadScope, sync, doctor, replayAndCheckScope) stay short.
 func replayScopeViaAgent(path string, ownSuperPub, ownX25519Pub []byte, ag *agent.Client) (*chain.ScopeState, error) {
 	return chain.ReplayScope(path, ownSuperPub, ownX25519Pub, AgentOpener{Agent: ag})
+}
+
+// replayScopeObservedViaAgent is replayScopeViaAgent with an optional
+// per-version observer. observe == nil is byte-for-byte the plain replay.
+func replayScopeObservedViaAgent(
+	path string,
+	ownSuperPub, ownX25519Pub []byte,
+	ag *agent.Client,
+	observe chain.SecretObserver,
+) (*chain.ScopeState, error) {
+	return chain.ReplayScopeObserved(path, ownSuperPub, ownX25519Pub, AgentOpener{Agent: ag}, observe)
 }
 
 // defaultLockWait is how long an interactive command waits for the flock

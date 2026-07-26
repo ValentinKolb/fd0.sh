@@ -1,7 +1,8 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { logger } from "hono/logger";
 import { serveStatic } from "hono/bun";
 import { timingSafeEqual } from "crypto";
+import { join } from "node:path";
 import {
   canonicalUrl,
   config,
@@ -16,7 +17,9 @@ import {
   DocsOverview,
   DocsConcepts,
   DocsInstall,
+  DocsDesktop,
   DocsCli,
+  DocsPass,
   DocsSsh,
   DocsTalos,
   DocsSync,
@@ -26,7 +29,6 @@ import {
   DocsTroubleshooting,
 } from "./pages/Docs";
 import Home from "./pages/Home";
-import Impressum from "./pages/Impressum";
 import {
   SpecOverview,
   SpecWire,
@@ -37,9 +39,30 @@ import {
   SpecThreats,
 } from "./pages/Spec";
 import Witness from "./pages/Witness";
+import { fetchStableDesktopReleases } from "./lib/desktop-releases";
 
 const VERSION = process.env.FD0_WEBSITE_VERSION ?? "dev";
+const IMPRESSUM_URL = "https://impressum.valentin-kolb.com";
 const METRICS_TOKEN = (process.env.FD0_WEBSITE_METRICS_TOKEN ?? "").trim();
+const installScriptPath = (name: "install.sh" | "install-desktop.sh"): string =>
+  process.env.NODE_ENV === "production"
+    ? join(import.meta.dir, "public", name)
+    : join(import.meta.dir, "..", "..", "scripts", name);
+
+const serveInstallScript = async (
+  c: Context,
+  name: "install.sh" | "install-desktop.sh",
+) => {
+  const file = Bun.file(installScriptPath(name));
+  if (!(await file.exists())) return c.notFound();
+  return new Response(file, {
+    headers: {
+      "Content-Type": "text/x-shellscript; charset=utf-8",
+      "Cache-Control": "public, max-age=300",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+};
 
 // ─── tiny in-process metrics ───────────────────────────────────────
 //
@@ -53,13 +76,32 @@ const m = {
   inFlight: 0,
   uptime: () => (Date.now() - startedAt) / 1000,
 };
-const opLabel = (path: string): string => {
-  const parts = path.replace(/^\//, "").split("/");
-  if (parts.length === 0 || parts[0] === "") return "/";
-  if (parts.length === 1) return `/${parts[0]}`;
-  if (parts.length >= 3) return `/${parts[0]}/${parts[1]}/*`;
-  return `/${parts[0]}/${parts[1]}`;
+const metricPaths = new Set([
+  ...SEO_ROUTES.map((route) => route.path),
+  "/impressum",
+  "/health",
+  "/version",
+  "/metrics",
+  "/robots.txt",
+  "/sitemap.xml",
+  "/llms.txt",
+  "/install",
+  "/install.sh",
+  "/install-desktop",
+  "/install-desktop.sh",
+  "/files/compose.yml",
+  "/api/desktop/releases",
+  "/download",
+]);
+export const metricPathLabel = (path: string): string => {
+  if (metricPaths.has(path)) return path;
+  if (path.startsWith("/public/")) return "/public/*";
+  return "/*";
 };
+export const metricMethod = (method: string): string =>
+  ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"].includes(method)
+    ? method
+    : "OTHER";
 const statusClass = (s: number): string => {
   if (s >= 500) return "5xx";
   if (s >= 400) return "4xx";
@@ -148,7 +190,7 @@ const renderLlmsTxt = (): string =>
     ),
     "",
     "## Source",
-    "- [GitHub repository](https://github.com/ValentinKolb/fd0.sh): client, server, witness, website, protocol docs, and release workflows.",
+    "- [GitHub repository](https://github.com/k2b-dev/fd0.sh): client, server, witness, website, protocol docs, and release workflows.",
     "",
   ].join("\n");
 
@@ -170,7 +212,7 @@ const app = new Hono()
     } finally {
       m.inFlight--;
       bumpCounter(
-        [c.req.method, opLabel(c.req.path), statusClass(c.res.status)].join("|"),
+        [metricMethod(c.req.method), metricPathLabel(c.req.path), statusClass(c.res.status)].join("|"),
       );
     }
   })
@@ -190,6 +232,42 @@ const app = new Hono()
       api_version: "v1",
     }),
   )
+  /*
+   * One click to the newest desktop build.
+   *
+   * GitHub's own /releases/latest returns the most recent release of ANY kind,
+   * and this repo tags client-v* and desktop-v* into the same feed — so a CLI
+   * release landing after a desktop one would send people to a page with no
+   * app on it. This resolves the newest stable desktop-v* tag instead, and
+   * falls back to the filtered release list when the feed cannot be read.
+   */
+  .get("/download", async (c) => {
+    const fallback = "https://github.com/k2b-dev/fd0.sh/releases?q=desktop-v&expanded=true";
+    try {
+      const releases = await fetchStableDesktopReleases();
+      const newest = releases[0]?.tag_name;
+      if (!newest) return c.redirect(fallback, 302);
+      return c.redirect(`https://github.com/k2b-dev/fd0.sh/releases/tag/${newest}`, 302);
+    } catch {
+      return c.redirect(fallback, 302);
+    }
+  })
+  .get("/api/desktop/releases", async (c) => {
+    try {
+      const releases = await fetchStableDesktopReleases();
+      const headers = {
+        "Cache-Control": "public, max-age=300, stale-if-error=86400",
+      };
+      if (c.req.query("format") === "tags") {
+        return c.text(releases.map((release) => release.tag_name).join("\n") + "\n", 200, headers);
+      }
+      return c.json(releases, 200, headers);
+    } catch {
+      return c.json({ error: "release feed unavailable" }, 503, {
+        "Cache-Control": "no-store",
+      });
+    }
+  })
   .get("/metrics", (c) => {
     if (!checkBearer(c.req.header("Authorization"), METRICS_TOKEN)) {
       return c.notFound();
@@ -244,28 +322,19 @@ const app = new Hono()
       "Content-Type": "text/plain; charset=utf-8",
     });
   })
-  // Install-script aliases: redirect to the GitHub raw URL so the
-  // README + spoken-word command stay short. curl -fsSL follows
-  // 302 by default, so `curl -fsSL https://fd0.sh/install | sh`
-  // ends up fetching the latest scripts/install.sh from main.
-  .get("/install", (c) =>
-    c.redirect(
-      "https://raw.githubusercontent.com/ValentinKolb/fd0.sh/main/scripts/install.sh",
-      302,
-    ),
-  )
-  .get("/install.sh", (c) =>
-    c.redirect(
-      "https://raw.githubusercontent.com/ValentinKolb/fd0.sh/main/scripts/install.sh",
-      302,
-    ),
-  )
+  // Install aliases serve the scripts embedded in this website build.
+  .get("/install", (c) => serveInstallScript(c, "install.sh"))
+  .get("/install.sh", (c) => serveInstallScript(c, "install.sh"))
+  .get("/install-desktop", (c) => serveInstallScript(c, "install-desktop.sh"))
+  .get("/install-desktop.sh", (c) => serveInstallScript(c, "install-desktop.sh"))
   // Pages
   .get("/", ...Home)
   .get("/docs", ...DocsOverview)
   .get("/docs/concepts", ...DocsConcepts)
   .get("/docs/install", ...DocsInstall)
+  .get("/docs/desktop", ...DocsDesktop)
   .get("/docs/cli", ...DocsCli)
+  .get("/docs/pass", ...DocsPass)
   .get("/docs/ssh", ...DocsSsh)
   .get("/docs/talos", ...DocsTalos)
   .get("/docs/sync", ...DocsSync)
@@ -281,19 +350,22 @@ const app = new Hono()
   .get("/spec/translog", ...SpecTranslog)
   .get("/spec/threats", ...SpecThreats)
   .get("/witness", ...Witness)
-  .get("/impressum", ...Impressum)
+  // The legal notice is maintained in one place for every site the same
+  // provider runs. Temporary (302) rather than permanent so the route can
+  // come back here without fighting a cached redirect.
+  .get("/impressum", (c) => c.redirect(IMPRESSUM_URL, 302))
   // Error handlers — designed pages instead of plaintext.
-  .notFound((c) => {
-    const res = renderHTML(() => <ErrorPage content={errorPresets[404]} />);
+  .notFound(async (c) => {
+    const res = await renderHTML(() => <ErrorPage content={errorPresets[404]} />);
     return new Response(res.body, { status: 404, headers: res.headers });
   })
-  .onError((err, c) => {
+  .onError(async (err, c) => {
     console.error("[fd0-site] handler error:", err);
     const detail =
       process.env.NODE_ENV === "development"
         ? String(err.stack ?? err.message ?? err)
         : undefined;
-    const res = renderHTML(() => (
+    const res = await renderHTML(() => (
       <ErrorPage content={errorPresets[500]} detail={detail} />
     ));
     return new Response(res.body, { status: 500, headers: res.headers });

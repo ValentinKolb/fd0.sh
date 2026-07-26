@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 
 	"github.com/valentinkolb/fd0.sh/internal/crypto"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
@@ -24,6 +25,38 @@ import (
 
 // MaxFrame caps a single wire frame.
 const MaxFrame = 1 << 20
+
+// ProtocolVersion identifies this request/response contract — the op codes and
+// the shape of the frames above — and is the only compatibility signal clients
+// may use. It is deliberately not the release version: the CLI and the desktop
+// app are installed and updated separately, so two different release strings
+// serving the same protocol is the normal case, not a fault. Bump this only
+// when an existing op changes meaning or an old client would misread a reply;
+// purely additive fields do not need it.
+//
+// Agents built before this field existed report 0. Every such release speaks
+// protocol 1, so clients MUST read an absent/zero value as 1.
+const ProtocolVersion = 1
+
+const (
+	// StartedByEnv marks who launched an fd0-agent process. It exists so a
+	// client can tell "the agent I supervise" from "an agent somebody else
+	// started" — the only thing that licenses stopping the process.
+	StartedByEnv = "FD0_AGENT_STARTED_BY"
+	// StartedByDesktop is set by fd0 Desktop's background service (and by the
+	// desktop bridge in development) on the agents it starts itself.
+	StartedByDesktop = "desktop"
+)
+
+// StartedByFromEnv reads StartedByEnv and keeps only values this build knows.
+// An unknown value is dropped rather than echoed: the result is shown to users,
+// and an agent must never be able to describe itself as something it is not.
+func StartedByFromEnv() string {
+	if os.Getenv(StartedByEnv) == StartedByDesktop {
+		return StartedByDesktop
+	}
+	return ""
+}
 
 // Op codes. Ints (small CBOR encoding) keep frames tight.
 const (
@@ -67,8 +100,9 @@ type EncryptSuperPrivResp struct {
 }
 
 // AddWrapReq adds a new vault wrap (new K_unlock for the same payload_key).
-// The agent encrypts its cached payload_key under the supplied K_unlock and
-// re-writes the vault file atomically.
+// VaultPath is retained for wire compatibility; the agent only accepts its
+// canonical fdhome vault path. The method must already be active in the
+// verified current user chain.
 type AddWrapReq struct {
 	VaultPath    string `cbor:"vault_path"`
 	MethodID     string `cbor:"method_id"`
@@ -121,17 +155,11 @@ type GetBodyResp struct {
 	UserSuperPub []byte `cbor:"user_super_pub"`
 }
 
-// UnlockReq supplies a credential to open the vault at VaultPath.
+// UnlockReq supplies a credential to open the agent's canonical vault.
 //
-// UserChainPath is the path to the user.cbor chain file. The agent
-// uses it during unlock for a rollback-detection check: after
-// AEAD-decrypt of the vault body, the agent compares
-// `body.AuthTip` against the live chain's tip; a mismatch means the
-// vault file has been rolled back relative to the (signed,
-// append-only) chain — likely a revoked-credential resurrection
-// attempt — and the agent refuses to cache super_priv (codex audit:
-// 🔴 vault.go:68). Empty string disables the check (back-compat
-// for old callers; emit a warning when this happens).
+// VaultPath and UserChainPath remain on the wire for compatibility, but the
+// agent rejects non-empty values that differ from its own fdhome.Paths. An
+// empty UserChainPath no longer disables rollback and revocation checks.
 type UnlockReq struct {
 	VaultPath     string `cbor:"vault_path"`
 	UserChainPath string `cbor:"user_chain_path,omitempty"`
@@ -157,9 +185,17 @@ type StatusResp struct {
 	SinceUnix      int64  `cbor:"since,omitempty"`
 	UserSuperPub   []byte `cbor:"user_super_pub,omitempty"`
 	ActiveMethodID string `cbor:"active_method_id,omitempty"`
-	Version        string `cbor:"version,omitempty"`
-	Flavor         string `cbor:"flavor,omitempty"`
-	YubikeyEnabled bool   `cbor:"yubikey_enabled,omitempty"`
+	// Protocol is ProtocolVersion; 0 means an agent that predates the field
+	// and is read as 1. Version below is informational only.
+	Protocol int `cbor:"protocol,omitempty"`
+	// StartedBy is StartedByDesktop when fd0 Desktop started this agent, and
+	// empty for every other launcher (a shell, a CLI unlock, an old build).
+	StartedBy         string `cbor:"started_by,omitempty"`
+	Version           string `cbor:"version,omitempty"`
+	Flavor            string `cbor:"flavor,omitempty"`
+	YubikeyEnabled    bool   `cbor:"yubikey_enabled,omitempty"`
+	IdleTimeoutMillis int64  `cbor:"idle_timeout_ms,omitempty"`
+	MaxLifetimeMillis int64  `cbor:"max_lifetime_ms,omitempty"`
 }
 
 // SignReq asks for an Ed25519 signature over Payload (caller already prefixed

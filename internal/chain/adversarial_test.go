@@ -237,7 +237,5 @@ func TestAdvAppendRawAtomic(t *testing.T) {
 	}
 }
 
-// (Stale-state CompactScope guard is covered directly by
-// TestCompactScopeRefusesStaleSnapshot in chain_test.go. We don't
-// re-test here — the codex test audit flagged the previous skip
-// stub as zero-coverage inflation.)
+// Scope-history omission is covered directly by
+// TestReplayScopeRejectsOmittedCurrentSecretWithRealFinalTip.

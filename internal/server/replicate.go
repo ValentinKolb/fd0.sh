@@ -6,14 +6,15 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/valentinkolb/fd0.sh/internal/canon"
+	"github.com/valentinkolb/fd0.sh/internal/httpguard"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
 	"github.com/valentinkolb/fd0.sh/internal/server/store"
 	"github.com/valentinkolb/fd0.sh/internal/translog"
@@ -35,6 +36,13 @@ import (
 
 const defaultReplicateInterval = 30 * time.Second
 
+func newReplicationHTTPClient() *http.Client {
+	return &http.Client{
+		CheckRedirect: httpguard.RejectRedirect,
+		Timeout:       60 * time.Second,
+	}
+}
+
 type replicator struct {
 	primary canon.URL
 	store   *store.Store
@@ -53,7 +61,7 @@ func (s *Server) startReplication(ctx context.Context, primary canon.URL, interv
 	r := &replicator{
 		primary: primary,
 		store:   s.store,
-		client:  &http.Client{Timeout: 60 * time.Second},
+		client:  newReplicationHTTPClient(),
 		log:     s.log,
 	}
 	go func() {
@@ -128,7 +136,7 @@ func (r *replicator) primaryPub(ctx context.Context) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("server-info: %s", resp.Status)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body, err := httpguard.ReadBody(resp.Body, 1<<20)
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +167,7 @@ func (r *replicator) listChains(ctx context.Context) ([]string, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("chains: %s", resp.Status)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<24))
+	body, err := httpguard.ReadBody(resp.Body, 1<<24)
 	if err != nil {
 		return nil, err
 	}
@@ -175,40 +183,151 @@ func (r *replicator) listChains(ctx context.Context) ([]string, error) {
 // mirrorChain pulls the new suffix (and STH) for one chain into the
 // backup archive, looping until the chain is fully caught up.
 func (r *replicator) mirrorChain(ctx context.Context, srcPub []byte, chainID string) error {
+	archived, err := r.store.BackupEvents(ctx, srcPub, chainID)
+	if err != nil {
+		return err
+	}
+	leafHashes := make([][]byte, 0, len(archived))
+	var prevHash []byte
+	for i, e := range archived {
+		hash, leaf, err := validateReplicatedEvent(chainID, uint64(i), prevHash, e)
+		if err != nil {
+			return fmt.Errorf("chain %s: invalid archived event: %w", chainID, err)
+		}
+		prevHash = hash
+		leafHashes = append(leafHashes, leaf)
+	}
+
+	expectedSeq := uint64(len(archived))
+	pending := make([]store.Event, 0)
+	var finalSTH *translog.STH
 	for {
-		maxSeq, err := r.store.BackupMaxSeq(ctx, srcPub, chainID)
+		resp, err := r.peerGetChain(ctx, srcPub, chainID, expectedSeq)
 		if err != nil {
 			return err
 		}
-		since := uint64(maxSeq + 1) // maxSeq == -1 (empty) -> since 0
-		resp, err := r.peerGetChain(ctx, srcPub, chainID, since)
-		if err != nil {
-			return err
+		if resp.STH == nil {
+			return fmt.Errorf("chain %s: primary omitted STH", chainID)
 		}
-		evs := make([]store.Event, 0, len(resp.Events))
-		for _, e := range resp.Events {
-			evs = append(evs, storeEventFromWire(e))
+		if err := translog.VerifySTH(srcPub, *resp.STH); err != nil {
+			return fmt.Errorf("chain %s: primary STH failed verification under its own key: %w", chainID, err)
 		}
-		if err := r.store.BackupAppendEvents(ctx, srcPub, evs); err != nil {
-			return err
+		if resp.STH.Head.ChainID != chainID {
+			return fmt.Errorf("chain %s: primary returned STH for %s", chainID, resp.STH.Head.ChainID)
 		}
-		if resp.STH != nil {
-			// Verify the STH is genuinely signed by the primary before
-			// archiving it. The archive is the DR source of truth; storing
-			// an unverified (forged / corrupted) STH would silently poison
-			// it. A bad STH fails the chain this cycle and is retried.
-			if err := translog.VerifySTH(srcPub, *resp.STH); err != nil {
-				return fmt.Errorf("chain %s: primary STH failed verification under its own key: %w", chainID, err)
+		if finalSTH != nil && resp.STH.Head.TreeSize < finalSTH.Head.TreeSize {
+			return fmt.Errorf("chain %s: primary tree shrank during replication (%d to %d)",
+				chainID, finalSTH.Head.TreeSize, resp.STH.Head.TreeSize)
+		}
+		finalSTH = resp.STH
+
+		for _, wire := range resp.Events {
+			if wire.ChainID != chainID {
+				return fmt.Errorf("chain %s: primary returned event for %s", chainID, wire.ChainID)
 			}
-			if err := r.store.BackupPutSTH(ctx, srcPub, chainID, *resp.STH); err != nil {
-				return err
+			e := storeEventFromWire(wire)
+			hash, leaf, err := validateReplicatedEvent(chainID, expectedSeq, prevHash, e)
+			if err != nil {
+				return fmt.Errorf("chain %s: invalid replicated event: %w", chainID, err)
 			}
+			pending = append(pending, e)
+			prevHash = hash
+			leafHashes = append(leafHashes, leaf)
+			expectedSeq++
 		}
-		// Done when the page wasn't full (no more events upstream).
-		if len(resp.Events) < peerPullLimit {
-			return nil
+
+		switch {
+		case expectedSeq == finalSTH.Head.TreeSize:
+			goto verified
+		case expectedSeq > finalSTH.Head.TreeSize:
+			return fmt.Errorf("chain %s: received %d events for tree size %d",
+				chainID, expectedSeq, finalSTH.Head.TreeSize)
+		case len(resp.Events) < peerPullLimit:
+			return fmt.Errorf("chain %s: incomplete page ended at seq %d before tree size %d",
+				chainID, expectedSeq, finalSTH.Head.TreeSize)
 		}
 	}
+
+verified:
+	root := translog.MerkleTreeHash(leafHashes)
+	if !bytes.Equal(root, finalSTH.Head.RootHash) {
+		return fmt.Errorf("chain %s: archived events do not match signed tree root", chainID)
+	}
+	if err := r.store.BackupAppendEvents(ctx, srcPub, pending); err != nil {
+		return err
+	}
+	return r.store.BackupPutSTH(ctx, srcPub, chainID, *finalSTH)
+}
+
+// validateReplicatedEvent binds the archive metadata and canonical event bytes
+// to one exact chain position and returns the hashes needed for chain and
+// transparency-log verification.
+func validateReplicatedEvent(chainID string, expectedSeq uint64, expectedPrev []byte, e store.Event) ([]byte, []byte, error) {
+	if e.ChainID != chainID {
+		return nil, nil, fmt.Errorf("event chain %s does not match requested chain", e.ChainID)
+	}
+	if e.Seq != expectedSeq {
+		return nil, nil, fmt.Errorf("event seq %d, want %d", e.Seq, expectedSeq)
+	}
+
+	var (
+		seq       uint64
+		prev      []byte
+		kind      string
+		prevInput []byte
+		err       error
+	)
+	switch {
+	case strings.HasPrefix(chainID, "scope:"):
+		var ev proto.ScopeEvent
+		if err := proto.Unmarshal(e.CBOR, &ev); err != nil {
+			return nil, nil, fmt.Errorf("decode scope event: %w", err)
+		}
+		seq = ev.SignedPrefix.Seq
+		prev = ev.SignedPrefix.PrevHash
+		kind = ev.SignedPrefix.Kind
+		prevInput, err = ev.PrevHashInput()
+		scopeID := strings.TrimPrefix(chainID, "scope:")
+		if seq == 0 {
+			if ev.SignedPrefix.Scope != nil {
+				return nil, nil, fmt.Errorf("genesis event has scope")
+			}
+			if got := proto.DeriveScopeID(proto.EventID(prevInput)).String(); got != scopeID {
+				return nil, nil, fmt.Errorf("genesis derives scope %s, want %s", got, scopeID)
+			}
+		} else if ev.SignedPrefix.Scope == nil || *ev.SignedPrefix.Scope != scopeID {
+			return nil, nil, fmt.Errorf("event scope does not match %s", scopeID)
+		}
+	case strings.HasPrefix(chainID, "user:"):
+		var ev proto.UserEvent
+		if err := proto.Unmarshal(e.CBOR, &ev); err != nil {
+			return nil, nil, fmt.Errorf("decode user event: %w", err)
+		}
+		seq = ev.Seq
+		prev = ev.PrevHash
+		kind = ev.Kind
+		prevInput, err = ev.PrevHashInput()
+	default:
+		return nil, nil, fmt.Errorf("unsupported chain id %q", chainID)
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("canonical event input: %w", err)
+	}
+	if seq != e.Seq || kind != e.Kind || !bytes.Equal(prev, e.PrevHash) {
+		return nil, nil, fmt.Errorf("event metadata does not match canonical bytes")
+	}
+	if expectedSeq == 0 {
+		if len(prev) != 0 {
+			return nil, nil, fmt.Errorf("genesis prev_hash is not empty")
+		}
+	} else if !bytes.Equal(prev, expectedPrev) {
+		return nil, nil, fmt.Errorf("event prev_hash does not match seq %d", expectedSeq-1)
+	}
+	if got := proto.EventID(prevInput); got != e.EventID {
+		return nil, nil, fmt.Errorf("event id %s does not match canonical bytes", e.EventID)
+	}
+	hash := proto.HashPrefix(prevInput)
+	return append([]byte(nil), hash[:]...), translog.LeafHash(hash[:]), nil
 }
 
 // peerGetChain performs a signed GET /v1/peer/chain?id=&since= against
@@ -253,7 +372,7 @@ func (r *replicator) peerGetChain(ctx context.Context, srcPub []byte, chainID st
 		return nil, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<26))
+	body, err := httpguard.ReadBody(resp.Body, 1<<26)
 	if err != nil {
 		return nil, err
 	}

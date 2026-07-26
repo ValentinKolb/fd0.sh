@@ -43,17 +43,26 @@ func TestUpdateVersionHelpers(t *testing.T) {
 	if cmp, ok := compareVersionStrings("0.8.0", "0.9.0"); !ok || cmp >= 0 {
 		t.Fatalf("compare 0.8.0 vs 0.9.0 = %d %v, want less", cmp, ok)
 	}
-	if got := parseFD0VersionOutput("fd0 0.9.0\n"); got.Version != "0.9.0" || got.Flavor != "standard" {
-		t.Fatalf("old version parse=%+v, want 0.9.0 standard", got)
-	}
-	if got := parseFD0VersionOutput("fd0 0.9.0 yubikey\n"); got.Version != "0.9.0" || got.Flavor != "yubikey" {
-		t.Fatalf("new version parse=%+v, want 0.9.0 yubikey", got)
-	}
 	if got := updateArchiveName("standard", "linux_amd64"); got != "fd0_linux_amd64.tar.gz" {
 		t.Fatalf("standard archive=%q", got)
 	}
 	if got := updateArchiveName("yubikey", "linux_amd64"); got != "fd0_yubikey_linux_amd64.tar.gz" {
 		t.Fatalf("yubikey archive=%q", got)
+	}
+}
+
+func TestRunUpdateHandsDesktopManagedInstallToDesktop(t *testing.T) {
+	var out bytes.Buffer
+	err := RunUpdate(context.Background(), UpdateOptions{
+		ManagedByDesktop: true,
+		Stdout:           &out,
+		Stderr:           ioDiscard{},
+	})
+	if err != nil {
+		t.Fatalf("RunUpdate: %v", err)
+	}
+	if !strings.Contains(out.String(), "managed by fd0 Desktop") || !strings.Contains(out.String(), "Support > Check now") {
+		t.Fatalf("unexpected output:\n%s", out.String())
 	}
 }
 
@@ -65,6 +74,7 @@ func TestRunUpdateCheckUsesLatestClientRelease(t *testing.T) {
 		fmt.Fprint(w, `[
 			{"name":"website-v0.0.99","tag_name":"website-v0.0.99","draft":false,"prerelease":false},
 			{"name":"client-v0.9.0-rc.1","tag_name":"v0.9.0-rc.1","draft":false,"prerelease":true},
+			{"name":"client-v0.8.5","tag_name":"v0.8.5","draft":false,"prerelease":false},
 			{"name":"client-v0.9.0","tag_name":"v0.9.0","draft":false,"prerelease":false}
 		]`)
 	}))
@@ -109,7 +119,6 @@ func TestRunUpdateInstallsVerifiedArchive(t *testing.T) {
 		Version:        "0.9.0",
 		Prefix:         prefix,
 		Yes:            true,
-		NoVerify:       true,
 		APIBase:        srv.URL,
 		ReleaseBase:    srv.URL,
 		HTTPClient:     srv.Client(),
@@ -117,6 +126,7 @@ func TestRunUpdateInstallsVerifiedArchive(t *testing.T) {
 		Stderr:         &stderr,
 		GOOS:           "linux",
 		GOARCH:         "amd64",
+		cosignPath:     fakeCosign(t, true),
 	})
 	if err != nil {
 		t.Fatalf("RunUpdate: %v\nstdout:\n%s\nstderr:\n%s", err, out.String(), stderr.String())
@@ -151,17 +161,20 @@ func TestRunUpdatePreservesYubikeyFlavor(t *testing.T) {
 	})
 	var out, stderr bytes.Buffer
 	err := RunUpdate(context.Background(), UpdateOptions{
-		Version:     "0.9.0",
-		Prefix:      prefix,
-		Yes:         true,
-		NoVerify:    true,
-		APIBase:     srv.URL,
-		ReleaseBase: srv.URL,
-		HTTPClient:  srv.Client(),
-		Stdout:      &out,
-		Stderr:      &stderr,
-		GOOS:        "linux",
-		GOARCH:      "amd64",
+		CurrentVersion: "0.8.0",
+		CurrentFlavor:  "yubikey",
+		Version:        "0.9.0",
+		Prefix:         prefix,
+		Executable:     filepath.Join(prefix, "fd0"),
+		Yes:            true,
+		APIBase:        srv.URL,
+		ReleaseBase:    srv.URL,
+		HTTPClient:     srv.Client(),
+		Stdout:         &out,
+		Stderr:         &stderr,
+		GOOS:           "linux",
+		GOARCH:         "amd64",
+		cosignPath:     fakeCosign(t, true),
 	})
 	if err != nil {
 		t.Fatalf("RunUpdate: %v\nstdout:\n%s\nstderr:\n%s", err, out.String(), stderr.String())
@@ -189,24 +202,47 @@ func TestRunUpdateExplicitFlavorSwitchAtSameVersion(t *testing.T) {
 	})
 	var out bytes.Buffer
 	err := RunUpdate(context.Background(), UpdateOptions{
-		Version:     "0.9.0",
-		Flavor:      "yubikey",
-		Prefix:      prefix,
-		Yes:         true,
-		NoVerify:    true,
-		APIBase:     srv.URL,
-		ReleaseBase: srv.URL,
-		HTTPClient:  srv.Client(),
-		Stdout:      &out,
-		Stderr:      ioDiscard{},
-		GOOS:        "linux",
-		GOARCH:      "amd64",
+		CurrentVersion: "0.9.0",
+		CurrentFlavor:  "standard",
+		Version:        "0.9.0",
+		Flavor:         "yubikey",
+		Prefix:         prefix,
+		Executable:     filepath.Join(prefix, "fd0"),
+		Yes:            true,
+		APIBase:        srv.URL,
+		ReleaseBase:    srv.URL,
+		HTTPClient:     srv.Client(),
+		Stdout:         &out,
+		Stderr:         ioDiscard{},
+		GOOS:           "linux",
+		GOARCH:         "amd64",
+		cosignPath:     fakeCosign(t, true),
 	})
 	if err != nil {
 		t.Fatalf("RunUpdate: %v\nstdout:\n%s", err, out.String())
 	}
 	if !strings.Contains(out.String(), "action:  switch flavor") {
 		t.Fatalf("expected switch flavor action:\n%s", out.String())
+	}
+}
+
+func TestDetectInstalledFD0DoesNotExecuteTarget(t *testing.T) {
+	prefix := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "executed")
+	target := filepath.Join(prefix, "fd0")
+	if err := os.WriteFile(target, []byte("#!/bin/sh\n: > \""+marker+"\"\necho fd0 9.9.9 yubikey\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := detectInstalledFD0(prefix, filepath.Join(t.TempDir(), "running-fd0"), "0.8.0", "standard")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Present || got.Version != "" {
+		t.Fatalf("detected client = %+v, want present with unknown version", got)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("target binary executed before verification: %v", err)
 	}
 }
 
@@ -224,7 +260,6 @@ func TestRunUpdateRejectsChecksumMismatch(t *testing.T) {
 		Version:        "client-v0.9.0",
 		Prefix:         prefix,
 		Yes:            true,
-		NoVerify:       true,
 		APIBase:        srv.URL,
 		ReleaseBase:    srv.URL,
 		HTTPClient:     srv.Client(),
@@ -232,9 +267,120 @@ func TestRunUpdateRejectsChecksumMismatch(t *testing.T) {
 		Stderr:         ioDiscard{},
 		GOOS:           "linux",
 		GOARCH:         "amd64",
+		cosignPath:     fakeCosign(t, true),
 	})
 	if err == nil || !strings.Contains(err.Error(), "sha256 mismatch") {
 		t.Fatalf("RunUpdate error=%v, want sha256 mismatch", err)
+	}
+}
+
+func TestRunUpdateRequiresPublisherAuthentication(t *testing.T) {
+	prefix := t.TempDir()
+	err := RunUpdate(context.Background(), UpdateOptions{
+		CurrentVersion: "0.8.0",
+		Version:        "0.9.0",
+		Prefix:         prefix,
+		Yes:            true,
+		Stdout:         ioDiscard{},
+		Stderr:         ioDiscard{},
+		GOOS:           "linux",
+		GOARCH:         "amd64",
+		cosignPath:     filepath.Join(t.TempDir(), "missing-cosign"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "cosign is required") {
+		t.Fatalf("RunUpdate error=%v, want required cosign error", err)
+	}
+}
+
+func TestRunUpdateRejectsInvalidPublisherSignature(t *testing.T) {
+	archive := makeUpdateArchive(t, map[string]string{
+		"fd0":       "#!/bin/sh\necho fd0 0.9.0\n",
+		"fd0-agent": "#!/bin/sh\necho fd0-agent 0.9.0\n",
+	})
+	sum := sha256.Sum256(archive)
+	prefix := t.TempDir()
+	srv := updateFixtureServer(t, map[string]updateFixtureArchive{
+		"fd0_linux_amd64.tar.gz": {Body: archive, Sum: hex.EncodeToString(sum[:])},
+	})
+	err := RunUpdate(context.Background(), UpdateOptions{
+		CurrentVersion: "0.8.0",
+		Version:        "0.9.0",
+		Prefix:         prefix,
+		Yes:            true,
+		ReleaseBase:    srv.URL,
+		HTTPClient:     srv.Client(),
+		Stdout:         ioDiscard{},
+		Stderr:         ioDiscard{},
+		GOOS:           "linux",
+		GOARCH:         "amd64",
+		cosignPath:     fakeCosign(t, false),
+	})
+	if err == nil || !strings.Contains(err.Error(), "cosign verification failed") {
+		t.Fatalf("RunUpdate error=%v, want cosign verification failure", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(prefix, "fd0")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("unverified fd0 was installed: %v", statErr)
+	}
+}
+
+func TestRunUpdateRejectsDowngradeWithoutExplicitOverride(t *testing.T) {
+	err := RunUpdate(context.Background(), UpdateOptions{
+		CurrentVersion: "1.0.0",
+		Version:        "0.9.0",
+		Prefix:         t.TempDir(),
+		Yes:            true,
+		Stdout:         ioDiscard{},
+		Stderr:         ioDiscard{},
+		GOOS:           "linux",
+		GOARCH:         "amd64",
+	})
+	if err == nil || !strings.Contains(err.Error(), "--allow-downgrade") {
+		t.Fatalf("RunUpdate error=%v, want downgrade refusal", err)
+	}
+}
+
+func TestRunUpdateRejectsPrereleaseDowngradeWithoutExplicitOverride(t *testing.T) {
+	err := RunUpdate(context.Background(), UpdateOptions{
+		CurrentVersion: "1.0.0",
+		Version:        "0.9.0-rc.1",
+		Prefix:         t.TempDir(),
+		Yes:            true,
+		Stdout:         ioDiscard{},
+		Stderr:         ioDiscard{},
+		GOOS:           "linux",
+		GOARCH:         "amd64",
+	})
+	if err == nil || !strings.Contains(err.Error(), "--allow-downgrade") {
+		t.Fatalf("RunUpdate error=%v, want prerelease downgrade refusal", err)
+	}
+}
+
+func TestRunUpdateAllowsExplicitAuthenticatedDowngrade(t *testing.T) {
+	archive := makeUpdateArchive(t, map[string]string{
+		"fd0":       "#!/bin/sh\necho fd0 0.9.0\n",
+		"fd0-agent": "#!/bin/sh\necho fd0-agent 0.9.0\n",
+	})
+	sum := sha256.Sum256(archive)
+	prefix := t.TempDir()
+	srv := updateFixtureServer(t, map[string]updateFixtureArchive{
+		"fd0_linux_amd64.tar.gz": {Body: archive, Sum: hex.EncodeToString(sum[:])},
+	})
+	err := RunUpdate(context.Background(), UpdateOptions{
+		CurrentVersion: "1.0.0",
+		Version:        "0.9.0",
+		Prefix:         prefix,
+		Yes:            true,
+		AllowDowngrade: true,
+		ReleaseBase:    srv.URL,
+		HTTPClient:     srv.Client(),
+		Stdout:         ioDiscard{},
+		Stderr:         ioDiscard{},
+		GOOS:           "linux",
+		GOARCH:         "amd64",
+		cosignPath:     fakeCosign(t, true),
+	})
+	if err != nil {
+		t.Fatalf("RunUpdate authenticated downgrade: %v", err)
 	}
 }
 
@@ -275,6 +421,10 @@ func updateFixtureServer(t *testing.T, archives map[string]updateFixtureArchive)
 			return
 		}
 		name := strings.TrimPrefix(r.URL.Path, prefix)
+		if name == "checksums.txt.sig" || name == "checksums.txt.pem" {
+			_, _ = fmt.Fprint(w, "test fixture")
+			return
+		}
 		if name == "checksums.txt" {
 			for archiveName, archive := range archives {
 				fmt.Fprintf(w, "%s  %s\n", archive.Sum, archiveName)
@@ -288,6 +438,22 @@ func updateFixtureServer(t *testing.T, archives map[string]updateFixtureArchive)
 		}
 		_, _ = w.Write(archive.Body)
 	}))
+}
+
+func fakeCosign(t *testing.T, accept bool) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "cosign")
+	exit := "1"
+	if accept {
+		exit = "0"
+	}
+	body := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$*\" | grep -F '^https://github\\.com/k2b-dev/fd0\\.sh/\\.github/workflows/release\\.yml@refs/tags/client-v0\\.9\\.0$' >/dev/null || exit 9\n" +
+		"exit " + exit + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 type ioDiscard struct{}

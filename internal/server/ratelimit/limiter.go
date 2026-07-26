@@ -154,12 +154,20 @@ type Decision struct {
 // AcquireWrite checks whether identity ident may issue one more write right
 // now. Cost is 1 token.
 func (l *Limiter) AcquireWrite(ident string) Decision {
+	return l.AcquireWrites(ident, 1)
+}
+
+// AcquireWrites charges a batch by its actual write count.
+func (l *Limiter) AcquireWrites(ident string, n int) Decision {
 	if l.cfg.IdentityWritesPerMin < 0 {
+		return Decision{Allow: true}
+	}
+	if n <= 0 {
 		return Decision{Allow: true}
 	}
 	cap := float64(l.cfg.IdentityWritesPerMin)
 	rate := cap / 60.0
-	return l.acquire(classWrites+ident, cap, rate, 1)
+	return l.acquire(classWrites+ident, cap, rate, float64(n))
 }
 
 // AcquireBytes records that identity ident produced n bytes of request body.

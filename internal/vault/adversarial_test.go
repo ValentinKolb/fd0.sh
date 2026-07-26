@@ -3,6 +3,8 @@ package vault
 import (
 	"bytes"
 	"crypto/ed25519"
+	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -29,7 +31,7 @@ func mkVault(t *testing.T) (path string, pub ed25519.PublicKey, unlock []byte) {
 		t.Fatal(err)
 	}
 	body := &proto.VaultBody{
-		SuperPriv: priv.Bytes(),
+		SuperPriv:        priv.Bytes(),
 		AuthTip:          proto.ChainTip{Seq: 0, Hash: bytes.Repeat([]byte{0xAA}, 32)},
 		Scopes:           map[string]proto.ScopeVaultData{},
 		PinnedIdentities: map[string]proto.PinnedIdentity{},
@@ -51,7 +53,7 @@ func TestAdvVaultRejectsEmptyWraps(t *testing.T) {
 	path := filepath.Join(dir, "vault.enc")
 	pub, priv, _ := crypto.GenerateIdentity()
 	body := &proto.VaultBody{
-		SuperPriv: priv.Bytes(),
+		SuperPriv:        priv.Bytes(),
 		AuthTip:          proto.ChainTip{},
 		Scopes:           map[string]proto.ScopeVaultData{},
 		PinnedIdentities: map[string]proto.PinnedIdentity{},
@@ -70,11 +72,11 @@ func TestAdvVaultRejectsEmptyWraps(t *testing.T) {
 func TestAdvPassphraseResolverRejectsBadArgon2(t *testing.T) {
 	salt := bytes.Repeat([]byte{0xAB}, 16)
 	cases := []proto.Argon2Params{
-		{M: 32 * 1024, T: 0, P: 1},        // T==0
-		{M: 32 * 1024, T: 1, P: 0},        // P==0
-		{M: 0, T: 1, P: 1},                // M too small
-		{M: 8 * 1024, T: 1, P: 1},         // M below MinArgon2
-		{M: 1024 * 1024 * 4, T: 1, P: 1},  // M=4 GiB, above MaxArgon2
+		{M: 32 * 1024, T: 0, P: 1},       // T==0
+		{M: 32 * 1024, T: 1, P: 0},       // P==0
+		{M: 0, T: 1, P: 1},               // M too small
+		{M: 8 * 1024, T: 1, P: 1},        // M below MinArgon2
+		{M: 1024 * 1024 * 4, T: 1, P: 1}, // M=4 GiB, above MaxArgon2
 	}
 	for i, p := range cases {
 		pb, err := proto.Marshal(p)
@@ -112,6 +114,35 @@ func TestAdvDecryptSuperPrivShortBlob(t *testing.T) {
 		if err == nil {
 			t.Errorf("len=%d: short blob accepted", n)
 		}
+	}
+}
+
+func TestAdvEncryptedSuperPrivBindsIdentityAndMethod(t *testing.T) {
+	pub, priv, err := crypto.GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlockKey := bytes.Repeat([]byte{0x51}, 32)
+	blob, err := EncryptSuperPriv(priv.Bytes(), pub.Bytes(), "am_primary", unlockKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := DecryptSuperPriv(blob, pub.Bytes(), "am_primary", unlockKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	crypto.Wipe(plain)
+
+	wrongPub := pub.Bytes()
+	wrongPub[0] ^= 1
+	if _, err := DecryptSuperPriv(blob, wrongPub, "am_primary", unlockKey); err == nil {
+		t.Fatal("encrypted super key opened under a different identity")
+	}
+	if _, err := DecryptSuperPriv(blob, pub.Bytes(), "am_other", unlockKey); err == nil {
+		t.Fatal("encrypted super key opened under a different auth method")
+	}
+	if _, err := DecryptSuperPriv(blob, pub.Bytes(), "am_primary", bytes.Repeat([]byte{0x52}, 32)); err == nil {
+		t.Fatal("encrypted super key opened under a different unlock key")
 	}
 }
 
@@ -160,6 +191,73 @@ func TestAdvVaultRejectsTamperedBody(t *testing.T) {
 	v2.Body[len(v2.Body)/2] ^= 0x01
 	if _, err := Open(&v2, []MethodResolver{PassphraseResolver{Passphrase: []byte("anchor-pass-1234")}}); err == nil {
 		t.Fatal("Open accepted tampered Body")
+	}
+}
+
+func TestAdvVaultMutationRejectsIdentityChangeWithoutWriting(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(path string, body *proto.VaultBody, payloadKey, wrongPub []byte) error
+	}{
+		{
+			name: "save body",
+			mutate: func(path string, body *proto.VaultBody, payloadKey, wrongPub []byte) error {
+				return SaveBody(path, wrongPub, body, payloadKey)
+			},
+		},
+		{
+			name: "add wrap",
+			mutate: func(path string, body *proto.VaultBody, payloadKey, wrongPub []byte) error {
+				return AddWrap(path, wrongPub, body, payloadKey, WrapInput{
+					MethodID:     "am_new",
+					MethodType:   "test",
+					PublicParams: []byte("public"),
+					UnlockKey:    bytes.Repeat([]byte{0x44}, 32),
+				})
+			},
+		},
+		{
+			name: "remove wrap",
+			mutate: func(path string, body *proto.VaultBody, payloadKey, wrongPub []byte) error {
+				return RemoveWrap(path, wrongPub, body, payloadKey, "am_x")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path, pub, _ := mkVault(t)
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			v, err := Read(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			res, err := Open(v, []MethodResolver{
+				PassphraseResolver{Passphrase: []byte("anchor-pass-1234")},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer crypto.Wipe(res.UnlockKey)
+			defer crypto.Wipe(res.PayloadKey)
+
+			wrongPub := append([]byte(nil), pub...)
+			wrongPub[0] ^= 0x01
+			err = tt.mutate(path, res.Body, res.PayloadKey, wrongPub)
+			if !errors.Is(err, ErrIdentityMismatch) {
+				t.Fatalf("expected ErrIdentityMismatch, got %v", err)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(after, before) {
+				t.Fatal("rejected identity change modified the vault file")
+			}
+		})
 	}
 }
 

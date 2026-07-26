@@ -279,9 +279,10 @@ type VaultBody struct {
 // first successful (or `super_pub_taken`-409) registration round.
 // Used to avoid pointless POSTs on every sync.
 type PinnedServer struct {
-	ServerPub  []byte `cbor:"server_pub"`
-	PinnedAt   uint64 `cbor:"pinned_at"`
-	Registered bool   `cbor:"registered,omitempty"`
+	ServerPub       []byte `cbor:"server_pub"`
+	PinnedAt        uint64 `cbor:"pinned_at"`
+	Registered      bool   `cbor:"registered,omitempty"`
+	MembershipAfter string `cbor:"membership_after,omitempty"`
 }
 
 // ScopeVaultData holds the OEK lineage and the latest accepted chain tip for

@@ -223,7 +223,7 @@ func SaveBody(path string, userSuperPub []byte, body *proto.VaultBody, payloadKe
 	if len(payloadKey) != 32 {
 		return errors.New("vault: SaveBody requires 32-byte payload_key")
 	}
-	v, err := Read(path)
+	v, err := readForMutation(path, userSuperPub)
 	if err != nil {
 		return err
 	}
@@ -274,8 +274,8 @@ func SaveBody(path string, userSuperPub []byte, body *proto.VaultBody, payloadKe
 // Idempotent on duplicate method_id: if a wrap with that method_id already
 // exists AND its payload-key decryption matches under the supplied
 // UnlockKey, the call is a no-op (= success). This supports crash recovery
-// when a previous `auth add` was interrupted between AddWrap and the
-// chain.AppendUser write — retrying must not error.
+// when a previous `auth add` was interrupted after the signed chain append
+// or while persisting the authorized wrap — retrying must not error.
 //
 // If a wrap with the same method_id exists but with a DIFFERENT
 // UnlockKey (genuine collision: random ulid duplicated, or programmer
@@ -285,7 +285,7 @@ func AddWrap(path string, userSuperPub []byte, body *proto.VaultBody, payloadKey
 	if len(payloadKey) != 32 || len(newWrap.UnlockKey) != 32 {
 		return errors.New("vault: AddWrap requires 32-byte keys")
 	}
-	v, err := Read(path)
+	v, err := readForMutation(path, userSuperPub)
 	if err != nil {
 		return err
 	}
@@ -318,7 +318,7 @@ func AddWrap(path string, userSuperPub []byte, body *proto.VaultBody, payloadKey
 		if !match {
 			return fmt.Errorf("vault: method_id %q exists but wraps a different payload_key", newWrap.MethodID)
 		}
-		// Truly a no-op retry. Caller's chain step can proceed.
+		// Truly a no-op retry.
 		return nil
 	}
 	wrapNonce, err := crypto.Nonce12()
@@ -358,7 +358,7 @@ func RemoveWrap(path string, userSuperPub []byte, body *proto.VaultBody, payload
 	if len(payloadKey) != 32 {
 		return errors.New("vault: RemoveWrap requires 32-byte payload_key")
 	}
-	v, err := Read(path)
+	v, err := readForMutation(path, userSuperPub)
 	if err != nil {
 		return err
 	}
@@ -490,6 +490,24 @@ func bodyAAD(v *proto.VaultFile) ([]byte, error) {
 		return nil, err
 	}
 	return append([]byte(proto.DomainVaultBody), hb...), nil
+}
+
+// ErrIdentityMismatch means a caller tried to mutate an existing vault under
+// a different user identity. The owner key is immutable because it is part of
+// every wrap AAD; changing it without re-wrapping every entry would make the
+// vault permanently unreadable.
+var ErrIdentityMismatch = errors.New("vault: user_super_pub does not match existing vault")
+
+func readForMutation(path string, userSuperPub []byte) (*proto.VaultFile, error) {
+	v, err := Read(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(userSuperPub) != len(v.UserSuperPub) ||
+		subtle.ConstantTimeCompare(userSuperPub, v.UserSuperPub) != 1 {
+		return nil, ErrIdentityMismatch
+	}
+	return v, nil
 }
 
 // atomicWrite writes data to path via a tmp file with fsync + rename + dir fsync.

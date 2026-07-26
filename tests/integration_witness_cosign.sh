@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration_isolation.sh"
+fd0_test_require_isolation
 
 # fd0-witness COSIGN + CLIENT CROSS-CHECK integration test
 # (TRANSLOG.md §8.3 / §10).
@@ -25,24 +27,24 @@ set -uo pipefail
 
 SERVER_PORT=14930
 WITNESS_PORT=14931
-WITNESS_PORT2=14932
-SERVER_DB=/tmp/fd0-cosign-server.db
-SERVER_LOG=/tmp/fd0-cosign-server.log
-SERVER_KEY=/tmp/server-translog.key  # default = dirname($SERVER_DB)/server-translog.key
+BASE="$FD0_TEST_ROOT/cosign"
+mkdir -p "$BASE"
+SERVER_DB="$BASE/server.db"
+SERVER_LOG="$BASE/server.log"
+SERVER_KEY="$BASE/server-translog.key"  # default = dirname($SERVER_DB)/server-translog.key
 HOME_AL=$HOME/.fd0-cosign-al
-WITNESS_DB=/tmp/fd0-cosign-witness.db
-WITNESS_KEY=/tmp/fd0-cosign-witness.key
-WITNESS_CFG=/tmp/fd0-cosign-witness.toml
-WITNESS_LOG=/tmp/fd0-cosign-witness.log
-WITNESS2_DB=/tmp/fd0-cosign-witness2.db
-WITNESS2_KEY=/tmp/fd0-cosign-witness2.key
-WITNESS2_CFG=/tmp/fd0-cosign-witness2.toml
-WITNESS2_LOG=/tmp/fd0-cosign-witness2.log
+WITNESS_DB="$BASE/witness.db"
+WITNESS_KEY="$BASE/witness.key"
+WITNESS_LOG="$BASE/witness.log"
+INFO_BODY="$BASE/witness-info.cbor"
+LATEST_BODY="$BASE/witness-latest.cbor"
 
 FD0=${FD0:-$HOME/go/bin/fd0}
 FD0_AGENT=${FD0_AGENT:-$HOME/go/bin/fd0-agent}
 FD0_SERVER_BIN=${FD0_SERVER:-$HOME/go/bin/fd0-server}
 FD0_WITNESS_BIN=${FD0_WITNESS:-$HOME/go/bin/fd0-witness}
+SERVER_PID=
+WITNESS_PID=
 
 PASS=0
 FAIL=0
@@ -51,17 +53,17 @@ ok()   { PASS=$((PASS+1)); printf "  \033[32m✓\033[0m %s\n" "$*"; }
 no()   { FAIL=$((FAIL+1)); printf "  \033[31m✗\033[0m %s\n" "$*"; }
 
 cleanup() {
-    pkill -f "fd0-witness.*${WITNESS_PORT}"  2>/dev/null || true
-    pkill -f "fd0-witness.*${WITNESS_PORT2}" 2>/dev/null || true
-    pkill -f fd0-witness  2>/dev/null || true
-    pkill -f fd0-agent    2>/dev/null || true
-    kill $SERVER_PID 2>/dev/null || true
-    rm -rf "$HOME_AL" "$SERVER_DB" "$SERVER_DB-wal" "$SERVER_DB-shm" \
-           "$SERVER_LOG" "$SERVER_KEY" \
-           "$WITNESS_DB" "$WITNESS_DB-wal" "$WITNESS_DB-shm" \
-           "$WITNESS_KEY" "$WITNESS_CFG" "$WITNESS_LOG" \
-           "$WITNESS2_DB" "$WITNESS2_DB-wal" "$WITNESS2_DB-shm" \
-           "$WITNESS2_KEY" "$WITNESS2_CFG" "$WITNESS2_LOG"
+    local code=$?
+    fd0_test_stop_matching -f "fd0-witness.*${WITNESS_PORT}"  2>/dev/null || true
+    fd0_test_stop_matching -f fd0-witness  2>/dev/null || true
+    fd0_test_stop_matching -f fd0-agent    2>/dev/null || true
+    [ -z "$SERVER_PID" ] || kill "$SERVER_PID" 2>/dev/null || true
+    if [ "$code" -eq 0 ]; then
+        rm -rf "$HOME_AL" "$BASE"
+    else
+        printf '  preserving witness-cosign failure artifacts at %s\n' "$BASE" >&2
+    fi
+    return "$code"
 }
 trap cleanup EXIT
 
@@ -102,22 +104,13 @@ sys.stdout.write(b[32:64].hex())
 "
 }
 
-write_witness_cfg() {
-    local cfg="$1" db="$2" key="$3" port="$4"
-    local server_pub_hex="$5"
-    cat > "$cfg" <<EOF
-[[target]]
-server_url    = "http://127.0.0.1:${SERVER_PORT}"
-server_pub    = "${server_pub_hex}"
-chains        = ["scope:_PLACEHOLDER_"]
-poll_interval = "1s"
-EOF
-}
-
 start_witness() {
-    local cfg="$1" db="$2" key="$3" port="$4" log="$5"
+    local db="$1" key="$2" port="$3" log="$4"
     "$FD0_WITNESS_BIN" \
-        --config="$cfg" --db="$db" --key="$key" --bind=":${port}" \
+        --db="$db" --key="$key" --bind=":${port}" \
+        --server-url="http://127.0.0.1:${SERVER_PORT}" \
+        --server-pub="$SRV_PUB_HEX" \
+        --poll-interval="1s" --auto-discover=false --chain="$SCOPE_CHAIN" \
         run > "$log" 2>&1 &
     echo $!
 }
@@ -125,21 +118,27 @@ start_witness() {
 # ---- setup ------------------------------------------------------------
 
 step "Setup: clean slate"
-pkill -f fd0-server  2>/dev/null || true
-pkill -f fd0-agent   2>/dev/null || true
-pkill -f fd0-witness 2>/dev/null || true
+fd0_test_stop_matching -f fd0-server  2>/dev/null || true
+fd0_test_stop_matching -f fd0-agent   2>/dev/null || true
+fd0_test_stop_matching -f fd0-witness 2>/dev/null || true
 sleep 0.3
 rm -rf "$HOME_AL" "$SERVER_DB" "$SERVER_LOG" "$SERVER_KEY" \
-       "$WITNESS_DB" "$WITNESS_KEY" "$WITNESS_CFG" "$WITNESS_LOG" \
-       "$WITNESS2_DB" "$WITNESS2_KEY" "$WITNESS2_CFG" "$WITNESS2_LOG"
+       "$WITNESS_DB" "$WITNESS_KEY" "$WITNESS_LOG"
 
 # fd0-server stores its translog keyfile next to the DB (default
 # path = dirname(db)/server-translog.key).
 "$FD0_SERVER_BIN" --bind=":${SERVER_PORT}" --db="$SERVER_DB" \
     --no-ratelimit > "$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
-sleep 0.5
-if ! curl -fs "http://127.0.0.1:${SERVER_PORT}/health" >/dev/null 2>&1; then
+SERVER_READY=0
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    if curl -fs "http://127.0.0.1:${SERVER_PORT}/health" >/dev/null 2>&1; then
+        SERVER_READY=1
+        break
+    fi
+    sleep 0.25
+done
+if [ "$SERVER_READY" -ne 1 ]; then
     no "server failed to come up"; exit 1
 fi
 ok "server up on :${SERVER_PORT}"
@@ -165,16 +164,7 @@ SCOPE_CHAIN=$(sqlite3 "$SERVER_DB" "SELECT chain_id FROM chains WHERE chain_id L
     || { no "could not find scope chain in server DB"; exit 1; }
 
 # Witness 1.
-sed -i.bak "s|scope:_PLACEHOLDER_|${SCOPE_CHAIN}|g" /dev/null 2>/dev/null # no-op, let cat-rewrite handle
-cat > "$WITNESS_CFG" <<EOF
-[[target]]
-server_url    = "http://127.0.0.1:${SERVER_PORT}"
-server_pub    = "${SRV_PUB_HEX}"
-chains        = ["${SCOPE_CHAIN}"]
-poll_interval = "1s"
-EOF
-
-WITNESS_PID=$(start_witness "$WITNESS_CFG" "$WITNESS_DB" "$WITNESS_KEY" "$WITNESS_PORT" "$WITNESS_LOG")
+WITNESS_PID=$(start_witness "$WITNESS_DB" "$WITNESS_KEY" "$WITNESS_PORT" "$WITNESS_LOG")
 sleep 1.5  # let witness boot + first poll
 W_PUB_HEX=$(extract_witness_pub_hex "$WITNESS_KEY")
 [ -n "$W_PUB_HEX" ] && ok "witness1 up + cosign pub: ${W_PUB_HEX:0:16}…" \
@@ -185,7 +175,7 @@ W_PUB_HEX=$(extract_witness_pub_hex "$WITNESS_KEY")
 step "Direct HTTP probes against witness1"
 
 # server-info should return the witness pub.
-INFO=$(curl -sf "http://127.0.0.1:${WITNESS_PORT}/v1/server-info" -o /tmp/wi-info.bin -w "%{http_code}")
+INFO=$(curl -sf "http://127.0.0.1:${WITNESS_PORT}/v1/server-info" -o "$INFO_BODY" -w "%{http_code}")
 if [ "$INFO" = "200" ]; then
     ok "GET /v1/server-info returned 200"
 else
@@ -199,7 +189,7 @@ sys.stdout.write(base64.urlsafe_b64encode(b'http://127.0.0.1:${SERVER_PORT}').rs
 ")
 
 # Latest STH endpoint.
-STATUS=$(curl -s -o /tmp/wi-latest.bin -w "%{http_code}" \
+STATUS=$(curl -s -o "$LATEST_BODY" -w "%{http_code}" \
     "http://127.0.0.1:${WITNESS_PORT}/v1/sth/${SRV_B64}/${SCOPE_CHAIN}")
 if [ "$STATUS" = "200" ]; then
     ok "witness has latest STH for scope (200)"
@@ -290,7 +280,7 @@ step "Equivocation: inject a cosigned-but-different-root row"
 #   5. Verifies the next AL sync FAILS with "equivocation".
 #
 # Stop the witness so it doesn't poll over our injection.
-kill $WITNESS_PID 2>/dev/null || true
+kill "$WITNESS_PID" 2>/dev/null || true
 sleep 0.3
 
 # Helper lives at cmd/fd0-test-equiv-inject (must be inside the
@@ -377,7 +367,7 @@ echo "$INJECT_OUT" | head -5 | sed 's/^/    inject> /'
 
 # Restart witness HTTP server (read-only side; it just serves
 # whatever is in the DB now, which includes our injected forked row).
-WITNESS_PID=$(start_witness "$WITNESS_CFG" "$WITNESS_DB" "$WITNESS_KEY" "$WITNESS_PORT" "$WITNESS_LOG")
+WITNESS_PID=$(start_witness "$WITNESS_DB" "$WITNESS_KEY" "$WITNESS_PORT" "$WITNESS_LOG")
 sleep 1
 
 # Note: LookupAt orders by fetched_at DESC, so our injected row
@@ -396,7 +386,7 @@ step "Client cross-check: lagging witness → reject (no soft-tolerance knob)"
 # one — both fail the absolute MinCosigns floor. Demonstrated by
 # stopping the witness and writing fresh keys: the next sync
 # cannot find a valid cosign at the new tree_size and refuses.
-kill $WITNESS_PID 2>/dev/null || true
+kill "$WITNESS_PID" 2>/dev/null || true
 sleep 0.3
 AL set k3 v3 --scope work >/dev/null
 SYNC_OUT=$(AL sync 2>&1 || true)
@@ -407,7 +397,7 @@ else
 fi
 
 # Restart witness to let it catch up for the closing checks.
-WITNESS_PID=$(start_witness "$WITNESS_CFG" "$WITNESS_DB" "$WITNESS_KEY" "$WITNESS_PORT" "$WITNESS_LOG")
+WITNESS_PID=$(start_witness "$WITNESS_DB" "$WITNESS_KEY" "$WITNESS_PORT" "$WITNESS_LOG")
 sleep 1.5
 
 # ---- witness cosign archive: check that cosigns actually got stored ---

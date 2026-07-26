@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration_isolation.sh"
+fd0_test_require_isolation
 # End-to-end integration test for #2a using the REAL binaries
 # (fd0-server processes + fd0 client + agent), not the in-process harness.
 #
@@ -40,8 +42,8 @@ URL_SB=http://localhost:$PORT_SB
 declare -A PIDS
 
 cleanup() {
-  pkill -f "$FD0_SERVER_BIN" 2>/dev/null
-  pkill -f "$FD0_AGENT_BIN"  2>/dev/null
+  fd0_test_stop_matching -f "$FD0_SERVER_BIN" 2>/dev/null
+  fd0_test_stop_matching -f "$FD0_AGENT_BIN"  2>/dev/null
   sleep 0.3
   export HOME=$HOME_BACKUP
 }

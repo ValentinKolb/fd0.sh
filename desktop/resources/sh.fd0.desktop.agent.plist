@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>sh.fd0.desktop.agent</string>
+  <key>BundleProgram</key>
+  <string>Contents/Resources/bin/fd0-agent</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <!-- Marks the agent started by this service as one fd0 Desktop supervises, so
+       the app can tell it apart from an agent the user started in a terminal —
+       which it must never stop. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>FD0_AGENT_STARTED_BY</key>
+    <string>desktop</string>
+  </dict>
+</dict>
+</plist>

@@ -1,9 +1,8 @@
 package cli
 
 // Sync orchestrator. The big workhorse is RunSync: one round-trip
-// covers pull + push + discovery + per-scope translog verification,
-// followed by best-effort compaction. Divergence handling, scope
-// discovery, and shared helpers are split out:
+// covers pull + push + discovery + per-scope translog verification.
+// Divergence handling, scope discovery, and shared helpers are split out:
 //
 //   - sync_internal.go   — buildSyncRequestBody, leafHashAtSeq,
 //                          decryptSecretBody, upsertOEK, fileSize, …
@@ -20,8 +19,8 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -35,6 +34,7 @@ import (
 	"github.com/valentinkolb/fd0.sh/internal/canon"
 	"github.com/valentinkolb/fd0.sh/internal/chain"
 	"github.com/valentinkolb/fd0.sh/internal/fdhome"
+	"github.com/valentinkolb/fd0.sh/internal/httpguard"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
 	"github.com/valentinkolb/fd0.sh/internal/translog"
 )
@@ -55,6 +55,22 @@ type pullCursor struct {
 	LastSTHSize uint64
 }
 
+var (
+	errSyncMorePushes  = errors.New("sync: more local pushes pending")
+	errSyncRateLimited = errors.New("sync: push batch rate limited")
+)
+
+const initialSyncPushBatch = 32
+
+const (
+	membershipPageSize        = 32
+	maxMembershipPagesPerSync = 4
+)
+
+type syncRunBudget struct {
+	membershipPages int
+}
+
 // RunSync pushes any local-only events to the configured fd0-server and pulls
 // new events from there.
 //
@@ -62,11 +78,37 @@ type pullCursor struct {
 // covers every locally-known scope from cursor=local_tip.
 //
 // RunSync targets one server. RunSyncPrimary wraps it with config/env/flag
-// resolution + post-success compaction and is the entry point most callers
-// want; the bare-server entry here is for explicit, single-target
+// resolution and is the entry point most callers want; the bare-server entry
+// here is for explicit, single-target
 // invocations (tests, scripts). Passing "" resolves the primary like
 // RunSyncPrimary does.
 func RunSync(ctx context.Context, server string) error {
+	budget := &syncRunBudget{membershipPages: maxMembershipPagesPerSync}
+	return runSyncBatches(ctx, server, budget, runSyncRound)
+}
+
+func runSyncBatches(
+	ctx context.Context,
+	server string,
+	budget *syncRunBudget,
+	runRound func(context.Context, string, int, *syncRunBudget) error,
+) error {
+	pushLimit := initialSyncPushBatch
+	for {
+		err := runRound(ctx, server, pushLimit, budget)
+		switch {
+		case errors.Is(err, errSyncMorePushes):
+			continue
+		case errors.Is(err, errSyncRateLimited) && pushLimit > 1:
+			pushLimit = (pushLimit + 1) / 2
+			continue
+		default:
+			return err
+		}
+	}
+}
+
+func runSyncRound(ctx context.Context, server string, pushLimit int, budget *syncRunBudget) error {
 	if server == "" {
 		// Resolve the single primary from flag/env/config. A stale pre-A1
 		// [sync].servers array errors here with migration guidance.
@@ -115,11 +157,23 @@ func RunSync(ctx context.Context, server string) error {
 	if err := s.EnsureUserRegistered(ctx, serverURL); err != nil {
 		return fmt.Errorf("user registration: %w", err)
 	}
+	if err := s.repairNonContiguousScopes(ctx, wcc, serverURL); err != nil {
+		return err
+	}
 
 	// Per-server state key for vault lookups. Each pinned server has
 	// its own PushFloor + LastSTH per scope; the canonical URL string
 	// is what addresses the entry.
 	serverKey := serverURL.String()
+	membershipAfter := ""
+	if pinned, ok := s.Body.PinnedServers[serverKey]; ok {
+		membershipAfter = pinned.MembershipAfter
+	}
+	if membershipAfter != "" {
+		if _, err := membershipCursorScopeID(membershipAfter); err != nil {
+			return fmt.Errorf("sync membership discovery: persisted cursor: %w", err)
+		}
+	}
 
 	// Snapshot pre-sync LastSTH per scope. Both pull AND push
 	// consistency proofs in this round are relative to the request's
@@ -187,7 +241,18 @@ func RunSync(ctx context.Context, server string) error {
 			pushItems = append(pushItems, pushItemFor(scopeRef, ev, lastSize))
 		}
 	}
-	body, err := buildSyncRequestBody(pullScopes, pushItems, true, 1000)
+	morePushes := len(pushItems) > pushLimit
+	if morePushes {
+		pushItems = pushItems[:pushLimit]
+	}
+	discoverMemberships := budget.membershipPages > 0
+	body, err := buildSyncRequestBody(
+		pullScopes,
+		pushItems,
+		discoverMemberships,
+		membershipAfter,
+		1000,
+	)
 	if err != nil {
 		return err
 	}
@@ -196,11 +261,14 @@ func RunSync(ctx context.Context, server string) error {
 		return err
 	}
 	defer resp.Body.Close()
-	rb, err := io.ReadAll(resp.Body)
+	rb, err := httpguard.ReadBody(resp.Body, maxSyncResponseBytes)
 	if err != nil {
 		return err
 	}
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusTooManyRequests {
+			return errSyncRateLimited
+		}
 		return fmt.Errorf("sync: %s: %s", resp.Status, rb)
 	}
 	var sr struct {
@@ -216,11 +284,9 @@ func RunSync(ctx context.Context, server string) error {
 			InclusionProofs  []translog.InclusionProof  `cbor:"inclusion_proofs,omitempty"`
 			ConsistencyProof *translog.ConsistencyProof `cbor:"consistency_proof,omitempty"`
 		} `cbor:"pull"`
-		Memberships []struct {
-			ScopeID    string `cbor:"scope_id"`
-			OEKVersion uint64 `cbor:"oek_version"`
-		} `cbor:"memberships"`
-		Push []struct {
+		Memberships          []membershipResult `cbor:"memberships"`
+		MembershipsNextAfter string             `cbor:"memberships_next_after,omitempty"`
+		Push                 []struct {
 			Accepted         bool                       `cbor:"accepted"`
 			Reason           string                     `cbor:"reason,omitempty"`
 			ScopeID          string                     `cbor:"scope_id,omitempty"`
@@ -236,6 +302,7 @@ func RunSync(ctx context.Context, server string) error {
 	}
 	// Apply pulled events for each known scope.
 	dirty := false
+	pullReconciled := map[string]struct{}{}
 	for sid, ps := range sr.Pull {
 		// Server says caller is no longer authorised → drop the scope
 		// locally (STORAGE.md §5.3).
@@ -278,6 +345,17 @@ func RunSync(ctx context.Context, server string) error {
 		// will get a clean Denied from pull and drop normally.
 		if sd.Leaving {
 			continue
+		}
+		if err := validateScopePullPage(sid, pullScopes[sid], ps.Tip.Seq, ps.Tip.Hash, ps.Events); err != nil {
+			if errors.Is(err, errScopePullDiverged) {
+				if rerr := s.reconcileAndRepush(ctx, wcc, serverURL, sid, 3); rerr != nil {
+					return fmt.Errorf("scope %s: pull diverged (%v); reconcile failed: %w", sid, err, rerr)
+				}
+				pullReconciled[sid] = struct{}{}
+				dirty = true
+				continue
+			}
+			return fmt.Errorf("scope %s: invalid pull suffix: %w", sid, err)
 		}
 		// Translog verification: hard-fail BEFORE any local state
 		// mutation. Server invariant per TRANSLOG.md §5.4: STH is
@@ -437,13 +515,17 @@ func RunSync(ctx context.Context, server string) error {
 	// locally yet. For each unknown scope_id we issue a second pull from
 	// cursor=0 and replay; replay extracts our OEK from the admit event's
 	// key_delivery via agent.OpenSeal (PROTOCOL.md §4.5 / STORAGE.md §6.1).
-	for _, m := range sr.Memberships {
-		if _, known := s.Body.Scopes[m.ScopeID]; known {
-			continue
-		}
-		if err := s.discoverScope(ctx, wcc, serverURL, m.ScopeID); err != nil {
-			fmt.Fprintf(os.Stderr, "  skip discover %s: %v\n", m.ScopeID, err)
-			continue
+	if discoverMemberships {
+		if err := s.processMembershipPages(
+			ctx,
+			wcc,
+			serverURL,
+			membershipAfter,
+			sr.Memberships,
+			sr.MembershipsNextAfter,
+			budget,
+		); err != nil {
+			return err
 		}
 	}
 	// Summarise push results, and advance per-scope PushFloor on
@@ -468,6 +550,12 @@ func RunSync(ctx context.Context, server string) error {
 	floorDirty := false
 	maxSizePersisted := map[string]uint64{} // scope_id → max sth.head.tree_size
 	for _, p := range sr.Push {
+		if _, ok := pullReconciled[p.ScopeID]; ok {
+			// The full reconcile ran after this response was received and
+			// therefore already incorporated any event this stale push
+			// result accepted. Do not verify or retry the old result again.
+			continue
+		}
 		switch {
 		case p.Accepted:
 			pushed++
@@ -584,17 +672,139 @@ func RunSync(ctx context.Context, server string) error {
 			return fmt.Errorf("sync: %d scope(s) failed reconcile after retry; %d push(es) initially refused", retryFailed, failed)
 		}
 		if retried > 0 {
+			if morePushes {
+				return errSyncMorePushes
+			}
 			fmt.Fprintf(os.Stderr, "✓ sync ok (pushed=%d dup=%d reconciled=%d)\n", pushed, dups, retried)
 			return nil
 		}
 		return fmt.Errorf("sync: %d push(es) refused (pushed=%d dup=%d)", failed, pushed, dups)
 	}
-	// Compaction is intentionally NOT run here. It rewrites the local
-	// chain into a non-contiguous form (STORAGE.md §5.4), which is only
-	// safe once the primary has converged to THIS tip. RunSyncPrimary runs
-	// CompactScopes once, after a successful round.
+	if morePushes {
+		return errSyncMorePushes
+	}
 	fmt.Fprintf(os.Stderr, "✓ sync ok (pushed=%d dup=%d)\n", pushed, dups)
 	return nil
+}
+
+type membershipResult struct {
+	ScopeID    string `cbor:"scope_id"`
+	OEKVersion uint64 `cbor:"oek_version"`
+}
+
+func (s *Session) processMembershipPages(
+	ctx context.Context,
+	wcc *WitnessCheckClient,
+	serverURL canon.URL,
+	requestAfter string,
+	memberships []membershipResult,
+	nextAfter string,
+	budget *syncRunBudget,
+) error {
+	for {
+		if err := validateMembershipPage(requestAfter, memberships, nextAfter); err != nil {
+			return err
+		}
+		for _, m := range memberships {
+			if _, known := s.Body.Scopes[m.ScopeID]; known {
+				continue
+			}
+			if err := s.discoverScope(ctx, wcc, serverURL, m.ScopeID); err != nil {
+				fmt.Fprintf(os.Stderr, "  skip discover %s: %v\n", m.ScopeID, err)
+			}
+		}
+		budget.membershipPages--
+		if nextAfter == "" || budget.membershipPages == 0 {
+			return s.persistMembershipCursor(serverURL.String(), nextAfter)
+		}
+		body, err := buildMembershipDiscoveryRequest(nextAfter)
+		if err != nil {
+			return err
+		}
+		resp, err := s.signedPOST(ctx, serverURL.JoinPath("/v1/sync"), body)
+		if err != nil {
+			return err
+		}
+		rb, readErr := httpguard.ReadBody(resp.Body, maxSyncResponseBytes)
+		resp.Body.Close()
+		if readErr != nil {
+			return readErr
+		}
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("sync membership discovery: %s: %s", resp.Status, rb)
+		}
+		var page struct {
+			Memberships          []membershipResult `cbor:"memberships"`
+			MembershipsNextAfter string             `cbor:"memberships_next_after,omitempty"`
+		}
+		if err := proto.Unmarshal(rb, &page); err != nil {
+			return fmt.Errorf("sync membership discovery: decode response: %w", err)
+		}
+		requestAfter = nextAfter
+		memberships = page.Memberships
+		nextAfter = page.MembershipsNextAfter
+	}
+}
+
+func validateMembershipPage(after string, memberships []membershipResult, nextAfter string) error {
+	if len(memberships) > membershipPageSize {
+		return fmt.Errorf(
+			"sync membership discovery: server returned %d memberships, limit is %d",
+			len(memberships),
+			membershipPageSize,
+		)
+	}
+	seen := make(map[string]struct{}, len(memberships))
+	for _, membership := range memberships {
+		if _, err := proto.ParseScopeID(membership.ScopeID); err != nil {
+			return fmt.Errorf("sync membership discovery: invalid scope_id: %w", err)
+		}
+		if _, ok := seen[membership.ScopeID]; ok {
+			return fmt.Errorf("sync membership discovery: duplicate scope_id %q", membership.ScopeID)
+		}
+		seen[membership.ScopeID] = struct{}{}
+	}
+	if nextAfter != "" && nextAfter <= after {
+		return errors.New("sync membership discovery: server pagination did not advance")
+	}
+	if nextAfter != "" {
+		cursorScopeID, err := membershipCursorScopeID(nextAfter)
+		if err != nil {
+			return fmt.Errorf("sync membership discovery: invalid next cursor: %w", err)
+		}
+		if len(memberships) == 0 || memberships[len(memberships)-1].ScopeID != cursorScopeID {
+			return errors.New("sync membership discovery: next cursor does not match page tail")
+		}
+	}
+	return nil
+}
+
+func membershipCursorScopeID(cursor string) (string, error) {
+	const prefix = "scope:"
+	if !strings.HasPrefix(cursor, prefix) {
+		return "", errors.New("cursor must start with scope")
+	}
+	scopeID := strings.TrimPrefix(cursor, prefix)
+	if _, err := proto.ParseScopeID(scopeID); err != nil {
+		return "", err
+	}
+	if cursor != prefix+scopeID {
+		return "", errors.New("cursor is not canonical")
+	}
+	return scopeID, nil
+}
+
+func (s *Session) persistMembershipCursor(serverKey, after string) error {
+	pinned, ok := s.Body.PinnedServers[serverKey]
+	if !ok {
+		return errors.New("sync membership discovery: server pin missing")
+	}
+	if pinned.MembershipAfter == after {
+		return nil
+	}
+	pinned.MembershipAfter = after
+	s.Body.PinnedServers[serverKey] = pinned
+	return s.ReSeal()
 }
 
 // summarizeReasons renders a push-refusal histogram as a single compact
@@ -613,48 +823,6 @@ func summarizeReasons(m map[string]int) string {
 	return strings.Join(parts, ", ")
 }
 
-// CompactScopes opens a session and runs best-effort compaction across
-// every scope chain. Split out of RunSync so the single-primary entry
-// point (RunSyncPrimary) runs it once, only after the primary has accepted
-// this round — see the comment at the call site above.
-func CompactScopes(ctx context.Context) error {
-	s, err := Open(ctx)
-	if err != nil {
-		return err
-	}
-	defer s.Close()
-	s.compactAfterSync()
-	return nil
-}
-
-// compactAfterSync runs CompactScope on every scope chain file.
-//
-// User-chain compaction is intentionally NOT triggered automatically: the
-// user chain is small (one auth.set per credential rotation) and our current
-// ReplayUser requires events[0].Seq == 0. A future revision can add
-// compacted-mode user-chain replay; until then we keep history.
-func (s *Session) compactAfterSync() {
-	for sid := range s.Body.Scopes {
-		st, err := replayScopeViaAgent(s.Paths.ScopeChain(proto.MustParseScopeID(sid)), s.UserSuperPub, s.UserX25519Pub, s.Agent)
-		if err != nil || st == nil {
-			continue
-		}
-		// chain.CompactScope derives the live event-id set from the
-		// post-replay snapshot (st.SecretIndex). It refuses to compact
-		// if the snapshot is stale relative to the chain file, so a
-		// silent-drop bug here would surface as an error.
-		changed, dropped, err := chain.CompactScope(s.Paths.ScopeChain(proto.MustParseScopeID(sid)), st)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "  ↳ compact %s skipped: %v\n", shortScopeID(sid), err)
-			continue
-		}
-		if changed {
-			fmt.Fprintf(os.Stderr, "  ↳ compacted scope %s (dropped %d superseded set(s))\n",
-				shortScopeID(sid), len(dropped))
-		}
-	}
-}
-
 // syncHTTPClient is the shared client for every fd0-server round-trip
 // (sync POST + translog pulls). It bounds the failure modes that made a
 // stalled server hang `fd0 sync` indefinitely: a dead connection
@@ -669,8 +837,11 @@ var syncHTTPClient = &http.Client{
 		ResponseHeaderTimeout: 30 * time.Second,
 		IdleConnTimeout:       90 * time.Second,
 	},
-	Timeout: 5 * time.Minute,
+	CheckRedirect: httpguard.RejectRedirect,
+	Timeout:       5 * time.Minute,
 }
+
+const maxSyncResponseBytes = 64 << 20
 
 // signedPOST performs an authenticated POST against the fd0-server.
 //
@@ -740,11 +911,10 @@ func (s *Session) signedPOST(ctx context.Context, endpoint string, body []byte) 
 		if resp.StatusCode != http.StatusTooManyRequests || attempt >= maxAttempts-1 {
 			return resp, nil
 		}
-		// Rate-limited and attempts remain: drain+close the body, wait
+		// Rate-limited and attempts remain: close the body, wait
 		// out Retry-After (server sends integer seconds; default 1s,
 		// capped), then re-sign and retry.
 		wait := retryAfterDelay(resp.Header.Get("Retry-After"), maxWait)
-		_, _ = io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 		select {
 		case <-time.After(wait):

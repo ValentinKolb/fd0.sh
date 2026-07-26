@@ -32,6 +32,10 @@ type Config struct {
 	Version        string
 	Flavor         string
 	YubikeyEnabled bool
+	// StartedBy is reported verbatim in StatusResp so clients can tell an
+	// agent they supervise from one somebody else started. Use
+	// StartedByFromEnv to fill it.
+	StartedBy string
 	// Scheduler is optional. When set, the agent runs auto-sync per its
 	// configuration and triggers an immediate sync after every unlock.
 	Scheduler *Scheduler
@@ -45,6 +49,14 @@ type Config struct {
 	NewYubikeyResolver func(pin []byte) vault.MethodResolver
 }
 
+// ErrAlreadyServing reports that another fd0-agent already owns this home's
+// socket, so this process did not start and did not touch anything. It is a
+// classification of the refusal below, never a licence to override it: a
+// supervisor that only wants *an* agent for the home (the desktop service, a
+// systemd unit) can treat it as "nothing to do" instead of a failure, and so
+// stop respawning itself into the same conflict.
+var ErrAlreadyServing = errors.New("agent: another agent is already serving this home")
+
 // Server is the running agent. Construct with Listen.
 type Server struct {
 	cfg       Config
@@ -53,23 +65,30 @@ type Server struct {
 	scheduler *Scheduler
 	log       *slog.Logger
 
-	mu           sync.Mutex
-	superPriv    *crypto.Secret // 64 B Ed25519
-	x25519Priv   *crypto.Secret // 32 B
-	unlockKey    *crypto.Secret // 32 B K_unlock for the active wrap (used to derive payloadKey + AddWrap source)
-	payloadKey   *crypto.Secret // 32 B stable across re-seals; needed by SaveBody/AddWrap/RemoveWrap
-	unlockMID    string         // method_id of the active wrap
-	unlockMType  string         // method_type of the active wrap
-	unlockPP     []byte         // public_params of the active wrap
-	userSuperPub []byte
-	redactedBody []byte // cached cbor(VaultBody) with super_priv zeroed
-	unlockedAt   time.Time
-	lastReq      time.Time
+	mu            sync.Mutex
+	superPriv     *crypto.Secret // 64 B Ed25519
+	x25519Priv    *crypto.Secret // 32 B
+	unlockKey     *crypto.Secret // 32 B K_unlock for the active wrap (used to derive payloadKey + AddWrap source)
+	payloadKey    *crypto.Secret // 32 B stable across re-seals; needed by SaveBody/AddWrap/RemoveWrap
+	unlockMID     string         // method_id of the active wrap
+	unlockMType   string         // method_type of the active wrap
+	unlockPP      []byte         // public_params of the active wrap
+	userSuperPub  []byte
+	redactedBody  []byte // cached cbor(VaultBody) with super_priv zeroed
+	unlockedAt    time.Time
+	lastActivity  time.Time
+	lifecycleWake chan struct{}
 }
 
 // Listen creates ~/.fd0/agent.sock and accepts connections. The directory
 // must already exist with mode 0700; we additionally chmod the socket to 0600.
 func Listen(paths fdhome.Paths, cfg Config) (*Server, error) {
+	if cfg.IdleTimeout < 0 {
+		return nil, errors.New("agent: idle timeout must not be negative")
+	}
+	if cfg.MaxLifetime < 0 {
+		return nil, errors.New("agent: max lifetime must not be negative")
+	}
 	if cfg.IdleTimeout == 0 {
 		cfg.IdleTimeout = 5 * time.Minute
 	}
@@ -88,7 +107,7 @@ func Listen(paths fdhome.Paths, cfg Config) (*Server, error) {
 	// mlocked, plus duplicate-state confusion). Detect via PID file +
 	// liveness check; only proceed if the prior agent is truly gone.
 	if alive, oldPID := isPriorAgentAlive(paths.AgentPID); alive {
-		return nil, fmt.Errorf("agent: already running as pid %d (delete %s if you're sure it's dead)", oldPID, paths.AgentPID)
+		return nil, fmt.Errorf("%w (pid %d; delete %s if you're sure it's dead)", ErrAlreadyServing, oldPID, paths.AgentPID)
 	}
 	// SECURITY (codex audit 🔴 server.go:82): if the PID file is
 	// missing/corrupt/stale BUT an old agent is still listening
@@ -97,8 +116,8 @@ func Listen(paths fdhome.Paths, cfg Config) (*Server, error) {
 	// (still holding super_priv mlocked) AND starting a duplicate.
 	// Probe the socket; fail if anything answers.
 	if probeAgentSocket(paths.AgentSock) {
-		return nil, fmt.Errorf("agent: another process is listening on %s but %s is missing/stale; remove the socket only if you're sure no agent is running",
-			paths.AgentSock, paths.AgentPID)
+		return nil, fmt.Errorf("%w: a process is listening on %s but %s is missing/stale; remove the socket only if you're sure no agent is running",
+			ErrAlreadyServing, paths.AgentSock, paths.AgentPID)
 	}
 	// Stale socket from a crashed agent: safe to unlink (no listener).
 	_ = os.Remove(paths.AgentSock)
@@ -121,12 +140,12 @@ func Listen(paths fdhome.Paths, cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("agent: write PID file %s: %w", paths.AgentPID, err)
 	}
 	s := &Server{
-		cfg:       cfg,
-		paths:     paths,
-		listener:  l,
-		scheduler: cfg.Scheduler,
-		log:       cfg.Logger,
-		lastReq:   time.Now(),
+		cfg:           cfg,
+		paths:         paths,
+		listener:      l,
+		scheduler:     cfg.Scheduler,
+		log:           cfg.Logger,
+		lifecycleWake: make(chan struct{}, 1),
 	}
 	return s, nil
 }
@@ -157,33 +176,117 @@ func (s *Server) Close() {
 	s.lock()
 }
 
-// lifecycleTimer expires the unlocked state after idle/max-lifetime.
+// lifecycleTimer expires the unlocked state at the earliest configured
+// deadline. Activity wakes the loop so a pushed-out idle deadline is observed
+// without polling, while max-lifetime always remains absolute.
 func (s *Server) lifecycleTimer(ctx context.Context) {
-	t := time.NewTicker(30 * time.Second)
-	defer t.Stop()
+	var timer *time.Timer
+	var timerC <-chan time.Time
+	stopTimer := func() {
+		if timer == nil {
+			return
+		}
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+	}
+	resetTimer := func() {
+		deadline, ok := s.nextLifecycleDeadline()
+		if !ok {
+			stopTimer()
+			timerC = nil
+			return
+		}
+		delay := time.Until(deadline)
+		if delay < 0 {
+			delay = 0
+		}
+		if timer == nil {
+			timer = time.NewTimer(delay)
+		} else {
+			stopTimer()
+			timer.Reset(delay)
+		}
+		timerC = timer.C
+	}
+	resetTimer()
+	defer stopTimer()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
-			s.mu.Lock()
-			if s.superPriv == nil {
-				s.mu.Unlock()
-				continue
-			}
-			now := time.Now()
-			idle := now.Sub(s.lastReq)
-			alive := now.Sub(s.unlockedAt)
-			s.mu.Unlock()
-			if idle > s.cfg.IdleTimeout {
-				s.log.Info("agent: idle timeout, locking")
-				s.lock()
-			}
-			if alive > s.cfg.MaxLifetime {
-				s.log.Info("agent: max lifetime, locking")
-				s.lock()
-			}
+		case <-s.lifecycleWake:
+			resetTimer()
+		case now := <-timerC:
+			s.enforceLifetime(now)
+			resetTimer()
 		}
+	}
+}
+
+func (s *Server) nextLifecycleDeadline() (time.Time, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.superPriv == nil || s.unlockedAt.IsZero() || s.lastActivity.IsZero() {
+		return time.Time{}, false
+	}
+	idleDeadline := s.lastActivity.Add(s.cfg.IdleTimeout)
+	maxDeadline := s.unlockedAt.Add(s.cfg.MaxLifetime)
+	if maxDeadline.Before(idleDeadline) {
+		return maxDeadline, true
+	}
+	return idleDeadline, true
+}
+
+func (s *Server) enforceLifetime(now time.Time) bool {
+	reason := s.expireUnlocked(now)
+	if reason == "" {
+		return false
+	}
+	s.log.Info("agent: " + reason + ", locking")
+	s.signalLifecycle()
+	return true
+}
+
+func (s *Server) expireUnlocked(now time.Time) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.superPriv == nil {
+		return ""
+	}
+	if !now.Before(s.unlockedAt.Add(s.cfg.MaxLifetime)) {
+		s.lockHeld()
+		return "max lifetime"
+	}
+	if !now.Before(s.lastActivity.Add(s.cfg.IdleTimeout)) {
+		s.lockHeld()
+		return "idle timeout"
+	}
+	return ""
+}
+
+func (s *Server) signalLifecycle() {
+	if s.lifecycleWake == nil {
+		return
+	}
+	select {
+	case s.lifecycleWake <- struct{}{}:
+	default:
+	}
+}
+
+func (s *Server) markActivity(now time.Time) {
+	s.mu.Lock()
+	updated := s.superPriv != nil
+	if updated {
+		s.lastActivity = now
+	}
+	s.mu.Unlock()
+	if updated {
+		s.signalLifecycle()
 	}
 }
 
@@ -199,10 +302,16 @@ func (s *Server) handleConn(ctx context.Context, c net.Conn) {
 	_ = WriteFrame(c, resp)
 }
 
-func (s *Server) dispatch(ctx context.Context, req *Request) *Response {
-	s.mu.Lock()
-	s.lastReq = time.Now()
-	s.mu.Unlock()
+func (s *Server) dispatch(ctx context.Context, req *Request) (resp *Response) {
+	// Check both deadlines before serving any operation. A request arriving
+	// after expiration must not revive or use an expired session while waiting
+	// for the lifecycle goroutine to run.
+	s.enforceLifetime(time.Now())
+	defer func() {
+		if resp != nil && resp.Err == "" && refreshesIdleDeadline(req.Op) {
+			s.markActivity(time.Now())
+		}
+	}()
 	switch req.Op {
 	case OpStatus:
 		return s.handleStatus()
@@ -256,14 +365,28 @@ func (s *Server) dispatch(ctx context.Context, req *Request) *Response {
 	}
 }
 
+func refreshesIdleDeadline(op uint8) bool {
+	switch op {
+	case OpSign, OpOpenSeal, OpReSeal, OpGetBody, OpRecoveryExport,
+		OpEncryptSuperPriv, OpAddWrap, OpRemoveWrap:
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Server) handleStatus() *Response {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	st := &StatusResp{
-		Unlocked:       s.superPriv != nil,
-		Version:        s.cfg.Version,
-		Flavor:         s.cfg.Flavor,
-		YubikeyEnabled: s.cfg.YubikeyEnabled,
+		Unlocked:          s.superPriv != nil,
+		Protocol:          ProtocolVersion,
+		StartedBy:         s.cfg.StartedBy,
+		Version:           s.cfg.Version,
+		Flavor:            s.cfg.Flavor,
+		YubikeyEnabled:    s.cfg.YubikeyEnabled,
+		IdleTimeoutMillis: s.cfg.IdleTimeout.Milliseconds(),
+		MaxLifetimeMillis: s.cfg.MaxLifetime.Milliseconds(),
 	}
 	if st.Unlocked {
 		st.SinceUnix = s.unlockedAt.Unix()
@@ -319,7 +442,10 @@ func (s *Server) handleUnlock(u *UnlockReq) *Response {
 		return errResp(fmt.Sprintf("unsupported method_type %q", u.MethodType))
 	}
 
-	v, err := vault.Read(u.VaultPath)
+	if err := s.validateCanonicalPaths(u.VaultPath, u.UserChainPath); err != nil {
+		return errResp(err.Error())
+	}
+	v, err := vault.Read(s.paths.Vault)
 	if err != nil {
 		return errResp(err.Error())
 	}
@@ -327,6 +453,7 @@ func (s *Server) handleUnlock(u *UnlockReq) *Response {
 	if err != nil {
 		return errResp(err.Error())
 	}
+	defer wipeOpenResult(&res)
 	body := res.Body
 	if len(body.SuperPriv) != ed25519.PrivateKeySize {
 		crypto.Wipe(res.UnlockKey)
@@ -340,73 +467,65 @@ func (s *Server) handleUnlock(u *UnlockReq) *Response {
 		return errResp("vault: super_priv pub != user_super_pub")
 	}
 
-	// SECURITY: rollback-detection (codex audit 🔴). The vault file
-	// is mutable storage; the user.cbor chain is append-only and
-	// every entry is signed. If an attacker rolls back vault.enc to
-	// an older snapshot (e.g. one where a now-revoked credential
-	// was still active), the older vault still decrypts cleanly and
-	// the agent would otherwise cache super_priv under the revoked
-	// credential. Compare body.AuthTip against the live chain tip;
-	// mismatch ⇒ refuse.
-	if u.UserChainPath != "" {
-		st, rerr := chain.ReplayUser(u.UserChainPath)
-		if rerr != nil {
-			crypto.Wipe(res.UnlockKey)
-			crypto.Wipe(res.PayloadKey)
-			return errResp(fmt.Sprintf("vault: replay user chain for rollback check: %v", rerr))
-		}
-		// st == nil means "no user chain yet" (file missing or
-		// empty). For a freshly-`init`'d vault this is fine; for a
-		// vault that has gone through `auth add` etc, body.AuthTip
-		// would be non-zero, and a missing chain is a rollback.
-		var liveSeq uint64
-		var liveHash []byte
-		if st != nil {
-			liveSeq = st.TipSeq
-			liveHash = st.TipHash
-		}
-		// SECURITY (codex security audit 🟠 vault.go:253): legacy
-		// vaults from before the AuthTip field was added decode
-		// with AuthTip = zero (CBOR omits absent fields). If an
-		// attacker rolls back to such a vault snapshot AND deletes
-		// the user chain, the previous check would see (0, nil) ==
-		// (0, nil) and unlock. Properly init'd modern vaults have
-		// AuthTip.Hash == HashPrefix(genesis_event), which is
-		// always exactly 32 bytes. Reject any vault whose AuthTip
-		// hash is missing/short — it can't be a legitimately-
-		// initialised v1 vault.
-		if len(body.AuthTip.Hash) != 32 {
-			crypto.Wipe(res.UnlockKey)
-			crypto.Wipe(res.PayloadKey)
-			return errResp(fmt.Sprintf(
-				"vault: AuthTip.Hash is %d bytes (want 32) — possible legacy/rolled-back vault; refusing to unlock",
-				len(body.AuthTip.Hash),
-			))
-		}
-		if liveSeq != body.AuthTip.Seq || !bytes.Equal(liveHash, body.AuthTip.Hash) {
-			if st == nil || st.TipSeq <= body.AuthTip.Seq {
-				crypto.Wipe(res.UnlockKey)
-				crypto.Wipe(res.PayloadKey)
-				return errResp(fmt.Sprintf(
-					"vault: ROLLBACK DETECTED — vault auth_tip (seq=%d) does not match user chain tip (seq=%d); refusing to unlock with potentially revoked credentials",
-					body.AuthTip.Seq, liveSeq,
-				))
-			}
-			if err := verifyChainAheadUnlock(st, v.UserSuperPub, body.SuperPriv, res.UsedWrap, res.UnlockKey); err != nil {
-				crypto.Wipe(res.UnlockKey)
-				crypto.Wipe(res.PayloadKey)
-				return errResp(fmt.Sprintf(
-					"vault: ROLLBACK DETECTED — vault auth_tip (seq=%d) is behind user chain tip (seq=%d) and used auth method is not live: %v",
-					body.AuthTip.Seq, liveSeq, err,
-				))
-			}
-		}
+	// The canonical signed user chain is authoritative for every unlock, not
+	// only when its tip is ahead of the vault. This rejects revoked methods
+	// and orphan wraps even when a stale vault has an internally consistent
+	// AuthTip.
+	st, rerr := chain.ReplayUser(s.paths.UserChain)
+	if rerr != nil {
+		crypto.Wipe(res.UnlockKey)
+		crypto.Wipe(res.PayloadKey)
+		return errResp(fmt.Sprintf("vault: replay canonical user chain: %v", rerr))
+	}
+	if st == nil || st.LatestAuthSet == nil {
+		crypto.Wipe(res.UnlockKey)
+		crypto.Wipe(res.PayloadKey)
+		return errResp("vault: canonical user chain is missing; refusing to unlock")
+	}
+	if !bytes.Equal(st.UserSuperPub, v.UserSuperPub) {
+		crypto.Wipe(res.UnlockKey)
+		crypto.Wipe(res.PayloadKey)
+		return errResp("vault: canonical user chain belongs to a different identity")
+	}
+	if len(body.AuthTip.Hash) != 32 {
+		crypto.Wipe(res.UnlockKey)
+		crypto.Wipe(res.PayloadKey)
+		return errResp(fmt.Sprintf(
+			"vault: AuthTip.Hash is %d bytes (want 32) — possible legacy/rolled-back vault; refusing to unlock",
+			len(body.AuthTip.Hash),
+		))
+	}
+	if st.TipSeq < body.AuthTip.Seq ||
+		(st.TipSeq == body.AuthTip.Seq && !bytes.Equal(st.TipHash, body.AuthTip.Hash)) {
+		crypto.Wipe(res.UnlockKey)
+		crypto.Wipe(res.PayloadKey)
+		return errResp(fmt.Sprintf(
+			"vault: ROLLBACK DETECTED — vault auth_tip (seq=%d) does not match canonical user chain tip (seq=%d)",
+			body.AuthTip.Seq, st.TipSeq,
+		))
+	}
+	if err := verifyLiveAuthMethod(st, v.UserSuperPub, body.SuperPriv, res.UsedWrap, res.UnlockKey); err != nil {
+		crypto.Wipe(res.UnlockKey)
+		crypto.Wipe(res.PayloadKey)
+		return errResp(fmt.Sprintf("vault: used auth method is not active in the canonical user chain: %v", err))
 	}
 
 	x, err := crypto.EdPrivToX25519(body.SuperPriv)
 	if err != nil {
 		crypto.Wipe(res.UnlockKey)
 		crypto.Wipe(res.PayloadKey)
+		return errResp(err.Error())
+	}
+	// Finish all fallible preparation before replacing the live session. A
+	// failed unlock response must never leave newly-installed keys behind.
+	redacted := *body
+	redacted.SuperPriv = bytes.Repeat([]byte{0}, ed25519.PrivateKeySize)
+	rb, err := proto.Marshal(redacted)
+	if err != nil {
+		crypto.Wipe(x)
+		crypto.Wipe(res.UnlockKey)
+		crypto.Wipe(res.PayloadKey)
+		crypto.Wipe(body.SuperPriv)
 		return errResp(err.Error())
 	}
 	s.mu.Lock()
@@ -430,15 +549,9 @@ func (s *Server) handleUnlock(u *UnlockReq) *Response {
 	s.unlockMType = res.UsedWrap.MethodType
 	s.unlockPP = append([]byte(nil), res.UsedWrap.PublicParams...)
 	s.userSuperPub = append([]byte(nil), v.UserSuperPub...)
-	s.unlockedAt = time.Now()
-	// Build redacted body: same shape, super_priv replaced with zeros.
-	redacted := *body
-	redacted.SuperPriv = bytes.Repeat([]byte{0}, ed25519.PrivateKeySize)
-	rb, err := proto.Marshal(redacted)
-	if err != nil {
-		s.mu.Unlock()
-		return errResp(err.Error())
-	}
+	now := time.Now()
+	s.unlockedAt = now
+	s.lastActivity = now
 	// SECURITY (codex audit 🟡 server.go:305): wipe any prior
 	// redactedBody before overwriting. The "redacted" body still
 	// contains OEKs and other sensitive scope data; repeated
@@ -448,6 +561,7 @@ func (s *Server) handleUnlock(u *UnlockReq) *Response {
 	}
 	s.redactedBody = rb
 	s.mu.Unlock()
+	s.signalLifecycle()
 	// Zero the original body (best-effort; CBOR decode allocated copies).
 	crypto.Wipe(body.SuperPriv)
 	if s.scheduler != nil && s.scheduler.cfg.OnUnlock {
@@ -457,6 +571,17 @@ func (s *Server) handleUnlock(u *UnlockReq) *Response {
 		RedactedBody: rb,
 		UserSuperPub: append([]byte(nil), v.UserSuperPub...),
 	}}
+}
+
+func wipeOpenResult(res *vault.OpenResult) {
+	if res == nil {
+		return
+	}
+	crypto.Wipe(res.UnlockKey)
+	crypto.Wipe(res.PayloadKey)
+	if res.Body != nil {
+		crypto.Wipe(res.Body.SuperPriv)
+	}
 }
 
 func (s *Server) handleSign(sr *SignReq) *Response {
@@ -510,6 +635,9 @@ func (s *Server) handleReSeal(r *ReSealReq) *Response {
 	if s.superPriv == nil || s.payloadKey == nil {
 		return errResp("locked")
 	}
+	if err := s.validateCanonicalVaultPath(r.VaultPath); err != nil {
+		return errResp(err.Error())
+	}
 	body, err := s.unredact(r.RedactedBody)
 	if err != nil {
 		return errResp(err.Error())
@@ -518,7 +646,7 @@ func (s *Server) handleReSeal(r *ReSealReq) *Response {
 	pk := make([]byte, 32)
 	copy(pk, s.payloadKey.Bytes())
 	defer crypto.Wipe(pk)
-	if err := vault.SaveBody(r.VaultPath, s.userSuperPub, body, pk); err != nil {
+	if err := vault.SaveBody(s.paths.Vault, s.userSuperPub, body, pk); err != nil {
 		return errResp(err.Error())
 	}
 	if s.redactedBody != nil {
@@ -632,6 +760,9 @@ func (s *Server) handleAddWrap(r *AddWrapReq) *Response {
 	if s.superPriv == nil || s.payloadKey == nil {
 		return errResp("locked")
 	}
+	if err := s.validateCanonicalVaultPath(r.VaultPath); err != nil {
+		return errResp(err.Error())
+	}
 	if r.MethodID == "" || r.MethodType == "" || len(r.UnlockKey) != 32 {
 		return errResp("add_wrap: missing method_id/method_type/unlock_key")
 	}
@@ -649,7 +780,19 @@ func (s *Server) handleAddWrap(r *AddWrapReq) *Response {
 		PublicParams: r.PublicParams,
 		UnlockKey:    r.UnlockKey,
 	}
-	if err := vault.AddWrap(r.VaultPath, s.userSuperPub, body, pk, wrap); err != nil {
+	st, err := chain.ReplayUser(s.paths.UserChain)
+	if err != nil {
+		return errResp(fmt.Sprintf("add_wrap: replay canonical user chain: %v", err))
+	}
+	candidate := &proto.WrappedKey{
+		MethodID:     r.MethodID,
+		MethodType:   r.MethodType,
+		PublicParams: r.PublicParams,
+	}
+	if err := verifyLiveAuthMethod(st, s.userSuperPub, body.SuperPriv, candidate, r.UnlockKey); err != nil {
+		return errResp(fmt.Sprintf("add_wrap: method is not active in the canonical user chain: %v", err))
+	}
+	if err := vault.AddWrap(s.paths.Vault, s.userSuperPub, body, pk, wrap); err != nil {
 		return errResp(err.Error())
 	}
 	return &Response{AddWrap: &AddWrapResp{}}
@@ -664,6 +807,9 @@ func (s *Server) handleRemoveWrap(r *RemoveWrapReq) *Response {
 	if s.superPriv == nil || s.payloadKey == nil {
 		return errResp("locked")
 	}
+	if err := s.validateCanonicalVaultPath(r.VaultPath); err != nil {
+		return errResp(err.Error())
+	}
 	if r.MethodID == s.unlockMID {
 		return errResp("remove_wrap: cannot remove the currently-active method (lock first, unlock with another method, then retry)")
 	}
@@ -675,7 +821,7 @@ func (s *Server) handleRemoveWrap(r *RemoveWrapReq) *Response {
 	pk := make([]byte, 32)
 	copy(pk, s.payloadKey.Bytes())
 	defer crypto.Wipe(pk)
-	if err := vault.RemoveWrap(r.VaultPath, s.userSuperPub, body, pk, r.MethodID); err != nil {
+	if err := vault.RemoveWrap(s.paths.Vault, s.userSuperPub, body, pk, r.MethodID); err != nil {
 		return errResp(err.Error())
 	}
 	return &Response{RemoveWrap: &RemoveWrapResp{}}
@@ -684,7 +830,12 @@ func (s *Server) handleRemoveWrap(r *RemoveWrapReq) *Response {
 // lock zeroizes super_priv, x25519_priv, and the cached body.
 func (s *Server) lock() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lockHeld()
+	s.mu.Unlock()
+	s.signalLifecycle()
+}
+
+func (s *Server) lockHeld() {
 	if s.superPriv != nil {
 		s.superPriv.Destroy()
 		s.superPriv = nil
@@ -710,11 +861,38 @@ func (s *Server) lock() {
 	s.unlockPP = nil
 	s.userSuperPub = nil
 	s.unlockedAt = time.Time{}
+	s.lastActivity = time.Time{}
 }
 
-func verifyChainAheadUnlock(st *chain.UserState, userSuperPub, superPriv []byte, used *proto.WrappedKey, unlockKey []byte) error {
+func (s *Server) validateCanonicalPaths(vaultPath, userChainPath string) error {
+	if err := s.validateCanonicalVaultPath(vaultPath); err != nil {
+		return err
+	}
+	if s.paths.UserChain == "" {
+		return errors.New("agent: canonical user chain path is unavailable")
+	}
+	if userChainPath != "" && userChainPath != s.paths.UserChain {
+		return errors.New("agent: refusing caller-selected user chain path")
+	}
+	return nil
+}
+
+func (s *Server) validateCanonicalVaultPath(vaultPath string) error {
+	if s.paths.Vault == "" {
+		return errors.New("agent: canonical vault path is unavailable")
+	}
+	if vaultPath != "" && vaultPath != s.paths.Vault {
+		return errors.New("agent: refusing caller-selected vault path")
+	}
+	return nil
+}
+
+func verifyLiveAuthMethod(st *chain.UserState, userSuperPub, superPriv []byte, used *proto.WrappedKey, unlockKey []byte) error {
 	if st == nil || st.LatestAuthSet == nil {
 		return errors.New("missing latest auth.set")
+	}
+	if !bytes.Equal(st.UserSuperPub, userSuperPub) {
+		return errors.New("auth.set belongs to a different identity")
 	}
 	if used == nil {
 		return errors.New("missing used wrap")

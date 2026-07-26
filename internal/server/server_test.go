@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -37,6 +38,113 @@ func newTestServer(t *testing.T) (*Server, *httptest.Server) {
 		_ = srv.Close()
 	})
 	return srv, ts
+}
+
+func TestBoundedPullLimit(t *testing.T) {
+	tests := []struct {
+		name       string
+		requested  int
+		scopeCount int
+		want       int
+	}{
+		{name: "default", requested: 0, scopeCount: 1, want: 100},
+		{name: "single scope maximum", requested: 1000, scopeCount: 1, want: 1000},
+		{name: "aggregate cap", requested: 1000, scopeCount: 256, want: 4},
+		{name: "small request preserved", requested: 3, scopeCount: 256, want: 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := boundedPullLimit(tt.requested, tt.scopeCount, 1024); got != tt.want {
+				t.Fatalf("boundedPullLimit() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLegacyMembershipDiscoveryFailsInsteadOfTruncating(t *testing.T) {
+	if !membershipPaginationRequired(0, "scope:s_0256") {
+		t.Fatal("legacy client would silently truncate membership discovery")
+	}
+	if membershipPaginationRequired(0, "") {
+		t.Fatal("single-page legacy membership discovery rejected")
+	}
+	if membershipPaginationRequired(32, "scope:s_0032") {
+		t.Fatal("pagination-capable client rejected")
+	}
+}
+
+func TestClientIPRequiresTrustedProxy(t *testing.T) {
+	s := &Server{}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "198.51.100.10:1234"
+	req.Header.Set("X-Forwarded-For", "203.0.113.20")
+	if got := s.clientIP(req); got != "198.51.100.10" {
+		t.Fatalf("untrusted forwarded address accepted: %q", got)
+	}
+}
+
+func TestPrunePeersRevokesOnlyUnconfiguredPeers(t *testing.T) {
+	srv, _ := newTestServer(t)
+	ctx := context.Background()
+	keepURL := "https://keep.example"
+	removeURL := "https://remove.example"
+	if err := srv.store.UpsertPeer(ctx, keepURL, bytes.Repeat([]byte{1}, 32), "keep"); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.UpsertPeer(ctx, removeURL, bytes.Repeat([]byte{2}, 32), "remove"); err != nil {
+		t.Fatal(err)
+	}
+	srv.cfg.Peers = []string{keepURL}
+
+	if err := srv.prunePeers(ctx); err != nil {
+		t.Fatal(err)
+	}
+	peers, err := srv.store.ListPeers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(peers) != 1 || peers[0].URL != keepURL {
+		t.Fatalf("peers after prune = %+v, want only %s", peers, keepURL)
+	}
+}
+
+func TestPrunePeersFailsClosedOnStoreError(t *testing.T) {
+	srv, ts := newTestServer(t)
+	ts.Close()
+	if err := srv.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.prunePeers(context.Background()); err == nil {
+		t.Fatal("prunePeers succeeded with an unavailable authorization store")
+	}
+}
+
+func TestClientIPAcceptsSingleAddressFromTrustedProxy(t *testing.T) {
+	_, network, err := net.ParseCIDR("10.0.0.0/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{trustedProxies: []*net.IPNet{network}}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "10.0.0.5:1234"
+	req.Header.Set("X-Forwarded-For", "203.0.113.20")
+	if got := s.clientIP(req); got != "203.0.113.20" {
+		t.Fatalf("trusted forwarded address ignored: %q", got)
+	}
+	req.Header.Set("X-Forwarded-For", "203.0.113.20, 10.0.0.5")
+	if got := s.clientIP(req); got != "10.0.0.5" {
+		t.Fatalf("forwarding chain should fail closed to proxy IP: %q", got)
+	}
+}
+
+func TestNewRejectsInvalidTrustedProxyCIDR(t *testing.T) {
+	_, err := New(Config{
+		DBPath:            filepath.Join(t.TempDir(), "fd0.db"),
+		TrustedProxyCIDRs: []string{"not-a-cidr"},
+	})
+	if err == nil {
+		t.Fatal("invalid trusted proxy CIDR accepted")
+	}
 }
 
 func TestRegisterAndAppend(t *testing.T) {
@@ -89,9 +197,9 @@ func TestRegisterAndAppend(t *testing.T) {
 	}
 	rb2, _ := io.ReadAll(r2.Body)
 	var got struct {
-		UserSuperPub []byte `cbor:"user_super_pub"`
+		UserSuperPub []byte          `cbor:"user_super_pub"`
 		Event        proto.UserEvent `cbor:"event"`
-		ChainTipSeq  uint64 `cbor:"chain_tip_seq"`
+		ChainTipSeq  uint64          `cbor:"chain_tip_seq"`
 	}
 	if err := proto.Unmarshal(rb2, &got); err != nil {
 		t.Fatal(err)

@@ -7,6 +7,7 @@
 #
 #   umask 077
 #   printf 'SERVER_URL=%s\n' 'https://api.fd0.sh' > .env
+#   printf 'SERVER_PUB=%s\n' '<64 hex characters obtained out of band>' >> .env
 #   printf 'METRICS_TOKEN=%s\n' "$(openssl rand -hex 32)" >> .env
 #   case "$(uname -m)" in arm64|aarch64) printf 'FD0_WITNESS_IMAGE=%s\n' 'ghcr.io/valentinkolb/fd0-witness:latest-arm64' >> .env ;; esac
 #   docker compose up -d
@@ -15,11 +16,10 @@
 #
 #   curl http://localhost:4049/health
 #
-# First run TOFU-pins the server pubkey from /v1/server-info. Verify
-# it matches the server's published pubkey out-of-band, otherwise a
-# MITM at first contact pins the wrong key. For an independent
-# witness watching a server you don't operate, set FD0_WITNESS_SERVER_PUB
-# explicitly instead.
+# A fresh witness requires the server's public key from an independent
+# channel. A self-hosted server prints `server_pub_hex` at startup.
+# Do not derive SERVER_PUB from the same first network connection the
+# witness is meant to monitor.
 
 services:
   fd0-witness:
@@ -34,6 +34,9 @@ services:
       # Required — the fd0-server this witness watches.
       FD0_WITNESS_SERVER_URL: ${SERVER_URL:?set SERVER_URL (e.g. https://api.fd0.sh)}
 
+      # Required — 32-byte ed25519 server public key as 64 hex characters.
+      FD0_WITNESS_SERVER_PUB: ${SERVER_PUB:?set SERVER_PUB from an independent channel}
+
       # Required — guards GET /metrics. Generate with `openssl rand -hex 32`.
       FD0_WITNESS_METRICS_TOKEN: ${METRICS_TOKEN:?set METRICS_TOKEN}
 
@@ -43,8 +46,7 @@ services:
       # FD0_WITNESS_KEY: /data/cosign.key             # auto-generated
       # FD0_WITNESS_POLL_INTERVAL: "30s"
       # FD0_WITNESS_AUTO_DISCOVER: "true"             # poll /v1/chains every round
-      # FD0_WITNESS_PIN_ON_FIRST_USE: "true"          # TOFU pin from /v1/server-info
-      # FD0_WITNESS_SERVER_PUB: ""                    # hex (32 bytes); skips TOFU
+      # FD0_WITNESS_PIN_ON_FIRST_USE: "false"         # true is UNSAFE development-only TOFU
       # FD0_WITNESS_CHAINS: ""                        # CSV "user:abc,scope:s_xyz"; skips auto-discover
     volumes:
       - fd0-witness-data:/data

@@ -27,11 +27,6 @@ func RunRecoveryExport(ctx context.Context, outPath string) error {
 	if _, err := os.Stat(outPath); err == nil {
 		return fmt.Errorf("refuse to overwrite %s", outPath)
 	}
-	s, err := Open(ctx)
-	if err != nil {
-		return err
-	}
-	defer s.Close()
 	pass, err := ReadPassphraseConfirm(
 		"Recovery passphrase: ",
 		"Confirm recovery passphrase: ",
@@ -40,21 +35,46 @@ func RunRecoveryExport(ctx context.Context, outPath string) error {
 		return err
 	}
 	defer crypto.Wipe(pass)
-	salt, err := crypto.RandomBytes(16)
+	out, err := ExportRecoveryWithPassphrase(ctx, pass)
 	if err != nil {
 		return err
+	}
+	if err := os.WriteFile(outPath, out, 0o600); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "✓ recovery file written to %s\n", outPath)
+	fmt.Fprintln(os.Stderr, "  Store it offline. Anyone with the file AND the")
+	fmt.Fprintln(os.Stderr, "  recovery passphrase can impersonate this identity.")
+	return nil
+}
+
+// ExportRecoveryWithPassphrase returns an encrypted RecoveryFile without
+// prompting or writing it. The caller owns pass and the returned bytes.
+func ExportRecoveryWithPassphrase(ctx context.Context, pass []byte) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if len(pass) == 0 {
+		return nil, errors.New("recovery passphrase cannot be empty")
+	}
+	s, err := Open(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+	salt, err := crypto.RandomBytes(16)
+	if err != nil {
+		return nil, err
 	}
 	nonce, err := crypto.Nonce12()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	kRecovery, err := crypto.DeriveKey(pass, salt, crypto.DefaultArgon2)
 	if err != nil {
-		return fmt.Errorf("derive K_recovery: %w", err)
+		return nil, fmt.Errorf("derive K_recovery: %w", err)
 	}
 	defer crypto.Wipe(kRecovery)
-	// AEAD over super_priv with AAD = "fd0-recovery-key-v1" || user_super_pub
-	aad := append([]byte(proto.DomainRecoveryKey), s.UserSuperPub...)
 	// We need super_priv plaintext to encrypt. The agent doesn't expose it
 	// directly; for export the agent provides a one-shot encrypted blob via
 	// a domain-bound Sign on the AAD followed by AEAD performed locally is
@@ -62,7 +82,7 @@ func RunRecoveryExport(ctx context.Context, outPath string) error {
 	// the recovery ciphertext.
 	enc, err := s.Agent.RecoveryExport(kRecovery, salt, nonce, s.UserSuperPub)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	rf := &proto.RecoveryFile{
 		Magic:        proto.RecoveryMagic,
@@ -79,15 +99,44 @@ func RunRecoveryExport(ctx context.Context, outPath string) error {
 	}
 	out, err := proto.Marshal(rf)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if err := os.WriteFile(outPath, out, 0o600); err != nil {
-		return err
+	return out, nil
+}
+
+// VerifyRecoveryWithPassphrase decrypts and validates a recovery artifact
+// without changing local state.
+func VerifyRecoveryWithPassphrase(data, pass, expectedPub []byte) error {
+	var rf proto.RecoveryFile
+	if err := proto.Unmarshal(data, &rf); err != nil {
+		return fmt.Errorf("recovery: decode: %w", err)
 	}
-	_ = aad
-	fmt.Fprintf(os.Stderr, "✓ recovery file written to %s\n", outPath)
-	fmt.Fprintln(os.Stderr, "  Store it offline. Anyone with the file AND the")
-	fmt.Fprintln(os.Stderr, "  recovery passphrase can impersonate this identity.")
+	if rf.Magic != proto.RecoveryMagic || rf.Version != 1 {
+		return errors.New("recovery: unsupported recovery file")
+	}
+	if !bytesEq(rf.UserSuperPub, expectedPub) {
+		return errors.New("recovery: identity does not match current vault")
+	}
+	kRecovery, err := crypto.DeriveKey(pass, rf.Salt, crypto.Argon2Params{
+		M: rf.Argon2Params.M, T: rf.Argon2Params.T, P: rf.Argon2Params.P,
+	})
+	if err != nil {
+		return fmt.Errorf("recovery: %w", err)
+	}
+	defer crypto.Wipe(kRecovery)
+	aad := append([]byte(proto.DomainRecoveryKey), rf.UserSuperPub...)
+	superPriv, err := crypto.AEADOpen(kRecovery, rf.Nonce, rf.EncryptedSuperPriv, aad)
+	if err != nil {
+		return fmt.Errorf("recovery: verify decrypt: %w", err)
+	}
+	defer crypto.Wipe(superPriv)
+	if len(superPriv) != ed25519.PrivateKeySize {
+		return errors.New("recovery: super_priv length")
+	}
+	derived := ed25519.PrivateKey(superPriv).Public().(ed25519.PublicKey)
+	if !bytesEq(derived, expectedPub) {
+		return errors.New("recovery: private identity does not match public identity")
+	}
 	return nil
 }
 
@@ -107,18 +156,9 @@ func RunRecoveryExport(ctx context.Context, outPath string) error {
 // User MUST then run `fd0 sync` against a server to learn about scopes
 // they were a member of.
 func RunRecoveryImport(ctx context.Context, inPath string, yes bool) error {
-	paths, err := fdhome.Resolve()
+	paths, err := recoveryImportTarget()
 	if err != nil {
 		return err
-	}
-	if err := paths.EnsureDirs(); err != nil {
-		return err
-	}
-	if VaultExists(paths) {
-		return fmt.Errorf("vault already exists at %s; remove it first", paths.Vault)
-	}
-	if _, err := os.Stat(paths.UserChain); err == nil {
-		return fmt.Errorf("user chain already exists at %s; remove it first", paths.UserChain)
 	}
 	if err := confirmDanger(yes, fmt.Sprintf("Bootstrap %s from recovery file %s?", paths.Home, inPath)); err != nil {
 		return err
@@ -127,41 +167,11 @@ func RunRecoveryImport(ctx context.Context, inPath string, yes bool) error {
 	if err != nil {
 		return err
 	}
-	var rf proto.RecoveryFile
-	if err := proto.Unmarshal(data, &rf); err != nil {
-		return fmt.Errorf("recovery: decode: %w", err)
-	}
-	if rf.Magic != proto.RecoveryMagic {
-		return fmt.Errorf("recovery: bad magic %q", rf.Magic)
-	}
-	if rf.Version != 1 {
-		return fmt.Errorf("recovery: unsupported version %d", rf.Version)
-	}
 	pass, err := ReadPassphrase("Recovery passphrase: ")
 	if err != nil {
 		return err
 	}
 	defer crypto.Wipe(pass)
-	kRecovery, err := crypto.DeriveKey(pass, rf.Salt, crypto.Argon2Params{
-		M: rf.Argon2Params.M, T: rf.Argon2Params.T, P: rf.Argon2Params.P,
-	})
-	if err != nil {
-		return fmt.Errorf("recovery: %w", err)
-	}
-	defer crypto.Wipe(kRecovery)
-	aad := append([]byte(proto.DomainRecoveryKey), rf.UserSuperPub...)
-	superPriv, err := crypto.AEADOpen(kRecovery, rf.Nonce, rf.EncryptedSuperPriv, aad)
-	if err != nil {
-		return fmt.Errorf("recovery: decrypt failed (wrong passphrase?): %w", err)
-	}
-	defer crypto.Wipe(superPriv)
-	if len(superPriv) != ed25519.PrivateKeySize {
-		return errors.New("recovery: super_priv length")
-	}
-	derived := ed25519.PrivateKey(superPriv).Public().(ed25519.PublicKey)
-	if !bytesEq(derived, rf.UserSuperPub) {
-		return errors.New("recovery: super_priv does not match user_super_pub")
-	}
 	// Set a new local unlock passphrase for this device.
 	newPass, err := ReadPassphraseConfirm(
 		"Choose a passphrase for this device: ",
@@ -171,23 +181,84 @@ func RunRecoveryImport(ctx context.Context, inPath string, yes bool) error {
 		return err
 	}
 	defer crypto.Wipe(newPass)
-	salt, err := crypto.RandomBytes(16)
+	result, err := ImportRecoveryWithPassphrases(ctx, data, pass, newPass)
 	if err != nil {
 		return err
+	}
+	fmt.Fprintf(os.Stderr, "✓ identity restored: %s…\n", b64sub(result.UserSuperPub))
+	fmt.Fprintf(os.Stderr, "✓ vault written to %s\n", result.VaultPath)
+	fmt.Fprintln(os.Stderr, "Run `fd0 unlock` to start the agent, then `fd0 sync` to fetch scopes.")
+	return nil
+}
+
+// RecoveryImportResult describes a restored identity without exposing private
+// key material.
+type RecoveryImportResult struct {
+	UserSuperPub []byte
+	VaultPath    string
+}
+
+// ImportRecoveryWithPassphrases restores a fresh fd0 home from recovery data.
+// It refuses to overwrite an existing vault or user chain. The caller owns and
+// must wipe both passphrases.
+func ImportRecoveryWithPassphrases(ctx context.Context, data, recoveryPass, newPass []byte) (*RecoveryImportResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if len(recoveryPass) == 0 || len(newPass) == 0 {
+		return nil, errors.New("recovery and local passphrases are required")
+	}
+	paths, err := recoveryImportTarget()
+	if err != nil {
+		return nil, err
+	}
+	var rf proto.RecoveryFile
+	if err := proto.Unmarshal(data, &rf); err != nil {
+		return nil, fmt.Errorf("recovery: decode: %w", err)
+	}
+	if rf.Magic != proto.RecoveryMagic {
+		return nil, fmt.Errorf("recovery: bad magic %q", rf.Magic)
+	}
+	if rf.Version != 1 {
+		return nil, fmt.Errorf("recovery: unsupported version %d", rf.Version)
+	}
+	kRecovery, err := crypto.DeriveKey(recoveryPass, rf.Salt, crypto.Argon2Params{
+		M: rf.Argon2Params.M, T: rf.Argon2Params.T, P: rf.Argon2Params.P,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("recovery: %w", err)
+	}
+	defer crypto.Wipe(kRecovery)
+	aad := append([]byte(proto.DomainRecoveryKey), rf.UserSuperPub...)
+	superPriv, err := crypto.AEADOpen(kRecovery, rf.Nonce, rf.EncryptedSuperPriv, aad)
+	if err != nil {
+		return nil, fmt.Errorf("recovery: decrypt failed (wrong passphrase?): %w", err)
+	}
+	defer crypto.Wipe(superPriv)
+	if len(superPriv) != ed25519.PrivateKeySize {
+		return nil, errors.New("recovery: super_priv length")
+	}
+	derived := ed25519.PrivateKey(superPriv).Public().(ed25519.PublicKey)
+	if !bytesEq(derived, rf.UserSuperPub) {
+		return nil, errors.New("recovery: super_priv does not match user_super_pub")
+	}
+	salt, err := crypto.RandomBytes(16)
+	if err != nil {
+		return nil, err
 	}
 	pp, err := vault.NewPassphraseParams(salt, crypto.DefaultArgon2)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	unlockKey, err := crypto.DeriveKey(newPass, salt, crypto.DefaultArgon2)
 	if err != nil {
-		return fmt.Errorf("derive K_unlock: %w", err)
+		return nil, fmt.Errorf("derive K_unlock: %w", err)
 	}
 	defer crypto.Wipe(unlockKey)
 	methodID := "am_" + ulid.Make().String()
 	encSP, err := vault.EncryptSuperPriv(superPriv, rf.UserSuperPub, methodID, unlockKey)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// Genesis auth.set on this device. Wave C-3': parse the
 	// recovery-decrypted priv into the typed Ed25519Priv before
@@ -198,7 +269,7 @@ func RunRecoveryImport(ctx context.Context, inPath string, yes bool) error {
 	// emit.
 	signerPriv, perr := crypto.ParseEd25519Priv(superPriv)
 	if perr != nil {
-		return fmt.Errorf("recovery: parse super_priv: %w", perr)
+		return nil, fmt.Errorf("recovery: parse super_priv: %w", perr)
 	}
 	// Codex Wave-C-3' review fix: ParseEd25519Priv allocates a
 	// second 64-byte copy of the decrypted super_priv. The
@@ -213,10 +284,10 @@ func RunRecoveryImport(ctx context.Context, inPath string, yes bool) error {
 		EncryptedSuperPriv: encSP,
 	}})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := chain.AppendUser(paths.UserChain, g); err != nil {
-		return err
+		return nil, err
 	}
 	// Two-phase commit: if vault.Save fails, drop the half-written user.cbor
 	// so a re-run of `fd0 recovery import` doesn't refuse on the
@@ -224,7 +295,7 @@ func RunRecoveryImport(ctx context.Context, inPath string, yes bool) error {
 	prefix, err := g.PrevHashInput()
 	if err != nil {
 		_ = os.Remove(paths.UserChain)
-		return err
+		return nil, err
 	}
 	authTipHash := proto.HashPrefix(prefix)
 	body := &proto.VaultBody{
@@ -240,13 +311,32 @@ func RunRecoveryImport(ctx context.Context, inPath string, yes bool) error {
 		UnlockKey:    unlockKey,
 	}}); err != nil {
 		_ = os.Remove(paths.UserChain)
-		return err
+		return nil, err
 	}
-	fmt.Fprintf(os.Stderr, "✓ identity restored: %s…\n", b64sub(rf.UserSuperPub))
-	fmt.Fprintf(os.Stderr, "✓ vault written to %s\n", paths.Vault)
-	fmt.Fprintln(os.Stderr, "Run `fd0 unlock` to start the agent, then `fd0 sync` to fetch scopes.")
 	_ = agent.OpStatus // silence unused import in some build configs
-	return nil
+	return &RecoveryImportResult{
+		UserSuperPub: append([]byte(nil), rf.UserSuperPub...),
+		VaultPath:    paths.Vault,
+	}, nil
+}
+
+func recoveryImportTarget() (fdhome.Paths, error) {
+	paths, err := fdhome.Resolve()
+	if err != nil {
+		return fdhome.Paths{}, err
+	}
+	if err := paths.EnsureDirs(); err != nil {
+		return fdhome.Paths{}, err
+	}
+	if VaultExists(paths) {
+		return fdhome.Paths{}, fmt.Errorf("vault already exists at %s; remove it first", paths.Vault)
+	}
+	if _, err := os.Stat(paths.UserChain); err == nil {
+		return fdhome.Paths{}, fmt.Errorf("user chain already exists at %s; remove it first", paths.UserChain)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fdhome.Paths{}, err
+	}
+	return paths, nil
 }
 
 func bytesEq(a, b []byte) bool {

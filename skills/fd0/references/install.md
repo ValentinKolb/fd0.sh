@@ -1,14 +1,15 @@
-# Installing the fd0 client and this skill
+# Installing fd0 and this skill
 
-Two separate installs: the **fd0 CLI** itself (binaries on the user's machine), and the **skill** (these files, so an agent can use the CLI correctly).
+The fd0 product and this agent skill are installed separately. Install either the CLI-only product or the Desktop bundle; install the skill so an agent can operate fd0 correctly.
 
 ## The fd0 CLI
 
 ```bash
+brew install cosign
 curl -fsSL https://fd0.sh/install | sh
 ```
 
-Supported platforms: Linux and macOS on amd64 and arm64. Installs `fd0` + `fd0-agent` to `~/.local/bin` (or `/usr/local/bin` with `--system`). Cosign-verifies the release manifest when cosign is available.
+Supported platforms: Linux and macOS on amd64 and arm64. Installs `fd0` + `fd0-agent` to `~/.local/bin` (or `/usr/local/bin` with `--system`). Cosign is required. On Linux, use the distribution package or the [official Cosign installation instructions](https://docs.sigstore.dev/cosign/system_config/installation/). The installer authenticates the manifest against the exact fd0 release workflow and tag before writing binaries.
 
 Verify:
 ```bash
@@ -41,18 +42,36 @@ fd0 agent restart
 
 Normal `fd0 update` preserves the installed flavor. A `yubikey` install stays on the `yubikey` archive; a `standard` install stays standard.
 
+`fd0 update --yes` never authorizes a rollback. An older release must be selected explicitly and also requires `--allow-downgrade`; `latest` resolution cannot downgrade.
+
 If `fd0` is not on PATH, the install script prints a one-line fix for the user's shell rc — read it back to them, do not invent your own.
 
-Windows: not yet built by the release pipeline. The binaries cross-compile but the agent's AF_UNIX socket is unvalidated. Track at https://github.com/ValentinKolb/fd0.sh/issues.
+Windows: not yet built by the release pipeline. The binaries cross-compile but the agent's AF_UNIX socket is unvalidated. Track at https://github.com/k2b-dev/fd0.sh/issues.
+
+## fd0 Desktop
+
+```bash
+curl -fsSL https://fd0.sh/install | sh -s -- --desktop
+```
+
+Desktop is one versioned bundle containing the app, YubiKey-capable CLI, and agent. Its installer bootstraps a SHA-256-pinned release verifier when needed, then creates marked `fd0` and `fd0-agent` wrappers in `~/.local/bin` or `/usr/local/bin`. Existing standalone commands are preserved and restored on uninstall. Desktop updates the app, CLI, and agent together from **Support**; Linux uses the verifier bundled in the app, so users do not install Cosign. A bundled `fd0 update` prints that handoff instead of modifying the signed app.
+
+A directly installed DMG or launched AppImage provides the GUI and its bundled service without replacing shell commands. Use the script when Desktop should own the `fd0` and `fd0-agent` command paths too.
+
+Uninstall the app and its marked wrappers without deleting `~/.fd0`:
+
+```bash
+curl -fsSL https://fd0.sh/install-desktop | sh -s -- --uninstall
+```
 
 ## This skill
 
-This skill lives at `skills/fd0/` inside the `ValentinKolb/fd0.sh` repository. The expected install path on the user's machine is `~/.claude/skills/fd0/` (or whatever skill directory their agent runtime reads from).
+This skill lives at `skills/fd0/` inside the `k2b-dev/fd0.sh` repository. The expected install path on the user's machine is `~/.claude/skills/fd0/` (or whatever skill directory their agent runtime reads from).
 
 ### Recommended — `bunx skills`
 
 ```bash
-bunx skills add ValentinKolb/fd0.sh
+bunx skills add k2b-dev/fd0.sh
 ```
 
 The installer clones the repo, finds the `skills/fd0/` directory, and copies it to the local skill directory. After install, the agent loads the SKILL.md on the next session start.
@@ -61,7 +80,7 @@ The installer clones the repo, finds the `skills/fd0/` directory, and copies it 
 
 ```bash
 # Clone the repo
-git clone https://github.com/ValentinKolb/fd0.sh.git /tmp/fd0.sh
+git clone https://github.com/k2b-dev/fd0.sh.git /tmp/fd0.sh
 
 # Copy the skill
 mkdir -p ~/.claude/skills
@@ -77,14 +96,17 @@ After install, the agent should recognise prompts like "save my deploy key" or "
 
 ## Updating
 
-Both the CLI and the skill are version-tracked separately under the project's scoped tag scheme (`client-vX.Y.Z` for the CLI; the skill ships alongside the repo and updates when the repo does).
+The CLI-only release, Desktop release, and skill use separate update channels: `client-vX.Y.Z`, `desktop-vX.Y.Z`, and the repository version containing the skill.
 
 ```bash
-# Update the CLI
+# Update a CLI-only installation
 fd0 update
 
+# Update a Desktop installation in the app
+# fd0 Desktop > Support > Check now
+
 # Update the skill (re-run the install)
-bunx skills add ValentinKolb/fd0.sh
+bunx skills add k2b-dev/fd0.sh
 ```
 
-The CLI installer is still idempotent for fresh machines and script bootstrap. For machines that already have fd0, prefer `fd0 update` because it preserves the installed release flavor.
+Both product installers are idempotent. Use `fd0 update` only for CLI-only installations; Desktop-managed commands hand off to the app updater.

@@ -16,6 +16,7 @@ import (
 
 	"github.com/valentinkolb/fd0.sh/internal/canon"
 	"github.com/valentinkolb/fd0.sh/internal/chain"
+	"github.com/valentinkolb/fd0.sh/internal/httpguard"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
 	"github.com/valentinkolb/fd0.sh/internal/translog"
 )
@@ -53,9 +54,26 @@ var (
 	// pure-layer ErrInclusionProofInvalid / ErrConsistencyProofInvalid
 	// to client-facing errors that doctor / sync surface as red
 	// banners.
-	ErrInclusionMismatch  = errors.New("translog: inclusion proof failed")
+	ErrInclusionMismatch   = errors.New("translog: inclusion proof failed")
 	ErrConsistencyMismatch = errors.New("translog: consistency proof failed — possible server equivocation or rewrite")
+
+	// ErrServerIdentityChanged is returned by the structured desktop pinning
+	// flow when the server key observed during confirmation no longer matches
+	// the key returned when the pin is committed. The caller must start the
+	// confirmation ceremony again; silently accepting the new key would create
+	// a preview/commit race at the trust boundary.
+	ErrServerIdentityChanged = errors.New("translog: server identity changed during pin confirmation")
 )
+
+// ServerPinPreview is the verified, non-secret result of inspecting a server
+// before a first-contact pin is committed. ServerPub is copied and owned by the
+// result. Callers must pass it back to PinServer exactly as received.
+type ServerPinPreview struct {
+	URL         string
+	ServerPub   ed25519.PublicKey
+	Fingerprint string
+	Label       string
+}
 
 // FD0AutoPinEnv, when set to "1", auto-confirms first-contact pinning
 // without an interactive prompt. Used by integration tests and by
@@ -108,6 +126,30 @@ func ServerFingerprint(serverURL string, pub []byte) (string, error) {
 	return strings.Join(lines, "\n"), nil
 }
 
+// InspectServer fetches and verifies a server's self-signed identity without
+// mutating the vault. It is the structured equivalent of the informational
+// half of the CLI pinning prompt and is safe for native GUI confirmation.
+func InspectServer(ctx context.Context, server string) (*ServerPinPreview, error) {
+	serverURL, err := canon.ParseURL(server)
+	if err != nil {
+		return nil, fmt.Errorf("server URL: %w", err)
+	}
+	info, err := fetchVerifiedServerInfo(ctx, serverURL)
+	if err != nil {
+		return nil, err
+	}
+	fingerprint, err := ServerFingerprint(serverURL.String(), info.ServerPub)
+	if err != nil {
+		return nil, err
+	}
+	return &ServerPinPreview{
+		URL:         serverURL.String(),
+		ServerPub:   append(ed25519.PublicKey(nil), info.ServerPub...),
+		Fingerprint: fingerprint,
+		Label:       info.Label,
+	}, nil
+}
+
 // EnsurePinnedServer reads the current pin for serverURL from the
 // vault. If absent, fetches /v1/server-info, verifies the
 // self-signature, runs the safety-number ceremony (or auto-confirms
@@ -127,15 +169,13 @@ func ServerFingerprint(serverURL string, pub []byte) (string, error) {
 // layers consume the same byte-stable canonical form.
 //
 // THREAT: T46 (server-info pubkey forgery — mitigated by server self-
-//                signature verify + first-contact pinning).
+//
+//	signature verify + first-contact pinning).
 func (s *Session) EnsurePinnedServer(ctx context.Context, serverURL canon.URL) (ed25519.PublicKey, error) {
 	canonical := serverURL.String()
-	info, err := fetchServerInfo(ctx, canonical)
+	info, err := fetchVerifiedServerInfo(ctx, serverURL)
 	if err != nil {
 		return nil, err
-	}
-	if err := translog.VerifyServerInfo(info); err != nil {
-		return nil, ErrServerInfoUnsigned
 	}
 	if s.Body.PinnedServers == nil {
 		s.Body.PinnedServers = map[string]proto.PinnedServer{}
@@ -162,6 +202,54 @@ func (s *Session) EnsurePinnedServer(ctx context.Context, serverURL canon.URL) (
 		return nil, fmt.Errorf("persist pinned server: %w", err)
 	}
 	return ed25519.PublicKey(info.ServerPub), nil
+}
+
+// PinServer commits a server key that was previously returned by
+// InspectServer. It refetches and re-verifies /v1/server-info before writing,
+// which binds the confirmation to the exact canonical URL and public key.
+func PinServer(ctx context.Context, server string, expectedPub []byte) error {
+	if len(expectedPub) != ed25519.PublicKeySize {
+		return errors.New("translog: expected server pubkey must be 32 bytes")
+	}
+	serverURL, err := canon.ParseURL(server)
+	if err != nil {
+		return fmt.Errorf("server URL: %w", err)
+	}
+	s, err := Open(ctx)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	return s.pinServer(ctx, serverURL, expectedPub)
+}
+
+func (s *Session) pinServer(ctx context.Context, serverURL canon.URL, expectedPub []byte) error {
+	info, err := fetchVerifiedServerInfo(ctx, serverURL)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(info.ServerPub, expectedPub) {
+		return ErrServerIdentityChanged
+	}
+	canonical := serverURL.String()
+	if s.Body.PinnedServers == nil {
+		s.Body.PinnedServers = map[string]proto.PinnedServer{}
+	}
+	if existing, ok := s.Body.PinnedServers[canonical]; ok {
+		if !bytes.Equal(existing.ServerPub, info.ServerPub) {
+			return ErrPinnedKeyMismatch
+		}
+		return nil
+	}
+	s.Body.PinnedServers[canonical] = proto.PinnedServer{
+		ServerPub: append([]byte(nil), info.ServerPub...),
+		PinnedAt:  uint64(nowUnix()),
+	}
+	if err := s.ReSeal(); err != nil {
+		delete(s.Body.PinnedServers, canonical)
+		return fmt.Errorf("persist pinned server: %w", err)
+	}
+	return nil
 }
 
 // pinningPrompt displays the safety number for (url, pub) and gates
@@ -263,7 +351,6 @@ func (s *Session) EnsureUserRegistered(ctx context.Context, serverURL canon.URL)
 			break
 		}
 		wait := retryAfterDelay(resp.Header.Get("Retry-After"), maxRegWait)
-		_, _ = io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 		select {
 		case <-time.After(wait):
@@ -279,13 +366,19 @@ func (s *Session) EnsureUserRegistered(ctx context.Context, serverURL canon.URL)
 		// Could be `super_pub_taken` (already registered, fine) or
 		// `dup` (event_id collision — also already registered). Either
 		// way we're idempotently registered.
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		respBody, err := httpguard.ReadBody(resp.Body, 4096)
+		if err != nil {
+			return fmt.Errorf("registration: POST /users: %w", err)
+		}
 		if !strings.Contains(string(respBody), "super_pub_taken") &&
 			!strings.Contains(string(respBody), "dup") {
 			return fmt.Errorf("registration: 409 with unexpected reason: %s", respBody)
 		}
 	default:
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		respBody, err := httpguard.ReadBody(resp.Body, 4096)
+		if err != nil {
+			return fmt.Errorf("registration: POST /users: %w", err)
+		}
 		return fmt.Errorf("registration: POST /users: %s: %s", resp.Status, respBody)
 	}
 	// Persist Registered=true so future syncs skip the round-trip.
@@ -314,13 +407,24 @@ func fetchServerInfo(ctx context.Context, canonicalURL string) (translog.ServerI
 	if resp.StatusCode != http.StatusOK {
 		return translog.ServerInfo{}, fmt.Errorf("/v1/server-info: %s", resp.Status)
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := httpguard.ReadBody(resp.Body, 1<<20)
 	if err != nil {
 		return translog.ServerInfo{}, err
 	}
 	var info translog.ServerInfo
 	if err := proto.Unmarshal(body, &info); err != nil {
 		return translog.ServerInfo{}, fmt.Errorf("decode /v1/server-info: %w", err)
+	}
+	return info, nil
+}
+
+func fetchVerifiedServerInfo(ctx context.Context, serverURL canon.URL) (translog.ServerInfo, error) {
+	info, err := fetchServerInfo(ctx, serverURL.String())
+	if err != nil {
+		return translog.ServerInfo{}, err
+	}
+	if err := translog.VerifyServerInfo(info); err != nil {
+		return translog.ServerInfo{}, ErrServerInfoUnsigned
 	}
 	return info, nil
 }
@@ -357,7 +461,8 @@ var ErrSTHTreeSizeRegression = errors.New("translog: STH tree_size went backward
 // so the caller can react uniformly.
 //
 // THREAT: T36 (server returns wrong consistency proof),
-//         T42 (STH for a different chain_id).
+//
+//	T42 (STH for a different chain_id).
 func VerifyTranslogResponse(
 	pinnedPub ed25519.PublicKey,
 	expectedChainID string,
@@ -472,8 +577,9 @@ func EncodeSTH(v VerifiedSTH) ([]byte, error) {
 // "no STH this round" outcome.
 //
 // THREAT: T35 (server equivocation between clients — witness cosign),
-//         T36 (wrong consistency proof — verify before commit),
-//         T25 (verify result discarded — type-state enforced).
+//
+//	T36 (wrong consistency proof — verify before commit),
+//	T25 (verify result discarded — type-state enforced).
 func VerifyAndCrossCheck(
 	ctx context.Context,
 	wcc *WitnessCheckClient,

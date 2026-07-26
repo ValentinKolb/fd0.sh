@@ -156,10 +156,30 @@ func RunHostAdd(ctx context.Context, o HostAddOpts) error {
 	return nil
 }
 
+// hostListRow is the machine-readable shape of one host.
+//
+// A host record holds no secret material — the key it names lives in its own
+// record and only ever leaves through the SSH agent — so the row is the whole
+// connection metadata. It is spelled out rather than marshalled from
+// sshhost.Host so a future field cannot join a public interface unreviewed.
+type hostListRow struct {
+	Alias       string            `json:"alias"`
+	Hostname    string            `json:"hostname"`
+	User        string            `json:"user,omitempty"`
+	Port        int               `json:"port,omitempty"`
+	KeyName     string            `json:"keyName,omitempty"`
+	ProxyJump   string            `json:"proxyJump,omitempty"`
+	Description string            `json:"description,omitempty"`
+	Tags        []string          `json:"tags,omitempty"`
+	Options     map[string]string `json:"options,omitempty"`
+	Scope       string            `json:"scope,omitempty"`
+	ScopeID     string            `json:"scopeId"`
+}
+
 // RunHostList prints every fd0-managed SSH host. Tag-filtering
 // supports AND (`--tag prod --tag db` requires both) and exclusion
 // (`--no-tag deprecated`).
-func RunHostList(ctx context.Context, scopeID string, anyTags, noTags []string) error {
+func RunHostList(ctx context.Context, scopeID string, anyTags, noTags []string, jsonOut bool) error {
 	s, err := Open(ctx)
 	if err != nil {
 		return err
@@ -170,6 +190,26 @@ func RunHostList(ctx context.Context, scopeID string, anyTags, noTags []string) 
 		return err
 	}
 	hosts = filterHosts(hosts, anyTags, noTags)
+	if jsonOut {
+		sshhost.SortHosts(hosts)
+		rows := make([]hostListRow, 0, len(hosts))
+		for _, h := range hosts {
+			rows = append(rows, hostListRow{
+				Alias:       h.Alias,
+				Hostname:    h.Hostname,
+				User:        h.User,
+				Port:        h.Port,
+				KeyName:     h.KeyName,
+				ProxyJump:   h.ProxyJump,
+				Description: h.Description,
+				Tags:        h.Tags,
+				Options:     h.Options,
+				Scope:       scopeLabelOf(s, h.Scope),
+				ScopeID:     h.Scope,
+			})
+		}
+		return json.NewEncoder(os.Stdout).Encode(rows)
+	}
 	if len(hosts) == 0 {
 		stderrln("no hosts")
 		return nil
@@ -250,9 +290,12 @@ func RunHostShow(ctx context.Context, scopeID, alias string) error {
 			}
 		}
 	}
-	out := sshhost.Render(sshhost.RenderInput{
+	out, err := sshhost.Render(sshhost.RenderInput{
 		Hosts: []*sshhost.Host{h}, SocketPath: SSHSocketPathForRender(), KnownKeys: keysSet, Now: nowFunc(),
 	})
+	if err != nil {
+		return err
+	}
 	fmt.Println(string(out))
 	return nil
 }
@@ -333,37 +376,7 @@ func RunHostMove(ctx context.Context, alias, fromScope, toScope string, force bo
 		return err
 	}
 	defer s.Close()
-	r, err := s.GetTypedSecret(fromScope, hostNamePrefix+alias)
-	if err != nil {
-		return err
-	}
-	h, err := decodeHost(*r)
-	if err != nil {
-		return err
-	}
-	dest, err := s.resolveScopeID(toScope)
-	if err != nil {
-		return err
-	}
-	if r.ScopeID == dest {
-		return fmt.Errorf("source and destination scopes are the same: %s", scopeName(s, dest))
-	}
-	if err := ensureNoDuplicate(s, dest, hostNamePrefix, alias, force); err != nil {
-		return err
-	}
-	if err := s.SetTypedSecret(ctx, dest, r.Name, sshhost.TypeHost, h.Marshal()); err != nil {
-		return err
-	}
-	if err := s.RemoveTypedSecret(ctx, r.ScopeID, r.Name); err != nil {
-		return fmt.Errorf("moved host %q to %s but failed to remove from %s: %w (clean up with: fd0 ssh rm %s --scope %s)",
-			alias, scopeName(s, dest), scopeName(s, r.ScopeID), err, alias, scopeName(s, r.ScopeID))
-	}
-	stderrln("✓ moved host %q: %s → %s", alias, scopeName(s, r.ScopeID), scopeName(s, dest))
-	if err := renderAndWarn(s); err != nil {
-		stderrln("⚠ render: %v", err)
-	}
-	hintSyncForPeers()
-	return nil
+	return s.MoveItem(ctx, KindHost, alias, fromScope, toScope, force)
 }
 
 // ----- helpers -----
@@ -481,13 +494,16 @@ func renderSSHConfig(s *Session, warnInclude bool) error {
 		return err
 	}
 
-	bytes := sshhost.Render(sshhost.RenderInput{
+	bytes, err := sshhost.Render(sshhost.RenderInput{
 		Hosts:      hosts,
 		SocketPath: SSHSocketPathForRender(),
 		KnownKeys:  known,
 		PubKeyDir:  pubDir,
 		Now:        nowFunc(),
 	})
+	if err != nil {
+		return err
+	}
 	target := SSHConfPath()
 	if err := writeManagedFile(target, bytes, "hosts", len(hosts)); err != nil {
 		return err
@@ -602,4 +618,85 @@ func parentDir(path string) string {
 		return path[:i]
 	}
 	return "."
+}
+
+// HostEditOpts patches an existing host. Every field is a pointer so that
+// "flag not given" stays distinguishable from "flag set to empty" — clearing a
+// jump host or a description is a real edit, not a no-op.
+type HostEditOpts struct {
+	Alias       string
+	Scope       string
+	Hostname    *string
+	User        *string
+	Port        *int
+	KeyName     *string
+	ProxyJump   *string
+	Description *string
+	Tags        *[]string
+	Options     map[string]string
+	// ClearOptions empties the option map; merging cannot express removal.
+	ClearOptions bool
+}
+
+// RunHostEdit changes only the fields the user named, leaving the rest alone.
+func RunHostEdit(ctx context.Context, o HostEditOpts) error {
+	if o.Alias == "" {
+		return errors.New("ssh edit: ALIAS required")
+	}
+	return EditItem(ctx, KindHost, o.Scope, o.Alias,
+		decodeHost,
+		func(h *sshhost.Host) (bool, error) {
+			changed := false
+			setString(&h.Hostname, o.Hostname, &changed)
+			setString(&h.User, o.User, &changed)
+			setInt(&h.Port, o.Port, &changed)
+			setString(&h.KeyName, o.KeyName, &changed)
+			setString(&h.ProxyJump, o.ProxyJump, &changed)
+			setString(&h.Description, o.Description, &changed)
+			setStrings(&h.Tags, o.Tags, &changed)
+			if o.ClearOptions && len(h.Options) > 0 {
+				h.Options = nil
+				changed = true
+			}
+			for name, value := range o.Options {
+				if h.Options == nil {
+					h.Options = map[string]string{}
+				}
+				if h.Options[name] != value {
+					h.Options[name] = value
+					changed = true
+				}
+			}
+			return changed, nil
+		},
+		func(h *sshhost.Host) error { return h.Validate() },
+		func(h *sshhost.Host) (string, any) { return sshhost.TypeHost, h.Marshal() },
+	)
+}
+
+// RunHostRename renames a host. The alias is both the record name and a field
+// inside the record, so the stored copy is rewritten to match.
+func RunHostRename(ctx context.Context, scopeID, oldAlias, newAlias string, force bool) error {
+	s, err := Open(ctx)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	return s.RenameItem(ctx, KindHost, scopeID, oldAlias, newAlias, force,
+		func(payload []byte, newName string) ([]byte, error) {
+			var wire sshhost.JSON
+			if err := json.Unmarshal(payload, &wire); err != nil {
+				return nil, err
+			}
+			h, err := sshhost.Unmarshal(wire)
+			if err != nil {
+				return nil, err
+			}
+			h.Alias = newName
+			if err := h.Validate(); err != nil {
+				return nil, err
+			}
+			return json.Marshal(h.Marshal())
+		},
+	)
 }

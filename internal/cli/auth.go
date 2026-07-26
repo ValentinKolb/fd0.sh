@@ -169,28 +169,16 @@ func RunAuthAdd(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	// Atomicity ordering: vault wrap FIRST, then chain advertisement.
-	//
-	// Rationale (THREATS.md §2 trust boundary):
-	//   - If AddWrap fails: the user-chain has not been mutated; the user
-	//     can simply retry. No half-state.
-	//   - If AddWrap succeeds and chain.AppendUser fails: the vault has an
-	//     orphan wrap whose method_id isn't in the active set. `auth ls`
-	//     won't show it (chain is the source of truth for "what exists"),
-	//     and `fd0 doctor` flags the inconsistency.
-	//   - If we instead did chain first and AddWrap failed, the chain
-	//     would advertise a method with no wrap → unlock with that method
-	//     fails confusingly; the user has no obvious way to recover
-	//     without a doctor-driven cleanup.
-	if err := s.Agent.AddWrap(s.Paths.Vault, newID, proto.AuthPassphrase, pp, newK); err != nil {
+	// The signed chain authorizes a wrap before the agent persists it. This
+	// ordering cannot create a hidden credential: handleAddWrap rejects any
+	// method that is absent from the canonical current auth.set.
+	if err := chain.AppendUser(s.Paths.UserChain, ev); err != nil {
 		return err
 	}
-	if err := chain.AppendUser(s.Paths.UserChain, ev); err != nil {
-		// Best-effort rollback: drop the wrap we just added so the vault
-		// returns to a consistent state. If this also fails, doctor will
-		// surface the orphan and the user can run `fd0 auth add` again
-		// (AddWrap is idempotent on duplicate method_id).
-		_ = s.Agent.RemoveWrap(s.Paths.Vault, newID)
+	if err := s.Agent.AddWrap(s.Paths.Vault, newID, proto.AuthPassphrase, pp, newK); err != nil {
+		if rollbackErr := rollbackAuthSet(s, ev, uctx.LatestAuthSet.Payload.Active); rollbackErr != nil {
+			return fmt.Errorf("add auth wrap: %w; restore auth chain: %v", err, rollbackErr)
+		}
 		return err
 	}
 	prefix, _ := ev.PrevHashInput()
@@ -247,19 +235,11 @@ func RunAuthRemove(ctx context.Context, methodID string, yes bool) error {
 	if err != nil {
 		return err
 	}
-	// Atomicity ordering: vault wrap deletion FIRST, then chain
-	// advertisement. THIS IS A SECURITY-CRITICAL ORDERING.
-	//
-	// Rationale: vault.Open iterates wraps independently of the chain.
-	// If we wrote the chain first (announcing the method gone) and then
-	// RemoveWrap failed, an attacker holding the just-revoked credential
-	// could STILL UNLOCK because the wrap remained in vault.enc. By
-	// removing the wrap first we close the credential's effectiveness
-	// before we declare it removed; if chain.AppendUser fails afterwards
-	// the chain still lists the method (so `auth ls` is misleading) but
-	// unlock with that credential will fail at the wrap-decrypt step
-	// (the wrap is gone). The user can re-issue `auth rm` and
-	// RemoveWrap is idempotent on "not found".
+	// Remove the physical wrap before publishing the reduced active set. If
+	// the chain append fails, the chain may temporarily list an unusable
+	// method, but the revoked credential cannot open the vault. Unlock also
+	// checks the canonical current auth.set, so a retained stale wrap would
+	// not remain authoritative after a successful chain append.
 	if err := s.Agent.RemoveWrap(s.Paths.Vault, methodID); err != nil {
 		return err
 	}
@@ -278,4 +258,32 @@ func RunAuthRemove(ctx context.Context, methodID string, yes bool) error {
 	}
 	fmt.Fprintf(os.Stderr, "✓ removed auth method %s\n", methodID)
 	return nil
+}
+
+func rollbackAuthSet(s *Session, committed *proto.UserEvent, active []proto.AuthMethod) error {
+	prefix, err := committed.PrevHashInput()
+	if err != nil {
+		return err
+	}
+	h := proto.HashPrefix(prefix)
+	ev, err := chain.BuildUserAuthSet(
+		AgentSigner{Agent: s.Agent},
+		s.UserSuperPub,
+		committed.Seq,
+		h[:],
+		append([]proto.AuthMethod(nil), active...),
+	)
+	if err != nil {
+		return err
+	}
+	if err := chain.AppendUser(s.Paths.UserChain, ev); err != nil {
+		return err
+	}
+	rollbackPrefix, err := ev.PrevHashInput()
+	if err != nil {
+		return err
+	}
+	rollbackHash := proto.HashPrefix(rollbackPrefix)
+	s.Body.AuthTip = proto.ChainTip{Seq: ev.Seq, Hash: rollbackHash[:]}
+	return s.ReSeal()
 }

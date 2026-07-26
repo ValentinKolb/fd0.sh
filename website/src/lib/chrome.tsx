@@ -19,6 +19,63 @@ export const C = {
 export const FONT_SANS = "Geist,Inter,system-ui,sans-serif";
 export const FONT_MONO = "'Geist Mono',ui-monospace,monospace";
 
+/** Latest signed fd0 Desktop release — the download everything points at. */
+/*
+ * Resolved server-side rather than linked straight at GitHub: /releases/latest
+ * returns the newest release of any kind, and this repo tags client-v* and
+ * desktop-v* into one feed, so a CLI release could send people to a page with
+ * no app on it. /download picks the newest desktop-v* tag.
+ */
+export const DESKTOP_RELEASE_URL = "/download";
+
+/**
+ * Product screenshot with a caption that says what the reader is looking
+ * at. The PNGs in public/shots are 2880×1800; `width`/`height` carry that
+ * 16:10 ratio at half size so the browser reserves the box before the
+ * bytes arrive and nothing reflows on load. Everything using this sits
+ * below the fold, so the default is lazy.
+ */
+export const Shot = (p: {
+  src: string;
+  alt: string;
+  title: string;
+  body: string;
+  eager?: boolean;
+  /** Subordinate placement — smaller caption so it doesn't compete
+   *  with the hero shot it sits under. */
+  dense?: boolean;
+}) => (
+  <figure
+    class="m-0 min-w-0"
+    style={`background:${C.bgRaised};border:1px solid ${C.border};`}
+  >
+    <img
+      src={p.src}
+      alt={p.alt}
+      width="1440"
+      height="900"
+      loading={p.eager ? "eager" : "lazy"}
+      decoding="async"
+      class="block w-full h-auto"
+      style={`border-bottom:1px solid ${C.border};background:${C.bg};`}
+    />
+    <figcaption class={p.dense ? "p-4" : "p-5"}>
+      <div
+        class={`${p.dense ? "text-[12px]" : "text-[13px]"} font-medium mb-1.5`}
+        style={`color:${C.acc};`}
+      >
+        {p.title}
+      </div>
+      <div
+        class={`${p.dense ? "text-[12px]" : "text-[13px]"} leading-relaxed`}
+        style={`color:${C.dim};`}
+      >
+        {p.body}
+      </div>
+    </figcaption>
+  </figure>
+);
+
 export const LogoMark = (p: { size?: number }) => {
   const s = p.size ?? 20;
   const dot = s * 0.18;
@@ -69,7 +126,7 @@ export const Nav = (p: { current?: NavKey }) => {
         {link("spec", "/spec", "Spec")}
         {link("witness", "/witness", "Witness")}
         <a
-          href="https://github.com/ValentinKolb/fd0.sh"
+          href="https://github.com/k2b-dev/fd0.sh"
           class="hidden md:inline transition-colors"
           style={`color:${C.dim};`}
         >
@@ -86,7 +143,9 @@ export type DocsKey =
   | "overview"
   | "concepts"
   | "install"
+  | "desktop"
   | "cli"
+  | "pass"
   | "ssh"
   | "talos"
   | "server"
@@ -99,7 +158,9 @@ export const DOCS_NAV: { key: DocsKey; href: string; label: string; group: strin
   { key: "overview", href: "/docs", label: "Overview", group: "Start" },
   { key: "concepts", href: "/docs/concepts", label: "Concepts", group: "Start" },
   { key: "install", href: "/docs/install", label: "Install", group: "Use" },
+  { key: "desktop", href: "/docs/desktop", label: "Desktop app", group: "Use" },
   { key: "cli", href: "/docs/cli", label: "CLI reference", group: "Use" },
+  { key: "pass", href: "/docs/pass", label: "Passwords", group: "Use" },
   { key: "ssh", href: "/docs/ssh", label: "SSH", group: "Use" },
   { key: "talos", href: "/docs/talos", label: "Talos & Kube", group: "Use" },
   { key: "sync", href: "/docs/sync", label: "Sync", group: "Use" },
@@ -256,12 +317,12 @@ export const SPEC_NAV: {
   link?: string;
 }[] = [
   { key: "overview", href: "/spec", label: "Overview", hex: "0x00", glyph: "◇" },
-  { key: "wire", href: "/spec/wire", label: "Wire format", hex: "0x01", glyph: "⌬", link: "https://github.com/ValentinKolb/fd0.sh/blob/main/docs/PROTOCOL.md" },
-  { key: "crypto", href: "/spec/crypto", label: "Cryptography", hex: "0x02", glyph: "⚛", link: "https://github.com/ValentinKolb/fd0.sh/blob/main/docs/PROTOCOL.md#1-primitives" },
-  { key: "storage", href: "/spec/storage", label: "Storage", hex: "0x03", glyph: "▢", link: "https://github.com/ValentinKolb/fd0.sh/blob/main/docs/STORAGE.md" },
-  { key: "sync", href: "/spec/sync", label: "Sync protocol", hex: "0x04", glyph: "⇄", link: "https://github.com/ValentinKolb/fd0.sh/blob/main/docs/API.md" },
-  { key: "translog", href: "/spec/translog", label: "Transparency log", hex: "0x05", glyph: "⊞", link: "https://github.com/ValentinKolb/fd0.sh/blob/main/docs/TRANSLOG.md" },
-  { key: "threats", href: "/spec/threats", label: "Threat model", hex: "0x06", glyph: "⚠", link: "https://github.com/ValentinKolb/fd0.sh/blob/main/docs/THREATS.md" },
+  { key: "wire", href: "/spec/wire", label: "Wire format", hex: "0x01", glyph: "⌬", link: "https://github.com/k2b-dev/fd0.sh/blob/main/docs/PROTOCOL.md" },
+  { key: "crypto", href: "/spec/crypto", label: "Cryptography", hex: "0x02", glyph: "⚛", link: "https://github.com/k2b-dev/fd0.sh/blob/main/docs/PROTOCOL.md#1-primitives" },
+  { key: "storage", href: "/spec/storage", label: "Storage", hex: "0x03", glyph: "▢", link: "https://github.com/k2b-dev/fd0.sh/blob/main/docs/STORAGE.md" },
+  { key: "sync", href: "/spec/sync", label: "Sync protocol", hex: "0x04", glyph: "⇄", link: "https://github.com/k2b-dev/fd0.sh/blob/main/docs/API.md" },
+  { key: "translog", href: "/spec/translog", label: "Transparency log", hex: "0x05", glyph: "⊞", link: "https://github.com/k2b-dev/fd0.sh/blob/main/docs/TRANSLOG.md" },
+  { key: "threats", href: "/spec/threats", label: "Threat model", hex: "0x06", glyph: "⚠", link: "https://github.com/k2b-dev/fd0.sh/blob/main/docs/THREATS.md" },
 ];
 
 export const SpecLayout = (p: { current: SpecKey; title: string; children: any }) => {
@@ -433,9 +494,13 @@ export const Footer = () => (
           <LogoMark size={18} />
           <span class="font-medium">fd0</span>
         </div>
+        {/* "Self-hosted" undersold it and contradicted the rest of the site:
+            the hosted instance is the default backend. What holds either way
+            is that the server cannot read anything. */}
         <p class="text-xs leading-relaxed max-w-xs">
-          Self-hosted secrets manager. Server stores ciphertext only;
-          membership rotates the per-scope key cryptographically.
+          Zero-knowledge secrets manager. Hosted or self-hosted, the server
+          stores ciphertext only; membership rotates the per-scope key
+          cryptographically.
         </p>
       </div>
       <div>
@@ -447,6 +512,7 @@ export const Footer = () => (
         </div>
         <div class="flex flex-col gap-1.5 text-xs">
           <a href="/" class="hover:text-white">Home</a>
+          <a href="/docs/desktop" class="hover:text-white">fd0 Desktop</a>
           <a href="/#install" class="hover:text-white">Install</a>
           <a href="/#quickstart" class="hover:text-white">Quickstart</a>
           <a href="/#compare" class="hover:text-white">Compare</a>
@@ -462,10 +528,11 @@ export const Footer = () => (
         <div class="flex flex-col gap-1.5 text-xs">
           <a href="/docs" class="hover:text-white">Docs</a>
           <a href="/docs/cli" class="hover:text-white">CLI reference</a>
+          <a href="/docs/pass" class="hover:text-white">Passwords</a>
           <a href="/docs/ssh" class="hover:text-white">SSH</a>
           <a href="/docs/server" class="hover:text-white">Self-host</a>
           <a href="/spec" class="hover:text-white">Specification</a>
-          <a href="/spec#threats" class="hover:text-white">Threat model</a>
+          <a href="/spec/threats" class="hover:text-white">Threat model</a>
         </div>
       </div>
       <div>
@@ -476,13 +543,13 @@ export const Footer = () => (
           Project
         </div>
         <div class="flex flex-col gap-1.5 text-xs">
-          <a href="https://github.com/ValentinKolb/fd0.sh" class="hover:text-white">
+          <a href="https://github.com/k2b-dev/fd0.sh" class="hover:text-white">
             GitHub
           </a>
-          <a href="https://github.com/ValentinKolb/fd0.sh/blob/main/LICENSE" class="hover:text-white">
+          <a href="https://github.com/k2b-dev/fd0.sh/blob/main/LICENSE" class="hover:text-white">
             Apache-2.0 licence
           </a>
-          <a href="https://github.com/ValentinKolb/fd0.sh/releases" class="hover:text-white">
+          <a href="https://github.com/k2b-dev/fd0.sh/releases" class="hover:text-white">
             Releases
           </a>
           <a href="/impressum" class="hover:text-white">Impressum</a>
@@ -494,7 +561,7 @@ export const Footer = () => (
       style={`border-top:1px solid ${C.border};`}
     >
       <div>fd0.sh — Apache-2.0</div>
-      <div>self-hosted · no telemetry · no cloud</div>
+      <div>self-hostable · no telemetry · ciphertext only</div>
     </div>
   </footer>
 );

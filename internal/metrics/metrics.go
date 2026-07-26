@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -87,8 +88,8 @@ func New(info BuildInfo) *Registry {
 	// Register the standard process + Go runtime collectors so the
 	// scrape includes RSS, FDs, GC stats — invaluable for operators.
 	r.reg.MustRegister(
-		prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}),
-		prometheus.NewGoCollector(),
+		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
+		collectors.NewGoCollector(),
 	)
 
 	return r
@@ -177,23 +178,34 @@ func statusClass(code int) string {
 // two path segments, and use a single bucket for everything else.
 //
 // Examples:
-//   GET  /v1/sync                          → "GET /v1/sync"
-//   GET  /v1/sth/aGVsbG8/scope:s_x         → "GET /v1/sth/*"
-//   GET  /v1/users/upXxx/events            → "GET /v1/users/*"
-//   GET  /health                           → "GET /health"
+//
+//	GET  /v1/sync                          → "GET /v1/sync"
+//	GET  /v1/sth/aGVsbG8/scope:s_x         → "GET /v1/sth/*"
+//	GET  /v1/users/upXxx/events            → "GET /v1/users/*"
+//	GET  /health                           → "GET /health"
 func opLabel(req *http.Request) string {
-	parts := strings.Split(strings.TrimPrefix(req.URL.Path, "/"), "/")
-	switch {
-	case len(parts) == 0 || parts[0] == "":
-		return req.Method + " /"
-	case len(parts) == 1:
-		return req.Method + " /" + parts[0]
-	case len(parts) >= 3:
-		// version + collection + variable → /v1/users/*, /v1/sth/*
-		return req.Method + " /" + parts[0] + "/" + parts[1] + "/*"
+	method := req.Method
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodOptions:
 	default:
-		return req.Method + " /" + parts[0] + "/" + parts[1]
+		method = "OTHER"
 	}
+	path := req.URL.Path
+	switch path {
+	case "/", "/health", "/version", "/metrics",
+		"/v1/server-info", "/v1/users", "/v1/sync", "/v1/chains",
+		"/v1/proof/inclusion", "/v1/proof/consistency", "/v1/peer/chain":
+		return method + " " + path
+	}
+	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	switch {
+	case len(parts) >= 3 && parts[0] == "v1":
+		switch parts[1] {
+		case "users", "sth", "highest", "equivocation", "observed":
+			return method + " /v1/" + parts[1] + "/*"
+		}
+	}
+	return method + " /*"
 }
 
 // sizeStatusWriter records the response status and total bytes

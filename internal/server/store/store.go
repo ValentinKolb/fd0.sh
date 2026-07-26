@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/valentinkolb/fd0.sh/internal/proto"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -42,7 +44,12 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	return &Store{db: db}, nil
+	store := &Store{db: db}
+	if err := store.ensureScopeMemberIndex(context.Background()); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("scope member index: %w", err)
+	}
+	return store, nil
 }
 
 // Close releases the underlying DB.
@@ -66,13 +73,13 @@ type Chain struct {
 
 // Event is one row of the events table.
 type Event struct {
-	ChainID   string
-	Seq       uint64
-	EventID   string
-	PrevHash  []byte
-	Kind      string
-	CBOR      []byte
-	StoredAt  int64
+	ChainID  string
+	Seq      uint64
+	EventID  string
+	PrevHash []byte
+	Kind     string
+	CBOR     []byte
+	StoredAt int64
 }
 
 // ErrNotFound is returned by lookups that find no row.
@@ -104,8 +111,8 @@ func (s *Store) GetChain(ctx context.Context, id string) (*Chain, error) {
 // AppendOpts is what callers must compute before calling Append.
 type AppendOpts struct {
 	ChainID     string
-	Kind        ChainKind   // user/scope (for chain-row creation)
-	Genesis     bool        // true at seq=0 (chain row is created)
+	Kind        ChainKind // user/scope (for chain-row creation)
+	Genesis     bool      // true at seq=0 (chain row is created)
 	Seq         uint64
 	NewTipHash  []byte
 	NewMetadata []byte // CBOR; replaces prior metadata wholesale
@@ -118,9 +125,10 @@ type AppendOpts struct {
 // callers).
 //
 // THREAT: T23 (stored-event replay — the events.event_id UNIQUE
-//                constraint at the SQL layer is what actually
-//                rejects duplicate inserts; proto.EventID derives
-//                the content-addressed value the constraint keys on).
+//
+//	constraint at the SQL layer is what actually
+//	rejects duplicate inserts; proto.EventID derives
+//	the content-addressed value the constraint keys on).
 func (s *Store) Append(ctx context.Context, o AppendOpts) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -177,6 +185,9 @@ func (s *Store) appendTx(ctx context.Context, tx *sql.Tx, o AppendOpts) error {
 		_, err = tx.ExecContext(ctx, `UPDATE chains SET tip_seq = ?, tip_hash = ?, metadata = ? WHERE chain_id = ?`,
 			o.Seq, o.NewTipHash, o.NewMetadata, o.ChainID)
 	}
+	if err == nil && o.Kind == KindScope && len(o.NewMetadata) > 0 {
+		err = replaceScopeMembersTx(ctx, tx, o.ChainID, o.NewMetadata)
+	}
 	return err
 }
 
@@ -188,6 +199,21 @@ func (s *Store) EventsSince(ctx context.Context, chainID string, since uint64, l
 // EventsSinceInclusive optionally includes seq == since (used for fresh
 // discovery where the caller has no prior cursor and needs the genesis).
 func (s *Store) EventsSinceInclusive(ctx context.Context, chainID string, since uint64, limit int, inclusive bool) ([]Event, error) {
+	events, _, _, err := s.EventsSinceInclusiveBudget(ctx, chainID, since, limit, inclusive, 0)
+	return events, err
+}
+
+// EventsSinceInclusiveBudget stops before the first event that would exceed
+// maxBytes. nextBytes reports that event's encoded size; zero means the page
+// ended by row/count exhaustion. A non-positive maxBytes disables the budget.
+func (s *Store) EventsSinceInclusiveBudget(
+	ctx context.Context,
+	chainID string,
+	since uint64,
+	limit int,
+	inclusive bool,
+	maxBytes int,
+) ([]Event, int, int, error) {
 	op := ">"
 	if inclusive {
 		op = ">="
@@ -196,18 +222,23 @@ func (s *Store) EventsSinceInclusive(ctx context.Context, chainID string, since 
 		`SELECT chain_id, seq, event_id, prev_hash, kind, cbor, stored_at FROM events WHERE chain_id = ? AND seq `+op+` ? ORDER BY seq LIMIT ?`,
 		chainID, since, limit)
 	if err != nil {
-		return nil, err
+		return nil, 0, 0, err
 	}
 	defer rows.Close()
 	var out []Event
+	usedBytes := 0
 	for rows.Next() {
 		var e Event
 		if err := rows.Scan(&e.ChainID, &e.Seq, &e.EventID, &e.PrevHash, &e.Kind, &e.CBOR, &e.StoredAt); err != nil {
-			return nil, err
+			return nil, 0, 0, err
+		}
+		if maxBytes > 0 && usedBytes+len(e.CBOR) > maxBytes {
+			return out, usedBytes, len(e.CBOR), nil
 		}
 		out = append(out, e)
+		usedBytes += len(e.CBOR)
 	}
-	return out, rows.Err()
+	return out, usedBytes, 0, rows.Err()
 }
 
 // EventExists returns true iff event_id is already stored.
@@ -238,23 +269,129 @@ func (s *Store) LatestEvent(ctx context.Context, chainID string) (*Event, error)
 	return &e, nil
 }
 
-// ScopesForMember returns chain_ids of scopes whose metadata lists pk in members.
-// Naive scan; small N in v1.
+// ScopesForMember returns only scopes indexed for pk.
 func (s *Store) ScopesForMember(ctx context.Context, pkBytes []byte) ([]Chain, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT chain_id, tip_seq, tip_hash, metadata FROM chains WHERE chain_id LIKE 'scope:%'`)
+	scopes, _, err := s.ScopesForMemberPage(ctx, pkBytes, "", 256)
+	return scopes, err
+}
+
+// ScopesForMemberPage returns a bounded, ordered membership page. nextAfter
+// is empty on the final page; otherwise pass it back unchanged.
+func (s *Store) ScopesForMemberPage(ctx context.Context, pkBytes []byte, after string, limit int) ([]Chain, string, error) {
+	if limit <= 0 || limit > 256 {
+		limit = 256
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT c.chain_id, c.tip_seq, c.tip_hash, c.metadata
+		   FROM scope_members sm
+		   JOIN chains c ON c.chain_id = sm.chain_id
+		  WHERE sm.member_pub = ? AND c.chain_id > ?
+		  ORDER BY c.chain_id
+		  LIMIT ?`,
+		pkBytes, after, limit+1,
+	)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer rows.Close()
 	var out []Chain
 	for rows.Next() {
 		var c Chain
 		if err := rows.Scan(&c.ID, &c.TipSeq, &c.TipHash, &c.Metadata); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		out = append(out, c)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	nextAfter := ""
+	if len(out) > limit {
+		out = out[:limit]
+		nextAfter = out[len(out)-1].ID
+	}
+	return out, nextAfter, nil
+}
+
+type scopeMemberMetadata struct {
+	Members [][]byte `cbor:"members"`
+}
+
+func replaceScopeMembersTx(ctx context.Context, tx *sql.Tx, chainID string, metadata []byte) error {
+	var decoded scopeMemberMetadata
+	if err := proto.Unmarshal(metadata, &decoded); err != nil {
+		return fmt.Errorf("decode scope members: %w", err)
+	}
+	if len(decoded.Members) > proto.MaxLegacyScopeMembers {
+		return fmt.Errorf("scope member count %d exceeds %d", len(decoded.Members), proto.MaxLegacyScopeMembers)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM scope_members WHERE chain_id = ?`, chainID); err != nil {
+		return err
+	}
+	for _, member := range decoded.Members {
+		if len(member) != 32 {
+			return fmt.Errorf("scope member has length %d", len(member))
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO scope_members (chain_id, member_pub) VALUES (?, ?)`,
+			chainID, member,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) ensureScopeMemberIndex(ctx context.Context) error {
+	var version string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT value FROM schema_state WHERE key = 'scope_members_version'`,
+	).Scan(&version)
+	if err == nil && version == "1" {
+		return nil
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM scope_members`); err != nil {
+		return err
+	}
+	lastChainID := ""
+	for {
+		var chainID string
+		var metadata []byte
+		err := tx.QueryRowContext(ctx,
+			`SELECT chain_id, metadata
+			   FROM chains
+			  WHERE chain_id LIKE 'scope:%' AND chain_id > ?
+			  ORDER BY chain_id
+			  LIMIT 1`,
+			lastChainID,
+		).Scan(&chainID, &metadata)
+		if errors.Is(err, sql.ErrNoRows) {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		if err := replaceScopeMembersTx(ctx, tx, chainID, metadata); err != nil {
+			return fmt.Errorf("%s: %w", chainID, err)
+		}
+		lastChainID = chainID
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO schema_state (key, value) VALUES ('scope_members_version', '1')
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+	); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ---- Replay nonces ----
@@ -318,20 +455,40 @@ func (s *Store) CountUsers(ctx context.Context) (int64, error) {
 // already includes its chain_id, so exposing the list here doesn't
 // leak more than the witness output already does.
 func (s *Store) ListChainIDs(ctx context.Context) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT chain_id FROM chains ORDER BY chain_id`)
+	ids, _, err := s.ListChainIDsPage(ctx, "", 1024)
+	return ids, err
+}
+
+// ListChainIDsPage returns a bounded page for witness discovery.
+func (s *Store) ListChainIDsPage(ctx context.Context, after string, limit int) ([]string, string, error) {
+	if limit <= 0 || limit > 1024 {
+		limit = 1024
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT chain_id FROM chains WHERE chain_id > ? ORDER BY chain_id LIMIT ?`,
+		after, limit+1,
+	)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer rows.Close()
 	out := []string{}
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		out = append(out, id)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	nextAfter := ""
+	if len(out) > limit {
+		out = out[:limit]
+		nextAfter = out[len(out)-1]
+	}
+	return out, nextAfter, nil
 }
 
 // CountChainsByKind returns chain counts grouped by their kind prefix

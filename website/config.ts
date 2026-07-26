@@ -19,7 +19,7 @@ const SITE_DESCRIPTION =
   "fd0 — a zero-knowledge secrets manager you run yourself or use hosted at fd0.sh. " +
   "Ciphertext-only server, hardware-backed identity via YubiKey-PIV, " +
   "end-to-end transparency log with independent witness verification.";
-const SITE_LASTMOD = process.env.FD0_WEBSITE_LASTMOD ?? "2026-06-28";
+const SITE_LASTMOD = process.env.FD0_WEBSITE_LASTMOD ?? "2026-07-26";
 
 type SeoRoute = {
   key: string;
@@ -39,7 +39,7 @@ export const SEO_ROUTE = {
     path: "/",
     title: "fd0 — zero-knowledge secrets manager",
     description:
-      "fd0 is a zero-knowledge secrets manager for passwords, SSH keys, host inventory, Kubernetes and Talos credentials.",
+      "fd0 is a zero-knowledge secrets manager for passwords, SSH keys, host inventory, Kubernetes and Talos credentials, with a desktop app for macOS and Linux.",
   },
   docs: {
     key: "docs",
@@ -60,9 +60,17 @@ export const SEO_ROUTE = {
   docsInstall: {
     key: "docsInstall",
     path: "/docs/install",
-    title: "Install fd0 CLI and agent",
+    title: "Install fd0 — Desktop, CLI, and agent",
     description:
-      "Install the fd0 CLI and agent, initialize a vault, unlock it, and choose the hosted fd0.sh backend or a self-hosted server.",
+      "Download fd0 Desktop for macOS or Linux, install the CLI and agent, initialize a vault, and choose the hosted fd0.sh backend or a self-hosted server.",
+    section: "docs",
+  },
+  docsDesktop: {
+    key: "docsDesktop",
+    path: "/docs/desktop",
+    title: "fd0 Desktop for macOS and Linux",
+    description:
+      "Download fd0 Desktop, see the vault, command palette, SSH hosts, and generator, and learn how the app installs alongside the fd0 CLI and agent.",
     section: "docs",
   },
   docsCli: {
@@ -70,7 +78,15 @@ export const SEO_ROUTE = {
     path: "/docs/cli",
     title: "fd0 CLI daily use",
     description:
-      "Daily fd0 CLI commands for storing secrets, copying values, sharing scopes, syncing devices, checking health, and managing the agent.",
+      "Daily fd0 CLI commands: the shared item grammar, plain secrets, scopes and sharing, item history, unlock methods, and local health checks.",
+    section: "docs",
+  },
+  docsPass: {
+    key: "docsPass",
+    path: "/docs/pass",
+    title: "fd0 password manager",
+    description:
+      "Use fd0 pass for login items, secret and text fields, TOTP codes, passkeys, file attachments, sections, and the interactive browser.",
     section: "docs",
   },
   docsSsh: {
@@ -150,7 +166,7 @@ export const SEO_ROUTE = {
     path: "/spec/crypto",
     title: "fd0 cryptography specification",
     description:
-      "fd0 cryptography reference for Ed25519, X25519, XChaCha20-Poly1305, OEK rotation, passphrase, and YubiKey unlocks.",
+      "fd0 cryptography reference for Ed25519, X25519, AES-256-GCM, Argon2id, OEK rotation, passphrase, and YubiKey unlocks.",
     section: "spec",
   },
   specStorage: {
@@ -158,7 +174,7 @@ export const SEO_ROUTE = {
     path: "/spec/storage",
     title: "fd0 storage format specification",
     description:
-      "fd0 storage reference for the encrypted vault, append-only user and scope chains, event bodies, tombstones, and compaction.",
+      "fd0 storage reference for the encrypted vault, append-only user and scope chains, event bodies, tombstones, and verified history repair.",
     section: "spec",
   },
   specSync: {
@@ -192,12 +208,6 @@ export const SEO_ROUTE = {
     description:
       "Live state of the official fd0 transparency-log witness: pubkey, observed chains, cosignatures, and equivocation status.",
   },
-  impressum: {
-    key: "impressum",
-    path: "/impressum",
-    title: "fd0 legal notice",
-    description: "Legal provider information for fd0.sh.",
-  },
 } satisfies Record<string, SeoRoute>;
 
 export type SeoRouteKey = keyof typeof SEO_ROUTE;
@@ -207,7 +217,9 @@ export const SEO_ROUTES = [
   SEO_ROUTE.docs,
   SEO_ROUTE.docsConcepts,
   SEO_ROUTE.docsInstall,
+  SEO_ROUTE.docsDesktop,
   SEO_ROUTE.docsCli,
+  SEO_ROUTE.docsPass,
   SEO_ROUTE.docsSsh,
   SEO_ROUTE.docsTalos,
   SEO_ROUTE.docsSync,
@@ -223,7 +235,6 @@ export const SEO_ROUTES = [
   SEO_ROUTE.specTranslog,
   SEO_ROUTE.specThreats,
   SEO_ROUTE.witness,
-  SEO_ROUTE.impressum,
 ] as const;
 
 export const sitemapLastmod = (route: SeoRoute) =>
@@ -287,7 +298,7 @@ const ORG_JSONLD = {
       name: SITE_NAME,
       url: SITE_URL,
       logo: `${SITE_URL}/public/logo.svg`,
-      sameAs: ["https://github.com/ValentinKolb/fd0.sh"],
+      sameAs: ["https://github.com/k2b-dev/fd0.sh"],
     },
     {
       "@type": "SoftwareApplication",
@@ -332,6 +343,7 @@ export const { config, plugin, html } = createConfig<PageOptions>({
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#0b0d0c">
+    <meta name="color-scheme" content="dark">
     <meta name="view-transition" content="same-origin">
     <title>${t}</title>
     <meta name="description" content="${d}">

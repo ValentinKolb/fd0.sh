@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"testing"
+
+	"github.com/valentinkolb/fd0.sh/internal/translog"
 )
 
 func openBackupTestStore(t *testing.T) *Store {
@@ -48,6 +50,47 @@ func TestBackupAppendEventsRejectsSameSeqDifferentBytes(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].EventID != "ev1" || !bytes.Equal(got[0].CBOR, []byte("one")) {
 		t.Fatalf("original event must be preserved on conflict, got %+v", got)
+	}
+}
+
+func TestBackupPutSTHRejectsSameSizeDifferentRoot(t *testing.T) {
+	s := openBackupTestStore(t)
+	ctx := context.Background()
+	src := bytes.Repeat([]byte{0xcd}, 32)
+	sth := translog.STH{
+		Head: translog.TreeHead{
+			ChainID:   "scope:s_x",
+			TreeSize:  4,
+			RootHash:  bytes.Repeat([]byte{1}, 32),
+			Timestamp: 10,
+		},
+		Signature: bytes.Repeat([]byte{2}, 64),
+	}
+	if err := s.BackupPutSTH(ctx, src, sth.Head.ChainID, sth); err != nil {
+		t.Fatalf("first put: %v", err)
+	}
+
+	sameRoot := sth
+	sameRoot.Head.Timestamp++
+	sameRoot.Signature = bytes.Repeat([]byte{3}, 64)
+	if err := s.BackupPutSTH(ctx, src, sth.Head.ChainID, sameRoot); err != nil {
+		t.Fatalf("same root must be idempotent: %v", err)
+	}
+	if err := s.BackupPutSTH(ctx, src, "scope:s_other", sth); err == nil {
+		t.Fatal("STH chain substitution accepted")
+	}
+
+	conflict := sth
+	conflict.Head.RootHash = bytes.Repeat([]byte{9}, 32)
+	if err := s.BackupPutSTH(ctx, src, sth.Head.ChainID, conflict); err == nil {
+		t.Fatal("expected conflicting root at same tree size to fail")
+	}
+	got, err := s.BackupCurrentSTH(ctx, src, sth.Head.ChainID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got.Head.RootHash, sth.Head.RootHash) {
+		t.Fatal("conflicting STH replaced the archived root")
 	}
 }
 

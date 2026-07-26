@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration_isolation.sh"
+fd0_test_require_isolation
 
 # Malicious-witness integration test (analogous to
 # integration_malicious_server.sh but on the OTHER side of the
@@ -56,8 +58,8 @@ ok()    { PASS=$((PASS+1)); printf "  \033[32m✓\033[0m %s\n" "$*"; }
 no()    { FAIL=$((FAIL+1)); printf "  \033[31m✗\033[0m %s\n" "$*"; }
 
 cleanup() {
-    pkill -f fd0-test-bad-witness 2>/dev/null || true
-    pkill -f fd0-agent  2>/dev/null || true
+    fd0_test_stop_matching -f fd0-test-bad-witness 2>/dev/null || true
+    fd0_test_stop_matching -f fd0-agent  2>/dev/null || true
     kill $SERVER_PID 2>/dev/null || true
     rm -rf "$HOME_AL" "$SERVER_DB" "$SERVER_DB-wal" "$SERVER_DB-shm" \
            "$SERVER_LOG" "$SERVER_KEY" "$WITNESS_KEY" "$WITNESS_LOG"
@@ -88,7 +90,7 @@ sys.stdout.write(b[32:64].hex())
 
 start_bad_witness() {
     local mode="$1"
-    pkill -f fd0-test-bad-witness 2>/dev/null || true
+    fd0_test_stop_matching -f fd0-test-bad-witness 2>/dev/null || true
     sleep 0.2
     "$FD0_BAD_WITNESS_BIN" \
         --listen=":${WITNESS_PORT}" \
@@ -188,9 +190,9 @@ run_scenario() {
 # ---- Setup ----------------------------------------------------------
 
 phase "Setup"
-pkill -f fd0-server 2>/dev/null || true
-pkill -f fd0-agent  2>/dev/null || true
-pkill -f fd0-test-bad-witness 2>/dev/null || true
+fd0_test_stop_matching -f fd0-server 2>/dev/null || true
+fd0_test_stop_matching -f fd0-agent  2>/dev/null || true
+fd0_test_stop_matching -f fd0-test-bad-witness 2>/dev/null || true
 sleep 0.3
 rm -rf "$HOME_AL" "$SERVER_DB" "$SERVER_LOG" "$SERVER_KEY" "$WITNESS_KEY" "$WITNESS_LOG"
 

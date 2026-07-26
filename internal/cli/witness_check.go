@@ -7,13 +7,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/valentinkolb/fd0.sh/internal/canon"
 	"github.com/valentinkolb/fd0.sh/internal/fdhome"
+	"github.com/valentinkolb/fd0.sh/internal/httpguard"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
 	"github.com/valentinkolb/fd0.sh/internal/translog"
 )
@@ -112,7 +112,10 @@ func NewWitnessCheckClient(cfg fdhome.Config) (*WitnessCheckClient, error) {
 			cfg.WitnessP.MinCosigns, len(pinned))
 	}
 	return &WitnessCheckClient{
-		HTTP:   &http.Client{Timeout: 10 * time.Second},
+		HTTP: &http.Client{
+			CheckRedirect: httpguard.RejectRedirect,
+			Timeout:       10 * time.Second,
+		},
 		Policy: cfg.WitnessP,
 		Pinned: pinned,
 	}, nil
@@ -304,7 +307,7 @@ func (c *WitnessCheckClient) fetchWitnessedSTH(ctx context.Context, witnessURL, 
 	default:
 		return translog.WitnessedSTH{}, fmt.Errorf("witness returned HTTP %s", resp.Status)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body, err := httpguard.ReadBody(resp.Body, 1<<20)
 	if err != nil {
 		return translog.WitnessedSTH{}, err
 	}
@@ -358,7 +361,7 @@ func (c *WitnessCheckClient) fetchHighestProbe(ctx context.Context, witnessURL, 
 	if resp.StatusCode != http.StatusOK {
 		return 0, false, fmt.Errorf("witness highest: HTTP %s", resp.Status)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<10))
+	body, err := httpguard.ReadBody(resp.Body, 1<<10)
 	if err != nil {
 		return 0, false, err
 	}
@@ -390,7 +393,7 @@ func (c *WitnessCheckClient) fetchEquivocationProbe(ctx context.Context, witness
 	if resp.StatusCode != http.StatusOK {
 		return false, fmt.Errorf("witness equivocation: HTTP %s", resp.Status)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<10))
+	body, err := httpguard.ReadBody(resp.Body, 1<<10)
 	if err != nil {
 		return false, err
 	}

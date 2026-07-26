@@ -41,6 +41,29 @@ func TestAcquireWriteAllowsBurstUpToCapacity(t *testing.T) {
 	}
 }
 
+func TestAcquireWritesChargesWholeBatch(t *testing.T) {
+	l, _ := newTestLimiter(t, Config{IdentityWritesPerMin: 5})
+	if d := l.AcquireWrites("alice", 4); !d.Allow {
+		t.Fatalf("batch within capacity denied: %v", d.Retry)
+	}
+	if d := l.AcquireWrite("alice"); !d.Allow {
+		t.Fatal("remaining token should allow one write")
+	}
+	if d := l.AcquireWrite("alice"); d.Allow {
+		t.Fatal("batch must consume four distinct write tokens")
+	}
+}
+
+func TestAcquireWritesRejectsOversizedBatchWithoutConsumingTokens(t *testing.T) {
+	l, _ := newTestLimiter(t, Config{IdentityWritesPerMin: 5})
+	if d := l.AcquireWrites("alice", 6); d.Allow {
+		t.Fatal("batch above capacity must be denied")
+	}
+	if d := l.AcquireWrites("alice", 5); !d.Allow {
+		t.Fatal("denied batch must not consume available tokens")
+	}
+}
+
 func TestAcquireWriteRefillsOverTime(t *testing.T) {
 	l, clk := newTestLimiter(t, Config{IdentityWritesPerMin: 60}) // 1/sec
 	// Drain the bucket.

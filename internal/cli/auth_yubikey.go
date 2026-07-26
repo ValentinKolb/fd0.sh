@@ -143,15 +143,15 @@ func RunAuthAddYubikey(ctx context.Context, touchPolicy string, force bool) erro
 	if err != nil {
 		return err
 	}
-	// Atomicity ordering: same as the passphrase path in `auth.go`.
-	// Vault wrap FIRST so that on chain-append failure the worst case is
-	// an orphan wrap (detected by doctor) rather than a chain advertising
-	// a method that cannot unlock.
-	if err := s.Agent.AddWrap(s.Paths.Vault, newID, proto.AuthYubikey, pp, kUnlock); err != nil {
+	// Authorize the method in the signed chain before asking the agent to
+	// persist its wrap. The agent rejects wraps outside the current auth.set.
+	if err := chain.AppendUser(s.Paths.UserChain, ev); err != nil {
 		return err
 	}
-	if err := chain.AppendUser(s.Paths.UserChain, ev); err != nil {
-		_ = s.Agent.RemoveWrap(s.Paths.Vault, newID)
+	if err := s.Agent.AddWrap(s.Paths.Vault, newID, proto.AuthYubikey, pp, kUnlock); err != nil {
+		if rollbackErr := rollbackAuthSet(s, ev, uctx.LatestAuthSet.Payload.Active); rollbackErr != nil {
+			return fmt.Errorf("add YubiKey auth wrap: %w; restore auth chain: %v", err, rollbackErr)
+		}
 		return err
 	}
 	prefix, _ := ev.PrevHashInput()
@@ -292,7 +292,7 @@ func confirmSlotOverwrite(force bool) error {
 		}
 		return fmt.Errorf("yubikey: cannot probe slot 0x9d before enrollment (%w); pass --force to skip the probe (DANGEROUS — may overwrite an existing key)", err)
 	}
-	defer card.Close()
+	defer func() { _ = card.Close() }()
 	pub, err := card.PublicX25519()
 	if err != nil {
 		// PublicX25519 fails when the slot is empty (the cached pub

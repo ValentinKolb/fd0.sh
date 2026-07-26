@@ -2,11 +2,18 @@ package chain
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/valentinkolb/fd0.sh/internal/crypto"
 	"github.com/valentinkolb/fd0.sh/internal/proto"
+)
+
+var (
+	ErrMalformedMemberKey        = errors.New("chain: malformed member public key")
+	ErrScopeHistoryNonContiguous = errors.New("chain: scope history is non-contiguous")
 )
 
 // Opener decrypts a libsodium sealed-box that was sealed to this principal's
@@ -45,7 +52,7 @@ func (o LocalOpener) Open(sealed []byte) ([]byte, error) {
 // ScopeState is the post-replay state of one scope chain.
 type ScopeState struct {
 	ScopeID       proto.ScopeID
-	MemberSet     [][]byte // super_pubs, sorted by bytes
+	MemberSet     [][]byte          // super_pubs, sorted by bytes
 	OEKs          map[uint64][]byte // version → 32B key
 	CurrentOEKVer uint64
 	SecretIndex   map[string]ScopeSecret // secret_id → latest record
@@ -60,6 +67,22 @@ type ScopeSecret struct {
 	Record  *proto.SecretRecord // nil = tombstone
 }
 
+// SecretVersion is one observed state of a secret during replay.
+//
+// There is no timestamp: SignedPrefix carries none (PROTOCOL.md §4.1), so
+// ordering is by Seq only. Any wall-clock time a caller shows must come
+// from inside the decrypted record payload, never from the envelope.
+type SecretVersion struct {
+	Seq     uint64
+	EventID string
+	Author  []byte
+	Record  *proto.SecretRecord // nil = tombstone
+}
+
+// SecretObserver is notified for every secret.set version that replay
+// applies, in chain order. See ReplayScopeObserved.
+type SecretObserver func(secretID string, v SecretVersion)
+
 // ReplayScope verifies every event in path and returns the post-replay state.
 //
 // Parameters:
@@ -73,28 +96,67 @@ type ScopeSecret struct {
 //     Open call is the only I/O the replay performs, so the rest of the
 //     code path stays testable in isolation.
 //
-// Compacted-chain handling (STORAGE.md §5.4): if the chain has a gap in
-// `seq` between two events, we set `incomplete` for the affected event.
-// While `incomplete` is true, projection-content integrity checks are
-// skipped — the local secret_index is by definition incomplete past a
-// gap, so a content comparison would false-positive. `incomplete` clears
-// on the next member.change that successfully populates secret_index.
-//
 // Pre-admit handling: if a member.change event has no key_delivery
 // addressed to us (we joined later in the chain), we advance MemberSet
 // and OEKVersion only; projection decryption is skipped. Our admit
 // event's projection is the authoritative re-establishment.
 //
 // THREAT: T20 (bit-flipping of on-disk chain — every event signature
-//                checked here),
-//         T27 (foreign-author event splice — author ∈ MemberSet check),
-//         T29 (insider projection-poisoning for existing members),
-//         T30 (no-op membership change rejection).
+//
+//	       checked here),
+//	T27 (foreign-author event splice — author ∈ MemberSet check),
+//	T29 (insider projection-poisoning for existing members),
+//	T30 (no-op membership change rejection).
 func ReplayScope(path string, ownSuperPub, ownX25519Pub []byte, opener Opener) (*ScopeState, error) {
+	return ReplayScopeObserved(path, ownSuperPub, ownX25519Pub, opener, nil)
+}
+
+// ReplayScopeObserved is ReplayScope plus an optional per-version observer.
+//
+// Verification is IDENTICAL to ReplayScope — the observer only watches what
+// replay already computed; it can neither skip nor reorder a check, and a
+// non-nil observer never changes the returned ScopeState.
+//
+// The observer fires exactly once per applied secret.set (including
+// tombstones, where Record is nil), in chain order. It does NOT fire for the
+// member.change projection rebuild: that rebuild is a re-encryption of the
+// current state under a new OEK, not a user edit, so surfacing it as a
+// version would invent history that never happened. It also does not fire
+// for pre-admit secret.set events — those are silently skipped by
+// applySecretSet because the OEK era predates our admit, and a version we
+// cannot decrypt must not appear as a phantom entry.
+//
+// Records handed to the observer are independently allocated copies, so they
+// stay valid after replay wipes its per-event plaintext buffers.
+func ReplayScopeObserved(
+	path string,
+	ownSuperPub, ownX25519Pub []byte,
+	opener Opener,
+	observe SecretObserver,
+) (*ScopeState, error) {
 	events, err := ReadScopeEvents(path)
 	if err != nil {
 		return nil, err
 	}
+	return ReplayScopeEvents(events, ownSuperPub, ownX25519Pub, opener, observe)
+}
+
+// ReplayScopeEvents is ReplayScopeObserved over an already-decoded event
+// slice. ReplayScopeObserved is a thin wrapper around it, so the two share
+// one verification loop — a candidate history held in memory is checked by
+// exactly the same code that checks a file, and there is no second, weaker
+// replay to drift out of sync.
+//
+// The legacy-history migration (cli.Session.MigrateLegacyScopeChains) uses
+// this to replay a server-supplied candidate BEFORE anything is written to
+// disk: the candidate has to replay to the tip the vault already binds, and
+// that has to be provable without first committing it.
+func ReplayScopeEvents(
+	events []*proto.ScopeEvent,
+	ownSuperPub, ownX25519Pub []byte,
+	opener Opener,
+	observe SecretObserver,
+) (*ScopeState, error) {
 	if len(events) == 0 {
 		return nil, nil
 	}
@@ -103,7 +165,6 @@ func ReplayScope(path string, ownSuperPub, ownX25519Pub []byte, opener Opener) (
 		SecretIndex: make(map[string]ScopeSecret),
 	}
 	var prevHash []byte
-	incomplete := false
 	for i, ev := range events {
 		sp := &ev.SignedPrefix
 		// Envelope checks.
@@ -115,24 +176,11 @@ func ReplayScope(path string, ownSuperPub, ownX25519Pub []byte, opener Opener) (
 			if sp.Scope == nil || *sp.Scope != st.ScopeID.String() {
 				return nil, fmt.Errorf("scope[%d]: scope mismatch", i)
 			}
-			// SECURITY (codex audit 🔴 scope.go:113): forward-only
-			// monotonicity. The previous gap-tolerant code accepted
-			// any sp.Seq != TipSeq+1 (incl. ==TipSeq or <TipSeq) as
-			// "compaction gap" and skipped the prev_hash check. A
-			// tampered local file could re-replay older signed
-			// events out of order, then close with the real
-			// vault-bound tip so CompareScopeTip still passes while
-			// SecretIndex contains stale data. Only sp.Seq > TipSeq+1
-			// is a legitimate compaction-induced forward gap.
-			switch {
-			case sp.Seq <= st.TipSeq:
-				return nil, fmt.Errorf("scope[%d]: non-monotone seq=%d (tip=%d)", i, sp.Seq, st.TipSeq)
-			case sp.Seq == st.TipSeq+1:
-				if !bytes.Equal(sp.PrevHash, prevHash) {
-					return nil, fmt.Errorf("scope[%d]: prev_hash mismatch", i)
-				}
-			default: // sp.Seq > TipSeq+1 — forward gap (compacted prefix)
-				incomplete = true
+			if sp.Seq != st.TipSeq+1 {
+				return nil, fmt.Errorf("%w: scope[%d] seq is %d, want %d", ErrScopeHistoryNonContiguous, i, sp.Seq, st.TipSeq+1)
+			}
+			if !bytes.Equal(sp.PrevHash, prevHash) {
+				return nil, fmt.Errorf("%w: scope[%d] prev_hash mismatch", ErrScopeHistoryNonContiguous, i)
 			}
 			if !memberContains(st.MemberSet, sp.Author) {
 				return nil, fmt.Errorf("scope[%d]: author not in member set", i)
@@ -166,22 +214,15 @@ func ReplayScope(path string, ownSuperPub, ownX25519Pub []byte, opener Opener) (
 				}
 				oekPlain = p
 			}
-			leave, err := applyMemberChange(st, ev, ownSuperPub, oekPlain, incomplete)
+			leave, err := applyMemberChange(st, ev, ownSuperPub, oekPlain)
 			if err != nil {
 				return nil, fmt.Errorf("scope[%d]: %w", i, err)
 			}
 			if leave {
 				st.Left = true
 			}
-			// After a successful projection-populating apply,
-			// secret_index is the authoritative snapshot for the
-			// current OEK era again. Clear incomplete so subsequent
-			// member.changes get full integrity checks.
-			if !leave {
-				incomplete = false
-			}
 		case proto.KindSecretSet:
-			if err := applySecretSet(st, ev); err != nil {
+			if err := applySecretSet(st, ev, observe); err != nil {
 				return nil, fmt.Errorf("scope[%d]: %w", i, err)
 			}
 		default:
@@ -201,6 +242,69 @@ func ReplayScope(path string, ownSuperPub, ownX25519Pub []byte, opener Opener) (
 		}
 	}
 	return st, nil
+}
+
+// ValidateScopeContinuity verifies the local append-only sequence and hash
+// links without decrypting event bodies. Sync uses it to identify legacy
+// compacted files before replay and repair them from the verified server copy.
+func ValidateScopeContinuity(path string) error {
+	events, err := ReadScopeEvents(path)
+	if err != nil {
+		return err
+	}
+	return validateScopeContinuity(events)
+}
+
+// ScopeFileTip returns the tip committed by the final local event. It does not
+// verify signatures; callers that expose state must still use ReplayScope.
+func ScopeFileTip(path string) (proto.ChainTip, bool, error) {
+	events, err := ReadScopeEvents(path)
+	if err != nil {
+		return proto.ChainTip{}, false, err
+	}
+	if len(events) == 0 {
+		return proto.ChainTip{}, false, nil
+	}
+	last := events[len(events)-1]
+	input, err := last.PrevHashInput()
+	if err != nil {
+		return proto.ChainTip{}, false, err
+	}
+	hash := proto.HashPrefix(input)
+	return proto.ChainTip{
+		Seq:  last.SignedPrefix.Seq,
+		Hash: append([]byte(nil), hash[:]...),
+	}, true, nil
+}
+
+func validateScopeContinuity(events []*proto.ScopeEvent) error {
+	if len(events) == 0 {
+		return nil
+	}
+	if events[0].SignedPrefix.Seq != 0 {
+		return fmt.Errorf("%w: first seq is %d, want 0", ErrScopeHistoryNonContiguous, events[0].SignedPrefix.Seq)
+	}
+	prevInput, err := events[0].PrevHashInput()
+	if err != nil {
+		return err
+	}
+	prevHash := proto.HashPrefix(prevInput)
+	for i := 1; i < len(events); i++ {
+		sp := &events[i].SignedPrefix
+		wantSeq := events[i-1].SignedPrefix.Seq + 1
+		if sp.Seq != wantSeq {
+			return fmt.Errorf("%w: scope[%d] seq is %d, want %d", ErrScopeHistoryNonContiguous, i, sp.Seq, wantSeq)
+		}
+		if !bytes.Equal(sp.PrevHash, prevHash[:]) {
+			return fmt.Errorf("%w: scope[%d] prev_hash mismatch", ErrScopeHistoryNonContiguous, i)
+		}
+		prevInput, err = events[i].PrevHashInput()
+		if err != nil {
+			return err
+		}
+		prevHash = proto.HashPrefix(prevInput)
+	}
+	return nil
 }
 
 // verifyScopeGenesis runs the genesis-only checks of ReplayScope. Pulled
@@ -251,20 +355,27 @@ func findOurKeyDelivery(ev *proto.ScopeEvent, ownX25519Pub []byte) []byte {
 //  3. We have no key_delivery (oekPlain == nil) → pre-admit event during
 //     discovery; advance MemberSet+OEKVersion, skip projection.
 //  4. Full processing: decrypt projection, verify content (unless we're
-//     the new admit or the chain is past a gap), install OEK + new
+//     the new admit), install OEK + new
 //     secret_index.
-//
-// `compacted=true` skips the projection-content integrity check: the
-// local secret_index is incomplete past a chain gap (STORAGE.md §5.4),
-// so projection-vs-index comparison would false-positive.
-func applyMemberChange(st *ScopeState, ev *proto.ScopeEvent, ownSuperPub, oekPlain []byte, compacted bool) (bool, error) {
+func applyMemberChange(st *ScopeState, ev *proto.ScopeEvent, ownSuperPub, oekPlain []byte) (bool, error) {
 	sp := &ev.SignedPrefix
 	pl := &sp.Payload
+	if len(st.MemberSet) > proto.MaxLegacyScopeMembers {
+		return false, errors.New("member.change: prior member set exceeds protocol limit")
+	}
+	if len(sp.KeyDeliveries) > proto.MaxKeyDeliveries {
+		return false, errors.New("member.change: too many key_deliveries")
+	}
 	if pl.Op != proto.OpAdd && pl.Op != proto.OpRemove {
 		return false, fmt.Errorf("member.change: bad op %q", pl.Op)
 	}
-	if len(pl.Member) == 0 {
-		return false, errors.New("member.change: empty member pubkey")
+	if len(pl.Member) != ed25519.PublicKeySize {
+		return false, fmt.Errorf(
+			"%w: member.change target has %d bytes, want %d",
+			ErrMalformedMemberKey,
+			len(pl.Member),
+			ed25519.PublicKeySize,
+		)
 	}
 	// SECURITY (codex audit 🔴 scope.go:249): no-op membership
 	// changes MUST be rejected. add of an existing member or
@@ -280,12 +391,18 @@ func applyMemberChange(st *ScopeState, ev *proto.ScopeEvent, ownSuperPub, oekPla
 		if isMember {
 			return false, fmt.Errorf("member.change: redundant add of existing member %x", pl.Member[:8])
 		}
+		if len(st.MemberSet) >= proto.MaxScopeMembers {
+			return false, errors.New("member.change: scope member limit reached")
+		}
 	case proto.OpRemove:
 		if !isMember {
 			return false, fmt.Errorf("member.change: remove of non-member %x", pl.Member[:8])
 		}
 	}
 	want := postMutationSet(st.MemberSet, pl.Member, pl.Op)
+	if len(sp.KeyDeliveries) != len(want) {
+		return false, errors.New("member.change: key_deliveries don't match post-mutation set")
+	}
 	got := recipientSet(sp.KeyDeliveries)
 	if !sameSet(want, got) {
 		return false, errors.New("member.change: key_deliveries don't match post-mutation set")
@@ -329,10 +446,9 @@ func applyMemberChange(st *ScopeState, ev *proto.ScopeEvent, ownSuperPub, oekPla
 	// Projection verification (PROTOCOL.md §4.5 steps 3–4): every
 	// non-tombstone in our index must appear byte-identically in the
 	// projection, and the projection must not inject unknown ids.
-	// Skipped for our own admit event (no prior local state) and past
-	// chain gaps (incomplete local state would false-positive).
+	// Skipped only for our own admit event, where no prior local state exists.
 	weAreNewMember := bytes.Equal(pl.Member, ownSuperPub) && pl.Op == proto.OpAdd
-	if !weAreNewMember && !compacted {
+	if !weAreNewMember {
 		projIDs := map[string]*proto.SecretRecord{}
 		for _, sec := range proj.Secrets {
 			projIDs[sec.ID] = sec.Record
@@ -399,7 +515,10 @@ func applyMemberChange(st *ScopeState, ev *proto.ScopeEvent, ownSuperPub, oekPla
 // happens during discovery when we receive pre-admit events whose OEK
 // era predates our admit. Our admit's projection is authoritative for
 // those secrets.
-func applySecretSet(st *ScopeState, ev *proto.ScopeEvent) error {
+//
+// observe (may be nil) is notified once the version has been fully verified
+// and installed — after, never instead of, the checks above it.
+func applySecretSet(st *ScopeState, ev *proto.ScopeEvent, observe SecretObserver) error {
 	sp := &ev.SignedPrefix
 	if len(sp.KeyDeliveries) != 0 {
 		return errors.New("secret.set: key_deliveries must be empty")
@@ -432,11 +551,46 @@ func applySecretSet(st *ScopeState, ev *proto.ScopeEvent) error {
 	if err != nil {
 		return err
 	}
+	eventID := proto.EventID(prefix)
 	st.SecretIndex[body.ID] = ScopeSecret{
-		EventID: proto.EventID(prefix),
+		EventID: eventID,
 		Record:  body.Record,
 	}
+	if observe != nil {
+		// Hand out a detached copy: `plain` (which body.Record may alias)
+		// is wiped when this function returns, and an observer keeps its
+		// versions for the whole replay.
+		record, cErr := cloneSecretRecord(body.Record)
+		if cErr != nil {
+			return fmt.Errorf("secret.set: copy record: %w", cErr)
+		}
+		observe(body.ID, SecretVersion{
+			Seq:     sp.Seq,
+			EventID: eventID,
+			Author:  append([]byte(nil), sp.Author...),
+			Record:  record,
+		})
+	}
 	return nil
+}
+
+// cloneSecretRecord returns an independently allocated copy of rec (nil for a
+// tombstone). Round-tripping through the deterministic codec is the same
+// technique applyMemberChange uses to detach projection records from the
+// plaintext buffer that is about to be wiped.
+func cloneSecretRecord(rec *proto.SecretRecord) (*proto.SecretRecord, error) {
+	if rec == nil {
+		return nil, nil
+	}
+	buf, err := proto.Marshal(rec)
+	if err != nil {
+		return nil, err
+	}
+	var fresh proto.SecretRecord
+	if err := proto.Unmarshal(buf, &fresh); err != nil {
+		return nil, err
+	}
+	return &fresh, nil
 }
 
 // ProjectionAAD returns the AAD used for AEAD-sealing the member.change
@@ -578,12 +732,7 @@ func sameSet(a, b [][]byte) bool {
 }
 
 func sortBytes(s [][]byte) [][]byte {
-	// Insertion sort — set sizes are small (≤1000 by spec, typically <10).
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && bytes.Compare(s[j-1], s[j]) > 0; j-- {
-			s[j-1], s[j] = s[j], s[j-1]
-		}
-	}
+	sort.Slice(s, func(i, j int) bool { return bytes.Compare(s[i], s[j]) < 0 })
 	return s
 }
 

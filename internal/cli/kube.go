@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -285,7 +286,34 @@ func storeKubeconfig(ctx context.Context, s *Session, scopeID string, k *kubecon
 		kubeconfig.TypeKubeconfig, k.Marshal())
 }
 
-func RunKubeList(ctx context.Context, scopeID string, anyTags, noTags []string) error {
+// kubeListRow is the machine-readable shape of one cluster.
+//
+// The credentials — CA, client cert, client key, bearer token — are absent by
+// construction: the row has no field to hold them. What a caller gets is how to
+// reach the cluster and which kind of credential is on file, which is what a
+// listing is for; the material itself comes out via `fd0 kube sync`.
+type kubeListRow struct {
+	Name                  string   `json:"name"`
+	Server                string   `json:"server"`
+	Auth                  string   `json:"auth"`
+	Namespace             string   `json:"namespace,omitempty"`
+	InsecureSkipTLSVerify bool     `json:"insecureSkipTlsVerify,omitempty"`
+	Description           string   `json:"description,omitempty"`
+	Tags                  []string `json:"tags,omitempty"`
+	Scope                 string   `json:"scope,omitempty"`
+	ScopeID               string   `json:"scopeId"`
+}
+
+// kubeAuthKind names the credential a cluster authenticates with. Shared by the
+// human and JSON listings so the two cannot disagree about the same record.
+func kubeAuthKind(k *kubeconfig.Kubeconfig) string {
+	if k.Token != "" && k.ClientCert == "" {
+		return "token"
+	}
+	return "cert"
+}
+
+func RunKubeList(ctx context.Context, scopeID string, anyTags, noTags []string, jsonOut bool) error {
 	s, err := Open(ctx)
 	if err != nil {
 		return err
@@ -297,15 +325,29 @@ func RunKubeList(ctx context.Context, scopeID string, anyTags, noTags []string) 
 	}
 	kk = filterKubeconfigs(kk, anyTags, noTags)
 	kubeconfig.SortKubeconfigs(kk)
+	if jsonOut {
+		rows := make([]kubeListRow, 0, len(kk))
+		for _, k := range kk {
+			rows = append(rows, kubeListRow{
+				Name:                  k.Name,
+				Server:                k.Server,
+				Auth:                  kubeAuthKind(k),
+				Namespace:             k.Namespace,
+				InsecureSkipTLSVerify: k.InsecureSkipTLSVerify,
+				Description:           k.Description,
+				Tags:                  k.Tags,
+				Scope:                 scopeLabelOf(s, k.Scope),
+				ScopeID:               k.Scope,
+			})
+		}
+		return json.NewEncoder(os.Stdout).Encode(rows)
+	}
 	if len(kk) == 0 {
 		stderrln("no kubeconfigs")
 		return nil
 	}
 	for _, k := range kk {
-		auth := "cert"
-		if k.Token != "" && k.ClientCert == "" {
-			auth = "token"
-		}
+		auth := kubeAuthKind(k)
 		extra := ""
 		if k.Namespace != "" {
 			extra = "  ns=" + k.Namespace
@@ -381,42 +423,70 @@ func RunKubeMove(ctx context.Context, name, fromScope, toScope string, force boo
 		return err
 	}
 	defer s.Close()
-	r, err := s.GetTypedSecret(fromScope, kubeNamePrefix+name)
+	return s.MoveItem(ctx, KindKube, name, fromScope, toScope, force)
+}
+
+// KubeEditOpts patches an existing kubeconfig. The credential material (CA,
+// client cert/key, bearer token) is absent on purpose: rotating a credential is
+// `fd0 kube add --force` or the talos refresh path, both of which replace the
+// whole bundle at once, and neither is something a partial patch should be able
+// to half-apply. InsecureSkipTLSVerify is absent for the same reason it is not
+// "metadata" — flipping it silently disarms cluster TLS verification.
+type KubeEditOpts struct {
+	Name        string
+	Scope       string
+	Server      *string
+	Namespace   *string
+	Description *string
+	Tags        *[]string
+}
+
+// RunKubeEdit changes only the fields the user named, leaving the rest alone.
+func RunKubeEdit(ctx context.Context, o KubeEditOpts) error {
+	if o.Name == "" {
+		return errors.New("kube edit: NAME required")
+	}
+	return EditItem(ctx, KindKube, o.Scope, o.Name,
+		decodeKubeconfig,
+		func(k *kubeconfig.Kubeconfig) (bool, error) {
+			changed := false
+			setString(&k.Server, o.Server, &changed)
+			setString(&k.Namespace, o.Namespace, &changed)
+			setString(&k.Description, o.Description, &changed)
+			setStrings(&k.Tags, o.Tags, &changed)
+			return changed, nil
+		},
+		func(k *kubeconfig.Kubeconfig) error { return k.Validate() },
+		func(k *kubeconfig.Kubeconfig) (string, any) { return kubeconfig.TypeKubeconfig, k.Marshal() },
+	)
+}
+
+// RunKubeRename renames a kubeconfig. The name is both the record name and a
+// field inside the payload — it becomes the cluster, user and context name in
+// the rendered config — so the stored copy is rewritten to match.
+func RunKubeRename(ctx context.Context, scopeID, oldName, newName string, force bool) error {
+	s, err := Open(ctx)
 	if err != nil {
 		return err
 	}
-	k, err := decodeKubeconfig(*r)
-	if err != nil {
-		return err
-	}
-	to, err := s.resolveScopeID(toScope)
-	if err != nil {
-		return err
-	}
-	if r.ScopeID == to {
-		return fmt.Errorf("source and destination scopes are the same: %s", scopeName(s, to))
-	}
-	if err := ensureNoDuplicate(s, to, kubeNamePrefix, name, force); err != nil {
-		return err
-	}
-	k.Scope = to
-	if err := storeKubeconfig(ctx, s, to, k); err != nil {
-		return err
-	}
-	if err := s.RemoveTypedSecret(ctx, r.ScopeID, r.Name); err != nil {
-		return fmt.Errorf("moved kube %q to %s but failed to remove from %s: %w (clean up with: fd0 kube rm %s --scope %s)",
-			name, scopeName(s, to), scopeName(s, r.ScopeID), err, name, scopeName(s, r.ScopeID))
-	}
-	stderrln("✓ moved kube %q: %s → %s", name, scopeName(s, r.ScopeID), scopeName(s, to))
-	if err := renderAndAutoMergeKube(s); err != nil {
-		return err
-	}
-	hintSyncForPeers()
-	return nil
+	defer s.Close()
+	return s.RenameItem(ctx, KindKube, scopeID, oldName, newName, force,
+		func(payload []byte, name string) ([]byte, error) {
+			k, err := kubeconfig.Unmarshal(payload)
+			if err != nil {
+				return nil, err
+			}
+			k.Name = name
+			if err := k.Validate(); err != nil {
+				return nil, err
+			}
+			return json.Marshal(k.Marshal())
+		},
+	)
 }
 
 func RunKubeEnable(ctx context.Context, merge bool) error {
-	if err := RunKubeSync(ctx, merge); err != nil {
+	if err := RunKubeSync(ctx, merge, false); err != nil {
 		return err
 	}
 	if err := setProjectionConfig("kube", true, merge); err != nil {
@@ -438,7 +508,10 @@ func RunKubeDisable(_ context.Context) error {
 	return nil
 }
 
-func RunKubeSync(ctx context.Context, merge bool) error {
+func RunKubeSync(ctx context.Context, merge, replaceActive bool) error {
+	if replaceActive && !merge {
+		return errors.New("kube sync: --replace-active requires --merge")
+	}
 	// Render under flock; close the session BEFORE shelling out to
 	// kubectl so a slow kubectl plugin / blocked filesystem can't
 	// block every other fd0 command on the lock.
@@ -454,7 +527,7 @@ func RunKubeSync(ctx context.Context, merge bool) error {
 		s.Close()
 	}
 	if merge {
-		if err := mergeKubeconfigFile(kubeconfPath(), userKubeconfigPath()); err != nil {
+		if err := mergeKubeconfigFile(kubeconfPath(), userKubeconfigPath(), replaceActive); err != nil {
 			return err
 		}
 		stderrln("✓ merged into %s", userKubeconfigPath())
