@@ -36,8 +36,7 @@ chmod +x "$RELEASE/fd0-desktop_0.1.0_linux_arm64.AppImage"
     shasum -a 256 fd0-desktop_* | awk '{print $1 "  " $2}'
   fi
 ) > "$RELEASE/checksums.txt"
-printf 'test signature\n' > "$RELEASE/checksums.txt.sig"
-printf 'desktop-v0.1.0\n' > "$RELEASE/checksums.txt.pem"
+printf 'desktop-v0.1.0\n' > "$RELEASE/checksums.txt.sigstore.json"
 
 OLD_DESKTOP_RELEASE="$BASE/releases/download/desktop-v0.0.9"
 mkdir -p "$OLD_DESKTOP_RELEASE"
@@ -56,8 +55,7 @@ chmod +x "$OLD_DESKTOP_RELEASE/fd0-desktop_0.0.9_linux_arm64.AppImage"
     shasum -a 256 fd0-desktop_* | awk '{print $1 "  " $2}'
   fi
 ) > "$OLD_DESKTOP_RELEASE/checksums.txt"
-printf 'test signature\n' > "$OLD_DESKTOP_RELEASE/checksums.txt.sig"
-printf 'desktop-v0.0.9\n' > "$OLD_DESKTOP_RELEASE/checksums.txt.pem"
+printf 'desktop-v0.0.9\n' > "$OLD_DESKTOP_RELEASE/checksums.txt.sigstore.json"
 
 make_client_release() {
   version=$1
@@ -193,6 +191,7 @@ identity=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --certificate) certificate=$2; shift 2 ;;
+    --bundle) certificate=$2; shift 2 ;;
     --certificate-identity-regexp) identity=$2; shift 2 ;;
     *) shift ;;
   esac
