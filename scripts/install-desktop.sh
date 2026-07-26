@@ -345,12 +345,11 @@ expected=$(awk -v target="$ASSET" '$2 == target || $2 == "*"target {print $1}' "
 actual=$(sha256_file "$TMP/$ASSET")
 [ "$actual" = "$expected" ] || die "SHA-256 mismatch; refusing to install"
 
-curl -fsSL "$DL/checksums.txt.sig" -o "$TMP/checksums.txt.sig" || die "missing checksums.txt.sig"
-curl -fsSL "$DL/checksums.txt.pem" -o "$TMP/checksums.txt.pem" || die "missing checksums.txt.pem"
+curl -fsSL "$DL/checksums.txt.sigstore.json" -o "$TMP/checksums.txt.sigstore.json" \
+    || die "missing checksums.txt.sigstore.json"
 IDENTITY_TAG=$(printf '%s' "$VERSION" | sed 's/\./\\./g')
 "$COSIGN" verify-blob \
-    --certificate "$TMP/checksums.txt.pem" \
-    --signature "$TMP/checksums.txt.sig" \
+    --bundle "$TMP/checksums.txt.sigstore.json" \
     --certificate-identity-regexp "^https://github\\.com/k2b-dev/fd0\\.sh/\\.github/workflows/release-desktop\\.yml@refs/tags/${IDENTITY_TAG}$" \
     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
     "$TMP/checksums.txt" >/dev/null 2>&1 || die "Cosign verification failed"

@@ -413,8 +413,6 @@ jobs:
           done > checksums.txt
           cosign sign-blob --yes \
             --bundle checksums.txt.sigstore.json \
-            --output-signature checksums.txt.sig \
-            --output-certificate checksums.txt.pem \
             checksums.txt
 
       - name: verify signed manifest with embedded verifier
