@@ -67,6 +67,7 @@ for spec in \
     "fd0-test-mitm:./cmd/fd0-test-mitm" \
     "fd0-test-bad-witness:./cmd/fd0-test-bad-witness" \
     "fd0-test-drop-scope-event:./tests/helpers/drop_scope_event" \
+    "fd0-test-tamper-scope-link:./tests/helpers/tamper_scope_link" \
     "fd0-test-compact-scope-chain:./tests/helpers/compact_scope_chain"; do
     name=${spec%%:*}
     package=${spec#*:}

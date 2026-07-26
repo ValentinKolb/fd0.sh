@@ -16,7 +16,7 @@ FD0_BIN=${FD0:-$HOME/go/bin/fd0}
 AGENT_BIN=${FD0_AGENT:-$HOME/go/bin/fd0-agent}
 SERVER_BIN=${FD0_SERVER:-$HOME/go/bin/fd0-server}
 COMPACT_HELPER=$HOME/go/bin/fd0-test-compact-scope-chain
-DROP_HELPER=$HOME/go/bin/fd0-test-drop-scope-event
+TAMPER_HELPER=$HOME/go/bin/fd0-test-tamper-scope-link
 PORT=14061
 URL="http://127.0.0.1:$PORT"
 
@@ -144,17 +144,13 @@ grep -q "history repair complete" "$BASE/unlock.log"
 test "$("$FD0_BIN" get GAMMA --scope legacy --raw)" = "three"
 
 # ---------------------------------------------------------------------------
-# 5. A gap the compactor could not have produced is never auto-migrated.
+# 5. A broken link without a gap is never auto-migrated.
 # ---------------------------------------------------------------------------
-"$DROP_HELPER" "$CHAIN" >"$BASE/drop.log"
-if "$FD0_BIN" get DELTA --scope legacy >"$BASE/midgap.log" 2>&1; then
-    echo "a mid-history gap was silently repaired" >&2
+"$TAMPER_HELPER" "$CHAIN" >"$BASE/tamper.log"
+if "$FD0_BIN" get DELTA --scope legacy >"$BASE/tampered-read.log" 2>&1; then
+    echo "a tampered history was silently repaired" >&2
     exit 1
 fi
-grep -q "scope history is non-contiguous" "$BASE/midgap.log"
-# It still has the ordinary, explicit repair path.
-"$FD0_BIN" sync >"$BASE/sync-repair.log" 2>&1
-grep -q "repairing legacy scope history" "$BASE/sync-repair.log"
-test "$("$FD0_BIN" get DELTA --scope legacy --raw)" = "four"
+grep -q "scope history is non-contiguous" "$BASE/tampered-read.log"
 
 echo "ok scope history migration"

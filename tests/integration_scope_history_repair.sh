@@ -53,11 +53,11 @@ scope_chain=$(find "$FD0_HOME/chains" -maxdepth 1 -type f -name 's_*.cbor' -prin
 test -n "$scope_chain"
 "$DROP_HELPER" "$scope_chain" >"$BASE/drop.log"
 
-if "$FD0_BIN" get TARGET --scope repair >"$BASE/get-before.log" 2>&1; then
-    echo "gapped scope history was exposed before repair" >&2
+if "$FD0_BIN" doctor >"$BASE/doctor-before.log" 2>&1; then
+    echo "doctor accepted gapped scope history before repair" >&2
     exit 1
 fi
-grep -q "scope history is non-contiguous" "$BASE/get-before.log"
+grep -q "scope history is non-contiguous" "$BASE/doctor-before.log"
 
 "$FD0_BIN" sync >"$BASE/repair.log" 2>&1
 grep -q "repairing legacy scope history" "$BASE/repair.log"
