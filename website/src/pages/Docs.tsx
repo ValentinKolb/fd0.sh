@@ -278,6 +278,13 @@ const InstallBody = () => (
       commands too. Take the CLI alone on servers and machines where a window
       would never open.
     </P>
+    <Box>{`$ curl -fsSL https://fd0.sh/install | sh`}</Box>
+    <P>
+      The installer asks whether to install Desktop or the CLI. For a CLI
+      install, it also asks whether to include YubiKey support. Run the same
+      command again to update: your current product and flavor are selected by
+      default, and nothing changes until you confirm.
+    </P>
 
     <H2 id="desktop">Install fd0 Desktop</H2>
     <DownloadCta
@@ -327,7 +334,7 @@ $ cosign version`}</Box>
       The CLI-only installer requires <Link href="https://docs.sigstore.dev/cosign/system_config/installation/">Cosign</Link>{" "}
       to authenticate release manifests. Install it first.
     </P>
-    <Box>{`$ curl -fsSL https://fd0.sh/install | sh
+    <Box>{`$ curl -fsSL https://fd0.sh/install | sh -s -- --flavor=standard
 $ fd0 version
 fd0 <version> standard`}</Box>
     <P>
@@ -345,8 +352,10 @@ fd0 <version> standard`}</Box>
       <Code>--allow-downgrade</Code> to move backwards),{" "}
       <Code>--flavor=auto|standard|yubikey</Code> chooses the build,{" "}
       <Code>--yubikey</Code> is the shortcut for the PIV one, and{" "}
-      <Code>-y</Code> answers the upgrade prompt. <Code>FD0_VERSION</Code> and{" "}
-      <Code>FD0_FLAVOR</Code> do the same from the environment.
+      <Code>-y</Code> skips prompts and keeps the non-interactive default on
+      the CLI unless a product or flavor is selected explicitly.{" "}
+      <Code>FD0_VERSION</Code> and <Code>FD0_FLAVOR</Code> provide the same
+      version and flavor choices from the environment.
     </P>
     <H2>Install the YubiKey flavor</H2>
     <Box>{`$ curl -fsSL https://fd0.sh/install | sh -s -- --yubikey

@@ -18,7 +18,8 @@
 #
 # Installs `fd0` and `fd0-agent` into ~/.local/bin (default) or
 # /usr/local/bin (--system), seeds ~/.fd0/config.toml if absent,
-# and prints a PATH hint when ~/.local/bin isn't on $PATH.
+# and prints a PATH hint when ~/.local/bin isn't on $PATH. Without an
+# explicit product or flavor, interactive runs offer Desktop or CLI.
 #
 # Doubles as an upgrade script: detects an existing install, prints
 # `current → new`, and asks before touching anything. Verifies the
@@ -40,6 +41,10 @@ VERSION="${FD0_VERSION:-latest}"
 ASSUME_YES=0
 ALLOW_DOWNGRADE=0
 BINARIES="fd0 fd0-agent"
+FLAVOR_EXPLICIT=0
+if [ "${FD0_FLAVOR+x}" = x ]; then
+    FLAVOR_EXPLICIT=1
+fi
 FLAVOR="${FD0_FLAVOR:-auto}"
 DESKTOP=0
 CUSTOM_PREFIX=0
@@ -49,8 +54,8 @@ while [ $# -gt 0 ]; do
         --system)       SYSTEM=1; PREFIX="/usr/local/bin"; shift ;;
         --prefix=*)     PREFIX="${1#--prefix=}"; CUSTOM_PREFIX=1; shift ;;
         --version=*)    VERSION="${1#--version=}"; shift ;;
-        --flavor=*)     FLAVOR="${1#--flavor=}"; shift ;;
-        --yubikey)      FLAVOR="yubikey"; shift ;;
+        --flavor=*)     FLAVOR="${1#--flavor=}"; FLAVOR_EXPLICIT=1; shift ;;
+        --yubikey)      FLAVOR="yubikey"; FLAVOR_EXPLICIT=1; shift ;;
         --desktop)      DESKTOP=1; shift ;;
         --allow-downgrade) ALLOW_DOWNGRADE=1; shift ;;
         -y|--yes)       ASSUME_YES=1; shift ;;
@@ -67,7 +72,7 @@ Installs or upgrades the fd0 client (fd0, fd0-agent).
   --yubikey           shortcut for --flavor=yubikey
   --desktop           install the signed desktop bundle, including its managed CLI and agent
   --allow-downgrade   permit an explicitly selected older release
-  -y, --yes           assume yes for the upgrade prompt
+  -y, --yes           skip prompts; defaults to CLI unless a product or flavor is selected
   -h, --help          show this help
 
 Environment:
@@ -86,6 +91,30 @@ done
 die() { printf 'fd0: %s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 COSIGN="${FD0_COSIGN_BIN:-cosign}"
+
+read_reply() {
+    reply=""
+    if [ -r /dev/tty ] && { IFS= read -r reply < /dev/tty; } 2>/dev/null; then
+        return 0
+    fi
+    if [ -t 0 ]; then
+        IFS= read -r reply || reply=""
+        return 0
+    fi
+    die "not a terminal; pass --yes for non-interactive use"
+}
+
+# Default Y; only `n` or `N` aborts. Reads from /dev/tty so prompts survive
+# `curl … | sh`.
+confirm() {
+    [ "$ASSUME_YES" = "1" ] && return 0
+    printf '%s [Y/n] ' "$1"
+    read_reply
+    case "$reply" in
+        ''|y|Y|yes|YES) return 0 ;;
+        *)              return 1 ;;
+    esac
+}
 
 version_lt() {
     awk -v left="$1" -v right="$2" '
@@ -157,32 +186,6 @@ install_desktop() {
         sh
 }
 
-if [ "$DESKTOP" = "1" ]; then
-    [ "$CUSTOM_PREFIX" = "0" ] || die "--prefix cannot be combined with --desktop; use --system for a system install"
-    install_desktop "$ASSUME_YES"
-    exit 0
-fi
-
-# Prompt unless stdin isn't a tty or -y was passed. Default Y; only `n` or
-# `N` aborts. Reads from /dev/tty so the prompt survives `curl … | sh`.
-confirm() {
-    [ "$ASSUME_YES" = "1" ] && return 0
-    if [ ! -t 0 ] && [ ! -r /dev/tty ]; then
-        printf 'fd0: not a terminal; pass -y to confirm non-interactively.\n' >&2
-        exit 1
-    fi
-    printf '%s [Y/n] ' "$1"
-    if [ -r /dev/tty ]; then
-        IFS= read -r reply < /dev/tty || reply=""
-    else
-        IFS= read -r reply || reply=""
-    fi
-    case "$reply" in
-        ''|y|Y|yes|YES) return 0 ;;
-        *)              return 1 ;;
-    esac
-}
-
 # Install with sudo only if we're touching a system path AND we aren't root.
 INSTALL_BIN() {
     src="$1"; dst="$2"
@@ -208,6 +211,97 @@ case "$ARCH" in
     aarch64|arm64) ARCH=arm64 ;;
     *) die "unsupported arch: $ARCH" ;;
 esac
+
+# ─── detect the existing product at the target prefix ────────────────────
+CURRENT=""
+CURRENT_FLAVOR=""
+if [ -x "$PREFIX/fd0" ]; then
+    CURRENT_OUT=$("$PREFIX/fd0" version 2>/dev/null || true)
+    CURRENT=$(printf '%s\n' "$CURRENT_OUT" | awk 'NR==1 {print $2}' || true)
+    CURRENT_FLAVOR=$(printf '%s\n' "$CURRENT_OUT" | awk 'NR==1 {print $3}' || true)
+fi
+case "$CURRENT_FLAVOR" in
+    yubikey|standard) ;;
+    *) CURRENT_FLAVOR="standard" ;;
+esac
+
+if [ "$OS" = "darwin" ]; then
+    DESKTOP_TARGET=$([ "$SYSTEM" = "1" ] && printf '/Applications/fd0.app' || printf '%s/Applications/fd0.app' "$HOME")
+else
+    DESKTOP_TARGET=$([ "$SYSTEM" = "1" ] && printf '/usr/local/bin/fd0-desktop' || printf '%s/.local/bin/fd0-desktop' "$HOME")
+fi
+CURRENT_DESKTOP=0
+if [ -e "$DESKTOP_TARGET" ]; then
+    CURRENT_DESKTOP=1
+fi
+
+choose_product() {
+    default_product=1
+    if [ "$CUSTOM_PREFIX" = "1" ] || { [ "$CURRENT_DESKTOP" != "1" ] && [ -n "$CURRENT" ]; }; then
+        default_product=2
+    fi
+
+    printf '\nWhat would you like to install?\n\n'
+    printf '  1) fd0 Desktop (recommended)\n'
+    printf '     Includes the CLI, agent, and YubiKey support.\n\n'
+    printf '  2) CLI and agent only\n\n'
+    while :; do
+        printf 'Select [%s]: ' "$default_product"
+        read_reply
+        [ -n "$reply" ] || reply=$default_product
+        case "$reply" in
+            1)
+                if [ "$CUSTOM_PREFIX" = "1" ]; then
+                    printf 'Desktop does not support --prefix; choose CLI or use --system.\n'
+                    continue
+                fi
+                DESKTOP=1
+                return 0
+                ;;
+            2)
+                break
+                ;;
+            *)
+                printf 'Please enter 1 or 2.\n'
+                ;;
+        esac
+    done
+
+    yubikey_default=n
+    yubikey_hint='y/N'
+    if [ "$CURRENT_FLAVOR" = "yubikey" ]; then
+        yubikey_default=y
+        yubikey_hint='Y/n'
+    fi
+    while :; do
+        printf 'Include YubiKey support? [%s] ' "$yubikey_hint"
+        read_reply
+        [ -n "$reply" ] || reply=$yubikey_default
+        case "$reply" in
+            y|Y|yes|YES)
+                FLAVOR=yubikey
+                return 0
+                ;;
+            n|N|no|NO)
+                FLAVOR=standard
+                return 0
+                ;;
+            *)
+                printf 'Please answer y or n.\n'
+                ;;
+        esac
+    done
+}
+
+if [ "$ASSUME_YES" = "0" ] && [ "$DESKTOP" = "0" ] && [ "$FLAVOR_EXPLICIT" = "0" ]; then
+    choose_product
+fi
+
+if [ "$DESKTOP" = "1" ]; then
+    [ "$CUSTOM_PREFIX" = "0" ] || die "--prefix cannot be combined with --desktop; use --system for a system install"
+    install_desktop "$ASSUME_YES"
+    exit 0
+fi
 
 # ─── version resolution ──────────────────────────────────────────────────
 REQUESTED_LATEST=0
@@ -266,18 +360,6 @@ printf '%s\n' "$RELEASE_TAG" | grep -Eq '^(client|fd0)-v[0-9]+\.[0-9]+\.[0-9]+([
     || die "invalid client release identity: $RELEASE_TAG"
 VERSION_NUM=${RELEASE_TAG#*-v}
 
-# ─── detect existing install at the target prefix ────────────────────────
-CURRENT=""
-CURRENT_FLAVOR=""
-if [ -x "$PREFIX/fd0" ]; then
-    CURRENT_OUT=$("$PREFIX/fd0" version 2>/dev/null || true)
-    CURRENT=$(printf '%s\n' "$CURRENT_OUT" | awk 'NR==1 {print $2}' || true)
-    CURRENT_FLAVOR=$(printf '%s\n' "$CURRENT_OUT" | awk 'NR==1 {print $3}' || true)
-fi
-case "$CURRENT_FLAVOR" in
-    yubikey|standard) ;;
-    *) CURRENT_FLAVOR="standard" ;;
-esac
 case "$FLAVOR" in
     auto) TARGET_FLAVOR="$CURRENT_FLAVOR"; [ -n "$TARGET_FLAVOR" ] || TARGET_FLAVOR="standard" ;;
     standard|yubikey) TARGET_FLAVOR="$FLAVOR" ;;
