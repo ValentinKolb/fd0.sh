@@ -694,19 +694,14 @@ func verifyChecksumsWithCosign(ctx context.Context, hc *http.Client, base, tmp s
 	if err := os.WriteFile(checksumPath, checksums, 0o600); err != nil {
 		return err
 	}
-	sigPath := filepath.Join(tmp, "checksums.txt.sig")
-	pemPath := filepath.Join(tmp, "checksums.txt.pem")
-	if err := downloadToFile(ctx, hc, base+"/checksums.txt.sig", sigPath, updateSmallFileMaxBytes); err != nil {
-		return err
-	}
-	if err := downloadToFile(ctx, hc, base+"/checksums.txt.pem", pemPath, updateSmallFileMaxBytes); err != nil {
+	bundlePath := filepath.Join(tmp, "checksums.txt.sigstore.json")
+	if err := downloadToFile(ctx, hc, base+"/checksums.txt.sigstore.json", bundlePath, updateSmallFileMaxBytes); err != nil {
 		return err
 	}
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(cctx, cosignPath, "verify-blob",
-		"--certificate", pemPath,
-		"--signature", sigPath,
+		"--bundle", bundlePath,
 		"--certificate-identity-regexp", "^"+regexp.QuoteMeta(
 			"https://github.com/"+defaultUpdateRepo+"/.github/workflows/release.yml@refs/tags/"+releaseTag,
 		)+"$",

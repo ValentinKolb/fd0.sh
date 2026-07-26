@@ -338,12 +338,11 @@ curl -fsSL "$DL/${TARBALL}" -o "$TMP/${TARBALL}" \
 printf '→ fetching checksum manifest\n'
 curl -fsSL "$DL/checksums.txt" -o "$TMP/checksums.txt" || die "missing checksums.txt"
 printf '→ fetching and verifying cosign signature\n'
-curl -fsSL "$DL/checksums.txt.sig" -o "$TMP/checksums.txt.sig" || die "missing checksums.txt.sig"
-curl -fsSL "$DL/checksums.txt.pem" -o "$TMP/checksums.txt.pem" || die "missing checksums.txt.pem"
+curl -fsSL "$DL/checksums.txt.sigstore.json" -o "$TMP/checksums.txt.sigstore.json" \
+    || die "missing checksums.txt.sigstore.json"
 IDENTITY_TAG=$(printf '%s' "$RELEASE_TAG" | sed 's/\./\\./g')
 "$COSIGN" verify-blob \
-    --certificate            "$TMP/checksums.txt.pem" \
-    --signature              "$TMP/checksums.txt.sig" \
+    --bundle                 "$TMP/checksums.txt.sigstore.json" \
     --certificate-identity-regexp "^https://github\\.com/k2b-dev/fd0\\.sh/\\.github/workflows/release\\.yml@refs/tags/${IDENTITY_TAG}$" \
     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
     "$TMP/checksums.txt" >/dev/null 2>&1 \
