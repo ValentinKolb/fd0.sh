@@ -253,8 +253,8 @@ const CryptoBody = () => (
   <>
     <Para>
       Identity is Ed25519, encryption is X25519 sealed-box, symmetric
-      AEAD is XChaCha20-Poly1305. All libsodium-compatible. No bespoke
-      constructions, no in-house crypto.
+      AEAD is AES-256-GCM, and the passphrase KDF is Argon2id. Standard
+      constructions throughout — no bespoke primitives, no in-house crypto.
     </Para>
 
     <SubHead>Identity — Ed25519</SubHead>
@@ -268,14 +268,14 @@ const CryptoBody = () => (
       under each enrolled auth method.
     </Para>
 
-    <SubHead>Encryption — X25519 + XChaCha20-Poly1305</SubHead>
+    <SubHead>Encryption — X25519 + AES-256-GCM</SubHead>
     <Para>
       For asymmetric flows (sealing the per-scope key to a teammate's
       card, recovery exports), fd0 derives an X25519 public key from
       the Ed25519 identity via the standard birational map and uses
-      libsodium-compatible sealed-box. Symmetric encryption (vault
-      body, AEAD-sealed secrets) uses XChaCha20-Poly1305 with 24-byte
-      random nonces and the domain string as the associated data.
+      a libsodium-compatible sealed-box. Symmetric encryption (vault
+      body, AEAD-sealed secrets) uses AES-256-GCM with 12-byte random
+      nonces and the domain string as the associated data.
     </Para>
 
     <SubHead>YubiKey-PIV X25519</SubHead>
@@ -490,58 +490,58 @@ const ThreatsBody = () => (
       style={`background:${C.bgRaised};border:1px solid ${C.border};padding:1.25rem 1.5rem;`}
     >
       <ThreatRow
-        id="T03"
-        name="Server reads secret plaintext"
+        id="T02"
+        name="Stolen vault file → offline brute-force"
         status="mitigated"
-        mitigation="Every secret AEAD-sealed under the per-scope OEK before reaching the server. Server-side decryption is impossible: there is no decryption code path."
+        mitigation="The vault body is AEAD-sealed under a key wrapped to each enrolled method. Offline resistance is Argon2id at M=64 MiB / T=3, so it rests on the strongest method you enrol — a YubiKey removes the guessing game entirely."
       />
       <ThreatRow
         id="T07"
-        name="Removed member decrypts post-removal writes"
+        name="Same-UID malware reads agent memory"
         status="mitigated"
-        mitigation="OEK rotates atomically on scope.remove-member. Subsequent secret.set events are sealed under the new OEK, which the removed card cannot unwrap."
+        mitigation="super_priv lives mlocked inside fd0-agent and is wiped on lock, idle timeout and exit. An attacker already running as you is not fully excluded — this narrows the window rather than closing it."
       />
       <ThreatRow
-        id="T12"
-        name="Server forges a chain event"
+        id="T26"
+        name="Forged member.change (unsigned author)"
         status="mitigated"
-        mitigation="Every event signed by author's super_priv over fd0-event-v1. Server has no signing capability for member identities."
+        mitigation="Every event is signed by its author over a domain-separated prefix, and the server validates authorship before storing. The server holds no member signing key."
       />
       <ThreatRow
-        id="T15"
-        name="YubiKey slot 9d compromise"
+        id="T27"
+        name="Foreign-author event splice"
         status="mitigated"
-        mitigation="X25519 ECDH happens on-card; slot private key never exposed. Touch and PIN policies enforced per unwrap. Loss of physical card requires firmware-level extraction, not in scope."
-      />
-      <ThreatRow
-        id="T22"
-        name="Vault file stolen at rest"
-        status="mitigated"
-        mitigation="Vault body AEAD-sealed under a payload key wrapped to each auth method's key. Offline brute-force resistance depends on the strongest enrolled method (passphrase entropy or YubiKey PIN+touch)."
+        mitigation="Replay checks each event's author against the member set as of that point in the chain, so a non-member's write is rejected on read even if the server stored it."
       />
       <ThreatRow
         id="T35"
-        name="Server equivocates (forks the log)"
+        name="Server equivocation between two clients"
         status="mitigated"
-        mitigation="Independent witness cosign + first-contact pinning. Detection by any client that compares STHs with peers or the witness archive."
+        mitigation="An independent witness cosigns the server's tree head, and clients cross-check it. Two distinct roots at the same tree size are detectable rather than a matter of trust."
       />
       <ThreatRow
         id="T41"
-        name="Witness host compromised"
-        status="accepted"
-        mitigation="Single-witness deployment provides single-point detection. Group-managed witness consortium on the roadmap. A silently-compromised witness reduces detection but does not enable decryption."
+        name="First-fetch checkpoint rollback"
+        status="mitigated"
+        mitigation="A client with no prior anchor probes for the highest checkpoint before accepting one, so a server cannot quietly seed a new device with an old view."
       />
       <ThreatRow
-        id="T46"
-        name="Vault and chain files rolled back together"
+        id="T06"
+        name="Coordinated local rollback (vault + chain)"
         status="accepted"
-        mitigation="Coordinated client-side rollback of both vault.enc and ~/.fd0/chains/ is explicitly out of scope. Documented in docs/PROTOCOL.md §6.4."
+        mitigation="Replacing vault.enc and ~/.fd0/chains/ together, on your own machine, is outside the model: an attacker with that access already has the device. Single-file rollback is caught (T05)."
+      />
+      <ThreatRow
+        id="T38"
+        name="Witness collusion with the server"
+        status="accepted"
+        mitigation="A witness that colludes stops being an independent check. It still cannot decrypt anything; pinning a second, independently operated witness is what reduces this."
       />
       <ThreatRow
         id="T52"
-        name="Operator coerces a client to publish"
+        name="Metadata side channels"
         status="accepted"
-        mitigation="Outside the cryptographic threat model. Use of physical security, jurisdictions, and operational controls is left to the deploying organisation."
+        mitigation="The server learns sizes, timing and access patterns even though it cannot read content. Hiding those needs padding and cover traffic, which fd0 does not currently do."
       />
     </div>
 

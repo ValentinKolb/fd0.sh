@@ -150,7 +150,7 @@ export const SEO_ROUTE = {
     path: "/spec/crypto",
     title: "fd0 cryptography specification",
     description:
-      "fd0 cryptography reference for Ed25519, X25519, XChaCha20-Poly1305, OEK rotation, passphrase, and YubiKey unlocks.",
+      "fd0 cryptography reference for Ed25519, X25519, AES-256-GCM, Argon2id, OEK rotation, passphrase, and YubiKey unlocks.",
     section: "spec",
   },
   specStorage: {

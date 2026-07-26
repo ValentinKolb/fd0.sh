@@ -309,7 +309,7 @@ ghp_xxxxxxxxxxxxxxxxxxxx`}</Shell>
         <PropertyCard
           label="Cryptography"
           value="Ed25519 · X25519"
-          sub="XChaCha20-Poly1305 AEAD"
+          sub="AES-256-GCM AEAD"
         />
         <PropertyCard
           label="Transparency"
