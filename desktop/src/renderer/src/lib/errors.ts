@@ -109,6 +109,25 @@ const rules: Rule[] = [
     detail: "This is a development vault. Sync is disabled on purpose.",
     severity: "warning",
   },
+  // Legacy-format vaults. These sit above the generic network rule because
+  // the offline variant mentions the connection, and the useful thing to say
+  // is not "you are offline" but "this vault needs a one-time repair".
+  // Matched on message text, not on the bridge code: toAppError only ever
+  // sees `message` + `action` (see rawMessage), so a code-based rule would
+  // silently never fire.
+  {
+    match: /older version of fd0 and needs a one-time repair/i,
+    title: "This vault needs a one-time repair",
+    detail:
+      "It was saved by an older version of fd0. Connect this device to the internet and open Sync to finish the repair. Nothing on this device has been changed, so it is safe to try again.",
+    severity: "warning",
+  },
+  {
+    match: /older version of fd0, but the history/i,
+    title: "This vault needs a one-time repair, and fd0 could not verify it",
+    detail:
+      "It was saved by an older version of fd0, but the history the server returned does not match the history this device already trusts. Run `fd0 sync` from the command line to reconcile the difference, then reopen fd0. Nothing on this device has been changed.",
+  },
   {
     match: /network|connection refused|timeout|dns|unreachable|offline/i,
     title: "fd0 could not reach the sync server",

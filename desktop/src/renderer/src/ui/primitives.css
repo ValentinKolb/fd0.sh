@@ -128,6 +128,19 @@
 
 .input::placeholder { color: var(--text-4); }
 .input:hover:not(:disabled) { border-color: var(--text-4); }
+
+/*
+ * Focus recolours the field's own border instead of drawing a ring outside it.
+ * A grey border plus an offset outline reads as two borders; one accent border
+ * says the same thing once. The box-shadow thickens it to the 2px the ring had
+ * without adding layout, so nothing shifts on focus.
+ */
+.input:focus-visible,
+.textarea:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
 .input:disabled { filter: grayscale(1); opacity: 0.5; }
 .input[aria-invalid="true"] { border-color: var(--danger-line); }
 
@@ -520,8 +533,11 @@
 
 .callout {
   display: flex;
-  align-items: flex-start;
-  gap: var(--space-3);
+  /* Title, body and details are siblings, so a row turned them into columns.
+     Stacking is the default; the icon variant below opts back into a row. */
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-2);
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -529,6 +545,9 @@
   font-size: var(--text-sm);
   line-height: var(--leading-normal);
 }
+/* With a leading icon the text already sits in its own wrapper, so the icon
+   and that wrapper are the two things that belong side by side. */
+.callout:has(> svg) { flex-direction: row; align-items: flex-start; gap: var(--space-3); }
 .callout strong { display: block; color: var(--text); font-weight: var(--weight-medium); }
 .callout p { margin: 2px 0 0; color: var(--text-2); }
 .callout > svg { flex: none; margin-top: 1px; }

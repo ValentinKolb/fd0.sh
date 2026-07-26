@@ -34,4 +34,13 @@ export const devEnv: NodeJS.ProcessEnv = {
   FD0_DESKTOP_USER_DATA: devUserData,
   FD0_AGENT_SYNC_DISABLED: "1",
   FD0_DESKTOP_DEV_PASSPHRASE: "fd0-desktop-dev",
+  // FD0_HOME isolates the vault but not what fd0 renders out of it. Every
+  // mutating ssh/kube/talos command rewrites the real dotfiles in $HOME, so a
+  // dev run would otherwise clobber the developer's own ssh_config, kubeconfig
+  // and talosconfig. Isolating the vault is not the same as isolating output.
+  FD0_SSH_CONFIG_PATH: join(devHome, "render", "ssh", "fd0.conf"),
+  FD0_KUBE_CONFIG_PATH: join(devHome, "render", "kube", "config.fd0"),
+  FD0_KUBE_USER_CONFIG: join(devHome, "render", "kube", "config"),
+  FD0_TALOS_CONFIG_PATH: join(devHome, "render", "talos", "config.fd0"),
+  FD0_TALOS_USER_CONFIG: join(devHome, "render", "talos", "config"),
 };

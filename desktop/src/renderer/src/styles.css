@@ -902,20 +902,28 @@ h1, h2, h3, p { margin: 0; }
 
 /* ----------------------------------------------------------- auth screens */
 
-.auth-shell { display: flex; flex-direction: column; height: 100%; }
+.auth-shell { position: relative; display: flex; flex-direction: column; height: 100%; }
+
+/*
+ * The locked screens have no title bar of their own — just a drag region.
+ *
+ * It is positioned rather than stacked so it costs no height: the card then
+ * centres in the window itself instead of in the strip below the bar, which is
+ * what "centred" means to someone looking at the window. Only the auth screens
+ * use this; the unlocked app keeps its real .titlebar.
+ */
 .auth-titlebar {
-  display: flex;
-  align-items: center;
+  position: absolute;
+  inset: 0 0 auto;
   height: var(--titlebar-height);
-  padding: 0 var(--space-5);
-  border-bottom: 1px solid var(--line-soft);
-  background: var(--surface);
   -webkit-app-region: drag;
 }
 
 .auth-main {
   flex: 1;
   min-height: 0;
+  /* Keeps content from sliding under the drag strip on short windows. */
+  padding-top: max(var(--space-7), var(--titlebar-height));
   display: flex;
   flex-wrap: wrap;
   align-items: center;
