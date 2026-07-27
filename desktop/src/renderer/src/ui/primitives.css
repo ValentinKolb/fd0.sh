@@ -528,6 +528,11 @@
 .safety-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .safety-copy strong { color: #f2d288; font-size: var(--text-base); font-weight: var(--weight-medium); }
 .safety-copy span { color: #c7ab6d; font-size: var(--text-sm); line-height: var(--leading-normal); }
+.safety-actions { display: flex; align-items: center; gap: var(--space-2); flex: none; }
+@media (max-width: 640px) {
+  .safety-banner { align-items: flex-start; flex-wrap: wrap; }
+  .safety-actions { width: 100%; justify-content: flex-end; padding-left: 30px; }
+}
 
 /* -------------------------------------------------------------- callouts */
 

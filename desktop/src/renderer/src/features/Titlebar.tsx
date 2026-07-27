@@ -30,9 +30,6 @@ export function Titlebar(props: {
   return (
     <header class="titlebar">
       <div class="titlebar-lead">
-        <div class="logo" aria-label="fd0">
-          <strong>fd0</strong>
-        </div>
         <VaultSwitcher onCreateVault={props.onCreateVault} onShareVault={props.onShareVault} />
       </div>
 

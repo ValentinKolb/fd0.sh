@@ -41,6 +41,43 @@ done
 die() { printf 'fd0 Desktop: %s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 COSIGN="${FD0_COSIGN_BIN:-cosign}"
+SPINNER_PID=""
+
+stop_spinner() {
+    [ -n "$SPINNER_PID" ] || return 0
+    kill "$SPINNER_PID" >/dev/null 2>&1 || true
+    wait "$SPINNER_PID" 2>/dev/null || true
+    SPINNER_PID=""
+    printf '\r\033[2K' >&2
+}
+
+run_step() {
+    label=$1
+    shift
+    if [ -t 2 ] && [ "${TERM:-dumb}" != "dumb" ]; then
+        (
+            while :; do
+                for frame in '|' '/' '-' '\'; do
+                    printf '\r%s %s' "$frame" "$label" >&2
+                    sleep 0.12
+                done
+            done
+        ) &
+        SPINNER_PID=$!
+    else
+        printf '… %s\n' "$label" >&2
+    fi
+
+    set +e
+    "$@"
+    status=$?
+    set -e
+    stop_spinner
+    if [ "$status" -eq 0 ]; then
+        printf '✓ %s\n' "$label"
+    fi
+    return "$status"
+}
 
 sha256_file() {
     if have sha256sum; then
@@ -71,6 +108,22 @@ prepare_cosign() {
     actual=$(sha256_file "$COSIGN")
     [ "$actual" = "$expected" ] || die "release verifier SHA-256 mismatch"
     chmod 700 "$COSIGN"
+}
+
+verify_release_signature() {
+    "$COSIGN" verify-blob \
+        --bundle "$TMP/checksums.txt.sigstore.json" \
+        --certificate-identity-regexp "^https://github\\.com/k2b-dev/fd0\\.sh/\\.github/workflows/release-desktop\\.yml@refs/tags/${IDENTITY_TAG}$" \
+        --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+        "$TMP/checksums.txt" >/dev/null 2>&1
+}
+
+verify_macos_signature() {
+    codesign --verify --deep --strict "$SOURCE" >/dev/null 2>&1
+}
+
+verify_macos_gatekeeper() {
+    spctl --assess --type execute "$SOURCE" >/dev/null 2>&1
 }
 
 version_lt() {
@@ -331,45 +384,49 @@ confirm "install fd0 Desktop?" || { printf 'aborted.\n'; exit 1; }
 TMP=$(mktemp -d)
 MOUNT=""
 cleanup() {
+    stop_spinner
     if [ -n "$MOUNT" ]; then hdiutil detach "$MOUNT" -quiet >/dev/null 2>&1 || true; fi
     rm -rf "$TMP"
 }
 trap cleanup EXIT HUP INT TERM
-prepare_cosign
+run_step "Preparing release verifier" prepare_cosign || die "could not prepare the release verifier"
 
 DL="${RELEASE_BASE}/download/${VERSION}"
-curl -fsSL "$DL/$ASSET" -o "$TMP/$ASSET" || die "could not download $ASSET"
-curl -fsSL "$DL/checksums.txt" -o "$TMP/checksums.txt" || die "missing checksums.txt"
+run_step "Downloading fd0 Desktop" \
+    curl -fsSL "$DL/$ASSET" -o "$TMP/$ASSET" || die "could not download $ASSET"
+run_step "Downloading signed release metadata" \
+    curl -fsSL "$DL/checksums.txt" -o "$TMP/checksums.txt" || die "missing checksums.txt"
 expected=$(awk -v target="$ASSET" '$2 == target || $2 == "*"target {print $1}' "$TMP/checksums.txt")
 [ -n "$expected" ] || die "$ASSET is not listed in checksums.txt"
 actual=$(sha256_file "$TMP/$ASSET")
 [ "$actual" = "$expected" ] || die "SHA-256 mismatch; refusing to install"
 
-curl -fsSL "$DL/checksums.txt.sigstore.json" -o "$TMP/checksums.txt.sigstore.json" \
+run_step "Downloading release signature" \
+    curl -fsSL "$DL/checksums.txt.sigstore.json" -o "$TMP/checksums.txt.sigstore.json" \
     || die "missing checksums.txt.sigstore.json"
 IDENTITY_TAG=$(printf '%s' "$VERSION" | sed 's/\./\\./g')
-"$COSIGN" verify-blob \
-    --bundle "$TMP/checksums.txt.sigstore.json" \
-    --certificate-identity-regexp "^https://github\\.com/k2b-dev/fd0\\.sh/\\.github/workflows/release-desktop\\.yml@refs/tags/${IDENTITY_TAG}$" \
-    --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-    "$TMP/checksums.txt" >/dev/null 2>&1 || die "Cosign verification failed"
-printf '✓ verified release manifest with Cosign\n'
+run_step "Authenticating signed release" verify_release_signature || die "Cosign verification failed"
 
 if [ "$OS" = "darwin" ]; then
     MOUNT="$TMP/mount"
     mkdir "$MOUNT"
-    hdiutil attach "$TMP/$ASSET" -nobrowse -readonly -mountpoint "$MOUNT" -quiet || die "could not mount disk image"
+    run_step "Opening disk image" \
+        hdiutil attach "$TMP/$ASSET" -nobrowse -readonly -mountpoint "$MOUNT" -quiet \
+        || die "could not mount disk image"
     SOURCE=$(find "$MOUNT" -maxdepth 1 -name '*.app' -type d | head -n1)
     [ -n "$SOURCE" ] || die "disk image does not contain an app"
-    codesign --verify --deep --strict "$SOURCE" >/dev/null 2>&1 || die "the macOS app signature is invalid"
-    spctl --assess --type execute "$SOURCE" >/dev/null 2>&1 || die "macOS Gatekeeper rejected the app"
+    run_step "Verifying macOS app signature" verify_macos_signature \
+        || die "the macOS app signature is invalid"
+    run_step "Checking macOS Gatekeeper" verify_macos_gatekeeper \
+        || die "macOS Gatekeeper rejected the app"
     PARENT=$(dirname "$TARGET")
     STAGED="$PARENT/.fd0.app.installing.$$"
     BACKUP="$PARENT/.fd0.app.previous.$$"
     if [ "$SYSTEM" = "1" ] && [ "$(id -u)" != "0" ]; then
         sudo mkdir -p "$PARENT"
         sudo rm -rf "$STAGED" "$BACKUP"
-        sudo ditto "$SOURCE" "$STAGED"
+        run_step "Installing fd0 Desktop" sudo ditto "$SOURCE" "$STAGED" \
+            || die "could not copy fd0 Desktop"
         if sudo test -e "$TARGET"; then sudo mv "$TARGET" "$BACKUP"; fi
         if ! sudo mv "$STAGED" "$TARGET"; then
             sudo test ! -e "$BACKUP" || sudo mv "$BACKUP" "$TARGET"
@@ -379,7 +436,8 @@ if [ "$OS" = "darwin" ]; then
     else
         mkdir -p "$PARENT"
         rm -rf "$STAGED" "$BACKUP"
-        ditto "$SOURCE" "$STAGED"
+        run_step "Installing fd0 Desktop" ditto "$SOURCE" "$STAGED" \
+            || die "could not copy fd0 Desktop"
         if [ -e "$TARGET" ]; then mv "$TARGET" "$BACKUP"; fi
         if ! mv "$STAGED" "$TARGET"; then
             [ ! -e "$BACKUP" ] || mv "$BACKUP" "$TARGET"
@@ -388,7 +446,8 @@ if [ "$OS" = "darwin" ]; then
         rm -rf "$BACKUP"
     fi
 else
-    install_executable "$TMP/$ASSET" "$TARGET"
+    run_step "Installing fd0 Desktop" install_executable "$TMP/$ASSET" "$TARGET" \
+        || die "could not install fd0 Desktop"
     if [ "$SYSTEM" != "1" ]; then
         DESKTOP_DIR="$HOME/.local/share/applications"
         mkdir -p "$DESKTOP_DIR"
@@ -450,3 +509,16 @@ case ":$PATH:" in
     *":$CLI_DIR:"*) ;;
     *) printf '! add %s to PATH to use the bundled fd0 CLI\n' "$CLI_DIR" >&2 ;;
 esac
+
+printf '\nNext steps:\n'
+if [ "$OS" = "darwin" ]; then
+    printf '  1. Open fd0 Desktop:\n'
+    printf '     open "%s"\n' "$TARGET"
+    printf '  2. If macOS asks, allow fd0 in System Settings > General > Login Items.\n'
+else
+    printf '  1. Open fd0 Desktop from your application menu, or run:\n'
+    printf '     "%s"\n' "$TARGET"
+    printf '  2. fd0 Desktop starts and manages the local agent automatically.\n'
+fi
+printf '  3. Verify your installation:\n'
+printf '     fd0 doctor\n'

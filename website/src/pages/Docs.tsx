@@ -385,9 +385,10 @@ $ fd0 update --flavor=yubikey`}</Box>
       addition to the version.
     </P>
     <Note>
-      Desktop-managed installations update from fd0 Desktop under Support. In
-      that installation, <Code>fd0 update</Code> points to the app updater
-      instead of modifying files inside the signed bundle.
+      In a Desktop-managed installation, plain <Code>fd0 update</Code> opens
+      Desktop under Support and starts the app updater. Desktop-specific
+      version, flavor, prefix, and downgrade flags are rejected because the
+      app, CLI, and agent update as one signed bundle.
     </Note>
     <Note>
       Windows is not supported yet. The binaries cross-compile, but the agent
@@ -533,8 +534,8 @@ const DesktopBody = () => (
 
     <H2>Update and remove</H2>
     <P>
-      Desktop updates itself from Support inside the app. In a
-      desktop-managed installation <Code>fd0 update</Code> points at that
+      Desktop updates itself from Support inside the app. In a Desktop-managed
+      installation <Code>fd0 update</Code> opens that view and starts the same
       updater instead of writing into the signed bundle. Before installing an
       update, Desktop stops the running agent so the app, CLI, and agent cannot
       drift apart.

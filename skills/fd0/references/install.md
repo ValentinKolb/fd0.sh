@@ -54,7 +54,7 @@ Windows: not yet built by the release pipeline. The binaries cross-compile but t
 curl -fsSL https://fd0.sh/install | sh -s -- --desktop
 ```
 
-Desktop is one versioned bundle containing the app, YubiKey-capable CLI, and agent. Its installer bootstraps a SHA-256-pinned release verifier when needed, then creates marked `fd0` and `fd0-agent` wrappers in `~/.local/bin` or `/usr/local/bin`. Existing standalone commands are preserved and restored on uninstall. Desktop updates the app, CLI, and agent together from **Support**; Linux uses the verifier bundled in the app, so users do not install Cosign. A bundled `fd0 update` prints that handoff instead of modifying the signed app.
+Desktop is one versioned bundle containing the app, YubiKey-capable CLI, and agent. Its installer bootstraps a SHA-256-pinned release verifier when needed, then creates marked `fd0` and `fd0-agent` wrappers in `~/.local/bin` or `/usr/local/bin`. Existing standalone commands are preserved and restored on uninstall. Desktop updates the app, CLI, and agent together from **Support**; Linux uses the verifier bundled in the app, so users do not install Cosign. A bundled `fd0 update` opens that same updater instead of modifying the signed app itself.
 
 A directly installed DMG or launched AppImage provides the GUI and its bundled service without replacing shell commands. Use the script when Desktop should own the `fd0` and `fd0-agent` command paths too.
 
@@ -102,11 +102,11 @@ The CLI-only release, Desktop release, and skill use separate update channels: `
 # Update a CLI-only installation
 fd0 update
 
-# Update a Desktop installation in the app
-# fd0 Desktop > Support > Check now
+# Update a Desktop installation (opens Desktop > Support)
+fd0 update
 
 # Update the skill (re-run the install)
 bunx skills add k2b-dev/fd0.sh
 ```
 
-Both product installers are idempotent. Use `fd0 update` only for CLI-only installations; Desktop-managed commands hand off to the app updater.
+Both product installers are idempotent. `fd0 update` detects the installation: standalone clients update their two binaries, while Desktop-managed clients hand off to the app updater so the app, CLI, and agent stay on one signed version.

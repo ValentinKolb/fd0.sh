@@ -133,6 +133,10 @@ metadata and an embedded Sigstore verifier pinned to the exact release workflow
 and tag. Before installing an update, Desktop stops the running agent so the
 bundled app, CLI, and agent cannot drift across versions.
 
+For installer-managed command paths, `fd0 update` opens Desktop, selects
+**Support**, and starts this same updater. It never creates a second terminal
+download or replacement path for the signed bundle.
+
 `scripts/install-desktop.sh` verifies SHA-256 for every install and always
 authenticates the manifest. If Cosign is absent, it downloads the pinned Cosign
 3.0.6 binary and checks its hard-coded platform SHA-256 before use. On macOS it

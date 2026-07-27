@@ -90,15 +90,13 @@ export function Toasts(props: { toasts: ToastMessage[] }): JSX.Element {
   );
 }
 
-/**
- * A persistent, dismissible-by-fixing banner for vault readiness.
- * Unlike an error it never auto-clears — it disappears when the state is fixed.
- */
+/** A persistent readiness banner whose reminder can be snoozed without hiding the underlying health state. */
 export function SafetyBanner(props: {
   title: string;
   description: string;
   actionLabel: string;
   onAction(): void;
+  onSnooze(): void;
 }): JSX.Element {
   return (
     <div class="safety-banner" role="status">
@@ -109,9 +107,14 @@ export function SafetyBanner(props: {
         <strong>{props.title}</strong>
         <span>{props.description}</span>
       </div>
-      <Button size="sm" onClick={props.onAction}>
-        {props.actionLabel}
-      </Button>
+      <div class="safety-actions">
+        <Button variant="quiet" size="sm" onClick={props.onSnooze}>
+          Remind me later
+        </Button>
+        <Button size="sm" onClick={props.onAction}>
+          {props.actionLabel}
+        </Button>
+      </div>
     </div>
   );
 }

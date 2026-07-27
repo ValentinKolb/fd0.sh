@@ -270,12 +270,17 @@ test "$(HOME="$MAC_HOME" "$MAC_HOME/.local/bin/fd0" version)" = "mac fd0 version
 test "$(HOME="$MAC_HOME" "$MAC_HOME/.local/bin/fd0-agent" check)" = "mac agent check"
 
 LINUX_HOME="$BASE/linux-home"
-run_installer "$LINUX_HOME" Linux >/dev/null
+LINUX_INSTALL_OUTPUT=$(run_installer "$LINUX_HOME" Linux 2>&1)
 test -x "$LINUX_HOME/.local/bin/fd0-desktop"
 test "$(HOME="$LINUX_HOME" "$LINUX_HOME/.local/bin/fd0" version)" = "fd0 0.1.0 standard"
 test "$(HOME="$LINUX_HOME" "$LINUX_HOME/.local/bin/fd0-agent" check)" = "linux agent check"
 grep -Fq "Exec=$LINUX_HOME/.local/bin/fd0-desktop" \
   "$LINUX_HOME/.local/share/applications/sh.fd0.desktop.desktop"
+printf '%s\n' "$LINUX_INSTALL_OUTPUT" | grep -Fq "… Downloading fd0 Desktop"
+printf '%s\n' "$LINUX_INSTALL_OUTPUT" | grep -Fq "✓ Authenticating signed release"
+printf '%s\n' "$LINUX_INSTALL_OUTPUT" | grep -Fq "Next steps:"
+printf '%s\n' "$LINUX_INSTALL_OUTPUT" | grep -Fq "\"$LINUX_HOME/.local/bin/fd0-desktop\""
+printf '%s\n' "$LINUX_INSTALL_OUTPUT" | grep -Fq "fd0 doctor"
 
 run_installer "$LINUX_HOME" Linux >/dev/null
 test "$(HOME="$LINUX_HOME" "$LINUX_HOME/.local/bin/fd0" version)" = "fd0 0.1.0 standard"

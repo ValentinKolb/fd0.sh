@@ -44,6 +44,7 @@ const api: DesktopAPI = {
   development: process.argv.includes("--fd0-isolated"),
   largeTypeMode: process.argv.includes("--fd0-large-type"),
   startupStatus: () => invoke<StartupStatus>("fd0:startup-status"),
+  consumeUpdateRequest: () => invoke<boolean>("fd0:consume-update-request"),
   retryStartup: () => invoke<StartupStatus>("fd0:retry-startup"),
   repairService: () => invoke<StartupStatus>("fd0:repair-service"),
   diagnostics: () => invoke<DiagnosticsSnapshot>("fd0:diagnostics"),
