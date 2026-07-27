@@ -133,7 +133,11 @@ jobs:
           test "$("$app/Contents/Resources/bin/fd0" version)" = "fd0 ${{ steps.version.outputs.version }} yubikey"
           test "$("$app/Contents/Resources/bin/fd0-agent" --version)" = "fd0-agent ${{ steps.version.outputs.version }} yubikey"
           test "$("$app/Contents/MacOS/fd0" --fd0-cli-relay version)" = "fd0 ${{ steps.version.outputs.version }} yubikey"
-          "$app/Contents/MacOS/fd0" --fd0-cli-relay update --check | grep -Fq "managed by fd0 Desktop"
+          if "$app/Contents/MacOS/fd0" --fd0-cli-relay update --check > update-check.txt 2>&1; then
+            echo "::error::desktop-managed update --check unexpectedly succeeded"
+            exit 1
+          fi
+          grep -Fq -- "--check cannot be used with fd0 Desktop" update-check.txt
           codesign --verify --deep --strict "$app"
           spctl --assess --type execute "$app"
           xcrun stapler validate "$app"
@@ -214,7 +218,11 @@ jobs:
           rpm_package=$(find dist -maxdepth 1 -type f -name '*.rpm' -print -quit)
           test -n "$app" && test -n "$deb" && test -n "$rpm_package"
           test "$("$app" --fd0-cli-relay version)" = "fd0 ${{ steps.version.outputs.version }} yubikey"
-          "$app" --fd0-cli-relay update --check | grep -Fq "managed by fd0 Desktop"
+          if "$app" --fd0-cli-relay update --check > update-check.txt 2>&1; then
+            echo "::error::desktop-managed update --check unexpectedly succeeded"
+            exit 1
+          fi
+          grep -Fq -- "--check cannot be used with fd0 Desktop" update-check.txt
           "$app" --appimage-extract >/dev/null
           test -x squashfs-root/resources/bin/fd0-release-verify
           test -f squashfs-root/resources/runtime/libpcsclite.so.1
