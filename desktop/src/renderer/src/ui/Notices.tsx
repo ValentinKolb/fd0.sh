@@ -68,6 +68,10 @@ export type ToastMessage = {
   text: string;
   /** Seconds remaining until the clipboard clears, shown as a countdown. */
   countdown?: number;
+  action?: {
+    label: string;
+    run(): void | Promise<void>;
+  };
 };
 
 export function Toasts(props: { toasts: ToastMessage[] }): JSX.Element {
@@ -81,6 +85,13 @@ export function Toasts(props: { toasts: ToastMessage[] }): JSX.Element {
               <span>{toast.text}</span>
               <Show when={toast.countdown !== undefined}>
                 <span class="toast-countdown">{toast.countdown}s</span>
+              </Show>
+              <Show when={toast.action}>
+                {(action) => (
+                  <button class="toast-action" type="button" onClick={() => void action().run()}>
+                    {action().label}
+                  </button>
+                )}
               </Show>
             </div>
           )}

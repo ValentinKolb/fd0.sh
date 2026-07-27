@@ -3,7 +3,10 @@ import "@fontsource-variable/geist";
 import "@fontsource-variable/geist-mono";
 import App from "./App";
 import { LargeTypeWindow } from "./features/LargeTypeWindow";
+import { activateTheme, readTheme } from "./lib/theme";
 import "./styles.css";
+
+activateTheme(readTheme(localStorage, window.fd0.development));
 
 /*
  * The floating large-type window loads this same bundle. The preload flag — not

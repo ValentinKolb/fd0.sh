@@ -12,7 +12,10 @@ import (
 )
 
 const (
-	agentRPCTimeout = 15 * time.Second
+	agentRPCTimeout          = 15 * time.Second
+	agentUnlockTimeout       = 60 * time.Second
+	agentUnlockServerGrace   = 5 * time.Second
+	agentUnlockClientTimeout = agentUnlockTimeout + 2*agentUnlockServerGrace
 )
 
 // Client is a thin RPC wrapper over the agent socket. One Client per fd0
@@ -96,10 +99,18 @@ func (c *Client) Unlock(vaultPath, userChainPath, methodType string, cred Unlock
 		Passphrase:    cred.Passphrase,
 		YubikeyPIN:    cred.YubikeyPIN,
 	}}
-	r, err := c.doWithTimeout(req, agentRPCTimeout)
+	r, err := c.doWithTimeout(req, agentUnlockClientTimeout)
 	if err != nil {
 		if strings.Contains(err.Error(), vault.ErrYubikeyNotConfigured.Error()) {
 			return nil, fmt.Errorf("%w", vault.ErrYubikeyNotConfigured)
+		}
+		var timeoutErr net.Error
+		if errors.As(err, &timeoutErr) && timeoutErr.Timeout() {
+			return nil, fmt.Errorf(
+				"agent unlock timed out after %s; run `fd0 agent status` before retrying because the agent may still be finishing: %w",
+				agentUnlockClientTimeout,
+				err,
+			)
 		}
 		return nil, err
 	}

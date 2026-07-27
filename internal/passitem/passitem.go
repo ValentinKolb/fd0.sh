@@ -15,8 +15,10 @@ import (
 	"net/url"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const (
@@ -477,18 +479,29 @@ func ParseTOTPURI(raw string) (TOTPValue, error) {
 	if err != nil {
 		return TOTPValue{}, err
 	}
-	if u.Scheme != "otpauth" || u.Host != "totp" {
+	if !strings.EqualFold(u.Scheme, "otpauth") || !strings.EqualFold(u.Host, "totp") {
 		return TOTPValue{}, errors.New("expected otpauth://totp/... URI")
 	}
 	q := u.Query()
+	digits, err := parseIntDefault(q.Get("digits"), DefaultDigits)
+	if err != nil {
+		return TOTPValue{}, fmt.Errorf("totp digits: %w", err)
+	}
+	period, err := parseIntDefault(q.Get("period"), DefaultPeriod)
+	if err != nil {
+		return TOTPValue{}, fmt.Errorf("totp period: %w", err)
+	}
 	v := TOTPValue{
 		Secret:    q.Get("secret"),
 		Issuer:    q.Get("issuer"),
-		Digits:    atoiDefault(q.Get("digits"), DefaultDigits),
-		Period:    atoiDefault(q.Get("period"), DefaultPeriod),
+		Digits:    digits,
+		Period:    period,
 		Algorithm: q.Get("algorithm"),
 	}
-	label, _ := url.PathUnescape(strings.TrimPrefix(u.Path, "/"))
+	label, err := url.PathUnescape(strings.TrimPrefix(u.Path, "/"))
+	if err != nil {
+		return TOTPValue{}, fmt.Errorf("totp account label: %w", err)
+	}
 	if label != "" {
 		if before, after, ok := strings.Cut(label, ":"); ok {
 			if v.Issuer == "" {
@@ -499,11 +512,22 @@ func ParseTOTPURI(raw string) (TOTPValue, error) {
 			v.Account = label
 		}
 	}
-	return NormalizeTOTP(v), nil
+	v = NormalizeTOTP(v)
+	if err := ValidateTOTP(v); err != nil {
+		return TOTPValue{}, err
+	}
+	return v, nil
 }
 
 func NormalizeTOTP(v TOTPValue) TOTPValue {
-	v.Secret = strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(v.Secret), " ", ""))
+	v.Secret = strings.ToUpper(strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) {
+			return -1
+		}
+		return r
+	}, strings.TrimSpace(v.Secret)))
+	v.Issuer = strings.TrimSpace(v.Issuer)
+	v.Account = strings.TrimSpace(v.Account)
 	if v.Digits == 0 {
 		v.Digits = DefaultDigits
 	}
@@ -765,16 +789,15 @@ func decodeBase32(s string) ([]byte, error) {
 	return base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(strings.TrimRight(s, "="))
 }
 
-func atoiDefault(s string, def int) int {
+func parseIntDefault(s string, def int) (int, error) {
 	if s == "" {
-		return def
+		return def, nil
 	}
-	var n int
-	_, err := fmt.Sscanf(s, "%d", &n)
-	if err != nil || n == 0 {
-		return def
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, errors.New("must be a number")
 	}
-	return n
+	return n, nil
 }
 
 // Notes returns the item's free-text note, or "" when it has none.

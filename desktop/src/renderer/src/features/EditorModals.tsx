@@ -1,19 +1,160 @@
 import { Show, createMemo, createSignal, type JSX } from "solid-js";
-import { IconAlertTriangle } from "@tabler/icons-solidjs";
+import { IconAlertTriangle, IconTransfer } from "@tabler/icons-solidjs";
+import type { ItemSummary, ScopeSummary } from "../../../shared/contracts";
 import { toAppError } from "../lib/errors";
 import { useVault } from "../lib/store";
 import { Modal } from "../ui/Modal";
 import { Button } from "../ui/Button";
-import { Field, Input, SecretInput, StrengthMeter, Textarea } from "../ui/Fields";
+import { Field, Input, SecretInput, Select, StrengthMeter, Textarea } from "../ui/Fields";
 
-function Footer(props: { onCancel(): void; busy: boolean; label: string; busyLabel: string; disabled?: boolean }): JSX.Element {
+function Footer(props: {
+  onCancel(): void;
+  busy: boolean;
+  label: string;
+  busyLabel: string;
+  disabled?: boolean;
+  form?: string;
+}): JSX.Element {
   return (
     <>
       <Button onClick={props.onCancel}>Cancel</Button>
-      <Button variant="primary" type="submit" form="editor-form" disabled={props.busy || props.disabled}>
+      <Button variant="primary" type="submit" form={props.form ?? "editor-form"} disabled={props.busy || props.disabled}>
         {props.busy ? props.busyLabel : props.label}
       </Button>
     </>
+  );
+}
+
+export function MoveItemModal(props: {
+  item: ItemSummary;
+  scopes: ScopeSummary[];
+  onClose(): void;
+  onMoved(targetScopeId: string): Promise<void>;
+}): JSX.Element {
+  const vault = useVault();
+  const options = createMemo(() =>
+    props.scopes
+      .filter((scope) => scope.id !== props.item.scopeId)
+      .map((scope) => ({ value: scope.id, label: scope.label })),
+  );
+  const [targetScopeId, setTargetScopeId] = createSignal(options()[0]?.value ?? "");
+  const [busy, setBusy] = createSignal(false);
+
+  async function move(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+    if (!targetScopeId()) return;
+    setBusy(true);
+    try {
+      const result = await window.fd0.moveItem({
+        source: { scopeId: props.item.scopeId, name: props.item.recordName },
+        targetScopeId: targetScopeId(),
+      });
+      if (!result.ok) return;
+      await props.onMoved(targetScopeId());
+    } catch (cause) {
+      vault.pushError(toAppError(cause, `fd0 could not move ${props.item.title}`));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal
+      title="Move to another vault"
+      description={`Move ${props.item.title} without changing its contents.`}
+      size="small"
+      onClose={props.onClose}
+      footer={
+        <Footer
+          form="move-item-form"
+          onCancel={props.onClose}
+          busy={busy()}
+          label="Continue…"
+          busyLabel="Moving…"
+          disabled={!targetScopeId()}
+        />
+      }
+    >
+      <form id="move-item-form" class="field-stack" onSubmit={move}>
+        <Field label="Destination vault" hint="Vault access controls who can open this item.">
+          {(field) => (
+            <Select
+              id={field.id}
+              value={targetScopeId()}
+              options={options()}
+              onChange={setTargetScopeId}
+              placeholder="Choose a vault"
+            />
+          )}
+        </Field>
+        <div class="callout">
+          <IconTransfer size={17} aria-hidden="true" />
+          <p>The item keeps its name and contents. You will confirm the access change before it moves.</p>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+export function RenameItemModal(props: {
+  item: ItemSummary;
+  onClose(): void;
+  onRenamed(name: string): Promise<void>;
+}): JSX.Element {
+  const vault = useVault();
+  const [name, setName] = createSignal(props.item.title);
+  const [busy, setBusy] = createSignal(false);
+  const nextName = () => name().trim();
+
+  async function rename(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+    if (!nextName() || nextName() === props.item.title) return;
+    setBusy(true);
+    try {
+      const result = await window.fd0.renameItem({
+        source: { scopeId: props.item.scopeId, name: props.item.recordName },
+        name: nextName(),
+      });
+      if (result.ok) await props.onRenamed(nextName());
+    } catch (cause) {
+      vault.pushError(toAppError(cause, `fd0 could not rename ${props.item.title}`));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal
+      title={`Rename ${props.item.title}`}
+      description="The generated configuration will use the new name."
+      size="small"
+      dirty={nextName() !== props.item.title}
+      onClose={props.onClose}
+      footer={
+        <Footer
+          form="rename-item-form"
+          onCancel={props.onClose}
+          busy={busy()}
+          label="Continue…"
+          busyLabel="Renaming…"
+          disabled={!nextName() || nextName() === props.item.title}
+        />
+      }
+    >
+      <form id="rename-item-form" class="field-stack" onSubmit={rename}>
+        <Field label="Name">
+          {(field) => (
+            <Input
+              id={field.id}
+              autofocus
+              required
+              value={name()}
+              onInput={(event) => setName(event.currentTarget.value)}
+            />
+          )}
+        </Field>
+      </form>
+    </Modal>
   );
 }
 

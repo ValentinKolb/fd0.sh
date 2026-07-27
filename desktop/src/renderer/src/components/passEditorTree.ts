@@ -2,6 +2,8 @@ import type { PassField } from "../../../shared/contracts";
 
 const MAX_PASS_DEPTH = 4;
 
+export type PassFieldDropLane = "field" | "section" | "mixed";
+
 export function updatePassFieldTree(fields: PassField[], path: number[], next: PassField | null): PassField[] {
   const [index, ...rest] = path;
   if (index === undefined || index < 0 || index >= fields.length) return fields;
@@ -37,6 +39,25 @@ export function canMovePassFieldTree(fields: PassField[], sourcePath: number[], 
   return !duplicate;
 }
 
+/**
+ * Drag-and-drop only reorders siblings. Root fields and root sections render
+ * in separate visual lanes, while children of a section share one mixed lane.
+ */
+export function canReorderPassFieldTree(
+  fields: PassField[],
+  sourcePath: number[],
+  targetParentPath: number[],
+  targetIndex: number,
+  lane: PassFieldDropLane,
+): boolean {
+  if (!samePath(sourcePath.slice(0, -1), targetParentPath)) return false;
+  const source = passFieldAt(fields, sourcePath);
+  if (!source) return false;
+  if (lane === "field" && source.type === "section") return false;
+  if (lane === "section" && source.type !== "section") return false;
+  return canMovePassFieldTree(fields, sourcePath, targetParentPath, targetIndex);
+}
+
 export function movePassFieldTree(fields: PassField[], sourcePath: number[], targetParentPath: number[], targetIndex: number): PassField[] {
   if (!canMovePassFieldTree(fields, sourcePath, targetParentPath, targetIndex)) return fields;
   const source = passFieldAt(fields, sourcePath)!;
@@ -56,6 +77,13 @@ export function movePassFieldTree(fields: PassField[], sourcePath: number[], tar
   const nextTarget = [...targetList];
   nextTarget.splice(insertionIndex, 0, source);
   return replacePassFieldList(withoutSource, adjustedParentPath, nextTarget);
+}
+
+/** Explicit hierarchy changes append the field to the chosen destination. */
+export function movePassFieldTreeToParent(fields: PassField[], sourcePath: number[], targetParentPath: number[]): PassField[] {
+  const target = passFieldListAt(fields, targetParentPath);
+  if (!target) return fields;
+  return movePassFieldTree(fields, sourcePath, targetParentPath, target.length);
 }
 
 function passFieldAt(fields: PassField[], path: number[]): PassField | null {

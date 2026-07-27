@@ -165,7 +165,7 @@ func TestRenderBasic(t *testing.T) {
 	out := mustRender(t, RenderInput{
 		Hosts:      hosts,
 		SocketPath: "/tmp/fd0/ssh.sock",
-		KnownKeys:  map[string]bool{"deploy": true},
+		KnownKeys:  map[KeyRef]bool{{Scope: "work", Name: "deploy"}: true},
 		PubKeyDir:  "/tmp/fd0/pub",
 		Now:        time.Date(2026, 6, 8, 12, 0, 0, 0, time.UTC),
 	})
@@ -228,7 +228,7 @@ func TestRenderKeyedHostEmitsIdentityFile(t *testing.T) {
 	out := string(mustRender(t, RenderInput{
 		Hosts:      hosts,
 		SocketPath: "/run/fd0.sock",
-		KnownKeys:  map[string]bool{"deploy": true},
+		KnownKeys:  map[KeyRef]bool{{Scope: "work", Name: "deploy"}: true},
 		PubKeyDir:  "/home/me/.ssh/fd0.d",
 		Now:        time.Now(),
 	}))
@@ -237,6 +237,26 @@ func TestRenderKeyedHostEmitsIdentityFile(t *testing.T) {
 	}
 	if !strings.Contains(out, "IdentitiesOnly yes") {
 		t.Errorf("keyed host should emit IdentitiesOnly:\n%s", out)
+	}
+}
+
+func TestRenderQuotesSSHPathsWithSpaces(t *testing.T) {
+	out := string(mustRender(t, RenderInput{
+		Hosts: []*Host{
+			{Alias: "prod-db", Hostname: "db", KeyName: "deploy", Scope: "work"},
+		},
+		SocketPath: "/Users/me/Application Support/fd0/agent.sock",
+		KnownKeys:  map[KeyRef]bool{{Scope: "work", Name: "deploy"}: true},
+		PubKeyDir:  "/Users/me/Application Support/fd0/ssh",
+		Now:        time.Now(),
+	}))
+	for _, want := range []string{
+		`IdentityAgent "/Users/me/Application Support/fd0/agent.sock"`,
+		`IdentityFile "/Users/me/Application Support/fd0/ssh/prod-db.pub"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
 	}
 }
 
@@ -269,11 +289,30 @@ func TestRenderMissingKeyWarning(t *testing.T) {
 	}
 	out := mustRender(t, RenderInput{
 		Hosts:     hosts,
-		KnownKeys: map[string]bool{"deploy": true}, // ghost not in set
+		KnownKeys: map[KeyRef]bool{{Scope: "s", Name: "deploy"}: true}, // ghost not in set
 		Now:       time.Now(),
 	})
 	if !strings.Contains(string(out), `# WARN: host "h" references missing key "ghost"`) {
 		t.Errorf("missing key warning not emitted:\n%s", string(out))
+	}
+}
+
+func TestRenderDoesNotResolveKeyFromAnotherScope(t *testing.T) {
+	hosts := []*Host{
+		{Alias: "prod", Hostname: "prod.example.com", KeyName: "deploy", Scope: "work"},
+	}
+	out := string(mustRender(t, RenderInput{
+		Hosts:      hosts,
+		SocketPath: "/run/fd0.sock",
+		KnownKeys:  map[KeyRef]bool{{Scope: "personal", Name: "deploy"}: true},
+		PubKeyDir:  "/home/me/.ssh/fd0.d",
+		Now:        time.Now(),
+	}))
+	if !strings.Contains(out, `references missing key "deploy"`) {
+		t.Fatalf("another vault's same-name key must not resolve:\n%s", out)
+	}
+	if strings.Contains(out, "IdentityFile") || strings.Contains(out, "IdentitiesOnly") {
+		t.Fatalf("a cross-vault key must not become the host identity:\n%s", out)
 	}
 }
 

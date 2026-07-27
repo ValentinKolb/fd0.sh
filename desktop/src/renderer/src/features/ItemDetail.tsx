@@ -2,9 +2,11 @@ import { For, Show, createEffect, createMemo, createSignal, onCleanup, type JSX 
 import { Dynamic } from "solid-js/web";
 import {
   IconAdjustmentsHorizontal,
+  IconArrowRight,
   IconCopy,
   IconDots,
   IconDownload,
+  IconCopyPlus,
   IconExternalLink,
   IconEye,
   IconEyeOff,
@@ -12,8 +14,10 @@ import {
   IconStar,
   IconTextSize,
   IconTrash,
+  IconTransfer,
+  IconTerminal2,
 } from "@tabler/icons-solidjs";
-import type { FieldView, ItemDetail as ItemDetailData } from "../../../shared/contracts";
+import type { FieldView, ItemDetail as ItemDetailData, ItemSummary } from "../../../shared/contracts";
 import { editability, kindIcon, kindMeta, kindTone, vaultTone } from "../lib/items";
 import { absoluteDate, flattenFieldViews, formatBytes, initials, prettyURL, relativeDate } from "../lib/format";
 import { useVault } from "../lib/store";
@@ -23,8 +27,16 @@ import { ItemHistory } from "./ItemHistory";
 
 const REVEAL_SECONDS = 15;
 
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\"'\"'")}'`;
+}
+
 export function ItemDetail(props: {
   onEdit(): void;
+  onDuplicate(): void;
+  onRename(item: ItemSummary): void;
+  onMove(item: ItemSummary): void;
+  onOpenItem(item: ItemSummary): void;
   onLargeType(field: FieldView, value: string): void;
 }): JSX.Element {
   const vault = useVault();
@@ -44,7 +56,18 @@ export function ItemDetail(props: {
           </div>
         }
       >
-        {(detail) => <DetailContent detail={detail()} raw={raw()} onEdit={props.onEdit} onLargeType={props.onLargeType} />}
+        {(detail) => (
+          <DetailContent
+            detail={detail()}
+            raw={raw()}
+            onEdit={props.onEdit}
+            onDuplicate={props.onDuplicate}
+            onRename={props.onRename}
+            onMove={props.onMove}
+            onOpenItem={props.onOpenItem}
+            onLargeType={props.onLargeType}
+          />
+        )}
       </Show>
     </article>
   );
@@ -54,6 +77,10 @@ function DetailContent(props: {
   detail: ItemDetailData;
   raw: boolean;
   onEdit(): void;
+  onDuplicate(): void;
+  onRename(item: ItemSummary): void;
+  onMove(item: ItemSummary): void;
+  onOpenItem(item: ItemSummary): void;
   onLargeType(field: FieldView, value: string): void;
 }): JSX.Element {
   const vault = useVault();
@@ -82,6 +109,17 @@ function DetailContent(props: {
 
   const websiteField = createMemo(() => allFields().find((field) => field.type === "url" && field.value));
   const edit = createMemo(() => editability(item().kind, item().badge, props.raw));
+  const usages = createMemo(() => props.detail.relations?.filter((relation) => relation.kind === "used-by") ?? []);
+
+  function linkedSSHKey(field: FieldView): ItemSummary | undefined {
+    if (item().badge !== "SSH HOST" || field.path !== "key" || !field.value) return undefined;
+    return vault.inventory().items.find(
+      (candidate) =>
+        candidate.scopeId === item().scopeId &&
+        candidate.recordName === `ssh:${field.value}` &&
+        candidate.badge === "SSH KEY",
+    );
+  }
 
   // A single ticking clock drives every countdown in the panel.
   createEffect(() => {
@@ -156,6 +194,20 @@ function DetailContent(props: {
     }
   }
 
+  function openSSHHost(): void {
+    void window.fd0
+      .openSSHHost({ scopeId: item().scopeId, name: item().recordName })
+      .then(() => vault.notify("SSH session opened"))
+      .catch((cause) =>
+        vault.fail(cause, "fd0 could not open that SSH host", {
+          label: "Terminal settings",
+          run: () => {
+            vault.setMainView("settings");
+          },
+        }),
+      );
+  }
+
   const menuSections = createMemo<MenuSection[]>(() => {
     const primary = primaryField();
     const website = websiteField();
@@ -171,6 +223,39 @@ function DetailContent(props: {
             disabledReason: edit().reason,
             run: props.onEdit,
           },
+          {
+            id: "move-item",
+            label: "Move to vault…",
+            icon: IconTransfer,
+            disabled: props.raw || vault.inventory().scopes.length < 2,
+            disabledReason: props.raw ? "Raw records cannot be moved here." : "Create another vault first.",
+            run: () => props.onMove(item()),
+          },
+          {
+            id: "duplicate-item",
+            label: "Duplicate…",
+            icon: IconCopyPlus,
+            disabled: props.raw || !(
+              item().kind === "password" ||
+              item().kind === "secret" ||
+              (item().kind === "ssh" && item().badge === "SSH HOST")
+            ),
+            disabledReason:
+              item().badge === "SSH KEY"
+                ? "Create a new key instead of copying private key material."
+                : "Imported configurations are duplicated by importing another file.",
+            run: props.onDuplicate,
+          },
+          ...(item().kind === "kubernetes" || item().kind === "talos"
+            ? [{
+                id: "rename-item",
+                label: "Rename…",
+                icon: IconAdjustmentsHorizontal,
+                disabled: props.raw,
+                disabledReason: "Raw records cannot be renamed here.",
+                run: () => props.onRename(item()),
+              }]
+            : []),
           ...(primary
             ? [
                 {
@@ -192,6 +277,29 @@ function DetailContent(props: {
                     void window.fd0
                       .openItemURL({ scopeId: item().scopeId, name: item().recordName })
                       .catch((cause) => vault.fail(cause, "fd0 could not open that website"));
+                  },
+                },
+              ]
+            : []),
+          ...(item().badge === "SSH HOST"
+            ? [
+                {
+                  id: "open-ssh-host",
+                  label: "Open in terminal",
+                  icon: IconTerminal2,
+                  run: openSSHHost,
+                },
+                {
+                  id: "copy-ssh-command",
+                  label: "Copy SSH command",
+                  icon: IconTerminal2,
+                  hint: `fd0 ssh connect --scope ${item().vault} ${item().title}`,
+                  run: () => {
+                    void window.fd0.copyText(
+                      `fd0 ssh connect --scope ${shellQuote(item().scopeId)} ${shellQuote(item().title)}`,
+                    )
+                      .then((result) => vault.notify("SSH command copied — clears in", result.clearAfterSeconds))
+                      .catch((cause) => vault.fail(cause, "fd0 could not copy the SSH command"));
                   },
                 },
               ]
@@ -226,6 +334,11 @@ function DetailContent(props: {
           <p>{props.raw ? "Raw stored record" : item().subtitle || kindMeta[item().kind].singular}</p>
         </div>
         <div class="detail-header-actions">
+          <Show when={item().badge === "SSH HOST" && !props.raw}>
+            <IconButton label="Open in terminal" onClick={openSSHHost}>
+              <IconTerminal2 size={17} />
+            </IconButton>
+          </Show>
           <Show when={item().kind === "password" && !props.raw}>
             <IconButton
               label={item().favorite ? "Remove from favorites" : "Add to favorites"}
@@ -254,7 +367,9 @@ function DetailContent(props: {
                       depth={0}
                       revealedOf={revealedOf}
                       secondsLeftOf={secondsLeftOf}
+                      linkedItem={linkedSSHKey(field)}
                       allowLargeType={item().kind === "password" && !props.raw}
+                      onOpenItem={props.onOpenItem}
                       onReveal={(next) => void toggleReveal(next)}
                       onLargeType={(next) => void largeType(next)}
                       onCopy={(next) =>
@@ -277,6 +392,25 @@ function DetailContent(props: {
               </section>
             )}
           </For>
+
+          <Show when={usages().length > 0}>
+            <section class="field-section relation-section">
+              <h2 class="section-heading">Used by {usages().length === 1 ? "1 server" : `${usages().length} servers`}</h2>
+              <div class="relation-list">
+                <For each={usages()}>
+                  {(relation) => (
+                    <button class="relation-row" type="button" onClick={() => props.onOpenItem(relation.item)}>
+                      <span>
+                        <strong>{relation.item.title}</strong>
+                        <small>{relation.item.subtitle}</small>
+                      </span>
+                      <span>Open</span>
+                    </button>
+                  )}
+                </For>
+              </div>
+            </section>
+          </Show>
 
           {/* Raw mode projects arbitrary records, so there is no single item
               whose history would be meaningful. */}
@@ -304,9 +438,11 @@ function DetailContent(props: {
 function FieldRow(props: {
   field: FieldView;
   depth: number;
+  linkedItem?: ItemSummary;
   revealedOf(path: string): string | undefined;
   secondsLeftOf(path: string): number | undefined;
   allowLargeType: boolean;
+  onOpenItem(item: ItemSummary): void;
   onReveal(field: FieldView): void;
   onCopy(field: FieldView): void;
   onLargeType(field: FieldView): void;
@@ -329,7 +465,7 @@ function FieldRow(props: {
         <div class="notes-block">
           <p class="notes-text">{props.field.value}</p>
           <span class="field-actions">
-            <IconButton label="Copy notes" size="sm" emphasis onClick={() => props.onCopy(props.field)}>
+            <IconButton label="Copy notes" size="sm" onClick={() => props.onCopy(props.field)}>
               <IconCopy size={15} />
             </IconButton>
           </span>
@@ -344,25 +480,42 @@ function FieldRow(props: {
             when={props.field.file}
             fallback={
               <Show
-                when={props.field.type === "url" && props.field.value}
+                when={props.linkedItem}
                 fallback={
-                  <span
-                    classList={{
-                      "field-value": true,
-                      "is-secret": props.field.sensitive && revealed() === undefined,
-                      "is-revealed": revealed() !== undefined,
-                      "is-totp": isTOTP(),
-                      "is-unset": !props.field.value && !props.field.sensitive,
-                    }}
+                  <Show
+                    when={props.field.type === "url" && props.field.value}
+                    fallback={
+                      <span
+                        classList={{
+                          "field-value": true,
+                          "is-secret": props.field.sensitive && revealed() === undefined,
+                          "is-revealed": revealed() !== undefined,
+                          "is-totp": isTOTP(),
+                          "is-unset": !props.field.value && !props.field.sensitive,
+                        }}
+                      >
+                        {shown()}
+                      </span>
+                    }
                   >
-                    {shown()}
-                  </span>
+                    <button class="link-value" type="button" onClick={() => props.onOpenURL(props.field)}>
+                      {prettyURL(props.field.value!)}
+                      <IconExternalLink size={13} />
+                    </button>
+                  </Show>
                 }
               >
-                <button class="link-value" type="button" onClick={() => props.onOpenURL(props.field)}>
-                  {prettyURL(props.field.value!)}
-                  <IconExternalLink size={13} />
-                </button>
+                {(linked) => (
+                  <button
+                    class="link-value"
+                    type="button"
+                    aria-label={`Open SSH key ${linked().title}`}
+                    onClick={() => props.onOpenItem(linked())}
+                  >
+                    {shown()}
+                    <IconArrowRight size={13} />
+                  </button>
+                )}
               </Show>
             }
           >
@@ -409,7 +562,7 @@ function FieldRow(props: {
             </IconButton>
           </Show>
           <Show when={props.field.copyable}>
-            <IconButton label={`Copy ${props.field.name}`} size="sm" emphasis onClick={() => props.onCopy(props.field)}>
+            <IconButton label={`Copy ${props.field.name}`} size="sm" onClick={() => props.onCopy(props.field)}>
               <IconCopy size={15} />
             </IconButton>
           </Show>
@@ -423,9 +576,11 @@ function FieldRow(props: {
               <FieldRow
                 field={child}
                 depth={props.depth + 1}
+                linkedItem={undefined}
                 revealedOf={props.revealedOf}
                 secondsLeftOf={props.secondsLeftOf}
                 allowLargeType={props.allowLargeType}
+                onOpenItem={props.onOpenItem}
                 onReveal={props.onReveal}
                 onCopy={props.onCopy}
                 onLargeType={props.onLargeType}

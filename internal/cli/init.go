@@ -302,6 +302,10 @@ func friendlyUnlockError(err error) error {
 		return errors.New("YubiKey unlock is enrolled, but the running fd0-agent was built without YubiKey/PIV support; install the yubikey flavor and run `fd0 agent restart`")
 	}
 	msg := err.Error()
+	if strings.Contains(msg, "unlock timed out") ||
+		strings.Contains(msg, "i/o timeout") {
+		return errors.New("unlock timed out; run `fd0 agent status` before retrying because the agent may already have completed the unlock")
+	}
 	if strings.Contains(msg, "pin longer than 8 bytes") ||
 		strings.Contains(msg, "yubikey PIN: must be at most 8 characters") {
 		return errors.New("YubiKey PIV PINs are 6-8 ASCII characters; if this key was enrolled as touch-only, press Enter instead of entering your fd0 passphrase")

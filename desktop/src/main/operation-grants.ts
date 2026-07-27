@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-export type OperationGrantKind = "pass.edit" | "secret.edit" | "ssh.edit";
+export type OperationGrantKind = "pass.edit" | "secret.edit" | "ssh.edit" | "ssh-key.edit";
 
 type Grant = {
   kind: OperationGrantKind;

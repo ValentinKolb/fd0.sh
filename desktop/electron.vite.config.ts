@@ -36,6 +36,11 @@ export default defineConfig({
   renderer: {
     root: resolve(import.meta.dirname, "src/renderer"),
     plugins: [devContentSecurityPolicy, solid()],
+    server: {
+      host: "127.0.0.1",
+      port: 5174,
+      strictPort: true,
+    },
     build: {
       rollupOptions: {
         input: resolve(import.meta.dirname, "src/renderer/index.html"),

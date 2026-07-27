@@ -40,24 +40,40 @@ import {
   selectDesktopRelease,
   type DesktopRelease,
 } from "./release-verification";
+import {
+  buildTerminalLaunchPlan,
+  detectTerminalEnvironment,
+  readTerminalLauncherSettings,
+  spawnTerminal,
+  terminalLauncherState,
+  writeTerminalLauncherSettings,
+} from "./terminal-launcher";
 import type {
   DesktopCommand,
+  DesktopTheme,
   DiagnosticsSnapshot,
   FieldRef,
   FieldView,
   GenerateSSHKeyInput,
   IdentityCardInfo,
+  Inventory,
   ItemDetail,
+  ItemSummary,
   ItemVersionRef,
   LargeTypeValue,
   LargeTypeWindowResult,
+  MoveItemInput,
   RecordRef,
+  RenameItemInput,
   SavePassInput,
+  SaveSSHKeyInput,
   SaveSSHHostInput,
   SaveSecretInput,
   ScopeShareInfo,
   StartupStatus,
   SyncPreparation,
+  TerminalLauncherSettings,
+  TerminalLauncherState,
   UnlockInput,
   UpdateStatus,
   VaultStatus,
@@ -96,7 +112,7 @@ let updaterConfigured = false;
 
 app.setName("fd0");
 if (!app.isPackaged) app.setPath("userData", requiredEnv("FD0_DESKTOP_USER_DATA"));
-nativeTheme.themeSource = "dark";
+nativeTheme.themeSource = "system";
 protocol.registerSchemesAsPrivileged([
   {
     scheme: "fd0-app",
@@ -155,12 +171,35 @@ function runtimeEnvironment(): NodeJS.ProcessEnv {
     FD0_BIN: requiredEnv("FD0_BIN"),
     FD0_DESKTOP_MODE: "isolated",
     FD0_AGENT_SYNC_DISABLED: "1",
+    FD0_SSH_CONFIG_PATH: requiredEnv("FD0_SSH_CONFIG_PATH"),
+    FD0_KUBE_CONFIG_PATH: requiredEnv("FD0_KUBE_CONFIG_PATH"),
+    FD0_KUBE_USER_CONFIG: requiredEnv("FD0_KUBE_USER_CONFIG"),
+    FD0_TALOS_CONFIG_PATH: requiredEnv("FD0_TALOS_CONFIG_PATH"),
+    FD0_TALOS_USER_CONFIG: requiredEnv("FD0_TALOS_USER_CONFIG"),
   };
 }
 
 function bridgeBinary(): string {
   if (!app.isPackaged) return requiredEnv("FD0_DESKTOP_BRIDGE_BIN");
   return join(process.resourcesPath, "bin", "fd0-desktop-bridge");
+}
+
+function terminalLauncherSettingsPath(): string {
+  return join(app.getPath("userData"), "terminal-launcher.json");
+}
+
+async function currentTerminalLauncherState(
+  settings?: TerminalLauncherSettings,
+): Promise<TerminalLauncherState> {
+  const environment = runtimeEnvironment();
+  const current =
+    settings ??
+    (await readTerminalLauncherSettings(terminalLauncherSettingsPath(), process.platform));
+  const detection = await detectTerminalEnvironment({
+    platform: process.platform,
+    environment,
+  });
+  return terminalLauncherState(process.platform, current, detection);
 }
 
 function runPackagedRelay(): number | null {
@@ -831,6 +870,26 @@ function registerInfrastructureIPC(): void {
   handle("fd0:quit", async () => {
     app.quit();
   });
+  handle("fd0:terminal-launcher", currentTerminalLauncherState);
+  ipcMain.handle("fd0:set-theme", (event, theme: DesktopTheme) => {
+    assertTrustedSender(event);
+    return respond(async () => {
+      if (theme !== "system" && theme !== "dark" && theme !== "light") throw new Error("Invalid desktop theme");
+      nativeTheme.themeSource = theme;
+      updateWindowBackgrounds();
+    });
+  });
+  ipcMain.handle("fd0:set-terminal-launcher", (event, settings: TerminalLauncherSettings) => {
+    assertTrustedSender(event);
+    return respond(async () => {
+      const saved = await writeTerminalLauncherSettings(
+        terminalLauncherSettingsPath(),
+        process.platform,
+        settings,
+      );
+      return currentTerminalLauncherState(saved);
+    });
+  });
 }
 
 function registerIPC(client: BridgeSupervisor): void {
@@ -936,6 +995,11 @@ function registerIPC(client: BridgeSupervisor): void {
   });
   handle("fd0:set-default-auth", async (method: string) => observeVaultStatus(await client.request<VaultStatus>("auth.default", { method })));
   handle("fd0:inventory", () => client.request("inventory.list", {}));
+  handle("fd0:deleted-items", () => client.request("deleted.list", {}));
+  handle("fd0:parse-totp", (uri: string) => {
+    if (typeof uri !== "string" || uri.length > 4096) throw new Error("TOTP setup link is invalid");
+    return client.request("totp.parse", { uri });
+  });
   handle("fd0:item-detail", (ref: RecordRef) => client.request("item.detail", ref));
   handle("fd0:item-history", (ref: RecordRef, options?: { limit?: number; offset?: number }) =>
     client.request("item.history", {
@@ -1052,6 +1116,18 @@ function registerIPC(client: BridgeSupervisor): void {
     return { ...input, authorization };
   });
   handle("fd0:generate-ssh-key", (input: GenerateSSHKeyInput) => client.request("sshKey.generate", input));
+  handle("fd0:list-ssh-keys", (scopeId: string) => client.request("sshKey.list", { scopeId }));
+  handle("fd0:save-ssh-key", async (input: SaveSSHKeyInput) => {
+    const { authorization, ...params } = input;
+    requireEditGrant(authorization, "ssh-key.edit", input.scopeId, `ssh:${input.name}`);
+    return client.request("sshKey.save", params);
+  });
+  handle("fd0:edit-ssh-key", async (ref: RecordRef) => {
+    const authorization = await issueEditGrant(client, ref, "ssh-key.edit");
+    if (!authorization) return null;
+    const input = await client.request<SaveSSHKeyInput>("sshKey.editData", ref);
+    return { ...input, authorization };
+  });
   handle("fd0:import-config", async (kind: "kubernetes" | "talos", scopeId: string) => {
     if (!mainWindow || (kind !== "kubernetes" && kind !== "talos")) throw new Error("Invalid config import");
     const selection = await dialog.showOpenDialog(mainWindow, {
@@ -1090,7 +1166,71 @@ function registerIPC(client: BridgeSupervisor): void {
     }
     return { saved: true };
   });
+  handle("fd0:move-item", async (input: MoveItemInput) => {
+    if (!mainWindow) throw new Error("fd0 window is unavailable");
+    const item = await loadTrustedItem(client, input.source);
+    const inventory = await client.request<Inventory>("inventory.list", {});
+    const target = inventory.scopes.find((scope) => scope.id === input.targetScopeId);
+    if (!target) throw new Error("That destination vault is no longer available");
+    if (target.id === item.item.scopeId) throw new Error("Choose another vault");
+
+    const usages = item.relations?.filter((relation) => relation.kind === "used-by") ?? [];
+    const sshKeyWarning =
+      item.item.badge === "SSH KEY" && usages.length > 0
+        ? `\n\nThis key is assigned to ${usages.length} server${usages.length === 1 ? "" : "s"} in the current vault. Those assignments will no longer resolve after the move.`
+        : "";
+    const confirmation = await dialog.showMessageBox(mainWindow, {
+      type: "warning",
+      buttons: ["Cancel", "Move"],
+      defaultId: 0,
+      cancelId: 0,
+      title: "Move item to another vault?",
+      message: `Move ${dialogText(item.item.title, "this item")} from ${dialogText(item.item.vault, "this vault")} to ${dialogText(target.label, "the selected vault")}?`,
+      detail: `Vault access controls who can open this item. The move will sync to other devices and vault members.${sshKeyWarning}`,
+      noLink: true,
+    });
+    if (confirmation.response !== 1) return { ok: false };
+    return client.request("item.move", input);
+  });
+  handle("fd0:rename-item", async (input: RenameItemInput) => {
+    if (!mainWindow) throw new Error("fd0 window is unavailable");
+    const item = await loadTrustedItem(client, input.source);
+    const name = input.name.trim();
+    if (!name) throw new Error("Item name is required");
+    if (item.item.kind !== "kubernetes" && item.item.kind !== "talos") {
+      throw new Error("Rename this item through its editor");
+    }
+    if (name === item.item.title) return { ok: true };
+    const confirmation = await dialog.showMessageBox(mainWindow, {
+      type: "question",
+      buttons: ["Cancel", "Rename"],
+      defaultId: 1,
+      cancelId: 0,
+      title: `Rename ${item.item.title}?`,
+      message: `Rename ${dialogText(item.item.title, "this item")} to ${dialogText(name, "the new name")}?`,
+      detail: "fd0 will update the generated configuration on this device.",
+      noLink: true,
+    });
+    if (confirmation.response !== 1) return { ok: false };
+    return client.request("item.rename", { source: input.source, name });
+  });
   handle("fd0:remove", async (ref: RecordRef) => {
+    const detail = await loadTrustedItem(client, ref);
+    const usages = detail.relations?.filter((relation) => relation.kind === "used-by") ?? [];
+    if (detail.item.badge === "SSH KEY" && usages.length > 0) {
+      if (!mainWindow) throw new Error("fd0 window is unavailable");
+      await dialog.showMessageBox(mainWindow, {
+        type: "warning",
+        buttons: ["OK"],
+        defaultId: 0,
+        cancelId: 0,
+        title: "SSH key is still in use",
+        message: `${dialogText(detail.item.title, "This key")} is assigned to ${usages.length} server${usages.length === 1 ? "" : "s"}.`,
+        detail: `${usages.map((relation) => relation.item.title).join(", ")}\n\nChoose another key for those servers before removing this key.`,
+        noLink: true,
+      });
+      return { ok: false, blocked: true };
+    }
     const item = await confirmItemAction(client, ref, {
       title: "Remove item?",
       action: "Remove",
@@ -1101,7 +1241,53 @@ function registerIPC(client: BridgeSupervisor): void {
     if (!item) return { ok: false };
     return client.request("item.remove", ref);
   });
+  handle("fd0:restore-deleted-item", async (ref: ItemVersionRef) => {
+    if (!mainWindow) throw new Error("fd0 window is unavailable");
+    const deleted = await client.request<{ items: Array<{ item: ItemSummary; restoreSeq: number }> }>("deleted.list", {});
+    const candidate = deleted.items.find(
+      (entry) =>
+        entry.item.scopeId === ref.scopeId &&
+        entry.item.recordName === ref.name &&
+        entry.restoreSeq === ref.seq,
+    );
+    if (!candidate) throw new Error("That deleted item is no longer available");
+    const confirmation = await dialog.showMessageBox(mainWindow, {
+      type: "question",
+      buttons: ["Cancel", "Restore"],
+      defaultId: 1,
+      cancelId: 0,
+      title: "Restore deleted item?",
+      message: `Restore ${dialogText(candidate.item.title, "this item")} to ${dialogText(candidate.item.vault, "its vault")}?`,
+      detail: "The restore is saved as a new version and will sync to other devices and vault members.",
+      noLink: true,
+    });
+    if (confirmation.response !== 1) return { ok: false };
+    return client.request("item.restore", ref);
+  });
   handle("fd0:create-scope", (label: string) => client.request("scope.create", { label }));
+  handle("fd0:rename-scope", (scopeId: string, label: string) =>
+    client.request("scope.rename", { scopeId, label }),
+  );
+  handle("fd0:leave-scope", async (scopeId: string) => {
+    if (!mainWindow) throw new Error("fd0 window is unavailable");
+    const inventory = await client.request<Inventory>("inventory.list", {});
+    const scope = inventory.scopes.find((candidate) => candidate.id === scopeId);
+    if (!scope) throw new Error("That vault is no longer available");
+    if (inventory.scopes.length <= 1) throw new Error("You cannot leave your only vault");
+    const count = inventory.items.filter((item) => item.scopeId === scopeId).length;
+    const confirmation = await dialog.showMessageBox(mainWindow, {
+      type: "warning",
+      buttons: ["Cancel", "Leave vault"],
+      defaultId: 0,
+      cancelId: 0,
+      title: `Leave ${dialogText(scope.label, "this vault")}?`,
+      message: `Leave ${dialogText(scope.label, "this vault")} and remove its items from this device?`,
+      detail: `${count} item${count === 1 ? "" : "s"} will disappear after the leave syncs. Other vault members keep their access.`,
+      noLink: true,
+    });
+    if (confirmation.response !== 1) return { ok: false };
+    return client.request("scope.leave", { scopeId });
+  });
   handle("fd0:scope-share-info", (scopeId: string) => client.request("scope.shareInfo", { scopeId }));
   handle("fd0:scope-add-member", async (scopeId: string, label: string) => {
     if (!mainWindow) throw new Error("fd0 window is unavailable");
@@ -1199,6 +1385,33 @@ function registerIPC(client: BridgeSupervisor): void {
   handle("fd0:launch-at-login", async () => agentLifecycle.guiLaunchesAtLogin());
   handle("fd0:set-launch-at-login", async (value: boolean) => {
     return agentLifecycle.setGuiLaunchAtLogin(Boolean(value));
+  });
+  handle("fd0:open-ssh-host", async (ref: RecordRef) => {
+    const detail = await loadTrustedItem(client, ref);
+    if (detail.item.badge !== "SSH HOST" || !detail.item.recordName.startsWith("host:")) {
+      throw new Error("Only fd0 SSH hosts can be opened in a terminal");
+    }
+    const alias = detail.item.recordName.slice("host:".length);
+    const environment = runtimeEnvironment();
+    const settings = await readTerminalLauncherSettings(
+      terminalLauncherSettingsPath(),
+      process.platform,
+    );
+    const detection = await detectTerminalEnvironment({
+      platform: process.platform,
+      environment,
+    });
+    const plan = buildTerminalLaunchPlan({
+      platform: process.platform,
+      settings,
+      detection,
+      fd0Binary: environment.FD0_BIN ?? "",
+      scopeId: detail.item.scopeId,
+      alias,
+      environment,
+    });
+    await spawnTerminal(plan);
+    return { profileId: plan.profileId };
   });
   handle("fd0:open-item-url", async (ref: RecordRef) => {
     if (!mainWindow) throw new Error("fd0 window is unavailable");
@@ -1323,6 +1536,16 @@ function rendererEntryURL(fragment = ""): string {
   return `${base}${fragment}`;
 }
 
+function windowBackgroundColor(): string {
+  return nativeTheme.shouldUseDarkColors ? "#0b0e0c" : "#ffffff";
+}
+
+function updateWindowBackgrounds(): void {
+  const background = windowBackgroundColor();
+  mainWindow?.setBackgroundColor(background);
+  largeTypeWindow?.setBackgroundColor(background);
+}
+
 function createWindow(): BrowserWindow {
   const mac = process.platform === "darwin";
   const window = new BrowserWindow({
@@ -1331,7 +1554,7 @@ function createWindow(): BrowserWindow {
     minWidth: 860,
     minHeight: 600,
     show: false,
-    backgroundColor: "#0b0e0c",
+    backgroundColor: windowBackgroundColor(),
     ...(mac
       ? {
           titleBarStyle: "hiddenInset" as const,
@@ -1421,7 +1644,7 @@ function openLargeTypeWindow(label: unknown, value: unknown): LargeTypeWindowRes
     skipTaskbar: true,
     alwaysOnTop: true,
     title: "fd0 large type",
-    backgroundColor: "#0b0e0c",
+    backgroundColor: windowBackgroundColor(),
     webPreferences: secureWebPreferences(["--fd0-large-type"]),
   });
   /*
@@ -1571,6 +1794,7 @@ async function initializeServices(): Promise<StartupStatus> {
 
 async function start(): Promise<void> {
   await app.whenReady();
+  nativeTheme.on("updated", updateWindowBackgrounds);
   diagnostics = new DiagnosticsLog(join(app.getPath("logs"), "fd0-desktop.log"));
   diagnostics.record("app", "starting", `${process.platform}/${process.arch} ${app.getVersion()}`);
   if (lifecycleCommand) {
@@ -1630,6 +1854,7 @@ app.on("before-quit", (event) => {
   if (updateTimer) clearTimeout(updateTimer);
   if (securityStatusTimer) clearInterval(securityStatusTimer);
   securityStatusTimer = null;
+  nativeTheme.removeListener("updated", updateWindowBackgrounds);
   disposeAutoLockEvents?.();
   disposeAutoLockEvents = null;
   bridge?.dispose();

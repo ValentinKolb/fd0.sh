@@ -1,8 +1,13 @@
-import { For, Show, createMemo, createSignal, onMount, type JSX } from "solid-js";
+import { Show, createMemo, createSignal, onMount, type JSX } from "solid-js";
+import type {
+  TerminalLauncherSettings,
+  TerminalLauncherState,
+  TerminalProfileID,
+} from "../../../shared/contracts";
 import { plural } from "../lib/format";
 import { useVault } from "../lib/store";
 import { Button } from "../ui/Button";
-import { Select, Switch } from "../ui/Fields";
+import { Field, Input, Select, Switch, Textarea } from "../ui/Fields";
 
 /**
  * Device settings.
@@ -15,6 +20,10 @@ import { Select, Switch } from "../ui/Fields";
 export function Settings(props: { onExportRecovery(): void; onShowShortcuts(): void }): JSX.Element {
   const vault = useVault();
   const [launchAtLogin, setLaunchAtLogin] = createSignal(false);
+  const [terminal, setTerminal] = createSignal<TerminalLauncherState | null>(null);
+  const [terminalProfile, setTerminalProfile] = createSignal<TerminalProfileID>("automatic");
+  const [customExecutable, setCustomExecutable] = createSignal("");
+  const [customArguments, setCustomArguments] = createSignal("");
 
   // A development run uses a throwaway profile, so registering a login item
   // would point the real session at a vault that is about to be deleted.
@@ -27,10 +36,32 @@ export function Settings(props: { onExportRecovery(): void; onShowShortcuts(): v
       .catch((cause: unknown) => {
         vault.fail(cause, "fd0 could not read your startup setting");
       });
+    void window.fd0
+      .terminalLauncher()
+      .then(applyTerminalState)
+      .catch((cause: unknown) => {
+        vault.fail(cause, "fd0 could not read your terminal setting");
+      });
   });
 
   const authMethods = () => vault.status()?.authMethods ?? [];
   const defaultMethod = () => authMethods().find((method) => method.default)?.id ?? "";
+  const terminalOptions = createMemo(() => {
+    const state = terminal();
+    if (!state) return [{ value: "automatic", label: "Automatic" }];
+    return state.profiles
+      .filter((profile) => profile.available || profile.id === state.settings.profileId)
+      .map((profile) => ({
+        value: profile.id,
+        label: profile.label,
+        hint:
+          profile.id === "automatic" && state.automaticProfileId
+            ? `Currently uses ${state.profiles.find((candidate) => candidate.id === state.automaticProfileId)?.label ?? "the system default"}`
+            : profile.available
+              ? profile.description
+              : `${profile.description} Not detected on this device.`,
+      }));
+  });
 
   const lockingValue = createMemo(() => {
     const millis = vault.status()?.idleTimeoutMillis;
@@ -47,6 +78,52 @@ export function Settings(props: { onExportRecovery(): void; onShowShortcuts(): v
       .catch((cause: unknown) => {
         vault.fail(cause, "fd0 could not change your startup setting");
       });
+  }
+
+  function applyTerminalState(state: TerminalLauncherState): void {
+    setTerminal(state);
+    setTerminalProfile(state.settings.profileId);
+    setCustomExecutable(state.settings.customExecutable);
+    setCustomArguments(state.settings.customArguments.join("\n"));
+  }
+
+  function storedTerminalSettings(profileId: TerminalProfileID): TerminalLauncherSettings {
+    const stored = terminal()?.settings;
+    return {
+      profileId,
+      customExecutable: stored?.customExecutable ?? "",
+      customArguments: stored?.customArguments ?? [],
+    };
+  }
+
+  function saveTerminalSettings(settings: TerminalLauncherSettings): void {
+    void window.fd0
+      .setTerminalLauncher(settings)
+      .then((state) => {
+        applyTerminalState(state);
+        vault.notify("Terminal launcher updated");
+      })
+      .catch((cause: unknown) => {
+        vault.fail(cause, "fd0 could not save your terminal setting");
+      });
+  }
+
+  function changeTerminalProfile(value: string): void {
+    const profile = terminal()?.profiles.find((candidate) => candidate.id === value);
+    if (!profile) return;
+    setTerminalProfile(profile.id);
+    if (profile.id !== "custom") saveTerminalSettings(storedTerminalSettings(profile.id));
+  }
+
+  function saveCustomTerminal(): void {
+    saveTerminalSettings({
+      profileId: "custom",
+      customExecutable: customExecutable().trim(),
+      customArguments: customArguments()
+        .split("\n")
+        .map((argument) => argument.trim())
+        .filter(Boolean),
+    });
   }
 
   function changeDefaultMethod(method: string): void {
@@ -71,6 +148,24 @@ export function Settings(props: { onExportRecovery(): void; onShowShortcuts(): v
       <div class="panel-column">
         <section class="setting-group">
           <h2 class="eyebrow">Appearance</h2>
+          <div class="setting-row">
+            <div>
+              <strong>Color theme</strong>
+              <small>Follow your operating system or choose a fixed theme.</small>
+            </div>
+            <Select
+              label="Color theme"
+              value={vault.theme()}
+              onChange={(value) => {
+                if (value === "system" || value === "light" || value === "dark") vault.setTheme(value);
+              }}
+              options={[
+                { value: "system", label: "System" },
+                { value: "light", label: "Light" },
+                { value: "dark", label: "Dark" },
+              ]}
+            />
+          </div>
           <Switch
             label="Compact rows"
             description="Fit more items on screen without making the text smaller."
@@ -92,12 +187,64 @@ export function Settings(props: { onExportRecovery(): void; onShowShortcuts(): v
             disabled={inDevelopment}
             onChange={changeLaunchAtLogin}
           />
+          <div class="setting-row">
+            <div>
+              <strong>SSH terminal</strong>
+              <small>Choose where Open in terminal starts SSH sessions on this device.</small>
+            </div>
+            <Select
+              label="SSH terminal"
+              value={terminalProfile()}
+              disabled={!terminal()}
+              onChange={changeTerminalProfile}
+              options={terminalOptions()}
+            />
+          </div>
+          <Show when={terminalProfile() === "custom"}>
+            <div class="terminal-custom-settings">
+              <Field
+                label="Executable or wrapper"
+                hint="Use an absolute path. fd0 appends its SSH command as separate arguments."
+              >
+                {(field) => (
+                  <Input
+                    id={field.id}
+                    aria-describedby={field.describedBy}
+                    value={customExecutable()}
+                    placeholder="/opt/bin/my-terminal-wrapper"
+                    spellcheck={false}
+                    onInput={(event) => setCustomExecutable(event.currentTarget.value)}
+                  />
+                )}
+              </Field>
+              <Field
+                label="Arguments before fd0"
+                hint="Optional. Enter one exact argument per line; no shell parsing is used."
+                optional
+              >
+                {(field) => (
+                  <Textarea
+                    id={field.id}
+                    aria-describedby={field.describedBy}
+                    value={customArguments()}
+                    rows={3}
+                    spellcheck={false}
+                    placeholder={"--new-window\n-e"}
+                    onInput={(event) => setCustomArguments(event.currentTarget.value)}
+                  />
+                )}
+              </Field>
+              <div class="terminal-custom-actions">
+                <Button onClick={saveCustomTerminal}>Save launcher</Button>
+              </div>
+            </div>
+          </Show>
         </section>
 
         <section class="setting-group">
           <h2 class="eyebrow">Security</h2>
 
-          <Show when={authMethods().length > 0}>
+          <Show when={authMethods().length > 1}>
             <div class="setting-row">
               <div>
                 <strong>Default unlock method</strong>

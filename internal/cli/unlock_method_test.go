@@ -213,6 +213,15 @@ func TestFriendlyUnlockErrorExplainsLongYubikeyPIN(t *testing.T) {
 	}
 }
 
+func TestFriendlyUnlockErrorExplainsLateAgentCompletion(t *testing.T) {
+	t.Parallel()
+	err := friendlyUnlockError(errors.New("read unix ->/tmp/fd0.sock: i/o timeout"))
+	const want = "unlock timed out; run `fd0 agent status` before retrying because the agent may already have completed the unlock"
+	if err == nil || err.Error() != want {
+		t.Fatalf("friendlyUnlockError()=%v want %q", err, want)
+	}
+}
+
 func TestYubikeyPINPromptMode(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

@@ -1,5 +1,5 @@
 import { For, Show, createMemo, createSignal, onMount, type JSX } from "solid-js";
-import { IconArrowLeft, IconCopy, IconShieldCheck, IconUserMinus, IconUserPlus } from "@tabler/icons-solidjs";
+import { IconArrowLeft, IconCopy, IconLogout, IconShieldCheck, IconUserMinus, IconUserPlus } from "@tabler/icons-solidjs";
 import type { IdentityCardInfo, ScopeShareInfo, ScopeSummary, TrustedContact } from "../../../shared/contracts";
 import { errorText } from "../lib/errors";
 import { initials, plural } from "../lib/format";
@@ -32,6 +32,7 @@ export function ShareVaultModal(props: {
   const [loading, setLoading] = createSignal(true);
   const [busy, setBusy] = createSignal("");
   const [error, setError] = createSignal("");
+  const [vaultName, setVaultName] = createSignal(props.scope.label);
 
   const available = createMemo(() => info().contacts.filter((contact) => !contact.shared));
   const canTrust = createMemo(() => Boolean(cardPreview() && reviewedURL() === cardURL().trim() && contactLabel().trim()));
@@ -88,6 +89,39 @@ export function ShareVaultModal(props: {
         return;
       }
       await finishMembershipChange(`${label} no longer has access to ${props.scope.label}`);
+    } catch (cause) {
+      setError(errorText(cause));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function renameVault(): Promise<void> {
+    const label = vaultName().trim();
+    if (!label || label === info().scopeLabel) return;
+    setBusy("rename-vault");
+    setError("");
+    try {
+      await window.fd0.renameScope(props.scope.id, label);
+      setInfo((current) => ({ ...current, scopeLabel: label }));
+      await finishMembershipChange(`Vault renamed to ${label}`);
+    } catch (cause) {
+      setError(errorText(cause));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function leaveVault(): Promise<void> {
+    setBusy("leave-vault");
+    setError("");
+    try {
+      const result = await window.fd0.leaveScope(props.scope.id);
+      if (!result.ok) return;
+      if (!window.fd0.development) await window.fd0.sync();
+      await props.onChanged();
+      props.onNotify(`Left ${info().scopeLabel}`);
+      props.onClose();
     } catch (cause) {
       setError(errorText(cause));
     } finally {
@@ -159,7 +193,7 @@ export function ShareVaultModal(props: {
 
   return (
     <Modal
-      title={isNewContact() ? "Add someone new" : `Who can open ${props.scope.label}`}
+      title={isNewContact() ? "Add someone new" : `Manage ${info().scopeLabel}`}
       description={
         isNewContact()
           ? "Swap invites, then check the security code together so you both know it is really them."
@@ -308,6 +342,44 @@ export function ShareVaultModal(props: {
                   </For>
                 </div>
               </Show>
+            </section>
+
+            <section class="share-section">
+              <div class="share-section-heading">
+                <div>
+                  <strong>Vault settings</strong>
+                  <small>The name is shared with every member.</small>
+                </div>
+              </div>
+              <div class="vault-settings-row">
+                <Input
+                  aria-label="Vault name"
+                  value={vaultName()}
+                  onInput={(event) => setVaultName(event.currentTarget.value)}
+                />
+                <Button
+                  size="sm"
+                  disabled={!vaultName().trim() || vaultName().trim() === info().scopeLabel || busy() === "rename-vault"}
+                  onClick={() => void renameVault()}
+                >
+                  {busy() === "rename-vault" ? "Renaming…" : "Rename"}
+                </Button>
+              </div>
+              <div class="vault-danger-row">
+                <span>
+                  <strong>Leave this vault</strong>
+                  <small>Its items disappear from this device after the change syncs.</small>
+                </span>
+                <Button
+                  size="sm"
+                  variant="danger"
+                  disabled={busy() === "leave-vault"}
+                  onClick={() => void leaveVault()}
+                >
+                  <IconLogout size={14} />
+                  {busy() === "leave-vault" ? "Leaving…" : "Leave…"}
+                </Button>
+              </div>
             </section>
           </Show>
         }

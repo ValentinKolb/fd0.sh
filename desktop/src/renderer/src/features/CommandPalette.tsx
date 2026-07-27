@@ -12,6 +12,7 @@ import {
   IconSettings,
   IconShieldLock,
   IconStar,
+  IconTrash,
   IconUsers,
 } from "@tabler/icons-solidjs";
 import { fuzzy } from "@valentinkolb/stdlib";
@@ -53,6 +54,7 @@ export function CommandPalette(props: {
   actions: PaletteAction[];
   onOpenItem(item: ItemSummary): void;
   onCopyPassword(item: ItemSummary): void;
+  onCopyTOTP(item: ItemSummary): void;
 }): JSX.Element {
   const vault = useVault();
   const [query, setQuery] = createSignal("");
@@ -71,7 +73,7 @@ export function CommandPalette(props: {
     }
 
     const itemHits = fuzzy.filter(needle, vault.inventory().items, {
-      key: (item) => `${item.title} ${item.subtitle ?? ""} ${item.vault}`,
+      key: (item) => `${item.title} ${item.subtitle ?? ""} ${item.vault} ${item.searchText ?? ""}`,
       limit: 8,
     });
     const actionHits = fuzzy.filter(needle, props.actions, {
@@ -112,14 +114,19 @@ export function CommandPalette(props: {
     onCleanup(() => previouslyFocused?.focus());
   });
 
-  function commit(row: Row | undefined, modifier: boolean): void {
+  function commit(row: Row | undefined, modifier: boolean, shift = false): void {
     if (!row) return;
     if (row.kind === "action") {
       props.onClose();
       row.action.run();
       return;
     }
-    if (modifier) {
+    if (shift && row.item.hasTOTP) {
+      props.onCopyTOTP(row.item);
+      props.onClose();
+      return;
+    }
+    if (modifier && row.item.kind === "password") {
       props.onCopyPassword(row.item);
       props.onClose();
       return;
@@ -152,7 +159,7 @@ export function CommandPalette(props: {
     }
     if (event.key === "Enter") {
       event.preventDefault();
-      commit(activeRow(), event.metaKey || event.ctrlKey);
+      commit(activeRow(), event.metaKey || event.ctrlKey, event.shiftKey);
       return;
     }
     if (event.key === "Escape") {
@@ -226,7 +233,7 @@ export function CommandPalette(props: {
                       role="option"
                       aria-selected={index() === cursor()}
                       onPointerMove={() => setCursor(index())}
-                      onClick={(event) => commit(row, event.metaKey || event.ctrlKey)}
+                      onClick={(event) => commit(row, event.metaKey || event.ctrlKey, event.shiftKey)}
                     >
                       <Show
                         when={row.kind === "item" ? row : undefined}
@@ -276,6 +283,10 @@ export function CommandPalette(props: {
                                   <span class="palette-row-sep" />
                                   <Kbd keys="mod+enter" /> copy
                                 </Show>
+                                <Show when={itemRow().item.hasTOTP}>
+                                  <span class="palette-row-sep" />
+                                  <Kbd keys="shift+enter" /> one-time code
+                                </Show>
                               </span>
                             </Show>
                           </>
@@ -292,6 +303,7 @@ export function CommandPalette(props: {
             <span><Kbd keys="↑" /><Kbd keys="↓" /> navigate</span>
             <span><Kbd keys="enter" /> select</span>
             <span><Kbd keys="mod+enter" /> copy password</span>
+            <span><Kbd keys="shift+enter" /> one-time code</span>
             <span><Kbd keys="esc" /> close</span>
           </footer>
         </div>
@@ -325,7 +337,7 @@ export function buildActions(handlers: {
   newVault(): void;
   lock(): void;
   sync(): void;
-  openView(view: "generator" | "support" | "settings"): void;
+  openView(view: "deleted" | "generator" | "support" | "settings"): void;
   filterType(type: string): void;
   filterVault(id: string): void;
   showFavorites(): void;
@@ -365,6 +377,7 @@ export function buildActions(handlers: {
 
   actions.push(
     { id: "generator", group: "Tools", label: "Password generator", icon: IconDice5, keywords: "random create strong", run: () => handlers.openView("generator") },
+    { id: "deleted", group: "Tools", label: "Recently deleted", icon: IconTrash, keywords: "trash restore undo removed", run: () => handlers.openView("deleted") },
     { id: "share", group: "Tools", label: "Share a vault", icon: IconUsers, keywords: "invite people access member", run: handlers.shareVault },
     { id: "recovery", group: "Tools", label: "Create recovery file", icon: IconShieldLock, keywords: "backup export restore", run: handlers.exportRecovery },
     { id: "sync", group: "Vault", label: "Sync now", icon: IconRefresh, keywords: "refresh upload download", run: handlers.sync },

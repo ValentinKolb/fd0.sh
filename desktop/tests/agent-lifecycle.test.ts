@@ -13,6 +13,15 @@ mock.module("electron", () => ({
 
 const { AgentLifecycle } = await import("../src/main/agent-lifecycle");
 
+test("macOS agent service keeps interactive crypto responsive", async () => {
+  const plist = await readFile(
+    join(import.meta.dir, "../resources/sh.fd0.desktop.agent.plist"),
+    "utf8",
+  );
+  expect(plist).toContain("<string>Standard</string>");
+  expect(plist).not.toContain("<string>Background</string>");
+});
+
 test("AgentLifecycle installs and starts an isolated systemd user service", async () => {
   const home = await mkdtemp(join(tmpdir(), "fd0-agent-lifecycle-"));
   const calls: string[][] = [];

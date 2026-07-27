@@ -6,12 +6,14 @@ import type {
   ItemSummary,
   RecordRef,
   StartupStatus,
+  DesktopTheme,
   VaultStatus,
 } from "../../../shared/contracts";
 import { appWarning, toAppError, type AppError } from "./errors";
+import { readTheme } from "./theme";
 import type { ToastMessage } from "../ui/Notices";
 
-export type MainView = "items" | "generator" | "support" | "settings";
+export type MainView = "items" | "deleted" | "generator" | "support" | "settings";
 export type TypeFilter = "all" | ItemKind;
 export type SmartView = "all" | "favorites";
 
@@ -39,6 +41,7 @@ export function createVaultStore() {
   const [errors, setErrors] = createSignal<AppError[]>([]);
   const [toasts, setToasts] = createSignal<ToastMessage[]>([]);
   const [compactRows, setCompactRows] = createSignal(localStorage.getItem("fd0.compactRows") === "1");
+  const [theme, setTheme] = createSignal<DesktopTheme>(readTheme(localStorage, window.fd0.development));
 
   let detailRequest = 0;
   let toastID = 1;
@@ -101,6 +104,22 @@ export function createVaultStore() {
     }, 3200));
   }
 
+  function notifyAction(text: string, label: string, run: () => void | Promise<void>): void {
+    const id = toastID++;
+    const dismissAndRun = async (): Promise<void> => {
+      const timer = toastTimers.get(id);
+      if (timer) clearTimeout(timer);
+      toastTimers.delete(id);
+      setToasts((current) => current.filter((toast) => toast.id !== id));
+      await run();
+    };
+    setToasts((current) => [...current.slice(-2), { id, text, action: { label, run: dismissAndRun } }]);
+    toastTimers.set(id, setTimeout(() => {
+      setToasts((current) => current.filter((toast) => toast.id !== id));
+      toastTimers.delete(id);
+    }, 10_000));
+  }
+
   function disposeToasts(): void {
     for (const timer of toastTimers.values()) clearTimeout(timer);
     toastTimers.clear();
@@ -124,7 +143,9 @@ export function createVaultStore() {
     const needle = query().trim().toLocaleLowerCase();
     if (needle) {
       items = items.filter((item) =>
-        [item.title, item.subtitle, item.vault, item.badge].some((value) => value?.toLocaleLowerCase().includes(needle)),
+        [item.title, item.subtitle, item.vault, item.badge, item.searchText].some((value) =>
+          value?.toLocaleLowerCase().includes(needle),
+        ),
       );
     }
     return items;
@@ -306,7 +327,7 @@ export function createVaultStore() {
    * main-process clipboard handler as the detail pane. No plaintext ever
    * reaches the renderer.
    */
-  async function copyFromItem(item: ItemSummary, want: "secret" | "username"): Promise<void> {
+  async function copyFromItem(item: ItemSummary, want: "secret" | "username" | "totp"): Promise<void> {
     try {
       const loaded = await window.fd0.itemDetail({ scopeId: item.scopeId, name: item.recordName });
       const fields = loaded.fields.flatMap(function flatten(field): typeof loaded.fields {
@@ -314,7 +335,9 @@ export function createVaultStore() {
       });
 
       const target =
-        want === "secret"
+        want === "totp"
+          ? fields.find((field) => field.type === "totp")
+          : want === "secret"
           ? fields.find((field) => field.type === "secret" && /^(password|pass|pin)$/i.test(field.name)) ??
             fields.find((field) => field.type === "secret")
           : fields.find((field) => /^(username|user|login|email|e-mail|account)$/i.test(field.name)) ??
@@ -322,7 +345,11 @@ export function createVaultStore() {
 
       if (!target) {
         warn(
-          want === "secret" ? `${item.title} has no password field` : `${item.title} has no username field`,
+          want === "secret"
+            ? `${item.title} has no password field`
+            : want === "totp"
+              ? `${item.title} has no one-time code`
+              : `${item.title} has no username field`,
           "Open the item to see what it stores.",
         );
         return;
@@ -337,14 +364,32 @@ export function createVaultStore() {
     try {
       const result = await window.fd0.remove({ scopeId: item.scopeId, name: item.recordName });
       if (!result.ok) {
-        // The native confirmation was declined, or the service refused. Either
-        // way the user gets an explicit outcome instead of silence.
-        notify("Nothing was removed");
+        // A blocked removal already explained itself in a native warning. Only
+        // surface the generic outcome when the user simply cancelled.
+        if (!result.blocked) notify("Nothing was removed");
         return;
       }
-      notify(`${item.title} removed`);
       setSelectedID("");
       await refresh();
+      if (result.undo) {
+        const undo = result.undo;
+        notifyAction(`${item.title} removed`, "Undo", async () => {
+          try {
+            const restored = await window.fd0.restoreDeletedItem(undo);
+            if (!restored.ok) {
+              notify("Nothing was restored");
+              return;
+            }
+            const selected = await refresh({ scopeId: undo.scopeId, name: undo.name });
+            await loadDetail(selected);
+            notify(`${item.title} restored`);
+          } catch (cause) {
+            fail(cause, `fd0 could not restore ${item.title}`);
+          }
+        });
+      } else {
+        notify(`${item.title} removed`);
+      }
     } catch (cause) {
       fail(cause, `fd0 could not remove ${item.title}`);
     }
@@ -376,8 +421,9 @@ export function createVaultStore() {
     detailLoading,
     syncing,
     errors, dismissError, clearErrors, pushError, fail, warn,
-    toasts, notify, disposeToasts,
+    toasts, notify, notifyAction, disposeToasts,
     compactRows, setCompactRows,
+    theme, setTheme,
     // derived
     selectedItem, visibleItems, scopeTotal, activeFilterCount, vaultCounts, isEmptyVault, needsRecovery,
     // actions

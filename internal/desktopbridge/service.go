@@ -250,9 +250,11 @@ func (s *Service) Handle(ctx context.Context, method string, raw json.RawMessage
 			Capabilities: []string{
 				"status", "unlock", "lock", "inventory", "item-detail",
 				"item-history", "item-version", "item-restore",
+				"deleted-items", "totp-parse",
 				"field-value", "pass-save", "secret-save", "ssh-host-save",
-				"ssh-key-generate", "config-import", "item-remove", "scope-create",
-				"scope-share", "scope-members", "identity-cards",
+				"ssh-key-list", "ssh-key-generate", "ssh-key-edit",
+				"config-import", "item-move", "item-rename", "item-remove", "scope-create",
+				"scope-rename", "scope-leave", "scope-share", "scope-members", "identity-cards",
 				"recovery-export", "recovery-import", "auth-default", "agent-prepare-update",
 				"agent-restart", "structured-sync",
 			},
@@ -357,6 +359,20 @@ func (s *Service) Handle(ctx context.Context, method string, raw json.RawMessage
 		return s.setDefaultAuthMethod(params.Method)
 	case "inventory.list":
 		return s.listInventory(ctx)
+	case "deleted.list":
+		return s.deletedItems(ctx)
+	case "totp.parse":
+		var params struct {
+			URI string `json:"uri"`
+		}
+		if err := decodeParams(raw, &params); err != nil {
+			return nil, err
+		}
+		value, err := passitem.ParseTOTPURI(params.URI)
+		if err != nil {
+			return nil, fail("validation", "That setup link is not a valid TOTP account.", err.Error(), false)
+		}
+		return value, nil
 	case "item.detail":
 		var params RecordRef
 		if err := decodeParams(raw, &params); err != nil {
@@ -444,6 +460,26 @@ func (s *Service) Handle(ctx context.Context, method string, raw json.RawMessage
 			return nil, err
 		}
 		return s.generateSSHKey(ctx, params)
+	case "sshKey.list":
+		var params struct {
+			ScopeID string `json:"scopeId"`
+		}
+		if err := decodeParams(raw, &params); err != nil {
+			return nil, err
+		}
+		return s.listSSHKeys(ctx, params.ScopeID)
+	case "sshKey.editData":
+		var params RecordRef
+		if err := decodeParams(raw, &params); err != nil {
+			return nil, err
+		}
+		return s.sshKeyEditData(ctx, params)
+	case "sshKey.save":
+		var params SaveSSHKeyParams
+		if err := decodeParams(raw, &params); err != nil {
+			return nil, err
+		}
+		return s.saveSSHKey(ctx, params)
 	case "config.import":
 		var params ImportConfigParams
 		if err := decodeParams(raw, &params); err != nil {
@@ -457,6 +493,18 @@ func (s *Service) Handle(ctx context.Context, method string, raw json.RawMessage
 			return nil, err
 		}
 		return s.removeItem(ctx, params)
+	case "item.move":
+		var params MoveItemParams
+		if err := decodeParams(raw, &params); err != nil {
+			return nil, err
+		}
+		return s.moveItem(ctx, params)
+	case "item.rename":
+		var params RenameItemParams
+		if err := decodeParams(raw, &params); err != nil {
+			return nil, err
+		}
+		return s.renameItem(ctx, params)
 	case "scope.create":
 		var params struct {
 			Label string `json:"label"`
@@ -468,6 +516,39 @@ func (s *Service) Handle(ctx context.Context, method string, raw json.RawMessage
 			return nil, fail("validation", "Vault name is required.", "", false)
 		}
 		if err := cli.RunScopeCreate(ctx, strings.TrimSpace(params.Label)); err != nil {
+			return nil, mapDomainError(err)
+		}
+		return map[string]bool{"ok": true}, nil
+	case "scope.rename":
+		var params struct {
+			ScopeID string `json:"scopeId"`
+			Label   string `json:"label"`
+		}
+		if err := decodeParams(raw, &params); err != nil {
+			return nil, err
+		}
+		if _, err := proto.ParseScopeID(params.ScopeID); err != nil {
+			return nil, fail("validation", "That vault reference is invalid.", "", false)
+		}
+		params.Label = strings.TrimSpace(params.Label)
+		if params.Label == "" {
+			return nil, fail("validation", "Vault name is required.", "", false)
+		}
+		if err := cli.RunScopeRename(ctx, params.ScopeID, params.Label); err != nil {
+			return nil, mapDomainError(err)
+		}
+		return map[string]bool{"ok": true}, nil
+	case "scope.leave":
+		var params struct {
+			ScopeID string `json:"scopeId"`
+		}
+		if err := decodeParams(raw, &params); err != nil {
+			return nil, err
+		}
+		if _, err := proto.ParseScopeID(params.ScopeID); err != nil {
+			return nil, fail("validation", "That vault reference is invalid.", "", false)
+		}
+		if err := cli.RunScopeLeave(ctx, params.ScopeID, true); err != nil {
 			return nil, mapDomainError(err)
 		}
 		return map[string]bool{"ok": true}, nil
@@ -1209,6 +1290,7 @@ func (s *Service) savePass(ctx context.Context, params SavePassParams) (map[stri
 	}
 	defer session.Close()
 	recordKey := "pass:" + params.RecordName
+	targetKey := "pass:" + strings.TrimSpace(params.Item.Title)
 	existing, existingErr := session.GetTypedSecret(params.ScopeID, recordKey)
 	if params.Create {
 		if existingErr == nil {
@@ -1232,6 +1314,11 @@ func (s *Service) savePass(ctx context.Context, params SavePassParams) (map[stri
 		if existing.Type != passitem.TypePassItem {
 			return nil, fail("type_conflict", "That name belongs to a different item type.", "Refresh the vault and choose another title.", false)
 		}
+		if targetKey != recordKey {
+			if err := requireMissingRecord(session, params.ScopeID, targetKey, "An item with that title already exists in this vault."); err != nil {
+				return nil, err
+			}
+		}
 		if raw, err := existing.PayloadJSON(); err == nil {
 			if old, err := passitem.Decode(raw); err == nil && params.Item.Meta == nil {
 				params.Item.Meta = old.Meta
@@ -1245,11 +1332,23 @@ func (s *Service) savePass(ctx context.Context, params SavePassParams) (map[stri
 	var writeErr error
 	if params.Create {
 		writeErr = session.CreateTypedSecret(ctx, params.ScopeID, recordKey, passitem.TypePassItem, params.Item.Marshal())
+	} else if targetKey != recordKey {
+		writeErr = session.CreateTypedSecret(ctx, params.ScopeID, targetKey, passitem.TypePassItem, params.Item.Marshal())
 	} else {
 		writeErr = session.UpdateTypedSecret(ctx, params.ScopeID, recordKey, passitem.TypePassItem, passitem.TypePassItem, params.Item.Marshal())
 	}
 	if writeErr != nil {
 		return nil, mapDomainError(writeErr)
+	}
+	if !params.Create && targetKey != recordKey {
+		if err := session.RemoveTypedSecretOfType(ctx, params.ScopeID, recordKey, passitem.TypePassItem); err != nil {
+			return nil, fail(
+				"rename_partial",
+				"The item was saved under its new title, but fd0 could not remove the old copy.",
+				"Review both items before retrying.",
+				false,
+			)
+		}
 	}
 	return map[string]bool{"ok": true}, nil
 }
@@ -1423,6 +1522,9 @@ func (s *Service) saveSSHHost(ctx context.Context, params SaveSSHHostParams) (ma
 		return nil, mapDomainError(err)
 	}
 	defer session.Close()
+	if err := requireSSHKeyReference(session, params.ScopeID, params.Record.KeyName); err != nil {
+		return nil, err
+	}
 	newName := "host:" + params.Record.Alias
 	if params.OldName == "" {
 		if err := requireMissingRecord(session, params.ScopeID, newName, "An SSH host with that alias already exists."); err != nil {
@@ -1454,6 +1556,14 @@ func (s *Service) saveSSHHost(ctx context.Context, params SaveSSHHostParams) (ma
 		if err := session.RemoveTypedSecretOfType(ctx, params.ScopeID, params.OldName, sshhost.TypeHost); err != nil {
 			return nil, fail("rename_partial", "The SSH host was saved under its new alias, but fd0 could not remove the old copy.", "Review both hosts before retrying.", false)
 		}
+	}
+	if err := cli.RefreshSSHProjection(session); err != nil {
+		return nil, fail(
+			"ssh_projection_partial",
+			"The server was saved, but fd0 could not refresh this device's SSH configuration.",
+			"Open Support, then retry the SSH configuration refresh.",
+			true,
+		)
 	}
 	return map[string]bool{"ok": true}, nil
 }
@@ -1522,10 +1632,11 @@ type GenerateSSHKeyParams struct {
 
 func (s *Service) generateSSHKey(ctx context.Context, params GenerateSSHKeyParams) (map[string]bool, error) {
 	params.Name = strings.TrimSpace(params.Name)
-	if params.Name == "" {
-		return nil, fail("validation", "SSH key name is required.", "", false)
+	params.Comment = strings.TrimSpace(params.Comment)
+	if err := validateSSHKeyMetadata(params.Name, params.Comment); err != nil {
+		return nil, err
 	}
-	key, err := sshkey.NewEd25519(params.Name, strings.TrimSpace(params.Comment))
+	key, err := sshkey.NewEd25519(params.Name, params.Comment)
 	if err != nil {
 		return nil, err
 	}
@@ -1542,6 +1653,14 @@ func (s *Service) generateSSHKey(ctx context.Context, params GenerateSSHKeyParam
 	}
 	if err := session.SetTypedSecret(ctx, params.ScopeID, "ssh:"+params.Name, string(key.Type), key.Marshal()); err != nil {
 		return nil, mapDomainError(err)
+	}
+	if err := cli.RefreshSSHProjectionIfEnabled(session); err != nil {
+		return nil, fail(
+			"ssh_projection_partial",
+			"The SSH key was created, but fd0 could not refresh this device's SSH configuration.",
+			"Open Support, then retry the SSH configuration refresh.",
+			true,
+		)
 	}
 	return map[string]bool{"ok": true}, nil
 }
@@ -1628,19 +1747,72 @@ func (s *Service) importConfig(ctx context.Context, params ImportConfigParams) (
 	return result, nil
 }
 
-func (s *Service) removeItem(ctx context.Context, ref RecordRef) (map[string]bool, error) {
+type RemoveItemResult struct {
+	OK   bool              `json:"ok"`
+	Undo ItemVersionParams `json:"undo"`
+}
+
+func (s *Service) removeItem(ctx context.Context, ref RecordRef) (RemoveItemResult, error) {
 	if err := ref.Validate(); err != nil {
-		return nil, err
+		return RemoveItemResult{}, err
 	}
 	session, err := cli.Open(ctx)
 	if err != nil {
-		return nil, mapDomainError(err)
+		return RemoveItemResult{}, mapDomainError(err)
 	}
 	defer session.Close()
-	if err := session.RemoveTypedSecret(ctx, ref.ScopeID, ref.Name); err != nil {
-		return nil, mapDomainError(err)
+	record, err := session.GetTypedSecret(ref.ScopeID, ref.Name)
+	if err != nil {
+		return RemoveItemResult{}, mapDomainError(err)
 	}
-	return map[string]bool{"ok": true}, nil
+	if isSSHKeyType(record.Type) {
+		usages, err := sshKeyUsages(session, ref.ScopeID, strings.TrimPrefix(ref.Name, "ssh:"))
+		if err != nil {
+			return RemoveItemResult{}, mapDomainError(err)
+		}
+		if len(usages) > 0 {
+			return RemoveItemResult{}, fail(
+				"ssh_key_in_use",
+				fmt.Sprintf("This SSH key is still assigned to %d server(s).", len(usages)),
+				"Choose another key for those servers before removing this key.",
+				false,
+			)
+		}
+	}
+	history, err := session.SecretHistory(ref.ScopeID, ref.Name)
+	if err != nil || len(history) == 0 || history[0].Tombstone() {
+		if err == nil {
+			err = errors.New("item has no restorable current version")
+		}
+		return RemoveItemResult{}, mapHistoryError(err)
+	}
+	restoreSeq := history[0].Seq
+	if err := session.RemoveTypedSecret(ctx, ref.ScopeID, ref.Name); err != nil {
+		return RemoveItemResult{}, mapDomainError(err)
+	}
+	var projectionErr error
+	switch {
+	case record.Type == sshhost.TypeHost:
+		projectionErr = cli.RefreshSSHProjection(session)
+	case isSSHKeyType(record.Type):
+		projectionErr = cli.RefreshSSHProjectionIfEnabled(session)
+	}
+	if projectionErr != nil {
+		return RemoveItemResult{}, fail(
+			"ssh_projection_partial",
+			"The item was removed, but fd0 could not refresh this device's SSH configuration.",
+			"Open Support, then retry the SSH configuration refresh.",
+			true,
+		)
+	}
+	return RemoveItemResult{
+		OK: true,
+		Undo: ItemVersionParams{
+			ScopeID: ref.ScopeID,
+			Name:    ref.Name,
+			Seq:     restoreSeq,
+		},
+	}, nil
 }
 
 func mapDomainError(err error) error {

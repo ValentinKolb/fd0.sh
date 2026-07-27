@@ -91,6 +91,28 @@ func TestNonInteractiveVaultCommandDoesNotAutoUnlock(t *testing.T) {
 	}
 }
 
+func TestInteractiveDoctorDoesNotAutoUnlock(t *testing.T) {
+	if testing.Short() {
+		t.Skip("simtest builds binaries + spawns agents; skipped in -short")
+	}
+	h := New(t, 1)
+	alice := h.AddClient("alice")
+	if out, err := alice.run("lock"); err != nil {
+		t.Fatalf("lock: %v\n%s", err, out)
+	}
+
+	out, err := runTTYNoInput(alice, "doctor")
+	if err == nil {
+		t.Fatalf("doctor should require an explicit unlock while locked:\n%s", out)
+	}
+	if strings.Contains(out, "Passphrase:") {
+		t.Fatalf("doctor unexpectedly prompted for credentials:\n%s", out)
+	}
+	if !strings.Contains(out, "fd0 agent is locked") {
+		t.Fatalf("doctor returned an unexpected locked-agent error:\n%s", out)
+	}
+}
+
 func TestEmptyHomePointsToInit(t *testing.T) {
 	if testing.Short() {
 		t.Skip("simtest builds binaries + spawns agents; skipped in -short")

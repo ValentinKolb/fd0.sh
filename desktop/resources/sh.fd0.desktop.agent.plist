@@ -14,7 +14,7 @@
     <false/>
   </dict>
   <key>ProcessType</key>
-  <string>Background</string>
+  <string>Standard</string>
   <!-- Marks the agent started by this service as one fd0 Desktop supervises, so
        the app can tell it apart from an agent the user started in a terminal —
        which it must never stop. -->

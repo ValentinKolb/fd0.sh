@@ -30,6 +30,8 @@
   --line-soft: #1e231f;
   --line: #2b312c;
   --line-control: #626962;
+  --editor-line: var(--line-soft);
+  --range-track: var(--line-control);
 
   /* ---- text: 4 steps, all AA on every surface above ---- */
   --text: #f1efe9;
@@ -40,6 +42,7 @@
   /* ---- accent + semantics ---- */
   --accent: #ffb000;
   --accent-hover: #ffc23b;
+  --accent-ink: #ffb000;
   --accent-on: #171105;
   --accent-dim: #5c4a1d;
   --accent-bg: #211f13;
@@ -61,6 +64,60 @@
 
   --teal: #7ec4c7;
   --teal-bg: #172020;
+  --purple: #c79ae0;
+  --talos: #e2aa58;
+  --talos-bg: #241b13;
+  --strength-warm: #e2a05a;
+  --strength-sage: #b6d17a;
+
+  --good-text: #b9d69c;
+  --good-strong: #cde5b7;
+  --warn-text: #c7ab6d;
+  --warn-strong: #f2d288;
+  --danger-text: #d5a9a3;
+  --danger-strong: #f7d3ce;
+  --danger-inline: #f0b8b1;
+  --semantic-divider: rgb(255 255 255 / 8%);
+
+  /*
+   * The title bar and navigation rail are fd0's permanent vault frame.
+   * These roles stay dark in both themes while the workspace may invert.
+   */
+  --frame-bg: #090c0a;
+  --frame-surface: #0d100e;
+  --frame-surface-raised: #121612;
+  --frame-surface-hover: #171b17;
+  --frame-surface-selected: #211f13;
+  --frame-field-bg: #101411;
+  --frame-line-soft: #1e231f;
+  --frame-line: #2b312c;
+  --frame-line-control: #626962;
+  --frame-text: #f1efe9;
+  --frame-text-2: #c3c7c1;
+  --frame-text-3: #949b95;
+  --frame-text-4: #868d87;
+  --frame-accent: #ffb000;
+  --frame-accent-hover: #ffc23b;
+  --frame-accent-ink: #ffb000;
+  --frame-accent-on: #171105;
+  --frame-accent-dim: #5c4a1d;
+  --frame-accent-bg: #211f13;
+  --frame-good: #9bcf68;
+  --frame-good-bg: #151d12;
+  --frame-good-line: #3d5231;
+  --frame-warn: #e7c66a;
+  --frame-warn-bg: #1d190d;
+  --frame-warn-line: #66511e;
+  --frame-danger: #ef8177;
+  --frame-info: #91aee8;
+  --frame-teal: #7ec4c7;
+  --frame-purple: #c79ae0;
+
+  --item-column-bg: var(--surface);
+  --detail-pane-bg: var(--bg);
+  --item-selected-bg: var(--surface-selected);
+  --rail-bg: var(--frame-surface);
+  --control-highlight-bg: var(--surface-raised);
 
   /* ---- space: 4pt scale, no off-grid values ---- */
   --space-1: 4px;
@@ -113,6 +170,7 @@
   --rail-width: 56px;
 
   /* ---- elevation ---- */
+  --shadow-control: none;
   --shadow-popover: 0 6px 24px rgb(0 0 0 / 44%), 0 1px 2px rgb(0 0 0 / 40%);
   --shadow-modal: 0 18px 60px rgb(0 0 0 / 52%), 0 1px 3px rgb(0 0 0 / 44%);
 
@@ -138,6 +196,124 @@
   /* ---- focus ---- */
   --focus-ring: 2px solid var(--accent);
   --focus-offset: 2px;
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+
+  /* Light Utility Wash: white workspace, quiet utility surfaces, fd0 amber state. */
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --surface-raised: #f1f3f1;
+  --surface-hover: rgb(9 12 10 / 4%);
+  --surface-selected: rgb(255 176 0 / 11%);
+  --field-bg: #f1f3f1;
+  --overlay: rgb(15 18 16 / 40%);
+
+  /* Border footprints stay in the layout; their light-theme ink steps away. */
+  --line-soft: transparent;
+  --line: transparent;
+  --line-control: transparent;
+  --editor-line: rgb(9 12 10 / 12%);
+  --range-track: rgb(9 12 10 / 18%);
+
+  --text: #111612;
+  --text-2: #273029;
+  --text-3: #465149;
+  --text-4: #59645c;
+
+  --accent: #ffb000;
+  --accent-hover: #ffc23b;
+  --accent-ink: #805000;
+  --accent-on: #171105;
+  --accent-dim: #b87900;
+  --accent-bg: rgb(255 176 0 / 11%);
+
+  --good: #246c0a;
+  --good-bg: #dff4d5;
+  --good-line: #82bb6b;
+
+  --warn: #815000;
+  --warn-bg: #ffedb8;
+  --warn-line: #d7a93c;
+
+  --danger: #a72e25;
+  --danger-bg: #ffe2df;
+  --danger-line: #d98b84;
+
+  --info: #234f9b;
+  --info-bg: #dfeaff;
+
+  --teal: #00656b;
+  --teal-bg: #d9f3f3;
+  --purple: #71398c;
+  --talos: #914500;
+  --talos-bg: #ffe1ba;
+  --strength-warm: #98591c;
+  --strength-sage: #5d7624;
+
+  --good-text: #3e662d;
+  --good-strong: #285416;
+  --warn-text: #755715;
+  --warn-strong: #634600;
+  --danger-text: #8b443d;
+  --danger-strong: #702b25;
+  --danger-inline: #873b34;
+  --semantic-divider: transparent;
+
+  --frame-bg: #fbfcfb;
+  --frame-surface: #f1f3f1;
+  --frame-surface-raised: #f1f3f1;
+  --frame-surface-hover: rgb(9 12 10 / 5%);
+  --frame-surface-selected: rgb(255 176 0 / 11%);
+  --frame-field-bg: #f1f3f1;
+  --frame-line-soft: transparent;
+  --frame-line: transparent;
+  --frame-line-control: transparent;
+  --frame-text: #111612;
+  --frame-text-2: #273029;
+  --frame-text-3: #465149;
+  --frame-text-4: #59645c;
+  --frame-accent: #ffb000;
+  --frame-accent-hover: #ffc23b;
+  --frame-accent-ink: #805000;
+  --frame-accent-on: #171105;
+  --frame-accent-dim: #b87900;
+  --frame-accent-bg: rgb(255 176 0 / 11%);
+  --frame-good: #246c0a;
+  --frame-good-bg: #dff4d5;
+  --frame-good-line: #82bb6b;
+  --frame-warn: #815000;
+  --frame-warn-bg: #ffedb8;
+  --frame-warn-line: #d7a93c;
+  --frame-danger: #a72e25;
+  --frame-info: #234f9b;
+  --frame-teal: #00656b;
+  --frame-purple: #71398c;
+
+  --item-column-bg: #ffffff;
+  --detail-pane-bg: #ffffff;
+  --rail-bg: transparent;
+  --control-highlight-bg: #ffffff;
+  --item-selected-bg: rgb(255 176 0 / 11%);
+  --item-selected-text: #111612;
+  --item-selected-text-2: #273029;
+  --item-selected-text-3: #465149;
+  --item-selected-text-4: #59645c;
+  --item-selected-hover: rgb(255 176 0 / 15%);
+  --item-selected-raised: #ffffff;
+  --item-selected-line: transparent;
+  --item-selected-accent: #805000;
+  --item-selected-tile-bg: rgb(255 176 0 / 18%);
+  --item-selected-tile-line: transparent;
+  --item-selected-tile-text: #805000;
+  --type-tile-bg: rgb(9 12 10 / 4%);
+  --type-tile-line: transparent;
+  --type-tile-text: #273029;
+
+  --shadow-control: 0 1px 4px rgb(9 12 10 / 10%);
+  --shadow-popover: 0 8px 30px rgb(15 18 16 / 16%), 0 1px 3px rgb(15 18 16 / 12%);
+  --shadow-modal: 0 20px 64px rgb(15 18 16 / 22%), 0 2px 6px rgb(15 18 16 / 14%);
 }
 
 @media (prefers-reduced-motion: reduce) {
