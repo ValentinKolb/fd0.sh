@@ -315,14 +315,20 @@ test("runs the isolated desktop vault end to end", async () => {
     await expect(page.getByText("Another program is running the fd0 service")).toHaveCount(0);
     await page.getByRole("button", { name: "Settings", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+    const terminalLauncherSelect = page.getByRole("combobox", { name: "SSH terminal" });
+    await expect(terminalLauncherSelect).toHaveText("In fd0");
+    const terminalThemeSelect = page.getByRole("combobox", { name: "Terminal theme" });
+    await expect(terminalThemeSelect).toHaveText("System");
+    await terminalThemeSelect.click();
+    await page.getByRole("option", { name: "Dark", exact: true }).click();
     const themeSelect = page.getByRole("combobox", { name: "Color theme" });
     await expect(themeSelect).toHaveText("Light");
     await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
-    await expect.poll(() => app.evaluate(({ nativeTheme }) => nativeTheme.themeSource)).toBe("light");
+    await expect.poll(() => app.evaluate(({ nativeTheme }) => nativeTheme.themeSource)).toBe("system");
     await themeSelect.click();
     await page.getByRole("option", { name: "Dark", exact: true }).click();
     await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
-    await expect.poll(() => app.evaluate(({ nativeTheme }) => nativeTheme.themeSource)).toBe("dark");
+    await expect.poll(() => app.evaluate(({ nativeTheme }) => nativeTheme.themeSource)).toBe("system");
     await expect
       .poll(() =>
         page.evaluate(() => ({
@@ -1111,6 +1117,49 @@ test("runs the isolated desktop vault end to end", async () => {
     await expect(page.locator(".detail-title h1")).toHaveText("talos-gw-renamed");
     await expect(page.getByText("talos-gw", { exact: true })).toHaveCount(0);
     await expect(page.getByText("Edited safely in fd0 Desktop", { exact: true })).toBeVisible();
+
+    // SSH opens in a second sandboxed fd0 window. The host is permanently
+    // visible, the terminal follows its own theme, and both windows remain one
+    // Electron application.
+    const terminalOpened = app.waitForEvent("window");
+    await page.getByRole("button", { name: "Open in terminal" }).click();
+    const terminalPage = await terminalOpened;
+    await expect(terminalPage.locator(".terminal-window")).toBeVisible();
+    await expect(terminalPage.locator(".terminal-identity strong")).toHaveText("talos-gw-renamed");
+    await expect(terminalPage.locator("html")).toHaveAttribute("data-theme", "dark");
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+    expect(await terminalPage.evaluate(() => ({
+      terminalMode: window.fd0.terminalMode,
+      largeTypeMode: window.fd0.largeTypeMode,
+      platform: window.fd0.platform,
+      headerPadding: getComputedStyle(document.querySelector(".terminal-window-header")!).paddingLeft,
+    }))).toMatchObject({
+      terminalMode: true,
+      largeTypeMode: false,
+      headerPadding: process.platform === "darwin" ? "112px" : "16px",
+    });
+    expect(await app.evaluate(({ BrowserWindow }) => {
+      const terminal = BrowserWindow.getAllWindows().find((candidate) =>
+        candidate.getTitle().includes("talos-gw-renamed"),
+      );
+      if (!terminal) return null;
+      const preferences = terminal.webContents.getLastWebPreferences();
+      return {
+        windows: BrowserWindow.getAllWindows().length,
+        title: terminal.getTitle(),
+        contextIsolation: preferences.contextIsolation,
+        nodeIntegration: preferences.nodeIntegration,
+        sandbox: preferences.sandbox,
+      };
+    })).toMatchObject({
+      windows: 2,
+      title: expect.stringContaining("talos-gw-renamed"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    });
+    await terminalPage.evaluate(() => window.fd0.closeTerminal());
+    await expect.poll(() => app.windows().length).toBe(1);
 
     // Keys expose their host assignments, stay editable without allowing a
     // rename, and cannot be removed while a server still references them.

@@ -377,8 +377,10 @@ export type DesktopCommand =
   | "refresh";
 
 export type DesktopTheme = "system" | "dark" | "light";
+export type TerminalTheme = "system" | "dark" | "light";
 
 export type TerminalProfileID =
+  | "in-app"
   | "automatic"
   | "macos-terminal"
   | "iterm2"
@@ -392,6 +394,8 @@ export type TerminalProfileID =
 
 export type TerminalLauncherSettings = {
   profileId: TerminalProfileID;
+  /** Appearance of the fd0 terminal only; independent from the main app theme. */
+  terminalTheme: TerminalTheme;
   /** Absolute executable or wrapper path. Used only by the custom profile. */
   customExecutable: string;
   /** Exact argv inserted before fd0's command. One entry is one argument. */
@@ -412,6 +416,16 @@ export type TerminalLauncherState = {
   automaticProfileId?: TerminalProfileID;
 };
 
+export type TerminalSessionInfo = {
+  host: string;
+  terminalTheme: TerminalTheme;
+};
+
+export type TerminalExit = {
+  exitCode: number;
+  signal?: number;
+};
+
 export type DesktopAPI = {
   platform: NodeJS.Platform;
   development: boolean;
@@ -421,6 +435,8 @@ export type DesktopAPI = {
    * navigation or a crafted URL fragment cannot turn the main window into it.
    */
   largeTypeMode: boolean;
+  /** True only inside a dedicated fd0 terminal window. */
+  terminalMode: boolean;
   startupStatus(): Promise<StartupStatus>;
   consumeUpdateRequest(): Promise<boolean>;
   retryStartup(): Promise<StartupStatus>;
@@ -481,6 +497,18 @@ export type DesktopAPI = {
   terminalLauncher(): Promise<TerminalLauncherState>;
   setTerminalLauncher(settings: TerminalLauncherSettings): Promise<TerminalLauncherState>;
   openSSHHost(ref: RecordRef): Promise<{ profileId: TerminalProfileID }>;
+  terminalSession(): Promise<TerminalSessionInfo>;
+  startTerminal(cols: number, rows: number): Promise<void>;
+  writeTerminal(data: string): void;
+  resizeTerminal(cols: number, rows: number): void;
+  setTerminalTitle(title: string): void;
+  copyTerminalSelection(value: string): Promise<void>;
+  pasteTerminal(): Promise<void>;
+  closeTerminal(): Promise<void>;
+  onTerminalData(handler: (data: string) => void): () => void;
+  onTerminalExit(handler: (result: TerminalExit) => void): () => void;
+  onTerminalProcess(handler: (processName: string) => void): () => void;
+  onTerminalTheme(handler: (theme: TerminalTheme) => void): () => void;
   openItemURL(ref: RecordRef): Promise<void>;
   openSupportLink(target: "docs" | "issues"): Promise<void>;
   showLargeType(label: string, value: string): Promise<LargeTypeWindowResult>;

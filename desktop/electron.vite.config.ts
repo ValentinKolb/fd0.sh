@@ -18,6 +18,7 @@ export default defineConfig({
     build: {
       rollupOptions: {
         input: resolve(import.meta.dirname, "src/main/index.ts"),
+        external: ["node-pty"],
       },
     },
   },

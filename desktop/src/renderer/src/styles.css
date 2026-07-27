@@ -1715,3 +1715,156 @@ h1, h2, h3, p { margin: 0; }
 }
 .editor-stack-actions .editor-add:hover:not(:disabled) { background: var(--surface-hover); }
 .editor-stack-actions .editor-add > span[aria-hidden] { color: var(--accent-ink); }
+
+/* ------------------------------------------------------- terminal window */
+
+.terminal-window {
+  display: grid;
+  grid-template-rows: 54px minmax(0, 1fr);
+  width: 100%;
+  height: 100%;
+  background: #f7f8f6;
+  color: #17201b;
+}
+
+[data-theme="dark"] .terminal-window {
+  background: #0b0e0c;
+  color: #e7ebe8;
+}
+
+.terminal-window-header {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding: 0 16px;
+  gap: 10px;
+  border-bottom: 1px solid #dce0dc;
+  background: #f1f3f0;
+  -webkit-app-region: drag;
+}
+
+[data-theme="dark"] .terminal-window-header {
+  border-color: #232a25;
+  background: #101411;
+}
+
+.terminal-window.is-mac .terminal-window-header { padding-left: 112px; }
+
+.terminal-status {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #3f8f3a;
+  box-shadow: 0 0 0 3px #3f8f3a1d;
+}
+
+.terminal-status.is-closed {
+  background: #8a938d;
+  box-shadow: none;
+}
+
+.terminal-identity {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+  gap: 9px;
+}
+
+.terminal-identity strong {
+  overflow: hidden;
+  max-width: min(42vw, 420px);
+  font-size: 13px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-identity span {
+  overflow: hidden;
+  color: #667169;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-theme="dark"] .terminal-identity span { color: #909a93; }
+
+.terminal-reconnect {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
+  margin-left: auto;
+  padding: 0 8px;
+  gap: 6px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #8a5500;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+
+.terminal-reconnect:hover { background: #ffad0a1c; }
+.terminal-reconnect:focus-visible { outline: 2px solid #ffad0a; outline-offset: 1px; }
+[data-theme="dark"] .terminal-reconnect {
+  color: #ffb31a;
+}
+[data-theme="dark"] .terminal-reconnect:hover { background: #ffad0a20; }
+
+.terminal-stage {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  padding: 12px 10px 10px 14px;
+  background: inherit;
+}
+
+.terminal-surface,
+.terminal-surface > .xterm {
+  width: 100%;
+  height: 100%;
+}
+
+.terminal-surface .xterm {
+  padding: 0;
+  user-select: text;
+}
+
+.terminal-surface .xterm-viewport {
+  scrollbar-gutter: stable;
+  background: transparent !important;
+}
+
+.terminal-overlay {
+  position: absolute;
+  inset: 12px 10px 10px 14px;
+  display: grid;
+  place-content: center;
+  gap: 8px;
+  background: #f7f8f6;
+  color: #667169;
+  text-align: center;
+}
+
+[data-theme="dark"] .terminal-overlay {
+  background: #0b0e0c;
+  color: #909a93;
+}
+
+.terminal-overlay.is-error strong { color: #b52f2a; }
+.terminal-overlay.is-error span { max-width: 520px; }
+.terminal-overlay.is-error button {
+  justify-self: center;
+  margin-top: 8px;
+  padding: 7px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: #ffad0a;
+  color: #171a18;
+  font-weight: 650;
+  cursor: pointer;
+}

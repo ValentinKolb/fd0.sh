@@ -19,6 +19,9 @@ import type {
   SaveSSHKeyInput,
   StartupStatus,
   TerminalLauncherSettings,
+  TerminalExit,
+  TerminalSessionInfo,
+  TerminalTheme,
   UpdateStatus,
 } from "../shared/contracts";
 
@@ -48,6 +51,7 @@ const api: DesktopAPI = {
   platform: process.platform,
   development: process.argv.includes("--fd0-isolated"),
   largeTypeMode: process.argv.includes("--fd0-large-type"),
+  terminalMode: process.argv.includes("--fd0-terminal"),
   startupStatus: () => invoke<StartupStatus>("fd0:startup-status"),
   consumeUpdateRequest: () => invoke<boolean>("fd0:consume-update-request"),
   retryStartup: () => invoke<StartupStatus>("fd0:retry-startup"),
@@ -108,6 +112,34 @@ const api: DesktopAPI = {
   terminalLauncher: () => invoke("fd0:terminal-launcher"),
   setTerminalLauncher: (settings: TerminalLauncherSettings) => invoke("fd0:set-terminal-launcher", settings),
   openSSHHost: (ref: RecordRef) => invoke("fd0:open-ssh-host", ref),
+  terminalSession: () => invoke<TerminalSessionInfo>("fd0:terminal-session"),
+  startTerminal: (cols: number, rows: number) => invoke<void>("fd0:terminal-start", cols, rows),
+  writeTerminal: (data: string) => ipcRenderer.send("fd0:terminal-write", data),
+  resizeTerminal: (cols: number, rows: number) => ipcRenderer.send("fd0:terminal-resize", cols, rows),
+  setTerminalTitle: (title: string) => ipcRenderer.send("fd0:terminal-title", title),
+  copyTerminalSelection: (value: string) => invoke<void>("fd0:terminal-copy", value),
+  pasteTerminal: () => invoke<void>("fd0:terminal-paste"),
+  closeTerminal: () => invoke<void>("fd0:terminal-close"),
+  onTerminalData: (handler: (data: string) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, data: string) => handler(data);
+    ipcRenderer.on("fd0:terminal-data", listener);
+    return () => ipcRenderer.removeListener("fd0:terminal-data", listener);
+  },
+  onTerminalExit: (handler: (result: TerminalExit) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, result: TerminalExit) => handler(result);
+    ipcRenderer.on("fd0:terminal-exit", listener);
+    return () => ipcRenderer.removeListener("fd0:terminal-exit", listener);
+  },
+  onTerminalProcess: (handler: (processName: string) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, processName: string) => handler(processName);
+    ipcRenderer.on("fd0:terminal-process", listener);
+    return () => ipcRenderer.removeListener("fd0:terminal-process", listener);
+  },
+  onTerminalTheme: (handler: (theme: TerminalTheme) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, theme: TerminalTheme) => handler(theme);
+    ipcRenderer.on("fd0:terminal-theme", listener);
+    return () => ipcRenderer.removeListener("fd0:terminal-theme", listener);
+  },
   openItemURL: (ref: RecordRef) => invoke("fd0:open-item-url", ref),
   openSupportLink: (target: "docs" | "issues") => invoke("fd0:open-support-link", target),
   showLargeType: (label: string, value: string) => invoke<LargeTypeWindowResult>("fd0:show-large-type", label, value),

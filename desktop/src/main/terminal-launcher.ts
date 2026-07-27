@@ -10,7 +10,8 @@ import type {
 } from "../shared/contracts";
 
 const defaultSettings: TerminalLauncherSettings = {
-  profileId: "automatic",
+  profileId: "in-app",
+  terminalTheme: "system",
   customExecutable: "",
   customArguments: [],
 };
@@ -130,8 +131,14 @@ async function anyAccessible(
 }
 
 function profileMetadata(platform: NodeJS.Platform): Array<Omit<TerminalProfileSummary, "available">> {
+  const inApp = {
+    id: "in-app" as const,
+    label: "In fd0",
+    description: "Open SSH sessions in a separate fd0 terminal window.",
+  };
   if (platform === "darwin") {
     return [
+      inApp,
       {
         id: "automatic",
         label: "Automatic",
@@ -161,6 +168,7 @@ function profileMetadata(platform: NodeJS.Platform): Array<Omit<TerminalProfileS
   }
   if (platform === "linux") {
     return [
+      inApp,
       {
         id: "automatic",
         label: "Automatic",
@@ -204,6 +212,7 @@ function profileMetadata(platform: NodeJS.Platform): Array<Omit<TerminalProfileS
     ];
   }
   return [
+    inApp,
     {
       id: "automatic",
       label: "Automatic",
@@ -223,6 +232,8 @@ function builtinAvailable(
   detection: TerminalDetection,
 ): boolean {
   switch (id) {
+    case "in-app":
+      return true;
     case "macos-terminal":
       return platform === "darwin" && detection.macApplications.terminal && Boolean(detection.commands.osascript);
     case "iterm2":
@@ -276,7 +287,9 @@ export function terminalLauncherState(
     profiles: profileMetadata(platform).map((profile) => ({
       ...profile,
       available:
-        profile.id === "automatic"
+        profile.id === "in-app"
+          ? true
+          : profile.id === "automatic"
           ? Boolean(automaticProfileId)
           : builtinAvailable(profile.id, platform, detection),
     })),
@@ -296,6 +309,10 @@ export function validateTerminalLauncherSettings(
 ): TerminalLauncherSettings {
   const availableIDs = new Set(profileMetadata(platform).map((profile) => profile.id));
   if (!input || !availableIDs.has(input.profileId)) throw new Error("Terminal profile is invalid");
+  const terminalTheme =
+    input.terminalTheme === "system" || input.terminalTheme === "light" || input.terminalTheme === "dark"
+      ? input.terminalTheme
+      : "system";
   const customExecutable = validateString(input.customExecutable, "Custom terminal executable", 4_096).trim();
   if (customExecutable && !isAbsolute(customExecutable)) {
     throw new Error("Custom terminal executable must be an absolute path");
@@ -309,7 +326,7 @@ export function validateTerminalLauncherSettings(
   const customArguments = input.customArguments.map((argument) =>
     validateString(argument, "Custom terminal argument", 512),
   );
-  return { profileId: input.profileId, customExecutable, customArguments };
+  return { profileId: input.profileId, terminalTheme, customExecutable, customArguments };
 }
 
 export async function readTerminalLauncherSettings(path: string, platform: NodeJS.Platform): Promise<TerminalLauncherSettings> {
@@ -410,6 +427,9 @@ export function buildTerminalLaunchPlan(options: {
       ? automaticProfile(options.platform, options.detection)
       : settings.profileId;
   if (!profileId) throw new Error("No supported terminal was detected. Choose a custom launcher in Settings.");
+  if (profileId === "in-app") {
+    throw new Error("The in-app terminal does not use an external launch plan");
+  }
 
   const fd0Arguments = [fd0Binary, "ssh", "connect", "--scope", scopeId, alias];
   if (profileId === "custom") {

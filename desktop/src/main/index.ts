@@ -48,6 +48,7 @@ import {
   terminalLauncherState,
   writeTerminalLauncherSettings,
 } from "./terminal-launcher";
+import { TerminalSessionManager, verifyTerminalRuntime } from "./terminal-session";
 import type {
   DesktopCommand,
   DesktopTheme,
@@ -74,12 +75,25 @@ import type {
   SyncPreparation,
   TerminalLauncherSettings,
   TerminalLauncherState,
+  TerminalSessionInfo,
+  TerminalTheme,
   UnlockInput,
   UpdateStatus,
   VaultStatus,
 } from "../shared/contracts";
 
 let mainWindow: BrowserWindow | null = null;
+let desktopTheme: DesktopTheme = "system";
+const terminalSessions = new TerminalSessionManager();
+type TerminalWindowState = {
+  window: BrowserWindow;
+  sessionId: string;
+  host: string;
+  theme: TerminalTheme;
+  processName: string;
+  remoteTitle: string;
+};
+const terminalWindows = new Map<number, TerminalWindowState>();
 let bridge: BridgeSupervisor | null = null;
 const agentLifecycle = new AgentLifecycle();
 const managedClipboard = new ManagedClipboard(clipboard);
@@ -102,6 +116,7 @@ let servicesStarting: Promise<StartupStatus> | null = null;
 let syncState: DiagnosticsSnapshot["sync"] = { state: "never" };
 const { autoUpdater } = electronUpdater;
 const desktopUpdateRequestArg = "--fd0-desktop-update";
+const terminalRuntimeSmokeArg = "--fd0-terminal-runtime-smoke";
 const applicationRoot = app.isPackaged ? app.getAppPath() : resolve(import.meta.dirname, "../..");
 const nativeAgentManaged = app.isPackaged
   && process.env.FD0_HOME === undefined
@@ -129,10 +144,11 @@ const lifecycleCommand = process.argv.find((value) => [
   "--fd0-agent-service-restart",
   "--fd0-agent-service-uninstall",
 ].includes(value));
+const terminalRuntimeSmokeRequested = process.argv.includes(terminalRuntimeSmokeArg);
 const relayExitCode = runPackagedRelay();
 if (relayExitCode !== null) process.exit(relayExitCode);
 
-if (!lifecycleCommand && !app.requestSingleInstanceLock()) {
+if (!lifecycleCommand && !terminalRuntimeSmokeRequested && !app.requestSingleInstanceLock()) {
   app.quit();
 }
 
@@ -685,6 +701,16 @@ function assertTrustedSender(event: Electron.IpcMainInvokeEvent): void {
   }
 }
 
+function terminalWindowForSender(
+  event: Electron.IpcMainInvokeEvent | Electron.IpcMainEvent,
+): TerminalWindowState {
+  const state = terminalWindows.get(event.sender.id);
+  if (!state || state.window.isDestroyed() || state.window.webContents !== event.sender) {
+    throw new Error("Untrusted terminal IPC sender");
+  }
+  return state;
+}
+
 type IPCResult<T> = { ok: true; value: T } | { ok: false; error: { code: string; message: string; action?: string; retryable: boolean } };
 
 function flattenFields(fields: FieldView[]): FieldView[] {
@@ -875,7 +901,7 @@ function registerInfrastructureIPC(): void {
     assertTrustedSender(event);
     return respond(async () => {
       if (theme !== "system" && theme !== "dark" && theme !== "light") throw new Error("Invalid desktop theme");
-      nativeTheme.themeSource = theme;
+      desktopTheme = theme;
       updateWindowBackgrounds();
     });
   });
@@ -887,8 +913,74 @@ function registerInfrastructureIPC(): void {
         process.platform,
         settings,
       );
+      updateTerminalThemes(saved.terminalTheme);
       return currentTerminalLauncherState(saved);
     });
+  });
+}
+
+function registerTerminalIPC(): void {
+  ipcMain.handle("fd0:terminal-session", (event) => {
+    return respond(async (): Promise<TerminalSessionInfo> => {
+      const state = terminalWindowForSender(event);
+      return { host: state.host, terminalTheme: state.theme };
+    });
+  });
+  ipcMain.handle("fd0:terminal-start", (event, cols: number, rows: number) => {
+    return respond(async () => {
+      const state = terminalWindowForSender(event);
+      terminalSessions.start(state.sessionId, cols, rows);
+    });
+  });
+  ipcMain.handle("fd0:terminal-close", (event) => {
+    return respond(async () => {
+      const state = terminalWindowForSender(event);
+      setImmediate(() => {
+        if (!state.window.isDestroyed()) state.window.close();
+      });
+    });
+  });
+  ipcMain.handle("fd0:terminal-copy", (event, value: string) => {
+    return respond(async () => {
+      terminalWindowForSender(event);
+      if (typeof value !== "string" || value.length > 1024 * 1024) {
+        throw new Error("Terminal selection is invalid");
+      }
+      managedClipboard.write(value);
+    });
+  });
+  ipcMain.handle("fd0:terminal-paste", (event) => {
+    return respond(async () => {
+      const state = terminalWindowForSender(event);
+      const value = clipboard.readText();
+      if (value.length > 1024 * 1024) throw new Error("Clipboard text is too large");
+      terminalSessions.write(state.sessionId, value);
+    });
+  });
+  ipcMain.on("fd0:terminal-write", (event, data: string) => {
+    try {
+      const state = terminalWindowForSender(event);
+      terminalSessions.write(state.sessionId, data);
+    } catch (error) {
+      diagnostics?.record("terminal", "input-rejected", error);
+    }
+  });
+  ipcMain.on("fd0:terminal-resize", (event, cols: number, rows: number) => {
+    try {
+      const state = terminalWindowForSender(event);
+      terminalSessions.resize(state.sessionId, cols, rows);
+    } catch (error) {
+      diagnostics?.record("terminal", "resize-rejected", error);
+    }
+  });
+  ipcMain.on("fd0:terminal-title", (event, title: string) => {
+    try {
+      const state = terminalWindowForSender(event);
+      state.remoteTitle = terminalTitlePart(title);
+      updateTerminalWindowTitle(state);
+    } catch (error) {
+      diagnostics?.record("terminal", "title-rejected", error);
+    }
   });
 }
 
@@ -1397,6 +1489,17 @@ function registerIPC(client: BridgeSupervisor): void {
       terminalLauncherSettingsPath(),
       process.platform,
     );
+    if (settings.profileId === "in-app") {
+      openTerminalWindow({
+        host: alias,
+        scopeId: detail.item.scopeId,
+        fd0Binary: environment.FD0_BIN ?? "",
+        environment,
+        cwd: environment.HOME ?? homedir(),
+        theme: settings.terminalTheme,
+      });
+      return { profileId: "in-app" };
+    }
     const detection = await detectTerminalEnvironment({
       platform: process.platform,
       environment,
@@ -1537,13 +1640,124 @@ function rendererEntryURL(fragment = ""): string {
 }
 
 function windowBackgroundColor(): string {
-  return nativeTheme.shouldUseDarkColors ? "#0b0e0c" : "#ffffff";
+  const dark = desktopTheme === "dark" || (desktopTheme === "system" && nativeTheme.shouldUseDarkColors);
+  return dark ? "#0b0e0c" : "#ffffff";
+}
+
+function terminalBackgroundColor(theme: TerminalTheme): string {
+  const dark = theme === "dark" || (theme === "system" && nativeTheme.shouldUseDarkColors);
+  return dark ? "#0b0e0c" : "#f7f8f6";
+}
+
+function terminalTitlePart(value: unknown): string {
+  if (typeof value !== "string") throw new Error("Terminal title is invalid");
+  const clean = value
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return [...clean].slice(0, 120).join("");
+}
+
+function updateTerminalWindowTitle(state: TerminalWindowState): void {
+  const context = state.remoteTitle || state.processName || "SSH";
+  state.window.setTitle(
+    context.localeCompare(state.host, undefined, { sensitivity: "accent" }) === 0
+      ? state.host
+      : `${state.host} — ${context}`,
+  );
+}
+
+function sendTerminalEvent(state: TerminalWindowState, channel: string, value: unknown): void {
+  if (!state.window.isDestroyed() && !state.window.webContents.isDestroyed()) {
+    state.window.webContents.send(channel, value);
+  }
+}
+
+function updateTerminalThemes(theme: TerminalTheme): void {
+  for (const state of terminalWindows.values()) {
+    state.theme = theme;
+    state.window.setBackgroundColor(terminalBackgroundColor(theme));
+    sendTerminalEvent(state, "fd0:terminal-theme", theme);
+  }
 }
 
 function updateWindowBackgrounds(): void {
   const background = windowBackgroundColor();
   mainWindow?.setBackgroundColor(background);
   largeTypeWindow?.setBackgroundColor(background);
+  for (const state of terminalWindows.values()) {
+    state.window.setBackgroundColor(terminalBackgroundColor(state.theme));
+  }
+}
+
+function openTerminalWindow(options: {
+  host: string;
+  scopeId: string;
+  fd0Binary: string;
+  environment: NodeJS.ProcessEnv;
+  cwd: string;
+  theme: TerminalTheme;
+}): BrowserWindow {
+  const mac = process.platform === "darwin";
+  const displayHost = terminalTitlePart(options.host) || "SSH host";
+  const window = new BrowserWindow({
+    width: 980,
+    height: 640,
+    minWidth: 640,
+    minHeight: 360,
+    show: false,
+    title: `${displayHost} — SSH — fd0`,
+    backgroundColor: terminalBackgroundColor(options.theme),
+    ...(mac
+      ? {
+          titleBarStyle: "hiddenInset" as const,
+          trafficLightPosition: { x: 18, y: 18 },
+        }
+      : {}),
+    webPreferences: secureWebPreferences(["--fd0-terminal"]),
+  });
+  const state = {
+    window,
+    sessionId: "",
+    host: displayHost,
+    theme: options.theme,
+    processName: "ssh",
+    remoteTitle: "",
+  } satisfies TerminalWindowState;
+  state.sessionId = terminalSessions.create(
+    {
+      host: options.host,
+      scopeId: options.scopeId,
+      fd0Binary: options.fd0Binary,
+      environment: options.environment,
+      cwd: options.cwd,
+    },
+    {
+      data: (value) => sendTerminalEvent(state, "fd0:terminal-data", value),
+      exit: (value) => sendTerminalEvent(state, "fd0:terminal-exit", value),
+      process: (value) => {
+        state.processName = terminalTitlePart(value) || "ssh";
+        updateTerminalWindowTitle(state);
+        sendTerminalEvent(state, "fd0:terminal-process", state.processName);
+      },
+    },
+  );
+  terminalWindows.set(window.webContents.id, state);
+  applyWindowGuards(window);
+  updateTerminalWindowTitle(state);
+  window.on("closed", () => {
+    terminalWindows.delete(window.webContents.id);
+    terminalSessions.close(state.sessionId);
+  });
+  window.webContents.on("render-process-gone", () => {
+    if (!window.isDestroyed()) window.destroy();
+  });
+  window.once("ready-to-show", () => {
+    window.show();
+    window.focus();
+  });
+  void window.loadURL(rendererEntryURL());
+  return window;
 }
 
 function createWindow(): BrowserWindow {
@@ -1794,6 +2008,17 @@ async function initializeServices(): Promise<StartupStatus> {
 
 async function start(): Promise<void> {
   await app.whenReady();
+  if (terminalRuntimeSmokeRequested) {
+    try {
+      await verifyTerminalRuntime();
+      console.log("fd0 terminal runtime ok");
+      app.exit(0);
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      app.exit(1);
+    }
+    return;
+  }
   nativeTheme.on("updated", updateWindowBackgrounds);
   diagnostics = new DiagnosticsLog(join(app.getPath("logs"), "fd0-desktop.log"));
   diagnostics.record("app", "starting", `${process.platform}/${process.arch} ${app.getVersion()}`);
@@ -1815,6 +2040,7 @@ async function start(): Promise<void> {
   session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
   session.defaultSession.setPermissionCheckHandler(() => false);
   registerInfrastructureIPC();
+  registerTerminalIPC();
   registerLargeTypeIPC();
   buildMenu();
   mainWindow = createWindow();
@@ -1823,7 +2049,7 @@ async function start(): Promise<void> {
   await initializeServices();
   flushDesktopUpdateRequest();
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) mainWindow = createWindow();
+    if (!mainWindow) mainWindow = createWindow();
   });
 }
 
@@ -1841,6 +2067,7 @@ app.on("before-quit", (event) => {
   // Runs on both passes: the quit below is deferred, and nothing should keep a
   // secret on screen while the vault is being locked.
   closeLargeTypeWindow();
+  terminalSessions.closeAll();
   if (!quitPrepared && bridge && !installingUpdate) {
     event.preventDefault();
     quitPrepared = true;

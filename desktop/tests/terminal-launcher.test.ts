@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -23,6 +23,7 @@ const linuxDetection: TerminalDetection = {
 
 const automatic: TerminalLauncherSettings = {
   profileId: "automatic",
+  terminalTheme: "system",
   customExecutable: "",
   customArguments: [],
 };
@@ -98,6 +99,7 @@ describe("terminal launcher profiles", () => {
   test("exposes only platform-relevant profiles and resolves Automatic", () => {
     const state = terminalLauncherState("linux", automatic, linuxDetection);
     expect(state.automaticProfileId).toBe("linux-system");
+    expect(state.profiles[0]).toMatchObject({ id: "in-app", available: true });
     expect(state.profiles.find((profile) => profile.id === "linux-system")?.available).toBe(true);
     expect(state.profiles.some((profile) => profile.id === "macos-terminal")).toBe(false);
   });
@@ -107,7 +109,7 @@ describe("terminal launcher settings", () => {
   test("requires an absolute custom executable", () => {
     expect(() =>
       validateTerminalLauncherSettings(
-        { profileId: "custom", customExecutable: "ghostty", customArguments: ["-e"] },
+        { profileId: "custom", terminalTheme: "system", customExecutable: "ghostty", customArguments: ["-e"] },
         "linux",
       ),
     ).toThrow("absolute path");
@@ -118,6 +120,7 @@ describe("terminal launcher settings", () => {
     const path = join(directory, "terminal-launcher.json");
     const input: TerminalLauncherSettings = {
       profileId: "custom",
+      terminalTheme: "dark",
       customExecutable: "/opt/bin/my-terminal-wrapper",
       customArguments: ["--new-window"],
     };
@@ -126,6 +129,36 @@ describe("terminal launcher settings", () => {
       expect(await readTerminalLauncherSettings(path, "linux")).toEqual(input);
       expect((await stat(path)).mode & 0o777).toBe(0o600);
       expect(await readFile(path, "utf8")).not.toContain("undefined");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("defaults new devices to the in-app terminal and a system terminal theme", async () => {
+    const path = join(tmpdir(), `fd0-terminal-settings-missing-${process.pid}.json`);
+    expect(await readTerminalLauncherSettings(path, "linux")).toEqual({
+      profileId: "in-app",
+      terminalTheme: "system",
+      customExecutable: "",
+      customArguments: [],
+    });
+  });
+
+  test("preserves an existing external choice while adding the terminal theme default", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "fd0-terminal-settings-legacy-"));
+    const path = join(directory, "terminal-launcher.json");
+    try {
+      await writeFile(path, JSON.stringify({
+        profileId: "ghostty",
+        customExecutable: "",
+        customArguments: [],
+      }));
+      expect(await readTerminalLauncherSettings(path, "linux")).toEqual({
+        profileId: "ghostty",
+        terminalTheme: "system",
+        customExecutable: "",
+        customArguments: [],
+      });
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

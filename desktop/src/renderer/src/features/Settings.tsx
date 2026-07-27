@@ -3,6 +3,7 @@ import type {
   TerminalLauncherSettings,
   TerminalLauncherState,
   TerminalProfileID,
+  TerminalTheme,
 } from "../../../shared/contracts";
 import { plural } from "../lib/format";
 import { useVault } from "../lib/store";
@@ -21,7 +22,8 @@ export function Settings(props: { onExportRecovery(): void; onShowShortcuts(): v
   const vault = useVault();
   const [launchAtLogin, setLaunchAtLogin] = createSignal(false);
   const [terminal, setTerminal] = createSignal<TerminalLauncherState | null>(null);
-  const [terminalProfile, setTerminalProfile] = createSignal<TerminalProfileID>("automatic");
+  const [terminalProfile, setTerminalProfile] = createSignal<TerminalProfileID>("in-app");
+  const [terminalTheme, setTerminalTheme] = createSignal<TerminalTheme>("system");
   const [customExecutable, setCustomExecutable] = createSignal("");
   const [customArguments, setCustomArguments] = createSignal("");
 
@@ -48,7 +50,7 @@ export function Settings(props: { onExportRecovery(): void; onShowShortcuts(): v
   const defaultMethod = () => authMethods().find((method) => method.default)?.id ?? "";
   const terminalOptions = createMemo(() => {
     const state = terminal();
-    if (!state) return [{ value: "automatic", label: "Automatic" }];
+    if (!state) return [{ value: "in-app", label: "In fd0" }];
     return state.profiles
       .filter((profile) => profile.available || profile.id === state.settings.profileId)
       .map((profile) => ({
@@ -83,6 +85,7 @@ export function Settings(props: { onExportRecovery(): void; onShowShortcuts(): v
   function applyTerminalState(state: TerminalLauncherState): void {
     setTerminal(state);
     setTerminalProfile(state.settings.profileId);
+    setTerminalTheme(state.settings.terminalTheme);
     setCustomExecutable(state.settings.customExecutable);
     setCustomArguments(state.settings.customArguments.join("\n"));
   }
@@ -91,6 +94,7 @@ export function Settings(props: { onExportRecovery(): void; onShowShortcuts(): v
     const stored = terminal()?.settings;
     return {
       profileId,
+      terminalTheme: stored?.terminalTheme ?? "system",
       customExecutable: stored?.customExecutable ?? "",
       customArguments: stored?.customArguments ?? [],
     };
@@ -118,11 +122,21 @@ export function Settings(props: { onExportRecovery(): void; onShowShortcuts(): v
   function saveCustomTerminal(): void {
     saveTerminalSettings({
       profileId: "custom",
+      terminalTheme: terminalTheme(),
       customExecutable: customExecutable().trim(),
       customArguments: customArguments()
         .split("\n")
         .map((argument) => argument.trim())
         .filter(Boolean),
+    });
+  }
+
+  function changeTerminalTheme(value: string): void {
+    if (value !== "system" && value !== "light" && value !== "dark") return;
+    setTerminalTheme(value);
+    saveTerminalSettings({
+      ...storedTerminalSettings(terminalProfile()),
+      terminalTheme: value,
     });
   }
 
@@ -200,6 +214,24 @@ export function Settings(props: { onExportRecovery(): void; onShowShortcuts(): v
               options={terminalOptions()}
             />
           </div>
+          <Show when={terminalProfile() === "in-app"}>
+            <div class="setting-row">
+              <div>
+                <strong>Terminal theme</strong>
+                <small>Choose the fd0 terminal appearance independently from the app.</small>
+              </div>
+              <Select
+                label="Terminal theme"
+                value={terminalTheme()}
+                onChange={changeTerminalTheme}
+                options={[
+                  { value: "system", label: "System" },
+                  { value: "light", label: "Light" },
+                  { value: "dark", label: "Dark" },
+                ]}
+              />
+            </div>
+          </Show>
           <Show when={terminalProfile() === "custom"}>
             <div class="terminal-custom-settings">
               <Field
