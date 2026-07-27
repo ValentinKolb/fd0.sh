@@ -158,8 +158,8 @@ h1, h2, h3, p { margin: 0; }
 .titlebar > *,
 .titlebar button { -webkit-app-region: no-drag; }
 
-/* Leave room for the macOS traffic lights. */
-.app.is-mac .titlebar { padding-left: 84px; }
+/* Leave room plus a visible gutter after the macOS traffic lights. */
+.app.is-mac .titlebar { padding-left: 108px; }
 
 .titlebar-lead { display: flex; align-items: center; gap: var(--space-3); min-width: 0; }
 .titlebar-trail { display: flex; align-items: center; gap: var(--space-2); margin-left: auto; }
@@ -214,7 +214,9 @@ h1, h2, h3, p { margin: 0; }
 .sync-button {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
+  width: 104px;
   height: var(--control-height-sm);
   padding: 0 var(--space-3);
   border: 1px solid transparent;
@@ -228,7 +230,10 @@ h1, h2, h3, p { margin: 0; }
 .sync-button.is-warning { border-color: var(--warn-line); background: var(--warn-bg); color: var(--warn); }
 .sync-button:disabled { opacity: 0.6; }
 
-@media (max-width: 900px) { .sync-label { display: none; } }
+@media (max-width: 900px) {
+  .sync-button { width: var(--control-height-sm); padding: 0; }
+  .sync-label { display: none; }
+}
 
 /* ------------------------------------------------------------------ rail */
 

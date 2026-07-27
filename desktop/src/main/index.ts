@@ -85,10 +85,14 @@ let domainIPCRegistered = false;
 let servicesStarting: Promise<StartupStatus> | null = null;
 let syncState: DiagnosticsSnapshot["sync"] = { state: "never" };
 const { autoUpdater } = electronUpdater;
+const desktopUpdateRequestArg = "--fd0-desktop-update";
 const applicationRoot = app.isPackaged ? app.getAppPath() : resolve(import.meta.dirname, "../..");
 const nativeAgentManaged = app.isPackaged
   && process.env.FD0_HOME === undefined
   && process.env.FD0_SSH_SOCK === undefined;
+let pendingDesktopUpdateRequest = process.argv.includes(desktopUpdateRequestArg);
+let rendererDesktopUpdateRequested = false;
+let updaterConfigured = false;
 
 app.setName("fd0");
 if (!app.isPackaged) app.setPath("userData", requiredEnv("FD0_DESKTOP_USER_DATA"));
@@ -207,6 +211,23 @@ function publishUpdate(status: UpdateStatus): void {
 
 function showAppMessageBox(options: MessageBoxOptions) {
   return mainWindow ? dialog.showMessageBox(mainWindow, options) : dialog.showMessageBox(options);
+}
+
+function flushDesktopUpdateRequest(): void {
+  if (!pendingDesktopUpdateRequest || !updaterConfigured || !mainWindow || mainWindow.webContents.isLoadingMainFrame()) {
+    return;
+  }
+  pendingDesktopUpdateRequest = false;
+  rendererDesktopUpdateRequested = true;
+  showMainWindow();
+  sendCommand("open-support");
+  void checkForUpdates();
+}
+
+function requestDesktopUpdate(): void {
+  pendingDesktopUpdateRequest = true;
+  showMainWindow();
+  flushDesktopUpdateRequest();
 }
 
 async function checkForUpdates(): Promise<UpdateStatus> {
@@ -350,6 +371,7 @@ function announceDownloadedUpdate(version: string): void {
 }
 
 function configureUpdater(): void {
+  updaterConfigured = true;
   if (!app.isPackaged) return;
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = false;
@@ -786,6 +808,11 @@ function registerInfrastructureIPC(): void {
     });
   };
   handle("fd0:startup-status", async () => startupStatus);
+  handle("fd0:consume-update-request", async () => {
+    const requested = rendererDesktopUpdateRequested;
+    rendererDesktopUpdateRequested = false;
+    return requested;
+  });
   handle("fd0:retry-startup", initializeServices);
   handle("fd0:repair-service", async () => {
     diagnostics?.record("agent", "repair-requested");
@@ -1318,7 +1345,8 @@ function createWindow(): BrowserWindow {
     if (mainWindow === window) mainWindow = null;
   });
   window.once("ready-to-show", () => window.show());
-  void window.loadURL(rendererEntryURL());
+  window.webContents.once("did-finish-load", flushDesktopUpdateRequest);
+  void window.loadURL(rendererEntryURL(pendingDesktopUpdateRequest ? "#support" : ""));
   return window;
 }
 
@@ -1569,13 +1597,15 @@ async function start(): Promise<void> {
   createTray();
   configureUpdater();
   await initializeServices();
+  flushDesktopUpdateRequest();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) mainWindow = createWindow();
   });
 }
 
-app.on("second-instance", () => {
+app.on("second-instance", (_event, commandLine) => {
   showMainWindow();
+  if (commandLine.includes(desktopUpdateRequestArg)) requestDesktopUpdate();
 });
 
 app.on("window-all-closed", () => {

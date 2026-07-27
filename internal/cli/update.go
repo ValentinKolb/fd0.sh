@@ -57,6 +57,8 @@ type UpdateOptions struct {
 	GOARCH      string
 	Executable  string
 	cosignPath  string
+
+	desktopLauncher func(appPath string, args ...string) error
 }
 
 type updateRelease struct {
@@ -102,9 +104,7 @@ func RunUpdate(ctx context.Context, opts UpdateOptions) error {
 		opts.Stderr = os.Stderr
 	}
 	if opts.ManagedByDesktop || os.Getenv("FD0_DESKTOP_MANAGED") == "1" {
-		fmt.Fprintln(opts.Stdout, "fd0 is managed by fd0 Desktop.")
-		fmt.Fprintln(opts.Stdout, "Open fd0 Desktop > Support > Check now to update the app, CLI, and agent together.")
-		return nil
+		return runDesktopManagedUpdate(opts)
 	}
 	if opts.HTTPClient == nil {
 		opts.HTTPClient = &http.Client{Timeout: 30 * time.Second}
@@ -252,6 +252,64 @@ func RunUpdate(ctx context.Context, opts UpdateOptions) error {
 		fmt.Fprintln(opts.Stdout, "restart the agent to use the new fd0-agent: fd0 agent restart")
 	}
 	return nil
+}
+
+func runDesktopManagedUpdate(opts UpdateOptions) error {
+	unsupported := make([]string, 0, 7)
+	if opts.CheckOnly {
+		unsupported = append(unsupported, "--check")
+	}
+	if opts.Yes {
+		unsupported = append(unsupported, "--yes")
+	}
+	if opts.Version != "" && opts.Version != "latest" {
+		unsupported = append(unsupported, "--version")
+	}
+	if opts.Flavor != "" && opts.Flavor != "auto" {
+		unsupported = append(unsupported, "--flavor")
+	}
+	if opts.Prefix != "" {
+		unsupported = append(unsupported, "--prefix")
+	}
+	if opts.System {
+		unsupported = append(unsupported, "--system")
+	}
+	if opts.AllowDowngrade {
+		unsupported = append(unsupported, "--allow-downgrade")
+	}
+	if len(unsupported) > 0 {
+		return fmt.Errorf(
+			"fd0 update: %s cannot be used with fd0 Desktop; run `fd0 update` without options",
+			strings.Join(unsupported, ", "),
+		)
+	}
+
+	appPath := strings.TrimSpace(os.Getenv("FD0_DESKTOP_APP"))
+	if appPath == "" {
+		return errors.New("fd0 update: desktop-managed fd0 is missing FD0_DESKTOP_APP")
+	}
+	launcher := opts.desktopLauncher
+	if launcher == nil {
+		launcher = launchDesktopUpdate
+	}
+	if err := launcher(appPath, "--fd0-desktop-update"); err != nil {
+		return fmt.Errorf("fd0 update: open fd0 Desktop: %w", err)
+	}
+	fmt.Fprintln(opts.Stdout, "✓ opened fd0 Desktop")
+	fmt.Fprintln(opts.Stdout, "Continue in Support to download and install the signed app, CLI, and agent update.")
+	return nil
+}
+
+func launchDesktopUpdate(appPath string, args ...string) error {
+	executable := appPath
+	if runtime.GOOS == "darwin" && strings.HasSuffix(strings.ToLower(appPath), ".app") {
+		executable = filepath.Join(appPath, "Contents", "MacOS", "fd0")
+	}
+	cmd := exec.Command(executable, args...)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	return cmd.Process.Release()
 }
 
 func getenvDefault(name, fallback string) string {

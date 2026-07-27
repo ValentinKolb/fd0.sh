@@ -1,4 +1,4 @@
-import { Show, createEffect, createSignal, onCleanup, onMount, type JSX } from "solid-js";
+import { Show, createEffect, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js";
 import { IconArrowLeft } from "@tabler/icons-solidjs";
 import { hotkeys } from "@valentinkolb/stdlib/solid";
 import type { FieldView, ItemSummary, ScopeSummary } from "../../shared/contracts";
@@ -19,6 +19,11 @@ import { Support } from "./features/Support";
 import { Titlebar } from "./features/Titlebar";
 import { Unlock } from "./features/Unlock";
 import { toAppError } from "./lib/errors";
+import {
+  isReadinessWarningSnoozed,
+  readinessWarningReason,
+  snoozeReadinessWarning,
+} from "./lib/readiness-snooze";
 import { VaultContext, createVaultStore } from "./lib/store";
 import { IconButton } from "./ui/Button";
 import { ErrorStack, SafetyBanner, Toasts } from "./ui/Notices";
@@ -28,6 +33,7 @@ const NARROW_BREAKPOINT = 720;
 
 function App(): JSX.Element {
   const vault = createVaultStore();
+  if (window.location.hash === "#support") vault.setMainView("support");
 
   const [paletteOpen, setPaletteOpen] = createSignal(false);
   const [shortcutsOpen, setShortcutsOpen] = createSignal(false);
@@ -37,11 +43,26 @@ function App(): JSX.Element {
   const [recoveryOpen, setRecoveryOpen] = createSignal(false);
   const [shareScope, setShareScope] = createSignal<ScopeSummary | null>(null);
   const [largeType, setLargeType] = createSignal<{ field: FieldView; value: string } | null>(null);
+  const [readinessClock, setReadinessClock] = createSignal(0);
 
   const [narrow, setNarrow] = createSignal(window.innerWidth < NARROW_BREAKPOINT);
   const [narrowPane, setNarrowPane] = createSignal<"list" | "detail">("list");
 
   const showingItems = () => vault.mainView() === "items";
+  const readinessBannerReason = createMemo(() => {
+    readinessClock();
+    if (window.fd0.development) return null;
+    const reason = readinessWarningReason(vault.status());
+    return reason && !isReadinessWarningSnoozed(localStorage, reason) ? reason : null;
+  });
+
+  function snoozeReadiness(): void {
+    const reason = readinessBannerReason();
+    if (!reason) return;
+    snoozeReadinessWarning(localStorage, reason);
+    setReadinessClock((current) => current + 1);
+    vault.notify("Reminder snoozed for 7 days");
+  }
 
   let pendingPassword = "";
 
@@ -203,7 +224,10 @@ function App(): JSX.Element {
     });
 
     const statusTimer = setInterval(() => {
-      if (vault.startup().state === "ready") void vault.checkLockState();
+      if (vault.startup().state === "ready") {
+        setReadinessClock((current) => current + 1);
+        void vault.checkLockState();
+      }
     }, 10_000);
 
     const refreshOnFocus = (): void => {
@@ -255,10 +279,20 @@ function App(): JSX.Element {
     const unsubscribe = window.fd0.onCommand((command) => {
       if (command === "focus-search") setPaletteOpen(true);
       if (command === "new-item") openAddItem();
+      if (command === "open-support") {
+        vault.setMainView("support");
+        void window.fd0.consumeUpdateRequest()
+          .catch((cause) => vault.fail(cause, "fd0 could not acknowledge the update view"));
+      }
       if (command === "open-settings") vault.setMainView("settings");
       if (command === "lock") void vault.lock();
       if (command === "refresh") void vault.refresh();
     });
+    void window.fd0.consumeUpdateRequest()
+      .then((requested) => {
+        if (requested) vault.setMainView("support");
+      })
+      .catch((cause) => vault.fail(cause, "fd0 could not open the update view"));
 
     onCleanup(() => {
       shortcuts.dispose();
@@ -379,21 +413,24 @@ function App(): JSX.Element {
                 </Show>
               </main>
 
-              <Show when={vault.needsRecovery() && !anyOverlayOpen()}>
-                <SafetyBanner
-                  title={
-                    vault.status()?.readiness?.firstSyncAt
-                      ? "Your vault has no backup yet"
-                      : "This device holds the only copy of your vault"
-                  }
-                  description={
-                    vault.status()?.readiness?.firstSyncAt
-                      ? "A recovery file restores your identity if you lose every device."
-                      : "Syncing uploads an encrypted copy. Until it succeeds, nothing else has your data."
-                  }
-                  actionLabel={vault.status()?.readiness?.firstSyncAt ? "Create recovery file" : "Sync now"}
-                  onAction={() => (vault.status()?.readiness?.firstSyncAt ? setRecoveryOpen(true) : void vault.sync())}
-                />
+              <Show when={!anyOverlayOpen() && readinessBannerReason()}>
+                {(reason) => (
+                  <SafetyBanner
+                    title={
+                      reason() === "recovery"
+                        ? "Your vault has no backup yet"
+                        : "This device holds the only copy of your vault"
+                    }
+                    description={
+                      reason() === "recovery"
+                        ? "A recovery file restores your identity if you lose every device."
+                        : "Syncing uploads an encrypted copy. Until it succeeds, nothing else has your data."
+                    }
+                    actionLabel={reason() === "recovery" ? "Create recovery file" : "Sync now"}
+                    onAction={() => (reason() === "recovery" ? setRecoveryOpen(true) : void vault.sync())}
+                    onSnooze={snoozeReadiness}
+                  />
+                )}
               </Show>
             </div>
 

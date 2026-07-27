@@ -323,6 +323,7 @@ export type DiagnosticsSnapshot = {
 export type DesktopCommand =
   | "focus-search"
   | "new-item"
+  | "open-support"
   | "open-settings"
   | "lock"
   | "refresh";
@@ -337,6 +338,7 @@ export type DesktopAPI = {
    */
   largeTypeMode: boolean;
   startupStatus(): Promise<StartupStatus>;
+  consumeUpdateRequest(): Promise<boolean>;
   retryStartup(): Promise<StartupStatus>;
   repairService(): Promise<StartupStatus>;
   diagnostics(): Promise<DiagnosticsSnapshot>;

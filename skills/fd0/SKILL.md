@@ -43,8 +43,9 @@ Map the user's intent to the right command before typing anything:
 | Confirm vault state | `fd0 doctor` (read-only check) |
 | Check installed client flavor | `fd0 version` (`standard` or `yubikey`) |
 | Install fd0 Desktop with its managed CLI and agent | `curl -fsSL https://fd0.sh/install \| sh -s -- --desktop` |
+| Update fd0 Desktop, its CLI, and its agent | `fd0 update` (opens the Desktop updater) |
 | Install YubiKey-capable client | `curl -fsSL https://fd0.sh/install \| sh -s -- --yubikey` |
-| Switch an existing install to YubiKey flavor | `fd0 update --flavor=yubikey` then `fd0 agent restart` |
+| Switch a standalone CLI install to YubiKey flavor | `fd0 update --flavor=yubikey` then `fd0 agent restart` |
 | Set this device's default unlock method | `fd0 auth default yubikey` or `fd0 auth default passphrase` |
 | End the session | `fd0 lock` |
 | Inspect or restart the agent | `fd0 agent status`; `fd0 agent restart`; `fd0 agent stop` |
@@ -351,7 +352,7 @@ These are not negotiable. The skill is useless and dangerous without them.
 | `fd0 SSH agent socket unavailable` / `Connection refused` from `ssh-add -L` | fd0-agent is running but its SSH-agent listener is stale or was started with the wrong socket path | Run `fd0 agent restart`. |
 | `standard flavor (YubiKey/PIV disabled)` while enrolling YubiKey | Installed client is the standard release flavor | Run `fd0 update --flavor=yubikey`, then `fd0 agent restart` |
 | YubiKey unlock says running agent lacks support | `fd0` was updated but old `fd0-agent` is still running | Run `fd0 agent restart`; then check `fd0 doctor` |
-| `fd0 is managed by fd0 Desktop` during `fd0 update` | The command belongs to the signed Desktop bundle | Open fd0 Desktop, then use **Support > Check now** so app, CLI, and agent update together |
+| An update flag “cannot be used with fd0 Desktop” | Desktop updates the signed app, CLI, and agent as one bundle | Run plain `fd0 update`; choose explicit versions or flavors only on standalone CLI installations |
 | `429 Too Many Requests` on register | Per-IP rate limit | Retry after the `retry-after` seconds; do not loop |
 | `pinned-key-mismatch` on sync | Server's translog key rotated, or MITM | STOP. Verify the new fingerprint out-of-band BEFORE re-pinning. `~/.fd0/config.toml` does not need editing — fd0 walks through the ceremony |
 | `witness cross-check failed` | Witness disagrees with server | STOP. Possible equivocation. Open an issue with the server operator |

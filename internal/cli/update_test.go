@@ -53,16 +53,59 @@ func TestUpdateVersionHelpers(t *testing.T) {
 
 func TestRunUpdateHandsDesktopManagedInstallToDesktop(t *testing.T) {
 	var out bytes.Buffer
+	app := filepath.Join(t.TempDir(), "fd0.app")
+	t.Setenv("FD0_DESKTOP_APP", app)
+	var launchedPath string
+	var launchedArgs []string
 	err := RunUpdate(context.Background(), UpdateOptions{
 		ManagedByDesktop: true,
 		Stdout:           &out,
 		Stderr:           ioDiscard{},
+		desktopLauncher: func(appPath string, args ...string) error {
+			launchedPath = appPath
+			launchedArgs = append([]string(nil), args...)
+			return nil
+		},
 	})
 	if err != nil {
 		t.Fatalf("RunUpdate: %v", err)
 	}
-	if !strings.Contains(out.String(), "managed by fd0 Desktop") || !strings.Contains(out.String(), "Support > Check now") {
+	if launchedPath != app || len(launchedArgs) != 1 || launchedArgs[0] != "--fd0-desktop-update" {
+		t.Fatalf("desktop launch=%q %q", launchedPath, launchedArgs)
+	}
+	if !strings.Contains(out.String(), "opened fd0 Desktop") || !strings.Contains(out.String(), "app, CLI, and agent") {
 		t.Fatalf("unexpected output:\n%s", out.String())
+	}
+}
+
+func TestRunUpdateRejectsStandaloneOptionsForDesktop(t *testing.T) {
+	t.Setenv("FD0_DESKTOP_APP", filepath.Join(t.TempDir(), "fd0.app"))
+	for _, test := range []struct {
+		name string
+		opts UpdateOptions
+		flag string
+	}{
+		{name: "check", opts: UpdateOptions{CheckOnly: true}, flag: "--check"},
+		{name: "yes", opts: UpdateOptions{Yes: true}, flag: "--yes"},
+		{name: "version", opts: UpdateOptions{Version: "0.12.0"}, flag: "--version"},
+		{name: "flavor", opts: UpdateOptions{Flavor: "yubikey"}, flag: "--flavor"},
+		{name: "prefix", opts: UpdateOptions{Prefix: "/tmp/fd0"}, flag: "--prefix"},
+		{name: "system", opts: UpdateOptions{System: true}, flag: "--system"},
+		{name: "downgrade", opts: UpdateOptions{AllowDowngrade: true}, flag: "--allow-downgrade"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			test.opts.ManagedByDesktop = true
+			test.opts.Stdout = ioDiscard{}
+			test.opts.Stderr = ioDiscard{}
+			test.opts.desktopLauncher = func(string, ...string) error {
+				t.Fatal("unsupported options must not launch fd0 Desktop")
+				return nil
+			}
+			err := RunUpdate(context.Background(), test.opts)
+			if err == nil || !strings.Contains(err.Error(), test.flag) {
+				t.Fatalf("RunUpdate error=%v, want %s", err, test.flag)
+			}
+		})
 	}
 }
 

@@ -153,6 +153,44 @@ test.afterAll(() => {
   rmSync(startupSock, { force: true });
 });
 
+test("routes a desktop-managed CLI update request to Support", async () => {
+  const updateHome = join(tmpdir(), `fd0-desktop-e2e-update-${process.pid}`);
+  const updateSock = join(tmpdir(), `fd0-desktop-e2e-update-${process.pid}.sock`);
+  const updateEnvironment: NodeJS.ProcessEnv = {
+    ...environment,
+    FD0_HOME: updateHome,
+    FD0_SSH_SOCK: updateSock,
+    FD0_DESKTOP_USER_DATA: join(updateHome, "desktop-ui"),
+  };
+  const seeded = spawnSync(join(buildDir, "fd0-desktop-dev-seed"), [], {
+    cwd: repoRoot,
+    env: updateEnvironment,
+    encoding: "utf8",
+  });
+  if (seeded.status !== 0) {
+    throw new Error(`update-request seed failed:\n${seeded.stdout}\n${seeded.stderr}`);
+  }
+  const app = await electron.launch({
+    executablePath: electronPath,
+    args: [join(desktopRoot, "out", "main", "index.js"), "--fd0-desktop-update"],
+    env: updateEnvironment,
+  });
+  try {
+    const page = await app.firstWindow();
+    await expect(page.getByRole("heading", { name: "Support" })).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole("heading", { name: "Updates" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Check now" })).toBeVisible();
+  } finally {
+    await app.close();
+    spawnSync(join(buildDir, "fd0"), ["agent", "stop"], { cwd: repoRoot, env: updateEnvironment });
+    const marker = join(updateHome, ".desktop-isolated");
+    if (existsSync(marker) && readFileSync(marker, "utf8") === "fd0-desktop-isolated-v1\n") {
+      rmSync(updateHome, { recursive: true });
+    }
+    rmSync(updateSock, { force: true });
+  }
+});
+
 test("runs the isolated desktop vault end to end", async () => {
   const app = await electron.launch({
     executablePath: electronPath,
@@ -200,6 +238,32 @@ test("runs the isolated desktop vault end to end", async () => {
       idleTimeoutMillis: 60 * 60_000,
       maxLifetimeMillis: 12 * 60 * 60_000,
     });
+
+    // Status text may grow from "Synced" to "Syncing…"; its reserved slot must
+    // keep the centred palette still while that happens.
+    const syncLayout = await page.evaluate(() => {
+      const titlebar = document.querySelector<HTMLElement>(".titlebar")!;
+      const palette = document.querySelector<HTMLElement>(".palette-trigger")!;
+      const button = document.querySelector<HTMLElement>(".sync-button")!;
+      const label = document.querySelector<HTMLElement>(".sync-label")!;
+      const original = label.textContent;
+      const before = { paletteLeft: palette.getBoundingClientRect().left, buttonWidth: button.getBoundingClientRect().width };
+      label.textContent = "Syncing…";
+      const after = { paletteLeft: palette.getBoundingClientRect().left, buttonWidth: button.getBoundingClientRect().width };
+      label.textContent = original;
+      return {
+        before,
+        after,
+        titlebarLogoCount: document.querySelectorAll(".titlebar .logo").length,
+        titlebarPaddingLeft: getComputedStyle(titlebar).paddingLeft,
+        platform: window.fd0.platform,
+      };
+    });
+    expect(syncLayout.titlebarLogoCount).toBe(0);
+    expect(syncLayout.titlebarPaddingLeft).toBe(syncLayout.platform === "darwin" ? "108px" : "16px");
+    expect(syncLayout.before.buttonWidth).toBe(104);
+    expect(syncLayout.after.buttonWidth).toBe(104);
+    expect(syncLayout.after.paletteLeft).toBe(syncLayout.before.paletteLeft);
 
     // The rail replaces the old type dropdown: every type is one click away.
     await railPasswords.click();
