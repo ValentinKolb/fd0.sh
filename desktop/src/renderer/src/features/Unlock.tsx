@@ -112,7 +112,12 @@ export function Unlock(props: {
                 </For>
               </div>
             </Show>
-            <div class="field-stack">
+            <div
+              classList={{
+                "field-stack": true,
+                "unlock-method-content": methods().length > 1,
+              }}
+            >
               <Show when={isPassphrase()}>
                 <Field label="Passphrase">
                   {(field) => (

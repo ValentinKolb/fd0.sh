@@ -1150,6 +1150,14 @@ h1, h2, h3, p { margin: 0; }
 }
 .unlock-methods button.is-active { background: var(--surface-hover); color: var(--text); }
 
+/*
+ * The passphrase and YubiKey forms have different natural heights. Because the
+ * auth card is vertically centred, switching between them otherwise moves the
+ * entire card. Reserve the taller normal branch only when a picker is present;
+ * single-method installations keep their compact layout.
+ */
+.unlock-method-content { min-height: 160px; }
+
 .startup-recovery { flex-direction: column; text-align: center; }
 .startup-glyph {
   display: grid;
@@ -1175,6 +1183,11 @@ h1, h2, h3, p { margin: 0; }
   .auth-main { gap: var(--space-6); padding: var(--space-5) var(--space-4); }
   .auth-copy h1 { font-size: var(--text-xl); }
   .modal-backdrop { padding: var(--space-3); }
+}
+
+@media (max-width: 400px) {
+  /* The YubiKey instructions and optional PIN hint wrap on narrow windows. */
+  .unlock-method-content { min-height: 204px; }
 }
 
 /* ------------------------------------------------------ item type picker */
