@@ -1173,7 +1173,7 @@ test("runs the isolated desktop vault end to end", async () => {
       nodeIntegration: false,
       sandbox: true,
     });
-    await terminalPage.evaluate(() => window.fd0.closeTerminal());
+    await terminalPage.close();
     await expect.poll(() => app.windows().length).toBe(1);
     const terminalSettingsAfterClose = await page.evaluate(async () => {
       const state = await window.fd0.terminalLauncher();
