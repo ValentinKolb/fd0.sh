@@ -1,4 +1,4 @@
-import { For, Index, Show, createEffect, createMemo, createSignal, onCleanup, type JSX } from "solid-js";
+import { For, Index, Show, createEffect, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js";
 import {
   IconAdjustmentsHorizontal,
   IconDotsVertical,
@@ -419,6 +419,28 @@ function FieldNameInput(props: {
     if (draft() !== props.field.name) props.onChange({ ...props.field, name: draft() });
   };
 
+  const onKeyDown = (event: KeyboardEvent): void => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      event.stopPropagation();
+      commit();
+      input?.blur();
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      setDraft(props.field.name);
+      input?.blur();
+    }
+  };
+
+  // The drag controller listens natively on the containing row. Use a native
+  // input listener too, so editing shortcuts stop before they reach drag and
+  // drop (Solid's delegated JSX handler would run too late).
+  onMount(() => input?.addEventListener("keydown", onKeyDown));
+  onCleanup(() => input?.removeEventListener("keydown", onKeyDown));
+
   return (
     <Input
       ref={input}
@@ -427,20 +449,6 @@ function FieldNameInput(props: {
       value={draft()}
       onInput={(event) => setDraft(event.currentTarget.value)}
       onBlur={commit}
-      onKeyDown={(event) => {
-        if (event.key === "Enter") {
-          event.preventDefault();
-          commit();
-          event.currentTarget.blur();
-          return;
-        }
-        if (event.key === "Escape") {
-          event.preventDefault();
-          event.stopPropagation();
-          setDraft(props.field.name);
-          event.currentTarget.blur();
-        }
-      }}
     />
   );
 }
