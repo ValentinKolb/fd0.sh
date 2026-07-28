@@ -25,7 +25,7 @@ const restoreHome = join(tmpdir(), `fd0-desktop-e2e-restore-${process.pid}`);
 const restoreSock = join(tmpdir(), `fd0-desktop-e2e-restore-ssh-${process.pid}.sock`);
 const startupHome = join(tmpdir(), `fd0-desktop-e2e-startup-${process.pid}`);
 const startupSock = join(tmpdir(), `fd0-desktop-e2e-startup-${process.pid}.sock`);
-const environment: NodeJS.ProcessEnv = {
+const environment = {
   ...process.env,
   NODE_ENV: "test",
   FD0_HOME: testHome,
@@ -44,7 +44,7 @@ const environment: NodeJS.ProcessEnv = {
   FD0_KUBE_USER_CONFIG: join(testHome, "render", "kube", "config"),
   FD0_TALOS_CONFIG_PATH: join(testHome, "render", "talos", "config.fd0"),
   FD0_TALOS_USER_CONFIG: join(testHome, "render", "talos", "config"),
-};
+} as Record<string, string>;
 
 /** The window's own minimum is 860x600; the layout is asserted below that too. */
 const DEFAULT_SIZE = { width: 1180, height: 780 };
@@ -81,6 +81,13 @@ function typeChoice(dialog: Locator, label: string): Locator {
 /** The wrapper of one ordinary field row, matched on the name it carries. */
 function fieldRow(scope: Locator, name: string): Locator {
   return scope.locator(`[data-field-name="${name}"]`);
+}
+
+/** Values from a group of input locators, evaluated in the renderer. */
+function inputValues(inputs: Locator): Promise<string[]> {
+  return inputs.evaluateAll((elements) =>
+    elements.map((element) => (element as HTMLInputElement).value),
+  );
 }
 
 /**
@@ -163,12 +170,12 @@ test.afterAll(() => {
 test("routes a desktop-managed CLI update request to Support", async () => {
   const updateHome = join(tmpdir(), `fd0-desktop-e2e-update-${process.pid}`);
   const updateSock = join(tmpdir(), `fd0-desktop-e2e-update-${process.pid}.sock`);
-  const updateEnvironment: NodeJS.ProcessEnv = {
+  const updateEnvironment = {
     ...environment,
     FD0_HOME: updateHome,
     FD0_SSH_SOCK: updateSock,
     FD0_DESKTOP_USER_DATA: join(updateHome, "desktop-ui"),
-  };
+  } as Record<string, string>;
   const seeded = spawnSync(join(buildDir, "fd0-desktop-dev-seed"), [], {
     cwd: repoRoot,
     env: updateEnvironment,
@@ -223,6 +230,8 @@ test("runs the isolated desktop vault end to end", async () => {
     await expect(page.getByText("fd0", { exact: true }).first()).toBeVisible();
     const security = await app.evaluate(({ BrowserWindow }) => {
       const window = BrowserWindow.getAllWindows()[0]!;
+      // Electron exposes this at runtime but omits it from the public type.
+      // @ts-expect-error runtime-only Electron diagnostic API
       const preferences = window.webContents.getLastWebPreferences();
       return {
         contextIsolation: preferences.contextIsolation,
@@ -456,6 +465,7 @@ test("runs the isolated desktop vault end to end", async () => {
     expect(await app.evaluate(({ BrowserWindow }) => {
       const floating = BrowserWindow.getAllWindows().find((candidate) => candidate.isAlwaysOnTop());
       if (!floating) return null;
+      // @ts-expect-error runtime-only Electron diagnostic API
       const preferences = floating.webContents.getLastWebPreferences();
       return {
         windows: BrowserWindow.getAllWindows().length,
@@ -552,7 +562,7 @@ test("runs the isolated desktop vault end to end", async () => {
      * `data-field-name` wrapper, because it owns none of what it shows.
      */
     const loginCard = passEditor.locator(".editor-card").first();
-    expect(await loginCard.getByRole("textbox", { name: "Field name" }).allInputValues()).toEqual(["username", "password"]);
+    expect(await inputValues(loginCard.getByRole("textbox", { name: "Field name" }))).toEqual(["username", "password"]);
     await expect(loginCard.getByText("Website", { exact: true })).toBeVisible();
     const usernameInput = loginCard.getByLabel("username", { exact: true });
     const passwordInput = loginCard.getByLabel("password", { exact: true });
@@ -606,7 +616,7 @@ test("runs the isolated desktop vault end to end", async () => {
     // than an edge case, and it gets a row of its own.
     await loginCard.getByRole("button", { name: "another website" }).click();
     await expect(loginCard.locator('input[type="url"]')).toHaveCount(2);
-    expect(await loginCard.getByRole("textbox", { name: "Field name" }).allInputValues()).toEqual(["username", "password"]);
+    expect(await inputValues(loginCard.getByRole("textbox", { name: "Field name" }))).toEqual(["username", "password"]);
     await expect(loginCard.getByText("Website (alternative)", { exact: true })).toBeVisible();
     const alternativeWebsite = loginCard.getByLabel("Website 2", { exact: true });
     await alternativeWebsite.fill("https://gist.github.com");
@@ -715,12 +725,12 @@ test("runs the isolated desktop vault end to end", async () => {
      * it in place would claim a relationship the stored item no longer has.
      */
     await renameField(page, loginCard, "password", "api token");
-    expect(await loginCard.getByRole("textbox", { name: "Field name" }).allInputValues()).toEqual(["username"]);
+    expect(await inputValues(loginCard.getByRole("textbox", { name: "Field name" }))).toEqual(["username"]);
     await expect(loginCard.locator('[data-field-name="api token"]')).toHaveCount(0);
     await expect(passEditor.locator(".editor-card").nth(1).locator('[data-field-name="api token"]')).toHaveCount(1);
     // And renaming it back is all it takes to be recognised again.
     await renameField(page, fieldRow(passEditor, "api token"), "api token", "password");
-    expect(await loginCard.getByRole("textbox", { name: "Field name" }).allInputValues()).toEqual(["username", "password"]);
+    expect(await inputValues(loginCard.getByRole("textbox", { name: "Field name" }))).toEqual(["username", "password"]);
 
     /*
      * Drag-and-drop reorder, driven from the keyboard.
@@ -968,7 +978,7 @@ test("runs the isolated desktop vault end to end", async () => {
 
     // A new password draft starts with the two fields the login card shows.
     const newLoginCard = itemEditor.locator(".editor-card").first();
-    expect(await newLoginCard.getByRole("textbox", { name: "Field name" }).allInputValues()).toEqual(["username", "password"]);
+    expect(await inputValues(newLoginCard.getByRole("textbox", { name: "Field name" }))).toEqual(["username", "password"]);
     await newLoginCard.getByRole("button", { name: "Generate a value" }).click();
     const generator = page.locator(".generator-popover");
     await expect(generator).toBeVisible();
@@ -1143,6 +1153,7 @@ test("runs the isolated desktop vault end to end", async () => {
         candidate.getTitle().includes("talos-gw-renamed"),
       );
       if (!terminal) return null;
+      // @ts-expect-error runtime-only Electron diagnostic API
       const preferences = terminal.webContents.getLastWebPreferences();
       return {
         windows: BrowserWindow.getAllWindows().length,
@@ -1355,12 +1366,12 @@ test("restores an identity without contacting the production fd0 instance", asyn
   expect(existsSync(recoveryPath)).toBe(true);
   mkdirSync(restoreHome, { recursive: true, mode: 0o700 });
   writeFileSync(join(restoreHome, ".desktop-isolated"), "fd0-desktop-isolated-v1\n", { mode: 0o600 });
-  const restoreEnvironment: NodeJS.ProcessEnv = {
+  const restoreEnvironment = {
     ...environment,
     FD0_HOME: restoreHome,
     FD0_SSH_SOCK: restoreSock,
     FD0_DESKTOP_USER_DATA: join(restoreHome, "desktop-ui"),
-  };
+  } as Record<string, string>;
   const app = await electron.launch({
     executablePath: electronPath,
     args: [join(desktopRoot, "out", "main", "index.js")],
@@ -1430,12 +1441,12 @@ test("first run creates a vault and lands in a usable, error-free app", async ()
   const firstRunSock = join(tmpdir(), `fd0-desktop-e2e-first-${process.pid}.sock`);
   mkdirSync(firstRunHome, { recursive: true, mode: 0o700 });
   writeFileSync(join(firstRunHome, ".desktop-isolated"), "fd0-desktop-isolated-v1\n", { mode: 0o600 });
-  const firstRunEnvironment: NodeJS.ProcessEnv = {
+  const firstRunEnvironment = {
     ...environment,
     FD0_HOME: firstRunHome,
     FD0_SSH_SOCK: firstRunSock,
     FD0_DESKTOP_USER_DATA: join(firstRunHome, "desktop-ui"),
-  };
+  } as Record<string, string>;
 
   const app = await electron.launch({
     executablePath: electronPath,

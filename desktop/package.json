@@ -17,7 +17,7 @@
     "build:ui": "electron-vite build",
     "package": "bun run scripts/package.ts",
     "dist": "bun run build && electron-builder",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.e2e.json",
     "test": "bun test",
     "test:e2e": "bun run build && playwright test"
   },
