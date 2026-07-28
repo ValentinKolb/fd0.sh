@@ -16,11 +16,5 @@ if [ -f "$profile" ]; then
     rm -f "$profile"
 fi
 
-# Package managers remove files but FPM can leave these empty directories.
-rmdir \
-    /opt/fd0/locales \
-    /opt/fd0/resources/bin \
-    /opt/fd0/resources/runtime \
-    /opt/fd0/resources \
-    /opt/fd0 \
-    2>/dev/null || true
+# FPM can leave empty directories from unpacked native modules.
+find /opt/fd0 -depth -type d -empty -delete 2>/dev/null || true

@@ -376,7 +376,7 @@ jobs:
             sh -ec "dnf install -y gtk3 libnotify nss libXScrnSaver libXtst xdg-utils at-spi2-core libuuid mesa-libgbm alsa-lib cups-libs dbus-libs libxkbcommon >/dev/null
               dnf install -y /release/$rpm >/dev/null
               ldconfig -p | grep -q libpcsclite.so.1
-              dnf remove -y fd0-desktop >/dev/null
+              dnf remove --noautoremove -y fd0-desktop >/dev/null
               test ! -e /opt/fd0"
           echo "deb/rpm ownership: pass" >> "linux-clean-${{ matrix.arch }}.txt"
 
