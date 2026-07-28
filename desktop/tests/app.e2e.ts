@@ -363,7 +363,7 @@ test("runs the isolated desktop vault end to end", async () => {
     await expect(page.getByRole("menuitem", { name: /^All vaults/ })).toBeVisible();
     await expect(page.getByRole("menuitem", { name: /^New vault/ })).toBeVisible();
     await page.getByRole("button", { name: "Manage access to Personal" }).click();
-    const accessDialog = page.getByRole("dialog", { name: "Who can open Personal" });
+    const accessDialog = page.getByRole("dialog", { name: "Manage Personal" });
     await expect(accessDialog).toBeVisible();
     await page.screenshot({ path: test.info().outputPath("fd0-share-access.png") });
     await app.evaluate(({ dialog }) => {
