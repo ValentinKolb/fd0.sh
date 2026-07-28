@@ -218,7 +218,7 @@ test("runs the isolated desktop vault end to end", async () => {
     page.on("console", (message) => {
       if (message.type() === "error") errors.push(message.text());
     });
-    page.on("pageerror", (error) => errors.push(error.stack ?? error.message));
+    page.on("pageerror", (error) => errors.push(error.stack || error.message || String(error)));
 
     const railPasswords = page.getByRole("button", { name: "Passwords", exact: true });
     try {
