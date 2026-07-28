@@ -227,8 +227,21 @@ jobs:
           deb=$(find dist -maxdepth 1 -type f -name '*.deb' -print -quit)
           rpm_package=$(find dist -maxdepth 1 -type f -name '*.rpm' -print -quit)
           test -n "$app" && test -n "$deb" && test -n "$rpm_package"
-          test "$(xvfb-run -a "$app" --fd0-terminal-runtime-smoke)" = "fd0 terminal runtime ok"
-          test "$("$app" --fd0-cli-relay version)" = "fd0 ${{ steps.version.outputs.version }} yubikey"
+          assert_output() {
+            local label=$1 expected=$2 output status
+            shift 2
+            set +e
+            output=$("$@" 2>&1)
+            status=$?
+            set -e
+            if [[ "$status" -ne 0 || "$output" != "$expected" ]]; then
+              echo "::error::$label failed with exit $status"
+              printf 'expected: %s\nactual:   %s\n' "$expected" "$output"
+              exit 1
+            fi
+          }
+          assert_output "terminal runtime smoke" "fd0 terminal runtime ok" xvfb-run -a "$app" --fd0-terminal-runtime-smoke
+          assert_output "desktop CLI relay" "fd0 ${{ steps.version.outputs.version }} yubikey" "$app" --fd0-cli-relay version
           if "$app" --fd0-cli-relay update --check > update-check.txt 2>&1; then
             echo "::error::desktop-managed update --check unexpectedly succeeded"
             exit 1
