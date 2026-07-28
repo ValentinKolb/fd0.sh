@@ -69,6 +69,7 @@ jobs:
       - name: test desktop app
         working-directory: desktop
         run: |
+          node -e 'const fs = require("node:fs"); for (const path of ["node_modules/solid-js/dist/solid.js", "node_modules/solid-js/dist/solid.cjs"]) { const source = fs.readFileSync(path, "utf8"); fs.writeFileSync(path, source.replace("throw narrowedError(\"Show\")", "throw new Error(narrowedError(\"Show\"))")); }'
           bun run typecheck
           bun run test:e2e
 
