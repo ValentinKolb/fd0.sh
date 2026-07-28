@@ -1196,7 +1196,7 @@ test("runs the isolated desktop vault end to end", async () => {
     await expect(keyEditor.getByLabel("Name", { exact: true })).toHaveAttribute("readonly", "");
     await keyEditor.getByRole("textbox", { name: "Comment optional" }).fill("production access");
     await keyEditor.getByRole("button", { name: "Save changes" }).click();
-    await expect(page.getByText("production access", { exact: true })).toBeVisible();
+    await expect(page.locator(".detail-pane .field-value").filter({ hasText: /^production access$/ })).toBeVisible();
     await page.getByRole("button", { name: "More actions" }).click();
     await page.getByRole("menuitem", { name: "Remove item" }).click();
     await expect(itemRow(page, "fd0-production")).toBeVisible();
