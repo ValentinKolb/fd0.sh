@@ -746,8 +746,8 @@ test("runs the isolated desktop vault end to end", async () => {
     await expect(operationsHandle).toHaveAttribute("aria-label", "Move Operations");
 
     // Slots register up front but collapse to nothing at rest, so the cards
-    // stay clean. Operations is the only root section, so arming it correctly
-    // offers no fake destination and never exposes a cross-container target.
+    // stay clean. Operations can move beside the existing Recovery section,
+    // but must never expose a cross-container target.
     const slots = page.locator(".editor-drop-slot[data-dnd-droppable]");
     expect(await slots.count()).toBeGreaterThan(0);
     expect((await slots.first().boundingBox())?.height ?? -1).toBe(0);
@@ -755,7 +755,9 @@ test("runs the isolated desktop vault end to end", async () => {
     await operationsHandle.focus();
     await page.keyboard.press("Space");
     await expect(operationsGutter).toHaveAttribute("data-dnd-active", "true");
-    await expect(page.locator('.editor-drop-slot[data-drop-disabled="false"]')).toHaveCount(0);
+    const enabledSectionSlots = page.locator('.editor-drop-slot[data-drop-disabled="false"]');
+    await expect(enabledSectionSlots).toHaveCount(1);
+    await expect(enabledSectionSlots).toHaveAttribute("data-drop-parent", "");
     expect(
       await page.locator('.editor-drop-slot[data-drop-disabled="true"]').evaluateAll((targets) =>
         targets.filter((target) => target.getBoundingClientRect().height > 0).length,
