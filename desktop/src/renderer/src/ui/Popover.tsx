@@ -57,7 +57,9 @@ export function Popover(props: PopoverProps): JSX.Element {
     // Flip only when the preferred side cannot hold the content and the other can do better.
     const placeAbove = wantsTop ? spaceAbove >= height || spaceAbove > spaceBelow : height > spaceBelow && spaceAbove > spaceBelow;
 
-    const maxHeight = Math.max(120, placeAbove ? spaceAbove : spaceBelow);
+    // Available viewport space is a hard boundary. A minimum height here made
+    // short-window menus extend below the viewport instead of scrolling.
+    const maxHeight = Math.max(0, placeAbove ? spaceAbove : spaceBelow);
     const top = placeAbove ? Math.max(margin, rect.top - gap - Math.min(height, maxHeight)) : rect.bottom + gap;
 
     const align = props.align ?? "start";
