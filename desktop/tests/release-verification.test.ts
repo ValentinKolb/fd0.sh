@@ -79,7 +79,7 @@ describe("desktop release authentication", () => {
     expect(linuxDesktopAssetName("1.2.3", "arm64"))
       .toBe("fd0-desktop_1.2.3_linux_arm64.AppImage");
     expect(linuxDesktopAssetName("1.2.3", "x64"))
-      .toBe("fd0-desktop_1.2.3_linux_x64.AppImage");
+      .toBe("fd0-desktop_1.2.3_linux_x86_64.AppImage");
     expect(() => linuxDesktopAssetName("1.2.3", "ia32")).toThrow("Unsupported");
     expect(() => linuxDesktopAssetName("../../payload", "x64")).toThrow("Invalid semantic version");
   });
