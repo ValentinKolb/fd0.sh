@@ -219,21 +219,6 @@ test("runs the isolated desktop vault end to end", async () => {
       if (message.type() === "error") errors.push(message.text());
     });
     page.on("pageerror", (error) => errors.push(error.stack || error.message || String(error)));
-    await page.evaluate(() => {
-      const diagnostics: Array<{ message: string; file: string; line: number; column: number }> = [];
-      Object.defineProperty(window, "__fd0E2EErrors", {
-        configurable: true,
-        value: diagnostics,
-      });
-      window.addEventListener("error", (event) => {
-        diagnostics.push({
-          message: event.message,
-          file: event.filename,
-          line: event.lineno,
-          column: event.colno,
-        });
-      });
-    });
 
     const railPasswords = page.getByRole("button", { name: "Passwords", exact: true });
     try {
@@ -1373,15 +1358,7 @@ test("runs the isolated desktop vault end to end", async () => {
     await expect(page.getByRole("heading", { name: "Unlock fd0" })).toBeVisible();
     await expect(page.getByText("d3v-Vault!GitHub-2026", { exact: true })).toHaveCount(0);
     await expect.poll(() => app.windows().length).toBe(1);
-    const rendererErrors = await page.evaluate(
-      () =>
-        (
-          window as typeof window & {
-            __fd0E2EErrors?: Array<{ message: string; file: string; line: number; column: number }>;
-          }
-        ).__fd0E2EErrors ?? [],
-    );
-    expect({ errors, rendererErrors }).toEqual({ errors: [], rendererErrors: [] });
+    expect(errors).toEqual([]);
   } finally {
     // Never leave a copied credential behind on the developer's clipboard.
     await app.evaluate(({ clipboard }) => clipboard.clear()).catch(() => undefined);

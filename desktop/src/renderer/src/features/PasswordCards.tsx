@@ -423,7 +423,8 @@ function FieldNameInput(props: {
     if (event.key === "Enter") {
       event.preventDefault();
       event.stopPropagation();
-      commit();
+      // Blur owns the commit so Enter cannot dispatch the same rename twice.
+      // A rename may immediately move this field out of its current login card.
       input?.blur();
       return;
     }
