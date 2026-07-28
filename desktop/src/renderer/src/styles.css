@@ -1657,6 +1657,7 @@ h1, h2, h3, p { margin: 0; }
 }
 .editor-stack.dragging .editor-drop-slot[data-drop-disabled="true"] {
   height: 0;
+  transition: none;
 }
 .editor-stack.dragging .editor-drop-slot[data-drop-disabled="true"]::after {
   content: none;
