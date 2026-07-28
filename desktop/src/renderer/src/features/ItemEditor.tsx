@@ -375,6 +375,7 @@ export function ItemEditor(props: {
                   id={field.id}
                   class="ssh-key-select"
                   type="button"
+                  aria-label={`SSH key: ${host().keyName || "No fd0 key"}`}
                   onClick={() => setKeyPickerOpen(true)}
                 >
                   <span class="ssh-key-select-glyph" aria-hidden="true">
