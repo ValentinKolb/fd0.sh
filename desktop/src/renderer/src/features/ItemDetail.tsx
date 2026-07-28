@@ -46,6 +46,7 @@ export function ItemDetail(props: {
     <article class="detail-panel" aria-label="Item details">
       <Show
         when={vault.detail()}
+        keyed
         fallback={
           <div class="empty-state detail-empty">
             <span class="empty-glyph">
@@ -58,7 +59,7 @@ export function ItemDetail(props: {
       >
         {(detail) => (
           <DetailContent
-            detail={detail()}
+            detail={detail}
             raw={raw()}
             onEdit={props.onEdit}
             onDuplicate={props.onDuplicate}
