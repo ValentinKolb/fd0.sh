@@ -121,15 +121,18 @@ jobs:
           app=dist/fd0-desktop_0.0.0_linux_x86_64.AppImage
           test -x "$app"
           assert_output() {
-            local label=$1 expected=$2 output status
+            local label=$1 expected=$2 output status stderr_file stderr_output
             shift 2
+            stderr_file=$(mktemp)
             set +e
-            output=$("$@" 2>&1)
+            output=$("$@" 2>"$stderr_file")
             status=$?
             set -e
+            stderr_output=$(<"$stderr_file")
+            rm -f "$stderr_file"
             if [[ "$status" -ne 0 || "$output" != "$expected" ]]; then
               echo "::error::$label failed with exit $status"
-              printf 'expected: %s\nactual:   %s\n' "$expected" "$output"
+              printf 'expected stdout: %s\nactual stdout:   %s\nstderr:         %s\n' "$expected" "$output" "$stderr_output"
               exit 1
             fi
           }
