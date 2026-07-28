@@ -1659,35 +1659,69 @@ function terminalTitlePart(value: unknown): string {
 }
 
 function updateTerminalWindowTitle(state: TerminalWindowState): void {
+  if (state.window.isDestroyed()) return;
   const context = state.remoteTitle || state.processName || "SSH";
-  state.window.setTitle(
-    context.localeCompare(state.host, undefined, { sensitivity: "accent" }) === 0
-      ? state.host
-      : `${state.host} — ${context}`,
-  );
+  try {
+    state.window.setTitle(
+      context.localeCompare(state.host, undefined, { sensitivity: "accent" }) === 0
+        ? state.host
+        : `${state.host} — ${context}`,
+    );
+  } catch (error) {
+    if (!state.window.isDestroyed()) diagnostics?.record("terminal", "title-update-failed", error);
+  }
 }
 
 function sendTerminalEvent(state: TerminalWindowState, channel: string, value: unknown): void {
-  if (!state.window.isDestroyed() && !state.window.webContents.isDestroyed()) {
-    state.window.webContents.send(channel, value);
+  if (state.window.isDestroyed()) return;
+  try {
+    const contents = state.window.webContents;
+    if (!contents.isDestroyed()) contents.send(channel, value);
+  } catch (error) {
+    if (!state.window.isDestroyed()) diagnostics?.record("terminal", "renderer-update-failed", error);
+  }
+}
+
+function releaseTerminalWindow(id: number, state: TerminalWindowState): void {
+  terminalWindows.delete(id);
+  terminalSessions.close(state.sessionId);
+}
+
+function updateLiveTerminalWindows(
+  operation: (state: TerminalWindowState) => void,
+): void {
+  for (const [id, state] of terminalWindows) {
+    if (state.window.isDestroyed()) {
+      releaseTerminalWindow(id, state);
+      continue;
+    }
+    try {
+      operation(state);
+    } catch (error) {
+      if (state.window.isDestroyed()) {
+        releaseTerminalWindow(id, state);
+      } else {
+        diagnostics?.record("terminal", "window-update-failed", error);
+      }
+    }
   }
 }
 
 function updateTerminalThemes(theme: TerminalTheme): void {
-  for (const state of terminalWindows.values()) {
+  updateLiveTerminalWindows((state) => {
     state.theme = theme;
     state.window.setBackgroundColor(terminalBackgroundColor(theme));
     sendTerminalEvent(state, "fd0:terminal-theme", theme);
-  }
+  });
 }
 
 function updateWindowBackgrounds(): void {
   const background = windowBackgroundColor();
   mainWindow?.setBackgroundColor(background);
   largeTypeWindow?.setBackgroundColor(background);
-  for (const state of terminalWindows.values()) {
+  updateLiveTerminalWindows((state) => {
     state.window.setBackgroundColor(terminalBackgroundColor(state.theme));
-  }
+  });
 }
 
 function openTerminalWindow(options: {
@@ -1742,12 +1776,12 @@ function openTerminalWindow(options: {
       },
     },
   );
-  terminalWindows.set(window.webContents.id, state);
+  const terminalWindowId = window.webContents.id;
+  terminalWindows.set(terminalWindowId, state);
   applyWindowGuards(window);
   updateTerminalWindowTitle(state);
   window.on("closed", () => {
-    terminalWindows.delete(window.webContents.id);
-    terminalSessions.close(state.sessionId);
+    releaseTerminalWindow(terminalWindowId, state);
   });
   window.webContents.on("render-process-gone", () => {
     if (!window.isDestroyed()) window.destroy();

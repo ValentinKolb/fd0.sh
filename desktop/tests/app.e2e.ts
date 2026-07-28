@@ -1160,6 +1160,14 @@ test("runs the isolated desktop vault end to end", async () => {
     });
     await terminalPage.evaluate(() => window.fd0.closeTerminal());
     await expect.poll(() => app.windows().length).toBe(1);
+    const terminalSettingsAfterClose = await page.evaluate(async () => {
+      const state = await window.fd0.terminalLauncher();
+      return window.fd0.setTerminalLauncher({
+        ...state.settings,
+        terminalTheme: "light",
+      });
+    });
+    expect(terminalSettingsAfterClose.settings.terminalTheme).toBe("light");
 
     // Keys expose their host assignments, stay editable without allowing a
     // rename, and cannot be removed while a server still references them.
