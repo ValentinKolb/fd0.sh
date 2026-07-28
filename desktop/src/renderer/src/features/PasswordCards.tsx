@@ -430,6 +430,7 @@ function FieldNameInput(props: {
       onKeyDown={(event) => {
         if (event.key === "Enter") {
           event.preventDefault();
+          commit();
           event.currentTarget.blur();
           return;
         }
