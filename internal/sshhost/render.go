@@ -10,14 +10,18 @@ import (
 
 // RenderInput drives Render. Hosts are emitted in (Scope, Alias) order;
 // SocketPath is written into IdentityAgent so the ssh client always
-// resolves through fd0-agent. KnownKeys is the set of valid key
-// secret names — any host referencing a key NOT in this set gets a
-// loud warning comment in the output (the user notices on next
-// `fd0 sync` AND in the rendered file).
+// resolves through fd0-agent. KnownKeys is keyed by vault and key
+// name — names are only unique inside one vault, so resolving them
+// globally could silently attach another vault's key.
+type KeyRef struct {
+	Scope string
+	Name  string
+}
+
 type RenderInput struct {
 	Hosts      []*Host
 	SocketPath string
-	KnownKeys  map[string]bool
+	KnownKeys  map[KeyRef]bool
 	// PubKeyDir, when non-empty, is the directory holding the
 	// per-host public-key selector files (<alias>.pub). For each host
 	// with a resolvable fd0 key the renderer emits
@@ -120,7 +124,8 @@ func Render(in RenderInput) ([]byte, error) {
 
 		// Warn on missing key references (the host stays valid; SSH
 		// will fall back to whatever the agent serves).
-		if h.KeyName != "" && in.KnownKeys != nil && !in.KnownKeys[h.KeyName] {
+		keyRef := KeyRef{Scope: h.Scope, Name: h.KeyName}
+		if h.KeyName != "" && in.KnownKeys != nil && !in.KnownKeys[keyRef] {
 			fmt.Fprintf(&b, "# WARN: host %q references missing key %q\n", h.Alias, h.KeyName)
 		}
 
@@ -136,7 +141,11 @@ func Render(in RenderInput) ([]byte, error) {
 			fmt.Fprintf(&b, "    ProxyJump %s\n", h.ProxyJump)
 		}
 		if in.SocketPath != "" {
-			fmt.Fprintf(&b, "    IdentityAgent %s\n", in.SocketPath)
+			socketPath, err := sshConfigPath(in.SocketPath)
+			if err != nil {
+				return nil, fmt.Errorf("render identity agent: %w", err)
+			}
+			fmt.Fprintf(&b, "    IdentityAgent %s\n", socketPath)
 
 			// IdentitiesOnly is only safe to set when we also pin an
 			// IdentityFile: it tells OpenSSH to offer ONLY identities
@@ -145,10 +154,14 @@ func Render(in RenderInput) ([]byte, error) {
 			// Without one (host has no fd0 key), emitting IdentitiesOnly
 			// would suppress the user's own ~/.ssh keys too — so for
 			// keyless hosts we emit IdentityAgent alone.
-			hasKey := h.KeyName != "" && in.KnownKeys != nil && in.KnownKeys[h.KeyName]
+			hasKey := h.KeyName != "" && in.KnownKeys != nil && in.KnownKeys[keyRef]
 			if hasKey && in.PubKeyDir != "" {
 				pub := filepath.Join(in.PubKeyDir, h.Alias+".pub")
-				fmt.Fprintf(&b, "    IdentityFile %s\n", pub)
+				pubPath, err := sshConfigPath(pub)
+				if err != nil {
+					return nil, fmt.Errorf("render identity file: %w", err)
+				}
+				fmt.Fprintf(&b, "    IdentityFile %s\n", pubPath)
 				fmt.Fprintf(&b, "    IdentitiesOnly yes\n")
 			}
 		}
@@ -159,6 +172,23 @@ func Render(in RenderInput) ([]byte, error) {
 	}
 
 	return []byte(b.String()), nil
+}
+
+// sshConfigPath keeps filesystem paths as one OpenSSH argument. Normal Unix
+// paths stay unchanged; paths with whitespace or quoting characters are
+// double-quoted and escaped.
+func sshConfigPath(path string) (string, error) {
+	if strings.ContainsAny(path, "\x00\r\n") {
+		return "", fmt.Errorf("path contains an invalid control character")
+	}
+	if !strings.ContainsAny(path, " \t\"\\") {
+		return path, nil
+	}
+	escaped := strings.NewReplacer(
+		`\`, `\\`,
+		`"`, `\"`,
+	).Replace(path)
+	return `"` + escaped + `"`, nil
 }
 
 // dupeRow is one entry in the cross-scope collision report.

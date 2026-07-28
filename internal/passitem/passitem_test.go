@@ -98,6 +98,30 @@ func TestParseTOTPURI(t *testing.T) {
 	}
 }
 
+func TestParseTOTPURIValidatesParameters(t *testing.T) {
+	tests := []struct {
+		name string
+		uri  string
+		want string
+	}{
+		{"missing secret", "otpauth://totp/GitHub:me@example.com?issuer=GitHub", "secret required"},
+		{"invalid secret", "otpauth://totp/GitHub:me@example.com?secret=not-base32!", "base32"},
+		{"invalid digits", "otpauth://totp/GitHub:me@example.com?secret=JBSWY3DPEHPK3PXP&digits=9", "digits"},
+		{"non-numeric digits", "otpauth://totp/GitHub:me@example.com?secret=JBSWY3DPEHPK3PXP&digits=six", "number"},
+		{"invalid period", "otpauth://totp/GitHub:me@example.com?secret=JBSWY3DPEHPK3PXP&period=1", "period"},
+		{"non-numeric period", "otpauth://totp/GitHub:me@example.com?secret=JBSWY3DPEHPK3PXP&period=thirty", "number"},
+		{"invalid algorithm", "otpauth://totp/GitHub:me@example.com?secret=JBSWY3DPEHPK3PXP&algorithm=MD5", "algorithm"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseTOTPURI(tt.uri)
+			if err == nil || !strings.Contains(strings.ToLower(err.Error()), tt.want) {
+				t.Fatalf("ParseTOTPURI() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestFileSizeLimit(t *testing.T) {
 	data := make([]byte, MaxFileBytes+1)
 	if _, err := NewFileField("too-big.pem", "", data); err == nil {

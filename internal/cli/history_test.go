@@ -187,6 +187,36 @@ func TestSecretHistoryOrdersNewestFirstAndFlagsTombstones(t *testing.T) {
 	})
 }
 
+func TestListDeletedTypedSecretsReturnsOnlyCurrentTombstones(t *testing.T) {
+	ctx, scopeID := newTestVault(t)
+	withSession(t, ctx, func(s *Session) {
+		if err := s.SetTypedSecret(ctx, scopeID, "gone", "kv.string", "before"); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SetTypedSecret(ctx, scopeID, "alive", "kv.string", "still here"); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.RemoveTypedSecret(ctx, scopeID, "gone"); err != nil {
+			t.Fatal(err)
+		}
+	})
+	withSession(t, ctx, func(s *Session) {
+		deleted, err := s.ListDeletedTypedSecrets()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(deleted) != 1 {
+			t.Fatalf("deleted = %+v, want one item", deleted)
+		}
+		if deleted[0].ScopeID != scopeID || deleted[0].Name != "gone" || deleted[0].Type != "kv.string" {
+			t.Fatalf("deleted item = %+v", deleted[0])
+		}
+		if deleted[0].DeletedSeq <= deleted[0].RestoreSeq {
+			t.Fatalf("sequences = deleted %d restore %d", deleted[0].DeletedSeq, deleted[0].RestoreSeq)
+		}
+	})
+}
+
 // TestSecretHistoryFollowsIDAcrossRename pins the id-vs-name choice: history
 // follows the secret ID, so versions written under the previous name stay in
 // the list with their historical Name, and the old name no longer resolves.

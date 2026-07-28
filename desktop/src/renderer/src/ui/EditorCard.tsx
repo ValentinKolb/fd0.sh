@@ -12,14 +12,11 @@ export function EditorCard(props: { class?: string; children: JSX.Element }): JS
 }
 
 /**
- * One row: the label sits small and quiet ABOVE the value, in the same cell.
- *
- * That is the move that stops the editor reading as `{key: value}` rendered
- * into form controls — the name is text, not a control, so changing a value
- * never competes with renaming the field.
+ * One row: the compact label editor sits above the value in the same cell.
+ * Fixed schema labels such as Website and Notes use plain text in the same slot.
  */
 export function EditorRow(props: {
-  label: string;
+  label: JSX.Element;
   /** Rendered to the right of the value, e.g. reveal and generate. */
   actions?: JSX.Element;
   /** Shown in the left gutter; used for drag handles. */

@@ -23,8 +23,8 @@ describe("OperationGrants", () => {
     now = 1_501;
     expect(grants.consume(expired, "secret.edit", "scope-a", "token")).toBe(false);
 
-    const cleared = grants.issue("ssh.edit", "scope-a", "host:prod");
+    const cleared = grants.issue("ssh-key.edit", "scope-a", "ssh:deploy");
     grants.clear();
-    expect(grants.consume(cleared, "ssh.edit", "scope-a", "host:prod")).toBe(false);
+    expect(grants.consume(cleared, "ssh-key.edit", "scope-a", "ssh:deploy")).toBe(false);
   });
 });

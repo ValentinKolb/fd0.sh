@@ -67,6 +67,44 @@ type ItemHistoryResult struct {
 	Truncated bool               `json:"truncated,omitempty"`
 }
 
+type DeletedItem struct {
+	Item       ItemSummary `json:"item"`
+	RestoreSeq uint64      `json:"restoreSeq"`
+}
+
+type DeletedItemsResult struct {
+	Items []DeletedItem `json:"items"`
+}
+
+func (s *Service) deletedItems(ctx context.Context) (DeletedItemsResult, error) {
+	session, err := cli.Open(ctx)
+	if err != nil {
+		return DeletedItemsResult{}, mapDomainError(err)
+	}
+	defer session.Close()
+	records, err := session.ListDeletedTypedSecrets()
+	if err != nil {
+		return DeletedItemsResult{}, mapDomainError(err)
+	}
+	result := DeletedItemsResult{Items: []DeletedItem{}}
+	for _, deleted := range records {
+		summary, err := summarizeRecord(session, cli.TypedRecord{
+			ScopeID: deleted.ScopeID,
+			Name:    deleted.Name,
+			Type:    deleted.Type,
+			Payload: deleted.Payload,
+		})
+		if err != nil {
+			continue
+		}
+		result.Items = append(result.Items, DeletedItem{
+			Item:       boundItemSummary(summary),
+			RestoreSeq: deleted.RestoreSeq,
+		})
+	}
+	return result, nil
+}
+
 func (p ItemHistoryParams) ref() RecordRef {
 	return RecordRef{ScopeID: p.ScopeID, Name: p.Name}
 }

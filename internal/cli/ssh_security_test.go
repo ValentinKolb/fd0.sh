@@ -2,8 +2,12 @@ package cli
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/valentinkolb/fd0.sh/internal/sshhost"
 )
 
 func TestDecodeHostRejectsUnsafeSynchronizedOptions(t *testing.T) {
@@ -34,6 +38,27 @@ func TestDecodeHostRejectsUnsafeSynchronizedOptions(t *testing.T) {
 				t.Fatalf("unexpected replay rejection: %v", err)
 			}
 		})
+	}
+}
+
+func TestSyncPubKeyFilesUsesTheHostScope(t *testing.T) {
+	dir := t.TempDir()
+	hosts := []*sshhost.Host{
+		{Alias: "prod", Hostname: "prod.example.com", KeyName: "deploy", Scope: "work"},
+	}
+	keys := map[sshhost.KeyRef][]byte{
+		{Scope: "personal", Name: "deploy"}: []byte("personal-public-key"),
+		{Scope: "work", Name: "deploy"}:     []byte("work-public-key"),
+	}
+	if err := syncPubKeyFiles(dir, hosts, keys); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "prod.pub"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "work-public-key\n" {
+		t.Fatalf("selector used a key from the wrong vault: %q", raw)
 	}
 }
 

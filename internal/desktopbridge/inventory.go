@@ -48,6 +48,8 @@ type ItemSummary struct {
 	Badge      string `json:"badge"`
 	UpdatedAt  string `json:"updatedAt,omitempty"`
 	Favorite   bool   `json:"favorite,omitempty"`
+	SearchText string `json:"searchText,omitempty"`
+	HasTOTP    bool   `json:"hasTOTP,omitempty"`
 }
 
 type RecordRef struct {
@@ -67,8 +69,14 @@ func (r RecordRef) Validate() error {
 }
 
 type ItemDetail struct {
-	Item   ItemSummary `json:"item"`
-	Fields []FieldView `json:"fields"`
+	Item      ItemSummary    `json:"item"`
+	Fields    []FieldView    `json:"fields"`
+	Relations []ItemRelation `json:"relations,omitempty"`
+}
+
+type ItemRelation struct {
+	Kind string      `json:"kind"`
+	Item ItemSummary `json:"item"`
 }
 
 type FieldView struct {
@@ -209,6 +217,7 @@ func boundItemSummary(summary ItemSummary) ItemSummary {
 	summary.Vault = boundedInventoryText(summary.Vault)
 	summary.Badge = boundedInventoryText(summary.Badge)
 	summary.UpdatedAt = boundedInventoryText(summary.UpdatedAt)
+	summary.SearchText = boundedInventorySearch(summary.SearchText)
 	return summary
 }
 
@@ -222,6 +231,20 @@ func boundedInventoryText(value string) string {
 	runes := []rune(value)
 	if len(runes) > maxInventoryTextRunes {
 		return string(runes[:maxInventoryTextRunes])
+	}
+	return value
+}
+
+func boundedInventorySearch(value string) string {
+	value = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, value)
+	runes := []rune(value)
+	if len(runes) > 2048 {
+		return string(runes[:2048])
 	}
 	return value
 }
@@ -269,6 +292,7 @@ func summarizeRecord(session *cli.Session, record cli.TypedRecord) (ItemSummary,
 		}
 		summary.UpdatedAt = metaString(item.Meta, "updated_at")
 		summary.Favorite = metaBool(item.Meta, "favorite")
+		summary.SearchText, summary.HasTOTP = passSearchMetadata(item)
 	case sshhost.TypeHost:
 		var wire sshhost.JSON
 		if err := json.Unmarshal(raw, &wire); err != nil {
@@ -285,6 +309,10 @@ func summarizeRecord(session *cli.Session, record cli.TypedRecord) (ItemSummary,
 			summary.Subtitle = host.User + "@" + host.Hostname
 		}
 		summary.Badge = "SSH HOST"
+		summary.SearchText = strings.Join([]string{
+			host.Alias, host.Hostname, host.User, host.KeyName, host.ProxyJump,
+			strings.Join(host.Tags, " "),
+		}, " ")
 	case string(sshkey.TypeEd25519), string(sshkey.TypeRSA), string(sshkey.TypeECDSA):
 		var wire sshkey.JSON
 		if err := json.Unmarshal(raw, &wire); err != nil {
@@ -294,6 +322,12 @@ func summarizeRecord(session *cli.Session, record cli.TypedRecord) (ItemSummary,
 		summary.Title = strings.TrimPrefix(record.Name, "ssh:")
 		summary.Subtitle = wire.Comment
 		summary.Badge = "SSH KEY"
+		if key, keyErr := sshkey.Unmarshal(wire); keyErr == nil {
+			summary.SearchText = strings.Join([]string{summary.Title, wire.Comment, wire.Type, key.Fingerprint()}, " ")
+			crypto.Wipe(key.Private)
+		} else {
+			summary.SearchText = strings.Join([]string{summary.Title, wire.Comment, wire.Type}, " ")
+		}
 	case kubeconfig.TypeKubeconfig:
 		entry, err := kubeconfig.Unmarshal(raw)
 		if err != nil {
@@ -303,6 +337,7 @@ func summarizeRecord(session *cli.Session, record cli.TypedRecord) (ItemSummary,
 		summary.Title = entry.Name
 		summary.Subtitle = entry.Server
 		summary.Badge = "KUBE"
+		summary.SearchText = strings.Join([]string{entry.Name, entry.Server, entry.Namespace}, " ")
 	case talosctx.TypeTalosContext:
 		entry, err := talosctx.Unmarshal(raw)
 		if err != nil {
@@ -312,8 +347,45 @@ func summarizeRecord(session *cli.Session, record cli.TypedRecord) (ItemSummary,
 		summary.Title = entry.Name
 		summary.Subtitle = strings.Join(entry.Endpoints, ", ")
 		summary.Badge = "TALOS"
+		summary.SearchText = strings.Join([]string{
+			entry.Name, strings.Join(entry.Endpoints, " "), strings.Join(entry.Nodes, " "), entry.Role,
+		}, " ")
 	}
 	return summary, nil
+}
+
+func passSearchMetadata(item *passitem.Item) (string, bool) {
+	parts := append([]string{item.Title}, item.URLs...)
+	hasTOTP := false
+	var visit func([]passitem.Field)
+	visit = func(fields []passitem.Field) {
+		for _, field := range fields {
+			if field.Name != passitem.NotesFieldName {
+				parts = append(parts, field.Name)
+			}
+			switch field.Type {
+			case passitem.FieldSection:
+				visit(field.Fields)
+			case passitem.FieldText:
+				if field.Name != passitem.NotesFieldName {
+					if value, err := passitem.StringValue(field); err == nil {
+						parts = append(parts, value)
+					}
+				}
+			case passitem.FieldTOTP:
+				hasTOTP = true
+				if value, err := passitem.TOTPFromField(field); err == nil {
+					parts = append(parts, value.Issuer, value.Account)
+				}
+			case passitem.FieldFile:
+				if value, err := passitem.FileFromField(field); err == nil {
+					parts = append(parts, value.Name)
+				}
+			}
+		}
+	}
+	visit(item.Fields)
+	return strings.Join(parts, " "), hasTOTP
 }
 
 func (s *Service) itemDetail(ctx context.Context, ref RecordRef) (ItemDetail, error) {
@@ -337,7 +409,17 @@ func (s *Service) itemDetail(ctx context.Context, ref RecordRef) (ItemDetail, er
 	if err != nil {
 		return ItemDetail{}, err
 	}
-	return ItemDetail{Item: summary, Fields: fields}, nil
+	detail := ItemDetail{Item: summary, Fields: fields}
+	if !ref.Raw && isSSHKeyType(record.Type) {
+		usages, err := sshKeyUsages(session, ref.ScopeID, strings.TrimPrefix(ref.Name, "ssh:"))
+		if err != nil {
+			return ItemDetail{}, mapDomainError(err)
+		}
+		for _, item := range usages {
+			detail.Relations = append(detail.Relations, ItemRelation{Kind: "used-by", Item: item})
+		}
+	}
+	return detail, nil
 }
 
 func detailFields(record cli.TypedRecord, rawMode bool) ([]FieldView, error) {
@@ -407,8 +489,14 @@ func detailFields(record cli.TypedRecord, rawMode bool) ([]FieldView, error) {
 		if err := json.Unmarshal(raw, &wire); err != nil {
 			return nil, err
 		}
+		key, err := sshkey.Unmarshal(wire)
+		if err != nil {
+			return nil, err
+		}
+		defer crypto.Wipe(key.Private)
 		return []FieldView{
 			textField("Algorithm", "algorithm", wire.Type, "SSH key"),
+			textField("Fingerprint", "fingerprint", key.Fingerprint(), "SSH key"),
 			textField("Public key", "public", wire.Pub, "SSH key"),
 			{Name: "Private key", Path: "private", Type: "secret", Sensitive: true, Copyable: true, Section: "SSH key"},
 			textField("Comment", "comment", wire.Comment, "Details"),

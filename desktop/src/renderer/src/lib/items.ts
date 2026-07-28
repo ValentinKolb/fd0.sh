@@ -49,9 +49,9 @@ export function editability(kind: ItemKind, badge: string, raw: boolean): { canE
   if (raw) return { canEdit: false, reason: "Not editable while showing raw records" };
   if (kind === "password" || kind === "secret") return { canEdit: true };
   if (kind === "ssh") {
-    return badge === "SSH HOST"
+    return badge === "SSH HOST" || badge === "SSH KEY"
       ? { canEdit: true }
-      : { canEdit: false, reason: "SSH keys cannot be edited after generation" };
+      : { canEdit: false, reason: "This SSH item cannot be edited here" };
   }
   if (kind === "kubernetes") return { canEdit: false, reason: "Re-import the kubeconfig to change this" };
   return { canEdit: false, reason: "Re-import the talosconfig to change this" };

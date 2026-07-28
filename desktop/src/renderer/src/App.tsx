@@ -5,13 +5,14 @@ import type { FieldView, ItemSummary, ScopeSummary } from "../../shared/contract
 import { PasswordGeneratorPanel } from "./components/PasswordGenerator";
 import { ShareVaultModal } from "./components/ShareVaultModal";
 import { CommandPalette, buildActions } from "./features/CommandPalette";
-import { CreateVaultModal, RecoveryExportModal } from "./features/EditorModals";
+import { CreateVaultModal, MoveItemModal, RecoveryExportModal, RenameItemModal } from "./features/EditorModals";
 import { ItemEditor, ItemTypePicker, emptyDraft, type ItemDraft } from "./features/ItemEditor";
 import { ItemDetail } from "./features/ItemDetail";
 import { ItemList } from "./features/ItemList";
 import { LargeType } from "./features/LargeType";
 import { Onboarding } from "./features/Onboarding";
 import { Rail } from "./features/Rail";
+import { RecentlyDeleted } from "./features/RecentlyDeleted";
 import { Settings } from "./features/Settings";
 import { Shortcuts } from "./features/Shortcuts";
 import { StartupRecovery } from "./features/StartupRecovery";
@@ -25,6 +26,7 @@ import {
   snoozeReadinessWarning,
 } from "./lib/readiness-snooze";
 import { VaultContext, createVaultStore } from "./lib/store";
+import { activateTheme, storeTheme } from "./lib/theme";
 import { IconButton } from "./ui/Button";
 import { ErrorStack, SafetyBanner, Toasts } from "./ui/Notices";
 
@@ -42,6 +44,8 @@ function App(): JSX.Element {
   const [newVaultOpen, setNewVaultOpen] = createSignal(false);
   const [recoveryOpen, setRecoveryOpen] = createSignal(false);
   const [shareScope, setShareScope] = createSignal<ScopeSummary | null>(null);
+  const [movingItem, setMovingItem] = createSignal<ItemSummary | null>(null);
+  const [renamingItem, setRenamingItem] = createSignal<ItemSummary | null>(null);
   const [largeType, setLargeType] = createSignal<{ field: FieldView; value: string } | null>(null);
   const [readinessClock, setReadinessClock] = createSignal(0);
 
@@ -144,6 +148,93 @@ function App(): JSX.Element {
           });
         })
         .catch(failed);
+      return;
+    }
+    if (item.kind === "ssh" && item.badge === "SSH KEY") {
+      void window.fd0
+        .editSSHKey(ref)
+        .then((input) => {
+          if (!input) return;
+          setDraft({
+            ...emptyDraft("ssh-key", input.scopeId),
+            recordName: `ssh:${input.name}`,
+            authorization: input.authorization,
+            title: input.name,
+            comment: input.comment ?? "",
+          });
+        })
+        .catch(failed);
+    }
+  }
+
+  function duplicateName(item: ItemSummary): string {
+    const base = `${item.title} copy`;
+    const recordName = (candidate: string): string => {
+      if (item.kind === "password") return `pass:${candidate}`;
+      if (item.kind === "ssh") return `host:${candidate}`;
+      return candidate;
+    };
+    const taken = new Set(
+      vault.inventory().items
+        .filter((candidate) => candidate.scopeId === item.scopeId)
+        .map((candidate) => candidate.recordName.toLocaleLowerCase()),
+    );
+    if (!taken.has(recordName(base).toLocaleLowerCase())) return base;
+    for (let suffix = 2; suffix < 10_000; suffix += 1) {
+      const candidate = `${base} ${suffix}`;
+      if (!taken.has(recordName(candidate).toLocaleLowerCase())) return candidate;
+    }
+    return `${base} ${crypto.randomUUID().slice(0, 8)}`;
+  }
+
+  function openDuplicate(): void {
+    const item = vault.detail()?.item;
+    if (!item) return;
+    const title = duplicateName(item);
+    const ref = { scopeId: item.scopeId, name: item.recordName };
+    const failed = (cause: unknown) => vault.pushError(toAppError(cause, `fd0 could not duplicate ${item.title}`));
+
+    if (item.kind === "password") {
+      void window.fd0.editPass(ref)
+        .then((input) => {
+          if (!input) return;
+          setDraft({
+            ...emptyDraft("password", input.scopeId),
+            title,
+            urls: [...(input.item.urls ?? [])],
+            fields: structuredClone(input.item.fields ?? []),
+          });
+        })
+        .catch(failed);
+      return;
+    }
+    if (item.kind === "secret") {
+      void window.fd0.editSecret(ref)
+        .then((input) => {
+          if (!input) return;
+          setDraft({ ...emptyDraft("secret", input.scopeId), title, value: input.value });
+        })
+        .catch(failed);
+      return;
+    }
+    if (item.kind === "ssh" && item.badge === "SSH HOST") {
+      void window.fd0.editSSHHost(ref)
+        .then((input) => {
+          if (!input) return;
+          setDraft({
+            ...emptyDraft("ssh", input.scopeId),
+            title,
+            host: {
+              hostname: input.host.Hostname,
+              user: input.host.User ?? "",
+              port: input.host.Port || 22,
+              keyName: input.host.KeyName ?? "",
+              jumpHost: input.host.ProxyJump ?? "",
+              notes: input.host.Description ?? "",
+            },
+          });
+        })
+        .catch(failed);
     }
   }
 
@@ -195,12 +286,24 @@ function App(): JSX.Element {
         newVaultOpen() ||
         recoveryOpen() ||
         shareScope() ||
+        movingItem() ||
+        renamingItem() ||
         largeType(),
     );
   }
 
   createEffect(() => {
     localStorage.setItem("fd0.compactRows", vault.compactRows() ? "1" : "0");
+  });
+
+  createEffect(() => {
+    const theme = vault.theme();
+    const stopTheme = activateTheme(theme);
+    onCleanup(stopTheme);
+    storeTheme(localStorage, theme);
+    void window.fd0.setTheme(theme).catch((cause: unknown) => {
+      vault.fail(cause, "fd0 could not apply the appearance");
+    });
   });
 
   createEffect(() => {
@@ -392,12 +495,16 @@ function App(): JSX.Element {
                       <Show when={vault.mainView() === "settings"}>
                         <Settings onExportRecovery={() => setRecoveryOpen(true)} onShowShortcuts={() => setShortcutsOpen(true)} />
                       </Show>
+                      <Show when={vault.mainView() === "deleted"}>
+                        <RecentlyDeleted />
+                      </Show>
                     </>
                   }
                 >
                   <ItemList
                     onCopyPassword={(item) => void vault.copyFromItem(item, "secret")}
                     onCopyUsername={(item) => void vault.copyFromItem(item, "username")}
+                    onCopyTOTP={(item) => void vault.copyFromItem(item, "totp")}
                     onCreate={() => openAddItem()}
                   />
                   <div class="detail-pane">
@@ -408,7 +515,14 @@ function App(): JSX.Element {
                         </IconButton>
                       </div>
                     </Show>
-                    <ItemDetail onEdit={openEditor} onLargeType={(field, value) => void showLargeType(field, value)} />
+                    <ItemDetail
+                      onEdit={openEditor}
+                onDuplicate={openDuplicate}
+                onRename={setRenamingItem}
+                onMove={setMovingItem}
+                      onOpenItem={openItem}
+                      onLargeType={(field, value) => void showLargeType(field, value)}
+                    />
                   </div>
                 </Show>
               </main>
@@ -444,6 +558,7 @@ function App(): JSX.Element {
                 actions={paletteActions()}
                 onOpenItem={openItem}
                 onCopyPassword={(item) => void vault.copyFromItem(item, "secret")}
+                onCopyTOTP={(item) => void vault.copyFromItem(item, "totp")}
               />
             </Show>
 
@@ -513,6 +628,42 @@ function App(): JSX.Element {
                   onNotify={(message) => vault.notify(message)}
                   onChanged={async () => {
                     await vault.refresh();
+                  }}
+                />
+              )}
+            </Show>
+
+            <Show when={movingItem()}>
+              {(item) => (
+                <MoveItemModal
+                  item={item()}
+                  scopes={vault.inventory().scopes}
+                  onClose={() => setMovingItem(null)}
+                  onMoved={async (targetScopeId) => {
+                    const moved = item();
+                    setMovingItem(null);
+                    if (vault.filters().vault === moved.scopeId) {
+                      vault.updateFilters({ vault: targetScopeId });
+                    }
+                    const selected = await vault.refresh({ scopeId: targetScopeId, name: moved.recordName });
+                    await vault.loadDetail(selected);
+                    vault.notify(`${moved.title} moved`);
+                  }}
+                />
+              )}
+            </Show>
+
+            <Show when={renamingItem()}>
+              {(item) => (
+                <RenameItemModal
+                  item={item()}
+                  onClose={() => setRenamingItem(null)}
+                  onRenamed={async (name) => {
+                    const prefix = item().kind === "kubernetes" ? "kube:" : "talos:";
+                    const selected = await vault.refresh({ scopeId: item().scopeId, name: `${prefix}${name}` });
+                    await vault.loadDetail(selected);
+                    vault.notify(`${item().title} renamed to ${name}`);
+                    setRenamingItem(null);
                   }}
                 />
               )}

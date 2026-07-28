@@ -2,7 +2,7 @@ import { For, Show, createSignal, type JSX } from "solid-js";
 import { Dynamic } from "solid-js/web";
 import type { Component } from "solid-js";
 import type { IconProps } from "@tabler/icons-solidjs";
-import { IconDice5, IconHelp, IconHistory, IconLayoutGrid, IconSettings, IconStar } from "@tabler/icons-solidjs";
+import { IconDice5, IconHelp, IconLayoutGrid, IconSettings, IconStar, IconTrash } from "@tabler/icons-solidjs";
 import { kindMeta, railKinds } from "../lib/items";
 import { plural } from "../lib/format";
 import { useVault, type MainView, type SmartView, type TypeFilter } from "../lib/store";
@@ -59,6 +59,13 @@ export function Rail(): JSX.Element {
       count: vault.inventory().items.filter((item) => item.favorite).length,
       active: isItems() && filters().view === "favorites",
       onSelect: () => selectView("favorites"),
+    },
+    {
+      id: "deleted",
+      label: "Recently deleted",
+      icon: IconTrash,
+      active: vault.mainView() === "deleted",
+      onSelect: () => openPanel("deleted"),
     },
   ];
 

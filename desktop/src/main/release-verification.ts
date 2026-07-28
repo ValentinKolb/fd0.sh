@@ -90,7 +90,8 @@ export function linuxDesktopAssetName(version: string, architecture: string): st
   if (architecture !== "x64" && architecture !== "arm64") {
     throw new Error(`Unsupported update architecture: ${architecture}`);
   }
-  return `fd0-desktop_${version}_linux_${architecture}.AppImage`;
+  const packageArchitecture = architecture === "x64" ? "x86_64" : architecture;
+  return `fd0-desktop_${version}_linux_${packageArchitecture}.AppImage`;
 }
 
 export function checksumForAsset(manifest: string, assetName: string): string {

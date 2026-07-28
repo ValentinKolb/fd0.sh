@@ -43,6 +43,62 @@ func TestInventoryBoundsUntrustedMetadata(t *testing.T) {
 	}
 }
 
+func TestPassSearchMetadataIncludesUsefulLabelsWithoutSecrets(t *testing.T) {
+	username, err := passitem.NewStringField(passitem.FieldText, "valentin@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	username.Name = "username"
+	password, err := passitem.NewStringField(passitem.FieldSecret, "do-not-index-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	password.Name = "password"
+	totp, err := passitem.NewTOTPField(passitem.TOTPValue{
+		Secret:  "JBSWY3DPEHPK3PXP",
+		Issuer:  "Example Inc",
+		Account: "valentin@example.com",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	totp.Name = "one-time code"
+	file, err := passitem.NewFileField("recovery.txt", "text/plain", []byte("do-not-index-file"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	file.Name = "recovery file"
+	notes, err := passitem.NewStringField(passitem.FieldText, "do-not-index-notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	notes.Name = passitem.NotesFieldName
+
+	search, hasTOTP := passSearchMetadata(&passitem.Item{
+		Title:  "Example login",
+		URLs:   []string{"https://example.com/sign-in"},
+		Fields: []passitem.Field{username, password, totp, file, notes},
+	})
+	if !hasTOTP {
+		t.Fatal("TOTP presence was not projected")
+	}
+	for _, want := range []string{
+		"Example login", "example.com/sign-in", "username", "valentin@example.com",
+		"Example Inc", "one-time code", "recovery.txt",
+	} {
+		if !strings.Contains(search, want) {
+			t.Fatalf("search metadata %q does not contain %q", search, want)
+		}
+	}
+	for _, secret := range []string{
+		"do-not-index-password", "JBSWY3DPEHPK3PXP", "do-not-index-file", "do-not-index-notes",
+	} {
+		if strings.Contains(search, secret) {
+			t.Fatalf("search metadata leaked %q: %q", secret, search)
+		}
+	}
+}
+
 // TestDetailFieldsProjectsCLINotes pins the seam between the CLI and the
 // desktop: a note the CLI wrote through passitem.SetNotes must arrive in the
 // detail view as the dedicated Notes field, exactly once, and must never also

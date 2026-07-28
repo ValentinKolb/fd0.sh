@@ -255,6 +255,7 @@ type sshMoveCmd struct {
 }
 type sshConnectCmd struct {
 	Alias string   `arg:"" optional:"" help:"Host alias. Empty opens picker."`
+	Scope string   `name:"scope" help:"Scope label or id."`
 	Tag   []string `name:"tag" help:"Pre-filter picker by tag."`
 	Cmd   []string `arg:"" optional:"" passthrough:"" help:"Command to execute on the host (passed to ssh)."`
 }
@@ -891,7 +892,6 @@ func commandNeedsUnlockedVault(command string) bool {
 		"card rm <label>",
 		"recovery export <out>",
 		"sync",
-		"doctor",
 		"auth list", "auth ls",
 		"auth add",
 		"auth rm <id>",
@@ -1224,7 +1224,7 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 		return cli.RunHostMove(ctx, c.Ssh.Move.Alias, c.Ssh.Move.From, c.Ssh.Move.ToScope, c.Ssh.Move.Force)
 
 	case "ssh", "ssh connect", "ssh connect <alias>", "ssh connect <alias> <cmd>":
-		return cli.RunSSHConnect(ctx, c.Ssh.Connect.Alias, c.Ssh.Connect.Cmd, c.Ssh.Connect.Tag)
+		return cli.RunSSHConnect(ctx, c.Ssh.Connect.Scope, c.Ssh.Connect.Alias, c.Ssh.Connect.Cmd, c.Ssh.Connect.Tag)
 
 	// ─── pass ─────────────────────────────────────────────────────────
 	case "pass", "pass <query>", "pass browse", "pass browse <query>":

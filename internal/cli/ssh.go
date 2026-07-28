@@ -282,11 +282,11 @@ func RunHostShow(ctx context.Context, scopeID, alias string) error {
 	}
 	fmt.Println()
 	fmt.Println("ssh_config render:")
-	keysSet := map[string]bool{}
+	keysSet := map[sshhost.KeyRef]bool{}
 	if rows, err := s.ListTypedSecrets("", ""); err == nil {
 		for _, r := range rows {
 			if strings.HasPrefix(r.Type, "ssh-") {
-				keysSet[strings.TrimPrefix(r.Name, keyNamePrefix)] = true
+				keysSet[sshhost.KeyRef{Scope: r.ScopeID, Name: strings.TrimPrefix(r.Name, keyNamePrefix)}] = true
 			}
 		}
 	}
@@ -474,17 +474,17 @@ func renderSSHConfig(s *Session, warnInclude bool) error {
 	}
 	// Load keys once: presence (for the missing-reference warning)
 	// plus the public-key line (for the per-host selector files).
-	known := map[string]bool{}
-	keyPub := map[string][]byte{}
+	known := map[sshhost.KeyRef]bool{}
+	keyPub := map[sshhost.KeyRef][]byte{}
 	if rows, err := s.ListTypedSecrets("", ""); err == nil {
 		for _, r := range rows {
 			if !strings.HasPrefix(r.Type, "ssh-") {
 				continue
 			}
-			name := strings.TrimPrefix(r.Name, keyNamePrefix)
-			known[name] = true
+			ref := sshhost.KeyRef{Scope: r.ScopeID, Name: strings.TrimPrefix(r.Name, keyNamePrefix)}
+			known[ref] = true
 			if k, err := decodeKey(r); err == nil {
-				keyPub[name] = k.Public
+				keyPub[ref] = k.Public
 			}
 		}
 	}
@@ -520,13 +520,13 @@ func renderSSHConfig(s *Session, warnInclude bool) error {
 // render artifacts — fully regenerable from vault state — so the whole
 // directory is fd0-managed. Public keys only; no private material ever
 // touches disk.
-func syncPubKeyFiles(dir string, hosts []*sshhost.Host, keyPub map[string][]byte) error {
+func syncPubKeyFiles(dir string, hosts []*sshhost.Host, keyPub map[sshhost.KeyRef][]byte) error {
 	wanted := map[string]bool{}
 	for _, h := range hosts {
 		if h.KeyName == "" {
 			continue
 		}
-		pub := keyPub[h.KeyName]
+		pub := keyPub[sshhost.KeyRef{Scope: h.Scope, Name: h.KeyName}]
 		if len(pub) == 0 {
 			continue
 		}

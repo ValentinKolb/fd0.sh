@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/valentinkolb/fd0.sh/internal/chain"
@@ -47,8 +48,79 @@ type SecretVersionEntry struct {
 	UpdatedAt   string // pass-item meta updated_at (RFC3339) or ""
 }
 
+// DeletedTypedRecord is the last live version of an item whose newest event is
+// a tombstone. RestoreSeq addresses that exact live version.
+type DeletedTypedRecord struct {
+	ScopeID    string
+	Name       string
+	Type       string
+	Payload    any
+	DeletedSeq uint64
+	RestoreSeq uint64
+}
+
 // Tombstone reports whether this version deleted the record.
 func (e SecretVersionEntry) Tombstone() bool { return e.Record == nil }
+
+// ListDeletedTypedSecrets returns deleted user records across active scopes.
+// Replay still performs every normal chain and rollback check; the observer
+// only retains the last live value needed to describe and restore a tombstone.
+func (s *Session) ListDeletedTypedSecrets() ([]DeletedTypedRecord, error) {
+	var deleted []DeletedTypedRecord
+	for scopeID, scope := range s.Body.Scopes {
+		if scope.Leaving {
+			continue
+		}
+		versions := map[string][]chain.SecretVersion{}
+		order := []string{}
+		state, err := s.replayObservedAndCheckScope(scopeID, func(secretID string, version chain.SecretVersion) {
+			if _, seen := versions[secretID]; !seen {
+				order = append(order, secretID)
+			}
+			versions[secretID] = append(versions[secretID], version)
+		})
+		if err != nil {
+			return nil, err
+		}
+		for _, secretID := range order {
+			observed := versions[secretID]
+			if len(observed) == 0 || observed[len(observed)-1].Record != nil {
+				continue
+			}
+			if current, ok := state.SecretIndex[secretID]; ok && current.Record != nil {
+				continue
+			}
+			for index := len(observed) - 2; index >= 0; index-- {
+				record := observed[index].Record
+				if record == nil {
+					continue
+				}
+				if isMetaSecret(secretID, record.Name) {
+					break
+				}
+				deleted = append(deleted, DeletedTypedRecord{
+					ScopeID:    scopeID,
+					Name:       record.Name,
+					Type:       record.Type,
+					Payload:    record.Payload,
+					DeletedSeq: observed[len(observed)-1].Seq,
+					RestoreSeq: observed[index].Seq,
+				})
+				break
+			}
+		}
+	}
+	sort.Slice(deleted, func(i, j int) bool {
+		if deleted[i].DeletedSeq != deleted[j].DeletedSeq {
+			return deleted[i].DeletedSeq > deleted[j].DeletedSeq
+		}
+		if deleted[i].ScopeID != deleted[j].ScopeID {
+			return deleted[i].ScopeID < deleted[j].ScopeID
+		}
+		return deleted[i].Name < deleted[j].Name
+	})
+	return deleted, nil
+}
 
 // SecretHistory returns every observed version of the record currently named
 // `name` in scopeOrLabel, newest first.

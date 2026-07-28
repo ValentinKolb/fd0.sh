@@ -67,7 +67,7 @@
   text-align: right;
 }
 
-.slider-row input[type="range"] { flex: 1; appearance: none; height: 3px; border-radius: var(--radius-full); background: var(--line-control); }
+.slider-row input[type="range"] { flex: 1; appearance: none; height: 3px; border-radius: var(--radius-full); background: var(--range-track); }
 .slider-row input[type="range"]::-webkit-slider-thumb {
   appearance: none;
   width: 15px;
@@ -241,6 +241,18 @@
 .share-section-heading small { color: var(--text-4); font-size: var(--text-xs); line-height: var(--leading-normal); }
 .share-empty { display: flex; flex-direction: column; gap: 2px; padding: var(--space-4) 0; color: var(--text-4); font-size: var(--text-sm); }
 .share-loading { padding: var(--space-5) 0; color: var(--text-4); font-size: var(--text-sm); text-align: center; }
+.vault-settings-row { display: flex; align-items: center; gap: var(--space-2); }
+.vault-settings-row .input { min-width: 0; flex: 1; }
+.vault-danger-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--line-soft);
+}
+.vault-danger-row > span { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
+.vault-danger-row strong { color: var(--text); font-size: var(--text-base); font-weight: var(--weight-medium); }
+.vault-danger-row small { color: var(--text-4); font-size: var(--text-xs); line-height: var(--leading-normal); }
 .new-contact-fields { display: flex; flex-direction: column; gap: var(--space-4); }
 .card-exchange-row { display: flex; align-items: flex-end; gap: var(--space-2); }
 .card-exchange-row .field { flex: 1; }
@@ -251,7 +263,7 @@
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--bg);
-  color: var(--accent);
+  color: var(--accent-ink);
   font-family: var(--font-mono);
   font-size: var(--text-base);
   letter-spacing: 0.08em;

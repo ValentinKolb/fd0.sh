@@ -3,17 +3,25 @@ import type {
   BridgeErrorShape,
   DesktopAPI,
   DesktopCommand,
+  DesktopTheme,
   DiagnosticsSnapshot,
   FieldRef,
   GenerateSSHKeyInput,
   ItemVersionRef,
   LargeTypeValue,
   LargeTypeWindowResult,
+  MoveItemInput,
+  RenameItemInput,
   RecordRef,
   SavePassInput,
   SaveSecretInput,
   SaveSSHHostInput,
+  SaveSSHKeyInput,
   StartupStatus,
+  TerminalLauncherSettings,
+  TerminalExit,
+  TerminalSessionInfo,
+  TerminalTheme,
   UpdateStatus,
 } from "../shared/contracts";
 
@@ -43,6 +51,7 @@ const api: DesktopAPI = {
   platform: process.platform,
   development: process.argv.includes("--fd0-isolated"),
   largeTypeMode: process.argv.includes("--fd0-large-type"),
+  terminalMode: process.argv.includes("--fd0-terminal"),
   startupStatus: () => invoke<StartupStatus>("fd0:startup-status"),
   consumeUpdateRequest: () => invoke<boolean>("fd0:consume-update-request"),
   retryStartup: () => invoke<StartupStatus>("fd0:retry-startup"),
@@ -60,6 +69,8 @@ const api: DesktopAPI = {
   exportRecovery: (passphrase: string) => invoke("fd0:export-recovery", passphrase),
   setDefaultAuthMethod: (method: string) => invoke("fd0:set-default-auth", method),
   inventory: () => invoke("fd0:inventory"),
+  deletedItems: () => invoke("fd0:deleted-items"),
+  parseTOTPURI: (uri: string) => invoke("fd0:parse-totp", uri),
   itemDetail: (ref: RecordRef) => invoke("fd0:item-detail", ref),
   itemHistory: (ref: RecordRef, options?: { limit?: number; offset?: number }) => invoke("fd0:item-history", ref, options),
   itemVersion: (ref: ItemVersionRef) => invoke("fd0:item-version", ref),
@@ -76,10 +87,18 @@ const api: DesktopAPI = {
   saveSSHHost: (input: SaveSSHHostInput) => invoke("fd0:save-ssh-host", input),
   editSSHHost: (ref: RecordRef) => invoke("fd0:edit-ssh-host", ref),
   generateSSHKey: (input: GenerateSSHKeyInput) => invoke("fd0:generate-ssh-key", input),
+  listSSHKeys: (scopeId: string) => invoke("fd0:list-ssh-keys", scopeId),
+  saveSSHKey: (input: SaveSSHKeyInput) => invoke("fd0:save-ssh-key", input),
+  editSSHKey: (ref: RecordRef) => invoke("fd0:edit-ssh-key", ref),
   importConfig: (kind: "kubernetes" | "talos", scopeId: string) => invoke("fd0:import-config", kind, scopeId),
   saveAttachment: (ref: FieldRef) => invoke("fd0:save-attachment", ref),
+  moveItem: (input: MoveItemInput) => invoke("fd0:move-item", input),
+  renameItem: (input: RenameItemInput) => invoke("fd0:rename-item", input),
   remove: (ref: RecordRef) => invoke("fd0:remove", ref),
+  restoreDeletedItem: (ref: ItemVersionRef) => invoke("fd0:restore-deleted-item", ref),
   createScope: (label: string) => invoke("fd0:create-scope", label),
+  renameScope: (scopeId: string, label: string) => invoke("fd0:rename-scope", scopeId, label),
+  leaveScope: (scopeId: string) => invoke("fd0:leave-scope", scopeId),
   scopeShareInfo: (scopeId: string) => invoke("fd0:scope-share-info", scopeId),
   addScopeMember: (scopeId: string, label: string) => invoke("fd0:scope-add-member", scopeId, label),
   removeScopeMember: (scopeId: string, memberId: string) => invoke("fd0:scope-remove-member", scopeId, memberId),
@@ -89,6 +108,38 @@ const api: DesktopAPI = {
   sync: () => invoke("fd0:sync"),
   launchAtLogin: () => invoke("fd0:launch-at-login"),
   setLaunchAtLogin: (value: boolean) => invoke("fd0:set-launch-at-login", value),
+  setTheme: (theme: DesktopTheme) => invoke("fd0:set-theme", theme),
+  terminalLauncher: () => invoke("fd0:terminal-launcher"),
+  setTerminalLauncher: (settings: TerminalLauncherSettings) => invoke("fd0:set-terminal-launcher", settings),
+  openSSHHost: (ref: RecordRef) => invoke("fd0:open-ssh-host", ref),
+  terminalSession: () => invoke<TerminalSessionInfo>("fd0:terminal-session"),
+  startTerminal: (cols: number, rows: number) => invoke<void>("fd0:terminal-start", cols, rows),
+  writeTerminal: (data: string) => ipcRenderer.send("fd0:terminal-write", data),
+  resizeTerminal: (cols: number, rows: number) => ipcRenderer.send("fd0:terminal-resize", cols, rows),
+  setTerminalTitle: (title: string) => ipcRenderer.send("fd0:terminal-title", title),
+  copyTerminalSelection: (value: string) => invoke<void>("fd0:terminal-copy", value),
+  pasteTerminal: () => invoke<void>("fd0:terminal-paste"),
+  closeTerminal: () => invoke<void>("fd0:terminal-close"),
+  onTerminalData: (handler: (data: string) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, data: string) => handler(data);
+    ipcRenderer.on("fd0:terminal-data", listener);
+    return () => ipcRenderer.removeListener("fd0:terminal-data", listener);
+  },
+  onTerminalExit: (handler: (result: TerminalExit) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, result: TerminalExit) => handler(result);
+    ipcRenderer.on("fd0:terminal-exit", listener);
+    return () => ipcRenderer.removeListener("fd0:terminal-exit", listener);
+  },
+  onTerminalProcess: (handler: (processName: string) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, processName: string) => handler(processName);
+    ipcRenderer.on("fd0:terminal-process", listener);
+    return () => ipcRenderer.removeListener("fd0:terminal-process", listener);
+  },
+  onTerminalTheme: (handler: (theme: TerminalTheme) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, theme: TerminalTheme) => handler(theme);
+    ipcRenderer.on("fd0:terminal-theme", listener);
+    return () => ipcRenderer.removeListener("fd0:terminal-theme", listener);
+  },
   openItemURL: (ref: RecordRef) => invoke("fd0:open-item-url", ref),
   openSupportLink: (target: "docs" | "issues") => invoke("fd0:open-support-link", target),
   showLargeType: (label: string, value: string) => invoke<LargeTypeWindowResult>("fd0:show-large-type", label, value),

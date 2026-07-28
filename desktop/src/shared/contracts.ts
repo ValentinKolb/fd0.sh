@@ -104,6 +104,9 @@ export type ItemSummary = {
   badge: string;
   updatedAt?: string;
   favorite?: boolean;
+  /** Safe, non-secret metadata used only for local search. */
+  searchText?: string;
+  hasTOTP?: boolean;
 };
 
 export type FileView = {
@@ -128,6 +131,12 @@ export type FieldView = {
 export type ItemDetail = {
   item: ItemSummary;
   fields: FieldView[];
+  relations?: ItemRelation[];
+};
+
+export type ItemRelation = {
+  kind: "used-by";
+  item: ItemSummary;
 };
 
 export type Inventory = {
@@ -141,6 +150,30 @@ export type RecordRef = {
   scopeId: string;
   name: string;
   raw?: boolean;
+};
+
+export type MoveItemInput = {
+  source: RecordRef;
+  targetScopeId: string;
+};
+
+export type RenameItemInput = {
+  source: RecordRef;
+  name: string;
+};
+
+export type DeletedItem = {
+  item: ItemSummary;
+  restoreSeq: number;
+};
+
+export type TOTPValue = {
+  secret: string;
+  issuer?: string;
+  account?: string;
+  digits: number;
+  period: number;
+  algorithm: "SHA1" | "SHA256" | "SHA512";
 };
 
 export type FieldRef = RecordRef & {
@@ -248,6 +281,21 @@ export type GenerateSSHKeyInput = {
   comment?: string;
 };
 
+export type SSHKeySummary = {
+  scopeId: string;
+  name: string;
+  algorithm: string;
+  fingerprint: string;
+  comment?: string;
+};
+
+export type SaveSSHKeyInput = {
+  scopeId: string;
+  name: string;
+  comment?: string;
+  authorization?: string;
+};
+
 export type ImportConfigResult = {
   imported: string[];
   skipped?: string[];
@@ -328,6 +376,56 @@ export type DesktopCommand =
   | "lock"
   | "refresh";
 
+export type DesktopTheme = "system" | "dark" | "light";
+export type TerminalTheme = "system" | "dark" | "light";
+
+export type TerminalProfileID =
+  | "in-app"
+  | "automatic"
+  | "macos-terminal"
+  | "iterm2"
+  | "ghostty"
+  | "linux-system"
+  | "debian-default"
+  | "ptyxis"
+  | "gnome-terminal"
+  | "konsole"
+  | "custom";
+
+export type TerminalLauncherSettings = {
+  profileId: TerminalProfileID;
+  /** Appearance of the fd0 terminal only; independent from the main app theme. */
+  terminalTheme: TerminalTheme;
+  /** Absolute executable or wrapper path. Used only by the custom profile. */
+  customExecutable: string;
+  /** Exact argv inserted before fd0's command. One entry is one argument. */
+  customArguments: string[];
+};
+
+export type TerminalProfileSummary = {
+  id: TerminalProfileID;
+  label: string;
+  description: string;
+  available: boolean;
+};
+
+export type TerminalLauncherState = {
+  settings: TerminalLauncherSettings;
+  profiles: TerminalProfileSummary[];
+  /** Concrete profile Automatic currently resolves to. */
+  automaticProfileId?: TerminalProfileID;
+};
+
+export type TerminalSessionInfo = {
+  host: string;
+  terminalTheme: TerminalTheme;
+};
+
+export type TerminalExit = {
+  exitCode: number;
+  signal?: number;
+};
+
 export type DesktopAPI = {
   platform: NodeJS.Platform;
   development: boolean;
@@ -337,6 +435,8 @@ export type DesktopAPI = {
    * navigation or a crafted URL fragment cannot turn the main window into it.
    */
   largeTypeMode: boolean;
+  /** True only inside a dedicated fd0 terminal window. */
+  terminalMode: boolean;
   startupStatus(): Promise<StartupStatus>;
   consumeUpdateRequest(): Promise<boolean>;
   retryStartup(): Promise<StartupStatus>;
@@ -354,6 +454,8 @@ export type DesktopAPI = {
   exportRecovery(passphrase: string): Promise<{ saved: boolean }>;
   setDefaultAuthMethod(method: string): Promise<VaultStatus>;
   inventory(): Promise<Inventory>;
+  deletedItems(): Promise<{ items: DeletedItem[] }>;
+  parseTOTPURI(uri: string): Promise<TOTPValue>;
   itemDetail(ref: RecordRef): Promise<ItemDetail>;
   itemHistory(ref: RecordRef, options?: { limit?: number; offset?: number }): Promise<ItemHistoryPage>;
   itemVersion(ref: ItemVersionRef): Promise<ItemDetail>;
@@ -370,10 +472,18 @@ export type DesktopAPI = {
   saveSSHHost(input: SaveSSHHostInput): Promise<{ ok: boolean }>;
   editSSHHost(ref: RecordRef): Promise<SaveSSHHostInput | null>;
   generateSSHKey(input: GenerateSSHKeyInput): Promise<{ ok: boolean }>;
+  listSSHKeys(scopeId: string): Promise<SSHKeySummary[]>;
+  saveSSHKey(input: SaveSSHKeyInput): Promise<{ ok: boolean }>;
+  editSSHKey(ref: RecordRef): Promise<SaveSSHKeyInput | null>;
   importConfig(kind: "kubernetes" | "talos", scopeId: string): Promise<ImportConfigResult | null>;
   saveAttachment(ref: FieldRef): Promise<{ saved: boolean }>;
-  remove(ref: RecordRef): Promise<{ ok: boolean }>;
+  moveItem(input: MoveItemInput): Promise<{ ok: boolean }>;
+  renameItem(input: RenameItemInput): Promise<{ ok: boolean }>;
+  remove(ref: RecordRef): Promise<{ ok: boolean; blocked?: boolean; undo?: ItemVersionRef }>;
+  restoreDeletedItem(ref: ItemVersionRef): Promise<{ ok: boolean }>;
   createScope(label: string): Promise<{ ok: boolean }>;
+  renameScope(scopeId: string, label: string): Promise<{ ok: boolean }>;
+  leaveScope(scopeId: string): Promise<{ ok: boolean }>;
   scopeShareInfo(scopeId: string): Promise<ScopeShareInfo>;
   addScopeMember(scopeId: string, label: string): Promise<{ ok: boolean }>;
   removeScopeMember(scopeId: string, memberId: string): Promise<{ ok: boolean }>;
@@ -383,6 +493,22 @@ export type DesktopAPI = {
   sync(): Promise<{ ok: boolean; cancelled?: boolean }>;
   launchAtLogin(): Promise<boolean>;
   setLaunchAtLogin(value: boolean): Promise<boolean>;
+  setTheme(theme: DesktopTheme): Promise<void>;
+  terminalLauncher(): Promise<TerminalLauncherState>;
+  setTerminalLauncher(settings: TerminalLauncherSettings): Promise<TerminalLauncherState>;
+  openSSHHost(ref: RecordRef): Promise<{ profileId: TerminalProfileID }>;
+  terminalSession(): Promise<TerminalSessionInfo>;
+  startTerminal(cols: number, rows: number): Promise<void>;
+  writeTerminal(data: string): void;
+  resizeTerminal(cols: number, rows: number): void;
+  setTerminalTitle(title: string): void;
+  copyTerminalSelection(value: string): Promise<void>;
+  pasteTerminal(): Promise<void>;
+  closeTerminal(): Promise<void>;
+  onTerminalData(handler: (data: string) => void): () => void;
+  onTerminalExit(handler: (result: TerminalExit) => void): () => void;
+  onTerminalProcess(handler: (processName: string) => void): () => void;
+  onTerminalTheme(handler: (theme: TerminalTheme) => void): () => void;
   openItemURL(ref: RecordRef): Promise<void>;
   openSupportLink(target: "docs" | "issues"): Promise<void>;
   showLargeType(label: string, value: string): Promise<LargeTypeWindowResult>;

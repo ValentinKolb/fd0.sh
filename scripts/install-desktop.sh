@@ -370,7 +370,9 @@ fi
 if [ "$OS" = "darwin" ]; then
     ASSET="fd0-desktop_${VERSION_NUM}_${ASSET_OS}_${ASSET_ARCH}.dmg"
 else
-    ASSET="fd0-desktop_${VERSION_NUM}_${ASSET_OS}_${ASSET_ARCH}.AppImage"
+    PACKAGE_ARCH=$ASSET_ARCH
+    [ "$PACKAGE_ARCH" != "x64" ] || PACKAGE_ARCH="x86_64"
+    ASSET="fd0-desktop_${VERSION_NUM}_${ASSET_OS}_${PACKAGE_ARCH}.AppImage"
 fi
 
 printf '\nfd0 Desktop installer\n'

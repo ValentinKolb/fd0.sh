@@ -1,6 +1,6 @@
 import { For, Show, createMemo, createSignal, type JSX } from "solid-js";
 import { Dynamic } from "solid-js/web";
-import { IconChevronRight, IconFileImport } from "@tabler/icons-solidjs";
+import { IconChevronRight, IconFileImport, IconKey } from "@tabler/icons-solidjs";
 import type { PassField, RecordRef, SavePassInput, ScopeSummary } from "../../../shared/contracts";
 import { toAppError } from "../lib/errors";
 import { itemKinds, type EditorKind } from "../lib/editorKinds";
@@ -10,6 +10,7 @@ import { Field, Input, Select, Textarea } from "../ui/Fields";
 import { Modal } from "../ui/Modal";
 import { MAX_FIELDS, PasswordCards } from "./PasswordCards";
 import { readNotes, withoutNotes, writeNotes } from "../lib/notes";
+import { SSHKeyPicker } from "./SSHKeyPicker";
 
 /**
  * Everything the editor needs to create or update one item.
@@ -104,6 +105,7 @@ export function ItemEditor(props: {
   const [value, setValue] = createSignal(props.draft.value);
   const [host, setHost] = createSignal({ ...props.draft.host });
   const [comment, setComment] = createSignal(props.draft.comment);
+  const [keyPickerOpen, setKeyPickerOpen] = createSignal(false);
   const [busy, setBusy] = createSignal(false);
   const [invalid, setInvalid] = createSignal<Set<string>>(new Set());
 
@@ -162,7 +164,7 @@ export function ItemEditor(props: {
           },
         };
         await window.fd0.savePass(input);
-        return { scopeId: scope, name: props.draft.recordName ?? `pass:${name}` };
+        return { scopeId: scope, name: `pass:${name}` };
       }
       case "secret": {
         await window.fd0.saveSecret({
@@ -194,7 +196,16 @@ export function ItemEditor(props: {
         return { scopeId: scope, name: `host:${name}` };
       }
       case "ssh-key": {
-        await window.fd0.generateSSHKey({ scopeId: scope, name, comment: comment().trim() });
+        if (isCreate()) {
+          await window.fd0.generateSSHKey({ scopeId: scope, name, comment: comment().trim() });
+        } else {
+          await window.fd0.saveSSHKey({
+            scopeId: scope,
+            name,
+            comment: comment().trim(),
+            authorization: props.draft.authorization,
+          });
+        }
         return { scopeId: scope, name: `ssh:${name}` };
       }
       default: {
@@ -245,7 +256,7 @@ export function ItemEditor(props: {
       onClose={props.onClose}
       footer={
         <div class="editor-footer">
-          <Show when={props.scopes.length > 1 || isCreate()}>
+          <Show when={isCreate()}>
             <div class="editor-footer-vault">
               <span class="editor-footer-label">Vault</span>
               <Select
@@ -265,19 +276,29 @@ export function ItemEditor(props: {
         </div>
       }
     >
-      <form id="item-editor-form" class="field-stack" onSubmit={save}>
+      <form id="item-editor-form" class="field-stack item-editor-form" onSubmit={save}>
         <Show when={!imports()}>
           <div classList={{ "form-grid": true, "is-single": true }}>
-            <Field label={titleLabel()}>
+            <Field
+              label={titleLabel()}
+              hint={props.draft.kind === "ssh-key" && !isCreate() ? "A key’s name stays fixed so server assignments cannot break." : undefined}
+            >
               {(field) => (
-                <Input
-                  id={field.id}
-                  autofocus
-                  required
-                  placeholder={`Enter ${titleLabel().toLowerCase()}`}
-                  value={title()}
-                  onInput={(event) => setTitle(event.currentTarget.value)}
-                />
+                <Show
+                  when={props.draft.kind === "ssh-key" && !isCreate()}
+                  fallback={
+                    <Input
+                      id={field.id}
+                      autofocus
+                      required
+                      placeholder={`Enter ${titleLabel().toLowerCase()}`}
+                      value={title()}
+                      onInput={(event) => setTitle(event.currentTarget.value)}
+                    />
+                  }
+                >
+                  <Input id={field.id} class="ssh-key-fixed-name" readOnly value={title()} />
+                </Show>
               )}
             </Field>
           </div>
@@ -348,13 +369,22 @@ export function ItemEditor(props: {
                 />
               )}
             </Field>
-            <Field label="Key" optional hint="The name of an SSH key stored in fd0.">
+            <Field label="Key" optional hint="Choose a key from this server’s vault.">
               {(field) => (
-                <Input
+                <button
                   id={field.id}
-                  value={host().keyName}
-                  onInput={(event) => setHost({ ...host(), keyName: event.currentTarget.value })}
-                />
+                  class="ssh-key-select"
+                  type="button"
+                  onClick={() => setKeyPickerOpen(true)}
+                >
+                  <span class="ssh-key-select-glyph" aria-hidden="true">
+                    <IconKey size={15} />
+                  </span>
+                  <span class="ssh-key-select-copy">
+                    <strong>{host().keyName || "No fd0 key"}</strong>
+                  </span>
+                  <span class="ssh-key-select-action">Choose…</span>
+                </button>
               )}
             </Field>
             <Field label="Connect through" optional hint="Another server to route through.">
@@ -410,6 +440,15 @@ export function ItemEditor(props: {
           </p>
         </Show>
       </form>
+
+      <Show when={keyPickerOpen()}>
+        <SSHKeyPicker
+          scopeId={scopeID()}
+          current={host().keyName}
+          onSelect={(key) => setHost({ ...host(), keyName: key?.name ?? "" })}
+          onClose={() => setKeyPickerOpen(false)}
+        />
+      </Show>
     </Modal>
   );
 }

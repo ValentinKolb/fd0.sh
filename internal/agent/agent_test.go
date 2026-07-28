@@ -130,6 +130,22 @@ func TestAgentRoundtrip(t *testing.T) {
 	if st.Unlocked {
 		t.Fatal("expected locked after Lock")
 	}
+	// A slow unlock must not install keys after its operation budget expires.
+	// Default Argon2 work is deliberately much slower than this deadline.
+	timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer timeoutCancel()
+	resp := srv.handleUnlockContext(timeoutCtx, &UnlockReq{
+		VaultPath:     paths.Vault,
+		UserChainPath: paths.UserChain,
+		MethodType:    proto.AuthPassphrase,
+		Passphrase:    append([]byte(nil), pass...),
+	})
+	if resp.Err != unlockTimeoutMessage {
+		t.Fatalf("expired unlock error=%q want %q", resp.Err, unlockTimeoutMessage)
+	}
+	if srv.handleStatus().Status.Unlocked {
+		t.Fatal("expired unlock installed a live session")
+	}
 	// Verify socket file persists.
 	if _, err := os.Stat(filepath.Join(dir, "agent.sock")); err != nil {
 		t.Fatal(err)

@@ -32,12 +32,12 @@ import (
 //
 // `extra` is the trailing argv after NAME — passed verbatim to ssh
 // (e.g. `fd0 ssh prod-db "uname -a"`).
-func RunSSHConnect(ctx context.Context, name string, extra []string, anyTags []string) error {
+func RunSSHConnect(ctx context.Context, scopeID, name string, extra []string, anyTags []string) error {
 	s, err := Open(ctx)
 	if err != nil {
 		return err
 	}
-	hosts, err := loadHosts(s, "")
+	hosts, err := loadHosts(s, scopeID)
 	if err != nil {
 		s.Close()
 		return err

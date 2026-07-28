@@ -28,6 +28,8 @@ case "$1" in
 esac
 EOF
 chmod +x "$RELEASE/fd0-desktop_0.1.0_linux_arm64.AppImage"
+cp "$RELEASE/fd0-desktop_0.1.0_linux_arm64.AppImage" \
+  "$RELEASE/fd0-desktop_0.1.0_linux_x86_64.AppImage"
 (
   cd "$RELEASE"
   if command -v sha256sum >/dev/null 2>&1; then
@@ -221,7 +223,7 @@ chmod +x "$FAKE_BIN/uname" "$FAKE_BIN/hdiutil" "$FAKE_BIN/ditto" "$FAKE_BIN/code
 run_installer() {
   HOME=$1 \
   TEST_UNAME_S=$2 \
-  TEST_UNAME_M=arm64 \
+  TEST_UNAME_M=${3:-arm64} \
   PATH="$FAKE_BIN:$PATH" \
   FD0_RELEASE_BASE="file://$BASE/releases" \
   FD0_DESKTOP_VERSION=desktop-v0.1.0 \
@@ -281,6 +283,10 @@ printf '%s\n' "$LINUX_INSTALL_OUTPUT" | grep -Fq "✓ Authenticating signed rele
 printf '%s\n' "$LINUX_INSTALL_OUTPUT" | grep -Fq "Next steps:"
 printf '%s\n' "$LINUX_INSTALL_OUTPUT" | grep -Fq "\"$LINUX_HOME/.local/bin/fd0-desktop\""
 printf '%s\n' "$LINUX_INSTALL_OUTPUT" | grep -Fq "fd0 doctor"
+
+LINUX_X64_HOME="$BASE/linux-x64-home"
+run_installer "$LINUX_X64_HOME" Linux x86_64 >/dev/null
+test "$(HOME="$LINUX_X64_HOME" "$LINUX_X64_HOME/.local/bin/fd0" version)" = "fd0 0.1.0 standard"
 
 run_installer "$LINUX_HOME" Linux >/dev/null
 test "$(HOME="$LINUX_HOME" "$LINUX_HOME/.local/bin/fd0" version)" = "fd0 0.1.0 standard"

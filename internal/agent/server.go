@@ -292,13 +292,22 @@ func (s *Server) markActivity(now time.Time) {
 
 func (s *Server) handleConn(ctx context.Context, c net.Conn) {
 	defer c.Close()
-	_ = c.SetDeadline(time.Now().Add(15 * time.Second))
+	_ = c.SetDeadline(time.Now().Add(agentRPCTimeout))
 	var req Request
 	if err := ReadFrame(c, &req); err != nil {
 		s.log.Debug("agent: read", "err", err)
 		return
 	}
-	resp := s.dispatch(ctx, &req)
+	requestCtx := ctx
+	cancel := func() {}
+	responseTimeout := agentRPCTimeout
+	if req.Op == OpUnlock {
+		requestCtx, cancel = context.WithTimeout(ctx, agentUnlockTimeout)
+		responseTimeout = agentUnlockTimeout + agentUnlockServerGrace
+	}
+	defer cancel()
+	_ = c.SetDeadline(time.Now().Add(responseTimeout))
+	resp := s.dispatch(requestCtx, &req)
 	_ = WriteFrame(c, resp)
 }
 
@@ -319,7 +328,7 @@ func (s *Server) dispatch(ctx context.Context, req *Request) (resp *Response) {
 		if req.Unlock == nil {
 			return errResp("missing unlock body")
 		}
-		return s.handleUnlock(req.Unlock)
+		return s.handleUnlockContext(ctx, req.Unlock)
 	case OpLock:
 		s.lock()
 		return &Response{}
@@ -396,7 +405,13 @@ func (s *Server) handleStatus() *Response {
 	return &Response{Status: st}
 }
 
+const unlockTimeoutMessage = "unlock timed out before completion"
+
 func (s *Server) handleUnlock(u *UnlockReq) *Response {
+	return s.handleUnlockContext(context.Background(), u)
+}
+
+func (s *Server) handleUnlockContext(ctx context.Context, u *UnlockReq) *Response {
 	// Sensitive credentials decoded from the wire frame: wipe before
 	// returning, regardless of which path runs. We register the
 	// wipes BEFORE any fallible call so a vault.Read / parse / RPC
@@ -404,6 +419,9 @@ func (s *Server) handleUnlock(u *UnlockReq) *Response {
 	// (The wire-frame buffer itself was already wiped in ReadFrame.)
 	defer crypto.Wipe(u.Passphrase)
 	defer crypto.Wipe(u.YubikeyPIN)
+	if ctx.Err() != nil {
+		return errResp(unlockTimeoutMessage)
+	}
 
 	// Refuse ambiguous credential bundles. The wire schema permits
 	// both Passphrase and YubikeyPIN to be set, but exactly one
@@ -529,6 +547,12 @@ func (s *Server) handleUnlock(u *UnlockReq) *Response {
 		return errResp(err.Error())
 	}
 	s.mu.Lock()
+	if ctx.Err() != nil {
+		s.mu.Unlock()
+		crypto.Wipe(x)
+		crypto.Wipe(rb)
+		return errResp(unlockTimeoutMessage)
+	}
 	if s.superPriv != nil {
 		s.superPriv.Destroy()
 	}

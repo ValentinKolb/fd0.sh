@@ -1,6 +1,6 @@
 import { For, Show, createEffect, createMemo, type JSX } from "solid-js";
 import { Dynamic } from "solid-js/web";
-import { IconCopy, IconKey, IconPlus, IconSearch, IconStar, IconUser, IconX } from "@tabler/icons-solidjs";
+import { IconCopy, IconKey, IconPlus, IconSearch, IconShieldCheck, IconStar, IconUser, IconX } from "@tabler/icons-solidjs";
 import type { ItemSummary } from "../../../shared/contracts";
 import { kindIcon, kindMeta, kindTone } from "../lib/items";
 import { initials, plural, prettyURL } from "../lib/format";
@@ -18,6 +18,7 @@ import { Switch } from "../ui/Fields";
 export function ItemList(props: {
   onCopyPassword(item: ItemSummary): void;
   onCopyUsername(item: ItemSummary): void;
+  onCopyTOTP(item: ItemSummary): void;
   onCreate(): void;
 }): JSX.Element {
   const vault = useVault();
@@ -56,9 +57,26 @@ export function ItemList(props: {
     return output;
   });
 
+  const displayItems = createMemo(() => {
+    const items = vault.visibleItems();
+    if (vault.filters().type !== "ssh") return items;
+    return [
+      ...items.filter((item) => item.badge === "SSH HOST"),
+      ...items.filter((item) => item.badge === "SSH KEY"),
+    ];
+  });
+
+  const sshGroups = createMemo(() => {
+    const items = displayItems();
+    return [
+      { id: "servers", label: "Servers", items: items.filter((item) => item.badge === "SSH HOST") },
+      { id: "keys", label: "Keys", items: items.filter((item) => item.badge === "SSH KEY") },
+    ];
+  });
+
   // Keep the DOM selection in sync so arrow keys resume from the right place.
   createEffect(() => {
-    const items = vault.visibleItems();
+    const items = displayItems();
     if (items.length === 0) {
       if (vault.selectedID()) vault.setSelectedID("");
       return;
@@ -67,7 +85,7 @@ export function ItemList(props: {
   });
 
   function moveSelection(delta: number): void {
-    const items = vault.visibleItems();
+    const items = displayItems();
     if (items.length === 0) return;
     const index = items.findIndex((item) => item.id === vault.selectedID());
     const next = index < 0 ? 0 : Math.min(items.length - 1, Math.max(0, index + delta));
@@ -92,12 +110,12 @@ export function ItemList(props: {
     }
     if (event.key === "Home") {
       event.preventDefault();
-      moveSelection(-vault.visibleItems().length);
+      moveSelection(-displayItems().length);
       return;
     }
     if (event.key === "End") {
       event.preventDefault();
-      moveSelection(vault.visibleItems().length);
+      moveSelection(displayItems().length);
       return;
     }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "c") {
@@ -106,6 +124,20 @@ export function ItemList(props: {
       event.preventDefault();
       props.onCopyPassword(item);
     }
+  }
+
+  function renderItem(item: ItemSummary): JSX.Element {
+    return (
+      <ItemRow
+        item={item}
+        selected={item.id === vault.selectedID()}
+        compact={vault.compactRows()}
+        onSelect={() => vault.selectItem(item)}
+        onCopyPassword={() => props.onCopyPassword(item)}
+        onCopyUsername={() => props.onCopyUsername(item)}
+        onCopyTOTP={() => props.onCopyTOTP(item)}
+      />
+    );
   }
 
   return (
@@ -161,18 +193,26 @@ export function ItemList(props: {
         ref={listElement}
         onKeyDown={onKeyDown}
       >
-        <For each={vault.visibleItems()} fallback={<EmptyState onCreate={props.onCreate} />}>
-          {(item) => (
-            <ItemRow
-              item={item}
-              selected={item.id === vault.selectedID()}
-              compact={vault.compactRows()}
-              onSelect={() => vault.selectItem(item)}
-              onCopyPassword={() => props.onCopyPassword(item)}
-              onCopyUsername={() => props.onCopyUsername(item)}
-            />
-          )}
-        </For>
+        <Show when={displayItems().length > 0} fallback={<EmptyState onCreate={props.onCreate} />}>
+          <Show
+            when={vault.filters().type === "ssh"}
+            fallback={<For each={displayItems()}>{renderItem}</For>}
+          >
+            <For each={sshGroups()}>
+              {(group) => (
+                <Show when={group.items.length > 0}>
+                  <div class="item-group" role="group" aria-label={group.label}>
+                    <div class="item-group-heading">
+                      <span>{group.label}</span>
+                      <span>{group.items.length}</span>
+                    </div>
+                    <For each={group.items}>{renderItem}</For>
+                  </div>
+                </Show>
+              )}
+            </For>
+          </Show>
+        </Show>
       </div>
     </section>
   );
@@ -185,6 +225,7 @@ function ItemRow(props: {
   onSelect(): void;
   onCopyPassword(): void;
   onCopyUsername(): void;
+  onCopyTOTP(): void;
 }): JSX.Element {
   const isPassword = () => props.item.kind === "password";
   const subtitle = () => {
@@ -196,7 +237,12 @@ function ItemRow(props: {
   return (
     <div
       data-item-id={props.item.id}
-      classList={{ "item-row": true, "is-selected": props.selected, "is-compact": props.compact }}
+      classList={{
+        "item-row": true,
+        "is-selected": props.selected,
+        "is-compact": props.compact,
+        "is-ssh-key": props.item.badge === "SSH KEY",
+      }}
       role="option"
       aria-selected={props.selected}
       tabindex={props.selected ? 0 : -1}
@@ -209,7 +255,16 @@ function ItemRow(props: {
       }}
     >
       <span classList={{ "item-avatar": true, [kindTone(props.item.kind)]: true }} aria-hidden="true">
-        <Show when={isPassword()} fallback={<Dynamic component={kindIcon(props.item.kind)} size={16} strokeWidth={1.7} />}>
+        <Show
+          when={isPassword()}
+          fallback={
+            <Dynamic
+              component={props.item.badge === "SSH KEY" ? IconKey : kindIcon(props.item.kind)}
+              size={16}
+              strokeWidth={1.7}
+            />
+          }
+        >
           {initials(props.item.title)}
         </Show>
       </span>
@@ -228,6 +283,19 @@ function ItemRow(props: {
           credential, and that should not require opening the item first. */}
       <span class="item-actions">
         <Show when={isPassword()}>
+          <Show when={props.item.hasTOTP}>
+            <IconButton
+              label={`Copy one-time code for ${props.item.title}`}
+              size="sm"
+              tabIndex={props.selected ? 0 : -1}
+              onClick={(event) => {
+                event.stopPropagation();
+                props.onCopyTOTP();
+              }}
+            >
+              <IconShieldCheck size={15} />
+            </IconButton>
+          </Show>
           <IconButton
             label={`Copy username for ${props.item.title}`}
             size="sm"

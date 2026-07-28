@@ -149,6 +149,19 @@ func renderSSHWithSessionIfEnabled(s *Session) error {
 	return renderAndWarn(s)
 }
 
+// RefreshSSHProjection updates the managed SSH config after a host mutation.
+// Desktop uses the same renderer as the CLI so the two surfaces cannot drift.
+func RefreshSSHProjection(s *Session) error {
+	return renderAndWarn(s)
+}
+
+// RefreshSSHProjectionIfEnabled updates key selector files only when the user
+// has enabled the fd0 SSH config include. Creating a key alone must not opt the
+// user into SSH config management.
+func RefreshSSHProjectionIfEnabled(s *Session) error {
+	return renderSSHWithSessionIfEnabled(s)
+}
+
 func sshProjectionEnabled() (bool, error) {
 	enabled, err := sshhost.HasInclude(sshhost.DefaultUserConfigPath(), SSHConfPath())
 	if err != nil {
