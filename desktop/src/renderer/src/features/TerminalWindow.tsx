@@ -214,10 +214,12 @@ export function TerminalWindow(): JSX.Element {
   return (
     <main class={`terminal-window ${window.fd0.platform === "darwin" ? "is-mac" : ""}`}>
       <header class="terminal-window-header">
-        <span class={`terminal-status ${exit() || error() ? "is-closed" : "is-open"}`} aria-hidden="true" />
-        <div class="terminal-identity">
-          <strong>{host()}</strong>
-          <Show when={secondaryLabel()}>{(label) => <span>{label()}</span>}</Show>
+        <div class="window-drag-handle">
+          <span class={`terminal-status ${exit() || error() ? "is-closed" : "is-open"}`} aria-hidden="true" />
+          <div class="terminal-identity">
+            <strong>{host()}</strong>
+            <Show when={secondaryLabel()}>{(label) => <span>{label()}</span>}</Show>
+          </div>
         </div>
         <Show when={exit() || error()}>
           <button class="terminal-reconnect" type="button" onClick={() => void startSession()}>

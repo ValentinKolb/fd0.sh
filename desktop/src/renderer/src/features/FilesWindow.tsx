@@ -243,10 +243,12 @@ export function FilesWindow(): JSX.Element {
       }}
     >
       <header class="terminal-window-header files-header">
-        <span classList={{ "terminal-status": true, "is-closed": Boolean(error()?.reconnect) }} aria-hidden="true" />
-        <div class="terminal-identity">
-          <strong>{host()}</strong>
-          <span>SFTP</span>
+        <div class="window-drag-handle">
+          <span classList={{ "terminal-status": true, "is-closed": Boolean(error()?.reconnect) }} aria-hidden="true" />
+          <div class="terminal-identity">
+            <strong>{host()}</strong>
+            <span>SFTP</span>
+          </div>
         </div>
         <nav class="files-header-path" aria-label="Remote path">
           <For each={breadcrumbs()}>

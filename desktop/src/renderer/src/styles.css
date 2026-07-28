@@ -1741,6 +1741,7 @@ h1, h2, h3, p { margin: 0; }
   gap: 10px;
   border-bottom: 1px solid #dce0dc;
   background: #f1f3f0;
+  app-region: drag;
   -webkit-app-region: drag;
 }
 
@@ -1751,6 +1752,17 @@ h1, h2, h3, p { margin: 0; }
 
 .terminal-window.is-mac .terminal-window-header,
 .files-window.is-mac .terminal-window-header { padding-left: 112px; }
+
+.window-drag-handle {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 10px;
+  app-region: drag;
+  -webkit-app-region: drag;
+}
+
+.terminal-window .window-drag-handle { flex: 1; }
 
 .terminal-status {
   flex: 0 0 auto;
@@ -1807,6 +1819,7 @@ h1, h2, h3, p { margin: 0; }
   font-size: 12px;
   font-weight: 650;
   cursor: pointer;
+  app-region: no-drag;
   -webkit-app-region: no-drag;
 }
 
@@ -1894,7 +1907,12 @@ h1, h2, h3, p { margin: 0; }
   align-items: center;
 }
 
-.files-actions { flex: 0 0 auto; gap: 6px; -webkit-app-region: no-drag; }
+.files-actions {
+  flex: 0 0 auto;
+  gap: 6px;
+  app-region: no-drag;
+  -webkit-app-region: no-drag;
+}
 
 .files-window .primary-button,
 .files-window .secondary-button,
@@ -1962,6 +1980,7 @@ h1, h2, h3, p { margin: 0; }
   border-radius: 8px;
   background: var(--surface-raised);
   scrollbar-width: none;
+  app-region: no-drag;
   -webkit-app-region: no-drag;
 }
 .files-header-path button {

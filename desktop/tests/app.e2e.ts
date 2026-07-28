@@ -1157,10 +1157,13 @@ test("runs the isolated desktop vault end to end", async () => {
       largeTypeMode: window.fd0.largeTypeMode,
       platform: window.fd0.platform,
       headerPadding: getComputedStyle(document.querySelector(".terminal-window-header")!).paddingLeft,
+      dragHandle: getComputedStyle(document.querySelector(".window-drag-handle")!)
+        .getPropertyValue("-webkit-app-region"),
     }))).toMatchObject({
       terminalMode: true,
       largeTypeMode: false,
       headerPadding: process.platform === "darwin" ? "112px" : "16px",
+      dragHandle: "drag",
     });
     expect(await app.evaluate(({ BrowserWindow }) => {
       const terminal = BrowserWindow.getAllWindows().find((candidate) =>
