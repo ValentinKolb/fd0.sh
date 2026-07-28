@@ -630,7 +630,9 @@ test("runs the isolated desktop vault end to end", async () => {
     await addField(page, addFieldButton, "Text");
     await renameField(page, fieldRow(passEditor, "field"), "field", "environment");
     const environmentField = fieldRow(passEditor, "environment");
-    const environmentInput = environmentField.getByLabel("environment", { exact: true });
+    await expect(environmentField).toBeVisible();
+    const environmentInput = environmentField.locator("input.editor-value");
+    await expect(environmentInput).toHaveAttribute("aria-label", "environment");
     await environmentInput.fill("production");
     await expect(environmentInput).toBeFocused();
 
