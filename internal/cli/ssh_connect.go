@@ -25,6 +25,78 @@ import (
 	"github.com/valentinkolb/fd0.sh/internal/tui"
 )
 
+type OpenSSHConnection struct {
+	Alias      string
+	ConfigPath string
+	SSHBinary  string
+}
+
+func (c OpenSSHConnection) SFTPSubsystemArgs() []string {
+	args := make([]string, 0, 8)
+	if c.ConfigPath != "" {
+		args = append(args, "-F", c.ConfigPath)
+	}
+	args = append(args,
+		"-o", "BatchMode=yes",
+		"-o", "StrictHostKeyChecking=yes",
+		"-s", c.Alias, "sftp",
+	)
+	return args
+}
+
+// PrepareOpenSSHConnection resolves one fd0 host and refreshes the local
+// OpenSSH projection without starting a shell. File-transfer clients use the
+// returned argv to request the SFTP subsystem while retaining native
+// ProxyJump, Known Hosts, and fd0-agent behavior.
+func PrepareOpenSSHConnection(ctx context.Context, scopeID, name string) (OpenSSHConnection, error) {
+	if name == "" {
+		return OpenSSHConnection{}, errors.New("host alias is required")
+	}
+	s, err := Open(ctx)
+	if err != nil {
+		return OpenSSHConnection{}, err
+	}
+	defer s.Close()
+	hosts, err := loadHosts(s, scopeID)
+	if err != nil {
+		return OpenSSHConnection{}, err
+	}
+	host := exactMatch(hosts, name)
+	if host == nil {
+		prefixed := prefixMatch(hosts, name)
+		if len(prefixed) == 1 {
+			host = prefixed[0]
+		} else if len(prefixed) > 1 {
+			return OpenSSHConnection{}, fmt.Errorf("host alias %q is ambiguous", name)
+		} else {
+			return OpenSSHConnection{}, fmt.Errorf("no fd0 host matches %q", name)
+		}
+	}
+	if err := renderSSHForConnect(s); err != nil {
+		return OpenSSHConnection{}, err
+	}
+	if sshAgentSocketDisabledByEnv() {
+		return OpenSSHConnection{}, errors.New("fd0 SSH agent socket is disabled by FD0_SSH_SOCK")
+	}
+	sshSock := SSHSocketPathForRender()
+	if err := checkSSHAgentSocket(sshSock); err != nil {
+		return OpenSSHConnection{}, sshAgentSocketUnavailable(sshSock, err)
+	}
+	configPath, err := sshConnectConfigPath()
+	if err != nil {
+		return OpenSSHConnection{}, err
+	}
+	binary, err := exec.LookPath("ssh")
+	if err != nil {
+		return OpenSSHConnection{}, fmt.Errorf("ssh client not on PATH: %w", err)
+	}
+	return OpenSSHConnection{
+		Alias:      host.Alias,
+		ConfigPath: configPath,
+		SSHBinary:  binary,
+	}, nil
+}
+
 // RunSSHConnect dispatches according to the name:
 //   - empty            → picker over all hosts
 //   - unique match     → exec ssh NAME [cmd...]

@@ -580,8 +580,8 @@ ghp_xxxxxxxxxxxxxxxxxxxx`}</Shell>
         />
         <HoldsRow
           name="SSH"
-          body="Keys generated inside the agent, plus a host inventory that renders to ssh_config."
-          cmd="fd0 key · fd0 ssh"
+          body="Keys generated inside the agent, a host inventory, terminal sessions, and two-way file transfer."
+          cmd="fd0 key · fd0 ssh · fd0 sftp"
         />
         <HoldsRow
           name="Clusters"
@@ -670,14 +670,15 @@ $ fd0 pass history restore github 3`}
     <Section pad="lg">
       <SectionHead
         kicker="fd0 ssh"
-        title="SSH keys + host inventory, scope-shared, zero on disk."
+        title="SSH keys, hosts, terminals, and files."
       >
         Keys are generated inside fd0-agent and served via the standard
         ssh-agent protocol. Hosts are structured entries that render to
         a regular <span style={`color:${C.acc};`}>~/.ssh/fd0.conf</span> you
         Include from your own config. Native SSH features (jump hosts,
         agent forwarding, port forwarding) all work because we are just
-        an agent.
+        an agent. The same host record also opens an fd0 terminal or an SFTP
+        Files window.
       </SectionHead>
 
       <div class="grid md:grid-cols-3 gap-5">
@@ -701,15 +702,16 @@ laptop@fd0`}
 ✓ ~/.ssh/fd0.conf rendered`}
         />
         <CmdCard
-          label="03 · Use native ssh"
-          code={`$ ssh prod-db
-$ ssh prod-db "uname -a"
-$ scp dump.sql prod-db:/tmp/
-$ git push origin main`}
+          label="03 · Connect or transfer"
+          code={`$ fd0 ssh prod-db
+$ fd0 sftp prod-db
+$ fd0 sftp cp prod-db \\
+    ./release.tar \\
+    remote:/tmp/release.tar`}
         />
       </div>
 
-      <div class="grid md:grid-cols-2 gap-5 mt-5">
+      <div class="grid md:grid-cols-3 gap-5 mt-5">
         <NoteCard
           title="For your team"
           code={`$ fd0 scope add-member bob --scope work
@@ -727,6 +729,14 @@ $ fd0 sync`}
             SSH_AUTH_SOCK
           </code>{" "}
           works. fd0 never writes anything to the remote server.
+        </NoteCard>
+        <NoteCard
+          title="Files without a second connection setup"
+          code={`$ fd0 sftp tree prod-db /srv/app --depth 2`}
+        >
+          Desktop and CLI reuse the exact fd0-rendered OpenSSH configuration:
+          assigned key, jump host, options, and strict host verification.
+          Transfers show progress and can be cancelled.
         </NoteCard>
       </div>
     </Section>

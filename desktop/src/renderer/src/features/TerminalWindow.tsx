@@ -5,6 +5,7 @@ import "@xterm/xterm/css/xterm.css";
 import { Show, createSignal, onCleanup, onMount, type JSX } from "solid-js";
 import type { TerminalExit, TerminalTheme } from "../../../shared/contracts";
 import { cleanTerminalTitle, resolveTerminalTheme } from "../lib/terminal";
+import { observeSystemTheme, systemThemeIsDark } from "../lib/theme";
 
 const darkTheme: ITheme = {
   background: "#0b0e0c",
@@ -78,7 +79,6 @@ export function TerminalWindow(): JSX.Element {
   const [exit, setExit] = createSignal<TerminalExit | null>(null);
   const [error, setError] = createSignal("");
   const [ready, setReady] = createSignal(false);
-  const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
   const disposers: Array<() => void> = [];
 
   function secondaryLabel(): string {
@@ -87,7 +87,7 @@ export function TerminalWindow(): JSX.Element {
   }
 
   function applyTheme(): void {
-    const resolved = resolveTerminalTheme(theme(), systemTheme.matches);
+    const resolved = resolveTerminalTheme(theme(), systemThemeIsDark());
     document.documentElement.dataset.theme = resolved;
     document.documentElement.style.colorScheme = resolved;
     if (terminal) terminal.options.theme = resolved === "dark" ? darkTheme : lightTheme;
@@ -136,6 +136,7 @@ export function TerminalWindow(): JSX.Element {
           allowProposedApi: false,
           convertEol: false,
           cursorBlink: true,
+          cursorInactiveStyle: "block",
           cursorStyle: "block",
           fontFamily: '"Geist Mono Variable", "SFMono-Regular", Consolas, monospace',
           fontSize: 14,
@@ -143,7 +144,7 @@ export function TerminalWindow(): JSX.Element {
           letterSpacing: 0,
           lineHeight: 1.16,
           scrollback: 10_000,
-          theme: resolveTerminalTheme(theme(), systemTheme.matches) === "dark" ? darkTheme : lightTheme,
+          theme: resolveTerminalTheme(theme(), systemThemeIsDark()) === "dark" ? darkTheme : lightTheme,
         });
         fit = new FitAddon();
         terminal.loadAddon(fit);
@@ -194,8 +195,12 @@ export function TerminalWindow(): JSX.Element {
     const onSystemTheme = (): void => {
       if (theme() === "system") applyTheme();
     };
-    systemTheme.addEventListener("change", onSystemTheme);
-    disposers.push(() => systemTheme.removeEventListener("change", onSystemTheme));
+    const onWindowFocus = (): void => terminal?.focus();
+    window.addEventListener("focus", onWindowFocus);
+    disposers.push(
+      observeSystemTheme(onSystemTheme),
+      () => window.removeEventListener("focus", onWindowFocus),
+    );
     void initialise();
   });
 

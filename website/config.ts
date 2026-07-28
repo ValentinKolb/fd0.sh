@@ -92,9 +92,9 @@ export const SEO_ROUTE = {
   docsSsh: {
     key: "docsSsh",
     path: "/docs/ssh",
-    title: "fd0 SSH keys and host inventory",
+    title: "fd0 SSH keys, hosts, and SFTP files",
     description:
-      "Use fd0 for encrypted SSH keys and scope-shared host aliases through fd0-agent and native OpenSSH configuration.",
+      "Use fd0 for encrypted SSH keys, scope-shared hosts, terminal sessions, and two-way SFTP transfers through the same native OpenSSH configuration.",
     section: "docs",
   },
   docsTalos: {

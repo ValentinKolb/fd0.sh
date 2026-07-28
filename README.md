@@ -19,8 +19,9 @@ the terminal, or both.
 
 - **Logins:** usernames, passwords, TOTP, passkeys stored as data, recovery
   codes, notes, and small file attachments.
-- **SSH:** encrypted private keys and a host inventory served through the
-  standard `ssh-agent` protocol to `ssh`, Git, `scp`, `rsync`, and other tools.
+- **SSH:** encrypted private keys, a host inventory, terminal sessions, and
+  two-way SFTP transfers. The same records work with `ssh`, Git, `scp`,
+  `rsync`, fd0 Desktop, and `fd0 sftp`.
 - **Clusters:** Kubernetes kubeconfigs and Talos contexts shared by scope
   instead of copied between machines.
 - **Secrets:** API keys, deploy tokens, connection strings, licence keys, and

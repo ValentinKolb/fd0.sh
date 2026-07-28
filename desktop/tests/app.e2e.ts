@@ -33,6 +33,7 @@ const environment = {
   FD0_AGENT_BIN: join(buildDir, "fd0-agent"),
   FD0_BIN: join(buildDir, "fd0"),
   FD0_DESKTOP_BRIDGE_BIN: join(buildDir, "fd0-desktop-bridge"),
+  FD0_SFTP_BRIDGE_BIN: join(buildDir, "fd0-sftp-bridge"),
   FD0_DESKTOP_MODE: "isolated",
   FD0_DESKTOP_USER_DATA: join(testHome, "desktop-ui"),
   FD0_AGENT_SYNC_DISABLED: "1",
@@ -360,6 +361,15 @@ test("runs the isolated desktop vault end to end", async () => {
     await page.getByRole("option", { name: "System", exact: true }).click();
     await expect.poll(() => app.evaluate(({ nativeTheme }) => nativeTheme.themeSource)).toBe("system");
     const systemTheme = await app.evaluate(({ nativeTheme }) => nativeTheme.shouldUseDarkColors ? "dark" : "light");
+    await expect(page.locator("html")).toHaveAttribute("data-theme", systemTheme);
+    const oppositeSystemTheme: "light" | "dark" = systemTheme === "dark" ? "light" : "dark";
+    await app.evaluate(({ nativeTheme }, theme) => {
+      nativeTheme.themeSource = theme;
+    }, oppositeSystemTheme);
+    await expect(page.locator("html")).toHaveAttribute("data-theme", oppositeSystemTheme);
+    await app.evaluate(({ nativeTheme }) => {
+      nativeTheme.themeSource = "system";
+    });
     await expect(page.locator("html")).toHaveAttribute("data-theme", systemTheme);
     await themeSelect.click();
     await page.getByRole("option", { name: "Light", exact: true }).click();

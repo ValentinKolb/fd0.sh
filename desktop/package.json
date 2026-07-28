@@ -86,6 +86,10 @@
         "to": "bin/fd0-desktop-bridge"
       },
       {
+        "from": "../.build/desktop/fd0-sftp-bridge",
+        "to": "bin/fd0-sftp-bridge"
+      },
+      {
         "from": "../.build/desktop/fd0-agent",
         "to": "bin/fd0-agent"
       },

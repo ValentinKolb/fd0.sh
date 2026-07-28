@@ -1,4 +1,4 @@
-import { basename, dirname, extname, join, resolve, sep } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createReadStream } from "node:fs";
 import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -49,7 +49,9 @@ import {
   writeTerminalLauncherSettings,
 } from "./terminal-launcher";
 import { TerminalSessionManager, verifyTerminalRuntime } from "./terminal-session";
+import { SFTPBridgeClient } from "./sftp-bridge";
 import type {
+  BridgeErrorShape,
   DesktopCommand,
   DesktopTheme,
   DiagnosticsSnapshot,
@@ -66,12 +68,18 @@ import type {
   MoveItemInput,
   RecordRef,
   RenameItemInput,
+  ResolvedDesktopTheme,
   SavePassInput,
   SaveSSHKeyInput,
   SaveSSHHostInput,
   SaveSecretInput,
   ScopeShareInfo,
   StartupStatus,
+  SFTPEntry,
+  SFTPPreview,
+  SFTPProgress,
+  SFTPSessionInfo,
+  SFTPTransferEvent,
   SyncPreparation,
   TerminalLauncherSettings,
   TerminalLauncherState,
@@ -94,6 +102,16 @@ type TerminalWindowState = {
   remoteTitle: string;
 };
 const terminalWindows = new Map<number, TerminalWindowState>();
+type FileWindowState = {
+  window: BrowserWindow;
+  client: SFTPBridgeClient;
+  host: string;
+  alias: string;
+  scopeId: string;
+  environment: NodeJS.ProcessEnv;
+  activeTransfers: Set<string>;
+};
+const fileWindows = new Map<number, FileWindowState>();
 let bridge: BridgeSupervisor | null = null;
 const agentLifecycle = new AgentLifecycle();
 const managedClipboard = new ManagedClipboard(clipboard);
@@ -170,6 +188,7 @@ function runtimeEnvironment(): NodeJS.ProcessEnv {
       FD0_HOME: process.env.FD0_HOME?.trim() || join(homedir(), ".fd0"),
       FD0_AGENT_BIN: join(process.resourcesPath, "bin", "fd0-agent"),
       FD0_BIN: join(process.resourcesPath, "bin", "fd0"),
+      FD0_SFTP_BRIDGE_BIN: join(process.resourcesPath, "bin", "fd0-sftp-bridge"),
       FD0_DESKTOP_MODE: "system",
       FD0_DESKTOP_VERSION: app.getVersion(),
       ...(process.platform === "linux"
@@ -185,6 +204,7 @@ function runtimeEnvironment(): NodeJS.ProcessEnv {
     FD0_SSH_SOCK: requiredEnv("FD0_SSH_SOCK"),
     FD0_AGENT_BIN: requiredEnv("FD0_AGENT_BIN"),
     FD0_BIN: requiredEnv("FD0_BIN"),
+    FD0_SFTP_BRIDGE_BIN: requiredEnv("FD0_SFTP_BRIDGE_BIN"),
     FD0_DESKTOP_MODE: "isolated",
     FD0_AGENT_SYNC_DISABLED: "1",
     FD0_SSH_CONFIG_PATH: requiredEnv("FD0_SSH_CONFIG_PATH"),
@@ -198,6 +218,11 @@ function runtimeEnvironment(): NodeJS.ProcessEnv {
 function bridgeBinary(): string {
   if (!app.isPackaged) return requiredEnv("FD0_DESKTOP_BRIDGE_BIN");
   return join(process.resourcesPath, "bin", "fd0-desktop-bridge");
+}
+
+function sftpBridgeBinary(): string {
+  if (!app.isPackaged) return requiredEnv("FD0_SFTP_BRIDGE_BIN");
+  return join(process.resourcesPath, "bin", "fd0-sftp-bridge");
 }
 
 function terminalLauncherSettingsPath(): string {
@@ -701,6 +726,15 @@ function assertTrustedSender(event: Electron.IpcMainInvokeEvent): void {
   }
 }
 
+function assertAppWindowSender(event: Electron.IpcMainInvokeEvent): void {
+  const id = event.sender.id;
+  const trusted = mainWindow?.webContents.id === id
+    || largeTypeWindow?.webContents.id === id
+    || terminalWindows.get(id)?.window.webContents === event.sender
+    || fileWindows.get(id)?.window.webContents === event.sender;
+  if (!trusted) throw new Error("Untrusted IPC sender");
+}
+
 function terminalWindowForSender(
   event: Electron.IpcMainInvokeEvent | Electron.IpcMainEvent,
 ): TerminalWindowState {
@@ -709,6 +743,33 @@ function terminalWindowForSender(
     throw new Error("Untrusted terminal IPC sender");
   }
   return state;
+}
+
+function fileWindowForSender(
+  event: Electron.IpcMainInvokeEvent,
+): FileWindowState {
+  const state = fileWindows.get(event.sender.id);
+  if (!state || state.window.isDestroyed() || state.window.webContents !== event.sender) {
+    throw new Error("Untrusted file window IPC sender");
+  }
+  return state;
+}
+
+function transferError(error: unknown): BridgeErrorShape {
+  if (error instanceof DesktopBridgeError) {
+    return {
+      code: error.code,
+      message: error.message,
+      action: error.action,
+      retryable: error.retryable,
+    };
+  }
+  return {
+    code: "transfer_failed",
+    message: "The file transfer failed.",
+    action: "Try again. Open Support if the problem continues.",
+    retryable: true,
+  };
 }
 
 type IPCResult<T> = { ok: true; value: T } | { ok: false; error: { code: string; message: string; action?: string; retryable: boolean } };
@@ -896,6 +957,10 @@ function registerInfrastructureIPC(): void {
   handle("fd0:quit", async () => {
     app.quit();
   });
+  ipcMain.handle("fd0:system-theme", (event) => {
+    assertAppWindowSender(event);
+    return respond(async () => resolvedSystemTheme());
+  });
   handle("fd0:terminal-launcher", currentTerminalLauncherState);
   ipcMain.handle("fd0:set-theme", (event, theme: DesktopTheme) => {
     assertTrustedSender(event);
@@ -982,6 +1047,240 @@ function registerTerminalIPC(): void {
       diagnostics?.record("terminal", "title-rejected", error);
     }
   });
+}
+
+function sendFileTransfer(state: FileWindowState, value: SFTPTransferEvent): void {
+  if (state.window.isDestroyed() || state.window.webContents.isDestroyed()) return;
+  state.window.webContents.send("fd0:sftp-transfer", value);
+}
+
+function startFileTransfer(
+  state: FileWindowState,
+  direction: "upload" | "download",
+  name: string,
+  remotePath: string,
+  localPath: string,
+  recursive: boolean,
+  force: boolean,
+): void {
+  if (state.activeTransfers.size >= 8) {
+    throw new Error("Wait for an active transfer to finish before starting another.");
+  }
+  const transfer = state.client.transfer<{ path: string; bytes: number }>(
+    direction === "upload" ? "transfer.upload" : "transfer.download",
+    { remotePath, localPath, recursive, force },
+    (progress: SFTPProgress) => {
+      sendFileTransfer(state, {
+        id: transfer.id,
+        direction,
+        name,
+        remotePath,
+        state: "running",
+        ...progress,
+      });
+    },
+  );
+  state.activeTransfers.add(transfer.id);
+  sendFileTransfer(state, {
+    id: transfer.id,
+    direction,
+    name,
+    remotePath,
+    state: "running",
+    transferred: 0,
+    total: 0,
+  });
+  void transfer.result.then((result) => {
+    state.activeTransfers.delete(transfer.id);
+    sendFileTransfer(state, {
+      id: transfer.id,
+      direction,
+      name,
+      remotePath,
+      state: "completed",
+      transferred: result.bytes,
+      total: result.bytes,
+    });
+  }).catch((error) => {
+    state.activeTransfers.delete(transfer.id);
+    const publicError = transferError(error);
+    diagnostics?.record("sftp", `${direction}-failed`, error);
+    sendFileTransfer(state, {
+      id: transfer.id,
+      direction,
+      name,
+      remotePath,
+      state: publicError.code === "cancelled" ? "cancelled" : "failed",
+      transferred: 0,
+      total: 0,
+      error: publicError,
+    });
+  });
+}
+
+function requireTransferCapacity(state: FileWindowState, count: number): void {
+  if (count < 1 || state.activeTransfers.size+count > 8) {
+    throw new Error("Up to eight file transfers can run at once.");
+  }
+}
+
+function validRemotePath(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 4096 && !value.includes("\0");
+}
+
+function registerFileIPC(): void {
+  ipcMain.handle("fd0:sftp-session", (event) => respond(async (): Promise<SFTPSessionInfo> => {
+    const state = fileWindowForSender(event);
+    const session = await state.client.request<{ workingDirectory: string }>("session.info", {});
+    return { host: state.host, workingDirectory: session.workingDirectory };
+  }));
+  ipcMain.handle("fd0:sftp-reconnect", (event) => respond(async (): Promise<SFTPSessionInfo> => {
+    const state = fileWindowForSender(event);
+    if (state.activeTransfers.size > 0) {
+      throw new Error("Cancel or wait for active file transfers before reconnecting.");
+    }
+    state.client.dispose();
+    state.client = new SFTPBridgeClient(
+      sftpBridgeBinary(),
+      state.alias,
+      state.scopeId,
+      state.environment,
+      (diagnosticEvent) => diagnostics?.record("sftp", diagnosticEvent),
+    );
+    const session = await state.client.request<{ workingDirectory: string }>("session.info", {});
+    return { host: state.host, workingDirectory: session.workingDirectory };
+  }));
+  ipcMain.handle("fd0:sftp-list", (event, path: string) => respond(async () => {
+    const state = fileWindowForSender(event);
+    if (!validRemotePath(path)) throw new Error("Remote path is invalid");
+    return state.client.request<SFTPEntry[]>("dir.list", { path });
+  }));
+  ipcMain.handle("fd0:sftp-preview", (event, path: string) => respond(async (): Promise<SFTPPreview> => {
+    const state = fileWindowForSender(event);
+    if (!validRemotePath(path)) throw new Error("Remote path is invalid");
+    const preview = await state.client.request<{ data: string; size: number; truncated: boolean }>(
+      "file.preview",
+      { path },
+    );
+    return {
+      contentBase64: preview.data,
+      size: preview.size,
+      truncated: preview.truncated,
+    };
+  }));
+  ipcMain.handle("fd0:sftp-mkdir", (event, path: string) => respond(async () => {
+    const state = fileWindowForSender(event);
+    if (!validRemotePath(path)) throw new Error("Remote path is invalid");
+    await state.client.request("dir.mkdir", { path, parents: false });
+  }));
+  ipcMain.handle("fd0:sftp-rename", (event, oldPath: string, newPath: string) => respond(async () => {
+    const state = fileWindowForSender(event);
+    if (!validRemotePath(oldPath) || !validRemotePath(newPath)) throw new Error("Remote path is invalid");
+    await state.client.request("path.rename", { old: oldPath, new: newPath, force: false });
+  }));
+  ipcMain.handle("fd0:sftp-remove", (event, path: string, recursive: boolean) => respond(async () => {
+    const state = fileWindowForSender(event);
+    if (!validRemotePath(path)) throw new Error("Remote path is invalid");
+    await state.client.request("path.remove", { path, recursive: Boolean(recursive) });
+  }));
+  ipcMain.handle("fd0:sftp-upload", (event, remoteDirectory: string) => respond(async () => {
+    const state = fileWindowForSender(event);
+    if (!validRemotePath(remoteDirectory)) throw new Error("Remote path is invalid");
+    const selection = await dialog.showOpenDialog(state.window, {
+      title: `Upload to ${state.host}`,
+      properties: ["openFile", "openDirectory", "multiSelections"],
+    });
+    if (selection.canceled) return { started: 0 };
+    requireTransferCapacity(state, selection.filePaths.length);
+    for (const localPath of selection.filePaths) {
+      const info = await stat(localPath);
+      const name = basename(localPath);
+      startFileTransfer(
+        state,
+        "upload",
+        name,
+        remoteDirectory,
+        localPath,
+        info.isDirectory(),
+        false,
+      );
+    }
+    return { started: selection.filePaths.length };
+  }));
+  ipcMain.handle("fd0:sftp-upload-dropped", (event, remoteDirectory: string, localPaths: string[]) => respond(async () => {
+    const state = fileWindowForSender(event);
+    if (!validRemotePath(remoteDirectory) || !Array.isArray(localPaths) || localPaths.length > 100) {
+      throw new Error("Dropped files are invalid");
+    }
+    requireTransferCapacity(state, localPaths.length);
+    let started = 0;
+    for (const localPath of localPaths) {
+      if (typeof localPath !== "string" || !isAbsolute(localPath) || localPath.includes("\0")) {
+        throw new Error("Dropped file is invalid");
+      }
+      const info = await stat(localPath);
+      const name = basename(localPath);
+      startFileTransfer(
+        state,
+        "upload",
+        name,
+        remoteDirectory,
+        localPath,
+        info.isDirectory(),
+        false,
+      );
+      started += 1;
+    }
+    return { started };
+  }));
+  ipcMain.handle("fd0:sftp-download", (event, entry: SFTPEntry) => respond(async () => {
+    const state = fileWindowForSender(event);
+    if (
+      !entry ||
+      !validRemotePath(entry.path) ||
+      typeof entry.name !== "string" ||
+      !["file", "directory"].includes(entry.type)
+    ) {
+      throw new Error("Remote file is invalid");
+    }
+    let localPath: string;
+    if (entry.type === "directory") {
+      const selection = await dialog.showOpenDialog(state.window, {
+        title: `Download ${entry.name}`,
+        properties: ["openDirectory", "createDirectory"],
+      });
+      if (selection.canceled || selection.filePaths.length === 0) return { started: false };
+      localPath = join(selection.filePaths[0]!, entry.name);
+    } else {
+      const selection = await dialog.showSaveDialog(state.window, {
+        title: `Download ${entry.name}`,
+        defaultPath: entry.name,
+      });
+      if (selection.canceled || !selection.filePath) return { started: false };
+      localPath = selection.filePath;
+    }
+    startFileTransfer(
+      state,
+      "download",
+      entry.name,
+      entry.path,
+      localPath,
+      entry.type === "directory",
+      true,
+    );
+    return { started: true };
+  }));
+  ipcMain.handle("fd0:sftp-cancel", (event, id: string) => respond(async () => {
+    const state = fileWindowForSender(event);
+    if (typeof id !== "string" || id.length > 128) throw new Error("Transfer id is invalid");
+    await state.client.cancel(id);
+  }));
+  ipcMain.handle("fd0:sftp-close", (event) => respond(async () => {
+    const state = fileWindowForSender(event);
+    setImmediate(() => {
+      if (!state.window.isDestroyed()) state.window.close();
+    });
+  }));
 }
 
 function registerIPC(client: BridgeSupervisor): void {
@@ -1516,6 +1815,17 @@ function registerIPC(client: BridgeSupervisor): void {
     await spawnTerminal(plan);
     return { profileId: plan.profileId };
   });
+  handle("fd0:open-ssh-files", async (ref: RecordRef) => {
+    const detail = await loadTrustedItem(client, ref);
+    if (detail.item.badge !== "SSH HOST" || !detail.item.recordName.startsWith("host:")) {
+      throw new Error("Only fd0 SSH hosts can be opened in Files");
+    }
+    openFileWindow({
+      host: detail.item.recordName.slice("host:".length),
+      scopeId: detail.item.scopeId,
+      environment: runtimeEnvironment(),
+    });
+  });
   handle("fd0:open-item-url", async (ref: RecordRef) => {
     if (!mainWindow) throw new Error("fd0 window is unavailable");
     const detail = await loadTrustedItem(client, ref);
@@ -1644,6 +1954,10 @@ function windowBackgroundColor(): string {
   return dark ? "#0b0e0c" : "#ffffff";
 }
 
+function resolvedSystemTheme(): ResolvedDesktopTheme {
+  return nativeTheme.shouldUseDarkColors ? "dark" : "light";
+}
+
 function terminalBackgroundColor(theme: TerminalTheme): string {
   const dark = theme === "dark" || (theme === "system" && nativeTheme.shouldUseDarkColors);
   return dark ? "#0b0e0c" : "#f7f8f6";
@@ -1719,9 +2033,83 @@ function updateWindowBackgrounds(): void {
   const background = windowBackgroundColor();
   mainWindow?.setBackgroundColor(background);
   largeTypeWindow?.setBackgroundColor(background);
+  for (const [id, state] of fileWindows) {
+    if (state.window.isDestroyed()) {
+      fileWindows.delete(id);
+    } else {
+      state.window.setBackgroundColor(background);
+    }
+  }
   updateLiveTerminalWindows((state) => {
     state.window.setBackgroundColor(terminalBackgroundColor(state.theme));
   });
+}
+
+function updateSystemAppearance(): void {
+  updateWindowBackgrounds();
+  const theme = resolvedSystemTheme();
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
+      window.webContents.send("fd0:system-theme", theme);
+    }
+  }
+}
+
+function openFileWindow(options: {
+  host: string;
+  scopeId: string;
+  environment: NodeJS.ProcessEnv;
+}): BrowserWindow {
+  const mac = process.platform === "darwin";
+  const displayHost = terminalTitlePart(options.host) || "SSH host";
+  const window = new BrowserWindow({
+    width: 1040,
+    height: 700,
+    minWidth: 720,
+    minHeight: 480,
+    show: false,
+    title: `${displayHost} — Files — fd0`,
+    backgroundColor: windowBackgroundColor(),
+    ...(mac
+      ? {
+          titleBarStyle: "hiddenInset" as const,
+          trafficLightPosition: { x: 18, y: 18 },
+        }
+      : {}),
+    webPreferences: secureWebPreferences(["--fd0-files"]),
+  });
+  const client = new SFTPBridgeClient(
+    sftpBridgeBinary(),
+    options.host,
+    options.scopeId,
+    options.environment,
+    (event) => diagnostics?.record("sftp", event),
+  );
+  const id = window.webContents.id;
+  const state = {
+    window,
+    client,
+    host: displayHost,
+    alias: options.host,
+    scopeId: options.scopeId,
+    environment: options.environment,
+    activeTransfers: new Set<string>(),
+  } satisfies FileWindowState;
+  fileWindows.set(id, state);
+  applyWindowGuards(window);
+  window.on("closed", () => {
+    fileWindows.delete(id);
+    state.client.dispose();
+  });
+  window.webContents.on("render-process-gone", () => {
+    if (!window.isDestroyed()) window.destroy();
+  });
+  window.once("ready-to-show", () => {
+    window.show();
+    window.focus();
+  });
+  void window.loadURL(rendererEntryURL());
+  return window;
 }
 
 function openTerminalWindow(options: {
@@ -2053,7 +2441,7 @@ async function start(): Promise<void> {
     }
     return;
   }
-  nativeTheme.on("updated", updateWindowBackgrounds);
+  nativeTheme.on("updated", updateSystemAppearance);
   diagnostics = new DiagnosticsLog(join(app.getPath("logs"), "fd0-desktop.log"));
   diagnostics.record("app", "starting", `${process.platform}/${process.arch} ${app.getVersion()}`);
   if (lifecycleCommand) {
@@ -2075,6 +2463,7 @@ async function start(): Promise<void> {
   session.defaultSession.setPermissionCheckHandler(() => false);
   registerInfrastructureIPC();
   registerTerminalIPC();
+  registerFileIPC();
   registerLargeTypeIPC();
   buildMenu();
   mainWindow = createWindow();
@@ -2102,6 +2491,8 @@ app.on("before-quit", (event) => {
   // secret on screen while the vault is being locked.
   closeLargeTypeWindow();
   terminalSessions.closeAll();
+  for (const state of fileWindows.values()) state.client.dispose();
+  fileWindows.clear();
   if (!quitPrepared && bridge && !installingUpdate) {
     event.preventDefault();
     quitPrepared = true;
@@ -2115,7 +2506,7 @@ app.on("before-quit", (event) => {
   if (updateTimer) clearTimeout(updateTimer);
   if (securityStatusTimer) clearInterval(securityStatusTimer);
   securityStatusTimer = null;
-  nativeTheme.removeListener("updated", updateWindowBackgrounds);
+  nativeTheme.removeListener("updated", updateSystemAppearance);
   disposeAutoLockEvents?.();
   disposeAutoLockEvents = null;
   bridge?.dispose();

@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type {
   BridgeErrorShape,
   DesktopAPI,
@@ -13,11 +13,15 @@ import type {
   MoveItemInput,
   RenameItemInput,
   RecordRef,
+  ResolvedDesktopTheme,
   SavePassInput,
   SaveSecretInput,
   SaveSSHHostInput,
   SaveSSHKeyInput,
   StartupStatus,
+  SFTPEntry,
+  SFTPPreview,
+  SFTPTransferEvent,
   TerminalLauncherSettings,
   TerminalExit,
   TerminalSessionInfo,
@@ -52,6 +56,7 @@ const api: DesktopAPI = {
   development: process.argv.includes("--fd0-isolated"),
   largeTypeMode: process.argv.includes("--fd0-large-type"),
   terminalMode: process.argv.includes("--fd0-terminal"),
+  fileMode: process.argv.includes("--fd0-files"),
   startupStatus: () => invoke<StartupStatus>("fd0:startup-status"),
   consumeUpdateRequest: () => invoke<boolean>("fd0:consume-update-request"),
   retryStartup: () => invoke<StartupStatus>("fd0:retry-startup"),
@@ -108,10 +113,17 @@ const api: DesktopAPI = {
   sync: () => invoke("fd0:sync"),
   launchAtLogin: () => invoke("fd0:launch-at-login"),
   setLaunchAtLogin: (value: boolean) => invoke("fd0:set-launch-at-login", value),
+  systemTheme: () => invoke<ResolvedDesktopTheme>("fd0:system-theme"),
+  onSystemTheme: (handler: (theme: ResolvedDesktopTheme) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, theme: ResolvedDesktopTheme) => handler(theme);
+    ipcRenderer.on("fd0:system-theme", listener);
+    return () => ipcRenderer.removeListener("fd0:system-theme", listener);
+  },
   setTheme: (theme: DesktopTheme) => invoke("fd0:set-theme", theme),
   terminalLauncher: () => invoke("fd0:terminal-launcher"),
   setTerminalLauncher: (settings: TerminalLauncherSettings) => invoke("fd0:set-terminal-launcher", settings),
   openSSHHost: (ref: RecordRef) => invoke("fd0:open-ssh-host", ref),
+  openSSHFiles: (ref: RecordRef) => invoke("fd0:open-ssh-files", ref),
   terminalSession: () => invoke<TerminalSessionInfo>("fd0:terminal-session"),
   startTerminal: (cols: number, rows: number) => invoke<void>("fd0:terminal-start", cols, rows),
   writeTerminal: (data: string) => ipcRenderer.send("fd0:terminal-write", data),
@@ -139,6 +151,28 @@ const api: DesktopAPI = {
     const listener = (_event: Electron.IpcRendererEvent, theme: TerminalTheme) => handler(theme);
     ipcRenderer.on("fd0:terminal-theme", listener);
     return () => ipcRenderer.removeListener("fd0:terminal-theme", listener);
+  },
+  sftpSession: () => invoke("fd0:sftp-session"),
+  sftpReconnect: () => invoke("fd0:sftp-reconnect"),
+  sftpList: (path: string) => invoke("fd0:sftp-list", path),
+  sftpPreview: (path: string) => invoke<SFTPPreview>("fd0:sftp-preview", path),
+  sftpUpload: (remoteDirectory: string) => invoke("fd0:sftp-upload", remoteDirectory),
+  sftpUploadDropped: (remoteDirectory: string, files: File[]) =>
+    invoke(
+      "fd0:sftp-upload-dropped",
+      remoteDirectory,
+      files.map((file) => webUtils.getPathForFile(file)),
+    ),
+  sftpDownload: (entry: SFTPEntry) => invoke("fd0:sftp-download", entry),
+  sftpMkdir: (path: string) => invoke("fd0:sftp-mkdir", path),
+  sftpRename: (oldPath: string, newPath: string) => invoke("fd0:sftp-rename", oldPath, newPath),
+  sftpRemove: (path: string, recursive: boolean) => invoke("fd0:sftp-remove", path, recursive),
+  sftpCancel: (id: string) => invoke("fd0:sftp-cancel", id),
+  closeSFTP: () => invoke("fd0:sftp-close"),
+  onSFTPTransfer: (handler: (event: SFTPTransferEvent) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, value: SFTPTransferEvent) => handler(value);
+    ipcRenderer.on("fd0:sftp-transfer", listener);
+    return () => ipcRenderer.removeListener("fd0:sftp-transfer", listener);
   },
   openItemURL: (ref: RecordRef) => invoke("fd0:open-item-url", ref),
   openSupportLink: (target: "docs" | "issues") => invoke("fd0:open-support-link", target),

@@ -30,6 +30,7 @@ const environment: NodeJS.ProcessEnv = {
   FD0_AGENT_BIN: join(buildDir, "fd0-agent"),
   FD0_BIN: join(buildDir, "fd0"),
   FD0_DESKTOP_BRIDGE_BIN: join(buildDir, "fd0-desktop-bridge"),
+  FD0_SFTP_BRIDGE_BIN: join(buildDir, "fd0-sftp-bridge"),
   FD0_DESKTOP_MODE: "isolated",
   FD0_DESKTOP_USER_DATA: join(shotHome, "desktop-ui"),
   FD0_AGENT_SYNC_DISABLED: "1",

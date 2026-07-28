@@ -9,6 +9,7 @@ import {
   repoRoot,
   runtimeDir,
   seedBin,
+  sftpBridgeBin,
 } from "./paths";
 import { run } from "./process";
 
@@ -22,6 +23,7 @@ const version = process.env.FD0_DESKTOP_VERSION?.trim();
 for (const [output, pkg, versioned, desktopManaged] of [
   [agentBin, "./cmd/fd0-agent", true, false],
   [bridgeBin, "./cmd/fd0-desktop-bridge", false, false],
+  [sftpBridgeBin, "./cmd/fd0-sftp-bridge", false, false],
   [cliBin, "./cmd/fd0", true, true],
   [seedBin, "./cmd/fd0-desktop-dev-seed", false, false],
   [releaseVerifierBin, "./cmd/fd0-release-verify", false, false],

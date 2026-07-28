@@ -10,6 +10,7 @@ import {
   IconExternalLink,
   IconEye,
   IconEyeOff,
+  IconFolder,
   IconKey,
   IconStar,
   IconTextSize,
@@ -209,6 +210,13 @@ function DetailContent(props: {
       );
   }
 
+  function openSSHFiles(): void {
+    void window.fd0
+      .openSSHFiles({ scopeId: item().scopeId, name: item().recordName })
+      .then(() => vault.notify("Remote files opened"))
+      .catch((cause) => vault.fail(cause, "fd0 could not open remote files"));
+  }
+
   const menuSections = createMemo<MenuSection[]>(() => {
     const primary = primaryField();
     const website = websiteField();
@@ -291,6 +299,12 @@ function DetailContent(props: {
                   run: openSSHHost,
                 },
                 {
+                  id: "open-ssh-files",
+                  label: "Browse files",
+                  icon: IconFolder,
+                  run: openSSHFiles,
+                },
+                {
                   id: "copy-ssh-command",
                   label: "Copy SSH command",
                   icon: IconTerminal2,
@@ -338,6 +352,9 @@ function DetailContent(props: {
           <Show when={item().badge === "SSH HOST" && !props.raw}>
             <IconButton label="Open in terminal" onClick={openSSHHost}>
               <IconTerminal2 size={17} />
+            </IconButton>
+            <IconButton label="Browse files" onClick={openSSHFiles}>
+              <IconFolder size={17} />
             </IconButton>
           </Show>
           <Show when={item().kind === "password" && !props.raw}>

@@ -377,6 +377,7 @@ export type DesktopCommand =
   | "refresh";
 
 export type DesktopTheme = "system" | "dark" | "light";
+export type ResolvedDesktopTheme = Exclude<DesktopTheme, "system">;
 export type TerminalTheme = "system" | "dark" | "light";
 
 export type TerminalProfileID =
@@ -426,6 +427,43 @@ export type TerminalExit = {
   signal?: number;
 };
 
+export type SFTPEntry = {
+  name: string;
+  path: string;
+  type: "file" | "directory" | "symlink" | "other";
+  size: number;
+  mode: string;
+  modifiedAt: string;
+  linkTarget?: string;
+};
+
+export type SFTPSessionInfo = {
+  host: string;
+  workingDirectory: string;
+};
+
+export type SFTPPreview = {
+  contentBase64: string;
+  size: number;
+  truncated: boolean;
+};
+
+export type SFTPProgress = {
+  transferred: number;
+  total: number;
+};
+
+export type SFTPTransferEvent = {
+  id: string;
+  direction: "upload" | "download";
+  name: string;
+  remotePath: string;
+  state: "running" | "completed" | "failed" | "cancelled";
+  transferred: number;
+  total: number;
+  error?: BridgeErrorShape;
+};
+
 export type DesktopAPI = {
   platform: NodeJS.Platform;
   development: boolean;
@@ -437,6 +475,8 @@ export type DesktopAPI = {
   largeTypeMode: boolean;
   /** True only inside a dedicated fd0 terminal window. */
   terminalMode: boolean;
+  /** True only inside a dedicated remote-files window. */
+  fileMode: boolean;
   startupStatus(): Promise<StartupStatus>;
   consumeUpdateRequest(): Promise<boolean>;
   retryStartup(): Promise<StartupStatus>;
@@ -493,10 +533,13 @@ export type DesktopAPI = {
   sync(): Promise<{ ok: boolean; cancelled?: boolean }>;
   launchAtLogin(): Promise<boolean>;
   setLaunchAtLogin(value: boolean): Promise<boolean>;
+  systemTheme(): Promise<ResolvedDesktopTheme>;
+  onSystemTheme(handler: (theme: ResolvedDesktopTheme) => void): () => void;
   setTheme(theme: DesktopTheme): Promise<void>;
   terminalLauncher(): Promise<TerminalLauncherState>;
   setTerminalLauncher(settings: TerminalLauncherSettings): Promise<TerminalLauncherState>;
   openSSHHost(ref: RecordRef): Promise<{ profileId: TerminalProfileID }>;
+  openSSHFiles(ref: RecordRef): Promise<void>;
   terminalSession(): Promise<TerminalSessionInfo>;
   startTerminal(cols: number, rows: number): Promise<void>;
   writeTerminal(data: string): void;
@@ -509,6 +552,19 @@ export type DesktopAPI = {
   onTerminalExit(handler: (result: TerminalExit) => void): () => void;
   onTerminalProcess(handler: (processName: string) => void): () => void;
   onTerminalTheme(handler: (theme: TerminalTheme) => void): () => void;
+  sftpSession(): Promise<SFTPSessionInfo>;
+  sftpReconnect(): Promise<SFTPSessionInfo>;
+  sftpList(path: string): Promise<SFTPEntry[]>;
+  sftpPreview(path: string): Promise<SFTPPreview>;
+  sftpUpload(remoteDirectory: string): Promise<{ started: number }>;
+  sftpUploadDropped(remoteDirectory: string, files: File[]): Promise<{ started: number }>;
+  sftpDownload(entry: SFTPEntry): Promise<{ started: boolean }>;
+  sftpMkdir(path: string): Promise<void>;
+  sftpRename(oldPath: string, newPath: string): Promise<void>;
+  sftpRemove(path: string, recursive: boolean): Promise<void>;
+  sftpCancel(id: string): Promise<void>;
+  closeSFTP(): Promise<void>;
+  onSFTPTransfer(handler: (event: SFTPTransferEvent) => void): () => void;
   openItemURL(ref: RecordRef): Promise<void>;
   openSupportLink(target: "docs" | "issues"): Promise<void>;
   showLargeType(label: string, value: string): Promise<LargeTypeWindowResult>;

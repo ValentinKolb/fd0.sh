@@ -1,7 +1,7 @@
 ---
 name: fd0
 description: >-
-  Use this skill whenever the user — or an agent acting on the user's behalf — needs to store, fetch, share, or organize secrets with the fd0 CLI (`fd0 init`, `fd0 secret set`, `fd0 secret get`, `fd0 sync`, `fd0 scope ...`, `fd0 card ...`), use fd0 as a password manager (`fd0 pass ...`), manage SSH keys and hosts (`fd0 key ...`, `fd0 ssh ...`), or manage Talos Linux / Kubernetes credentials (`fd0 talos ...`, `fd0 kube ...`). Trigger on any of these phrasings even when the user does not name fd0 explicitly — "store a deploy key", "save this API token", "fetch my DB password", "share a credential with bob", "add bob to the work scope", "rotate access", "set up my passphrase", "vault locked", "lock failed", "sync errored", "open my password manager", "store a login", "copy my GitHub password", "add a TOTP code", "attach a recovery key file", "generate an ssh key", "share ssh access with the team", "connect to the prod box", "store the talosconfig", "share the kubeconfig", "bootstrap a talos cluster". Also trigger when an agent in the middle of another task needs to inject a credential into a script or deploy step — `fd0 secret get NAME` or `fd0 pass field get ITEM FIELD --raw` is the canonical retrieval path. Do NOT trigger for hosting or operating the fd0-server; that is a separate concern documented in this project's docs/HOSTING.md.
+  Use this skill whenever the user — or an agent acting on the user's behalf — needs to store, fetch, share, or organize secrets with the fd0 CLI (`fd0 init`, `fd0 secret set`, `fd0 secret get`, `fd0 sync`, `fd0 scope ...`, `fd0 card ...`), use fd0 as a password manager (`fd0 pass ...`), manage SSH keys, hosts, terminal sessions, or remote files (`fd0 key ...`, `fd0 ssh ...`, `fd0 sftp ...`), or manage Talos Linux / Kubernetes credentials (`fd0 talos ...`, `fd0 kube ...`). Trigger on any of these phrasings even when the user does not name fd0 explicitly — "store a deploy key", "save this API token", "fetch my DB password", "share a credential with bob", "add bob to the work scope", "rotate access", "set up my passphrase", "vault locked", "lock failed", "sync errored", "open my password manager", "store a login", "copy my GitHub password", "add a TOTP code", "attach a recovery key file", "generate an ssh key", "share ssh access with the team", "connect to the prod box", "browse files on the prod box", "upload this release to the server", "download a remote log", "store the talosconfig", "share the kubeconfig", "bootstrap a talos cluster". Also trigger when an agent in the middle of another task needs to inject a credential into a script or deploy step — `fd0 secret get NAME` or `fd0 pass field get ITEM FIELD --raw` is the canonical retrieval path. Do NOT trigger for hosting or operating the fd0-server; that is a separate concern documented in this project's docs/HOSTING.md.
 ---
 
 # fd0 — Zero-knowledge secrets CLI
@@ -55,6 +55,11 @@ Map the user's intent to the right command before typing anything:
 | Show a public key for authorized_keys | `fd0 key show NAME --pub` |
 | Add an SSH host | `fd0 ssh add ALIAS [user@]host[:port] [--key NAME \| --with-key] [--jump ALIAS] [--tag T]` |
 | Connect to a host | `fd0 ssh ALIAS` (or bare `fd0 ssh` for the fuzzy picker) |
+| Browse remote files interactively | `fd0 sftp ALIAS` |
+| List or inspect remote files | `fd0 sftp ls ALIAS [PATH] [--json]`; `fd0 sftp tree ALIAS [PATH] --depth N`; `fd0 sftp stat ALIAS PATH` |
+| Upload a file or directory | `fd0 sftp cp ALIAS LOCAL remote:PATH [--recursive] [--force]` |
+| Download a file or directory | `fd0 sftp cp ALIAS remote:PATH LOCAL [--recursive] [--force]` |
+| Manage remote paths | `fd0 sftp mkdir ALIAS PATH`; `fd0 sftp mv ALIAS OLD NEW`; `fd0 sftp rm ALIAS PATH [--recursive --yes]` |
 | One-time SSH setup | `fd0 ssh enable` + `export SSH_AUTH_SOCK="$(fd0 ssh sock)"` in your shell rc |
 | Tag hosts without a full edit | `fd0 ssh tag ALIAS --add T --remove U` (`ssh edit --tag` replaces the whole list) |
 | Store a Talos context | `fd0 talos add NAME --from-config ~/.talos/config` (or per-field `--ca-file/--crt-file/--key-file`) |
@@ -126,6 +131,11 @@ Two properties worth relying on:
 - **Restore writes forward.** `history restore` adds a new version carrying the old content rather than rewinding the chain, so the history stays append-only and the restore is itself auditable.
 
 Module-specific commands sit alongside these, not instead of them: `pass field/notes/totp/file`, `ssh connect/tag`, `kube sync`, `talos secrets`.
+
+For remote file browsing and transfer, read `references/sftp.md` before
+constructing commands. It defines the `remote:` operand, overwrite/delete
+confirmations, JSON use, and the boundary between fd0-managed SSH access and
+remote authorization.
 
 ## Mental model
 
@@ -342,6 +352,7 @@ These are not negotiable. The skill is useless and dangerous without them.
 5. Prefer `fd0 pass copy` over `fd0 pass show --reveal` for passwords/TOTP/secrets. Use `--reveal`, `pass field get`, or `pass file export` only when plaintext output is explicitly needed and keep it out of logs.
 6. Confirm before `fd0 rm`, `fd0 pass rm`, `fd0 pass field rm`, `fd0 scope leave`, `fd0 auth rm`, and `fd0 recovery import` — each one is destructive or irreversible without a backup.
 7. When the user has not run `fd0 recovery export`, prompt them to do it before any operation that could lose `super_priv` (re-init, device migration, `auth rm` of the last method).
+8. Treat `fd0 sftp rm`, overwriting transfers (`--force`), and remote renames as remote mutations. Confirm the exact host and path before destructive operations; non-interactive recursive delete additionally requires `--recursive --yes`.
 
 ## Troubleshooting
 
@@ -363,6 +374,7 @@ These are not negotiable. The skill is useless and dangerous without them.
 
 - **`references/protocol.md`** — Before answering questions about what the server can/cannot see, why removing a member actually revokes access, how the transparency log works, or what "ciphertext-only contract" means. Also before discussing trust assumptions for self-hosting vs hosted.
 - **`references/install.md`** — When the user wants to install or update fd0 itself, or wants to install this skill in a different setup. Includes `bunx skills add` and manual paths.
+- **`references/sftp.md`** — Before browsing, uploading, downloading, renaming, or deleting files on an fd0 SSH host.
 
 ## When NOT to use this skill
 

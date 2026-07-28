@@ -1,6 +1,6 @@
 # fd0 Desktop
 
-fd0 Desktop is the Electron and SolidJS client for the existing fd0 agent. It presents passwords, general secrets, SSH access, kubeconfigs, and Talos contexts without moving private-key ownership into the renderer.
+fd0 Desktop is the Electron and SolidJS client for the existing fd0 agent. It presents passwords, general secrets, SSH access and remote files, kubeconfigs, and Talos contexts without moving private-key ownership into the renderer.
 
 ## Architecture
 
@@ -14,6 +14,14 @@ Electron main process
 fd0-desktop-bridge
     | existing internal/cli and domain packages
 fd0-agent
+
+Files renderer
+    | typed file-operation IPC + native local file dialogs
+Electron main process
+    | bounded NDJSON with progress and cancellation
+fd0-sftp-bridge
+    | system OpenSSH using fd0's rendered host configuration
+remote SFTP subsystem
 ```
 
 The agent remains the long-lived key holder. The renderer has no Node.js access, network access, filesystem access, or direct agent socket access. Secret clipboard writes, attachment export, recovery files, and external links cross native main-process handlers.
@@ -89,8 +97,9 @@ The Electron test launches real temporary fd0 agents and vaults. It covers rende
 
 - Development and tests require `FD0_DESKTOP_MODE=isolated`, a non-production `FD0_HOME`, an exact marker, a dedicated `FD0_SSH_SOCK`, and `FD0_AGENT_SYNC_DISABLED=1`.
 - They also require `FD0_SSH_CONFIG_PATH`. `FD0_HOME` isolates the vault but not what fd0 writes out of it: every mutating `fd0 ssh` command re-renders `~/.ssh/fd0.conf`, so without this an isolated run still overwrites the developer's real ssh_config.
-- Packaged builds use `FD0_DESKTOP_MODE=system` and bundled `fd0`, `fd0-agent`, and bridge binaries.
+- Packaged builds use `FD0_DESKTOP_MODE=system` and bundled `fd0`, `fd0-agent`, desktop bridge, and SFTP bridge binaries.
 - IPC channels and bridge methods are explicit allowlists with strict decoding and 1 MiB frame limits.
+- Remote transfers retain strict OpenSSH host verification, reject recursive symlinks, write through temporary destinations, and require explicit overwrite or delete actions.
 - Renderer navigation, new windows, permissions, and network connections are denied.
 - Copied secrets clear after 30 seconds when the clipboard still contains the copied value.
 - Electron production fuses disable RunAsNode, Node options, and inspector arguments and require the embedded ASAR.

@@ -1,7 +1,7 @@
 import { appendFile, mkdir, rename, rm, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 
-export type DiagnosticComponent = "app" | "agent" | "bridge" | "sync" | "terminal" | "updater";
+export type DiagnosticComponent = "app" | "agent" | "bridge" | "sync" | "terminal" | "sftp" | "updater";
 
 export type DiagnosticEvent = {
   at: string;

@@ -1,10 +1,10 @@
-import type { DesktopTheme } from "../../../shared/contracts";
+import type { DesktopTheme, ResolvedDesktopTheme } from "../../../shared/contracts";
 
 const THEME_STORAGE_KEY = "fd0.theme";
-const SYSTEM_DARK_QUERY = "(prefers-color-scheme: dark)";
-export type ResolvedDesktopTheme = Exclude<DesktopTheme, "system">;
 
 let removeActiveSystemListener: (() => void) | undefined;
+let systemTheme: ResolvedDesktopTheme = "light";
+const systemThemeListeners = new Set<() => void>();
 
 export function readTheme(storage: Pick<Storage, "getItem">, development: boolean): DesktopTheme {
   const stored = storage.getItem(THEME_STORAGE_KEY);
@@ -20,7 +20,7 @@ export function resolveTheme(theme: DesktopTheme, systemDark: boolean): Resolved
 export function applyTheme(
   theme: DesktopTheme,
   root: HTMLElement = document.documentElement,
-  systemDark = window.matchMedia(SYSTEM_DARK_QUERY).matches,
+  systemDark = systemTheme === "dark",
 ): ResolvedDesktopTheme {
   const resolved = resolveTheme(theme, systemDark);
   root.dataset.theme = resolved;
@@ -31,24 +31,38 @@ export function applyTheme(
 export function activateTheme(
   theme: DesktopTheme,
   root: HTMLElement = document.documentElement,
-  media: MediaQueryList = window.matchMedia(SYSTEM_DARK_QUERY),
 ): () => void {
   removeActiveSystemListener?.();
   removeActiveSystemListener = undefined;
 
   const update = (): void => {
-    applyTheme(theme, root, media.matches);
+    applyTheme(theme, root);
   };
   update();
 
   if (theme !== "system") return () => undefined;
-  media.addEventListener("change", update);
+  systemThemeListeners.add(update);
   const stop = (): void => {
-    media.removeEventListener("change", update);
+    systemThemeListeners.delete(update);
     if (removeActiveSystemListener === stop) removeActiveSystemListener = undefined;
   };
   removeActiveSystemListener = stop;
   return stop;
+}
+
+export function setSystemTheme(theme: ResolvedDesktopTheme): void {
+  if (systemTheme === theme) return;
+  systemTheme = theme;
+  for (const listener of systemThemeListeners) listener();
+}
+
+export function systemThemeIsDark(): boolean {
+  return systemTheme === "dark";
+}
+
+export function observeSystemTheme(listener: () => void): () => void {
+  systemThemeListeners.add(listener);
+  return () => systemThemeListeners.delete(listener);
 }
 
 export function storeTheme(storage: Pick<Storage, "setItem">, theme: DesktopTheme): void {

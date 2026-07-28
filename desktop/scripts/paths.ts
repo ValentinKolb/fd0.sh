@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 export const repoRoot = resolve(import.meta.dirname, "../..");
 export const buildDir = join(repoRoot, ".build", "desktop");
 export const bridgeBin = join(buildDir, "fd0-desktop-bridge");
+export const sftpBridgeBin = join(buildDir, "fd0-sftp-bridge");
 export const agentBin = join(buildDir, "fd0-agent");
 export const cliBin = join(buildDir, "fd0");
 export const seedBin = join(buildDir, "fd0-desktop-dev-seed");
@@ -30,6 +31,7 @@ export const devEnv: NodeJS.ProcessEnv = {
   FD0_AGENT_BIN: agentBin,
   FD0_BIN: cliBin,
   FD0_DESKTOP_BRIDGE_BIN: bridgeBin,
+  FD0_SFTP_BRIDGE_BIN: sftpBridgeBin,
   FD0_DESKTOP_MODE: "isolated",
   FD0_DESKTOP_USER_DATA: devUserData,
   FD0_AGENT_SYNC_DISABLED: "1",

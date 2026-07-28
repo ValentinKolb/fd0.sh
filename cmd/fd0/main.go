@@ -41,6 +41,7 @@ type rootCLI struct {
 	Doctor   doctorCmd   `cmd:"" help:"Diagnose vault, chain, and tip-binding consistency."`
 	Key      keyCmd      `cmd:"" help:"Manage cryptographic keys (top-level; SSH and future consumers use them)."`
 	Ssh      sshCmd      `cmd:"" help:"Manage SSH hosts + connect. Without args opens a fuzzy picker."`
+	Sftp     sftpCmd     `cmd:"" help:"Browse and transfer files on fd0 SSH hosts."`
 	Pass     passCmd     `cmd:"" help:"Manage structured passwords, TOTP, passkeys, and small files."`
 	Talos    talosCmd    `cmd:"" help:"Manage Talos Linux contexts + secrets.yaml DR bundles."`
 	Kube     kubeCmd     `cmd:"" help:"Manage Kubernetes kubeconfig clusters (Talos, EKS, GKE, AKS, …)."`
@@ -258,6 +259,77 @@ type sshConnectCmd struct {
 	Scope string   `name:"scope" help:"Scope label or id."`
 	Tag   []string `name:"tag" help:"Pre-filter picker by tag."`
 	Cmd   []string `arg:"" optional:"" passthrough:"" help:"Command to execute on the host (passed to ssh)."`
+}
+
+// ───── sftp ──────────────────────────────────────────────────────────
+type sftpCmd struct {
+	Connect sftpConnectCmd `cmd:"" default:"withargs" help:"Open an interactive SFTP session."`
+	List    sftpListCmd    `cmd:"" aliases:"ls" help:"List a remote directory."`
+	Tree    sftpTreeCmd    `cmd:"" help:"Print a bounded remote directory tree."`
+	Stat    sftpStatCmd    `cmd:"" help:"Show remote file metadata."`
+	Copy    sftpCopyCmd    `cmd:"" name:"cp" help:"Copy between this device and a remote host."`
+	Mkdir   sftpMkdirCmd   `cmd:"" help:"Create a remote directory."`
+	Move    sftpMoveCmd    `cmd:"" name:"mv" help:"Rename or move a remote path."`
+	Remove  sftpRemoveCmd  `cmd:"" name:"rm" help:"Remove a remote path."`
+}
+
+type sftpConnectCmd struct {
+	Host  string `arg:"" help:"Host alias."`
+	Scope string `name:"scope" help:"Scope label or id."`
+}
+
+type sftpListCmd struct {
+	Host  string `arg:"" help:"Host alias."`
+	Path  string `arg:"" optional:"" help:"Remote directory. Default: remote home."`
+	Scope string `name:"scope" help:"Scope label or id."`
+	JSON  bool   `name:"json" help:"Print JSON."`
+}
+
+type sftpTreeCmd struct {
+	Host  string `arg:"" help:"Host alias."`
+	Path  string `arg:"" optional:"" help:"Remote directory. Default: remote home."`
+	Scope string `name:"scope" help:"Scope label or id."`
+	Depth int    `name:"depth" default:"3" help:"Maximum directory depth."`
+	JSON  bool   `name:"json" help:"Print JSON."`
+}
+
+type sftpStatCmd struct {
+	Host  string `arg:"" help:"Host alias."`
+	Path  string `arg:"" help:"Remote path."`
+	Scope string `name:"scope" help:"Scope label or id."`
+	JSON  bool   `name:"json" help:"Print JSON."`
+}
+
+type sftpCopyCmd struct {
+	Host      string `arg:"" help:"Host alias."`
+	Source    string `arg:"" help:"Local path or remote:PATH."`
+	Dest      string `arg:"" help:"Local path or remote:PATH."`
+	Scope     string `name:"scope" help:"Scope label or id."`
+	Recursive bool   `name:"recursive" short:"r" help:"Copy directories recursively without following symlinks."`
+	Force     bool   `name:"force" help:"Replace an existing file destination."`
+}
+
+type sftpMkdirCmd struct {
+	Host    string `arg:"" help:"Host alias."`
+	Path    string `arg:"" help:"Remote directory."`
+	Scope   string `name:"scope" help:"Scope label or id."`
+	Parents bool   `name:"parents" short:"p" help:"Create missing parent directories."`
+}
+
+type sftpMoveCmd struct {
+	Host  string `arg:"" help:"Host alias."`
+	Old   string `arg:"" help:"Existing remote path."`
+	New   string `arg:"" help:"New remote path."`
+	Scope string `name:"scope" help:"Scope label or id."`
+	Force bool   `name:"force" help:"Replace an existing destination when supported."`
+}
+
+type sftpRemoveCmd struct {
+	Host      string `arg:"" help:"Host alias."`
+	Path      string `arg:"" help:"Remote path."`
+	Scope     string `name:"scope" help:"Scope label or id."`
+	Recursive bool   `name:"recursive" short:"r" help:"Remove a directory and its contents without following symlinks."`
+	Yes       bool   `name:"yes" short:"y" help:"Confirm the destructive operation."`
 }
 
 // ───── pass ───────────────────────────────────────────────────────────
@@ -922,6 +994,15 @@ func commandNeedsUnlockedVault(command string) bool {
 		"talos history restore <name> <seq>",
 		"pass move <name>",
 		"ssh", "ssh connect", "ssh connect <alias>", "ssh connect <alias> <cmd>",
+		"sftp", "sftp connect", "sftp connect <host>",
+		"sftp list <host>", "sftp list <host> <path>",
+		"sftp ls <host>", "sftp ls <host> <path>",
+		"sftp tree <host>", "sftp tree <host> <path>",
+		"sftp stat <host> <path>",
+		"sftp cp <host> <source> <dest>",
+		"sftp mkdir <host> <path>",
+		"sftp mv <host> <old> <new>",
+		"sftp rm <host> <path>",
 		"pass", "pass <query>", "pass browse", "pass browse <query>",
 		"pass add <name>",
 		"pass edit <name>",
@@ -1225,6 +1306,50 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 
 	case "ssh", "ssh connect", "ssh connect <alias>", "ssh connect <alias> <cmd>":
 		return cli.RunSSHConnect(ctx, c.Ssh.Connect.Scope, c.Ssh.Connect.Alias, c.Ssh.Connect.Cmd, c.Ssh.Connect.Tag)
+
+	// ─── sftp ────────────────────────────────────────────────────────
+	case "sftp", "sftp connect", "sftp connect <host>":
+		return cli.RunSFTPInteractive(ctx, c.Sftp.Connect.Host, c.Sftp.Connect.Scope)
+	case "sftp list <host>", "sftp list <host> <path>", "sftp ls <host>", "sftp ls <host> <path>":
+		return cli.RunSFTPList(ctx, cli.SFTPListOpts{
+			Host: c.Sftp.List.Host, Path: c.Sftp.List.Path, Scope: c.Sftp.List.Scope, JSON: c.Sftp.List.JSON,
+		})
+	case "sftp tree <host>", "sftp tree <host> <path>":
+		return cli.RunSFTPTree(ctx, cli.SFTPTreeOpts{
+			SFTPListOpts: cli.SFTPListOpts{
+				Host: c.Sftp.Tree.Host, Path: c.Sftp.Tree.Path, Scope: c.Sftp.Tree.Scope, JSON: c.Sftp.Tree.JSON,
+			},
+			Depth: c.Sftp.Tree.Depth,
+		})
+	case "sftp stat <host> <path>":
+		return cli.RunSFTPStat(ctx, cli.SFTPListOpts{
+			Host: c.Sftp.Stat.Host, Path: c.Sftp.Stat.Path, Scope: c.Sftp.Stat.Scope, JSON: c.Sftp.Stat.JSON,
+		})
+	case "sftp cp <host> <source> <dest>":
+		return cli.RunSFTPCopy(ctx, cli.SFTPCopyOpts{
+			Host:      c.Sftp.Copy.Host,
+			Source:    c.Sftp.Copy.Source,
+			Dest:      c.Sftp.Copy.Dest,
+			Scope:     c.Sftp.Copy.Scope,
+			Recursive: c.Sftp.Copy.Recursive,
+			Force:     c.Sftp.Copy.Force,
+		})
+	case "sftp mkdir <host> <path>":
+		return cli.RunSFTPMkdir(ctx, cli.SFTPMkdirOpts{
+			Host: c.Sftp.Mkdir.Host, Path: c.Sftp.Mkdir.Path, Scope: c.Sftp.Mkdir.Scope, Parents: c.Sftp.Mkdir.Parents,
+		})
+	case "sftp mv <host> <old> <new>":
+		return cli.RunSFTPMove(ctx, cli.SFTPMoveOpts{
+			Host: c.Sftp.Move.Host, Old: c.Sftp.Move.Old, New: c.Sftp.Move.New, Scope: c.Sftp.Move.Scope, Force: c.Sftp.Move.Force,
+		})
+	case "sftp rm <host> <path>":
+		return cli.RunSFTPRemove(ctx, cli.SFTPRemoveOpts{
+			Host:      c.Sftp.Remove.Host,
+			Path:      c.Sftp.Remove.Path,
+			Scope:     c.Sftp.Remove.Scope,
+			Recursive: c.Sftp.Remove.Recursive,
+			Yes:       c.Sftp.Remove.Yes,
+		})
 
 	// ─── pass ─────────────────────────────────────────────────────────
 	case "pass", "pass <query>", "pass browse", "pass browse <query>":

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { activateTheme, readTheme, resolveTheme } from "../src/renderer/src/lib/theme";
+import { activateTheme, readTheme, resolveTheme, setSystemTheme } from "../src/renderer/src/lib/theme";
 
 function storage(value: string | null): Pick<Storage, "getItem"> {
   return { getItem: () => value };
@@ -10,27 +10,6 @@ function root(): HTMLElement {
     dataset: {},
     style: { colorScheme: "" },
   } as unknown as HTMLElement;
-}
-
-function media(initial: boolean): MediaQueryList & { emit(matches: boolean): void } {
-  let matches = initial;
-  const listeners = new Set<() => void>();
-  return {
-    get matches() {
-      return matches;
-    },
-    media: "(prefers-color-scheme: dark)",
-    onchange: null,
-    addEventListener: (_type, listener) => listeners.add(listener as () => void),
-    removeEventListener: (_type, listener) => listeners.delete(listener as () => void),
-    addListener: (listener) => listeners.add(listener),
-    removeListener: (listener) => listeners.delete(listener),
-    dispatchEvent: () => true,
-    emit(next) {
-      matches = next;
-      for (const listener of listeners) listener();
-    },
-  };
 }
 
 describe("desktop theme", () => {
@@ -51,17 +30,17 @@ describe("desktop theme", () => {
 
   test("updates a System renderer live and stops observing when disposed", () => {
     const target = root();
-    const preference = media(false);
-    const stop = activateTheme("system", target, preference);
+    setSystemTheme("light");
+    const stop = activateTheme("system", target);
     expect(target.dataset.theme).toBe("light");
     expect(target.style.colorScheme).toBe("light");
 
-    preference.emit(true);
+    setSystemTheme("dark");
     expect(target.dataset.theme).toBe("dark");
     expect(target.style.colorScheme).toBe("dark");
 
     stop();
-    preference.emit(false);
+    setSystemTheme("light");
     expect(target.dataset.theme).toBe("dark");
   });
 });

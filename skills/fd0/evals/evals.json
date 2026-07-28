@@ -30,6 +30,36 @@
       "prompt": "Der SSH-Host prod-db in fd0 hat den falschen Port, der muss auf 2222. Tags, Key-Bindung und die Description sollen bleiben wie sie sind.",
       "expected_output": "Uses `fd0 ssh edit prod-db --port 2222`. Does NOT suggest `fd0 ssh add prod-db ... --force` or an rm+add cycle: --force replaces the record outright and would reset tags, key binding and description, and rm+add would also lose the item's history. May mention that the same `edit`/`rename`/`move`/`history` verbs exist on pass, key, kube and talos.",
       "files": []
+    },
+    {
+      "id": "sftp-deploy-and-cleanup",
+      "prompt": "Ich muss ./dist auf den fd0 SSH Host prod unter /srv/app/dist hochladen und danach den alten Remote-Ordner /srv/app/dist-old löschen. Zeig mir sichere, scriptbare Commands.",
+      "expected_output": "Uses `fd0 sftp cp prod ./dist remote:/srv/app/dist --recursive` for upload and explains that `--force` is only needed and should only be added after approval if the destination exists. Uses `fd0 sftp rm prod /srv/app/dist-old --recursive --yes` only after calling out the destructive host/path confirmation. Does not invent host:path syntax or disable StrictHostKeyChecking.",
+      "files": []
+    },
+    {
+      "id": "sftp-read-only-browse",
+      "prompt": "Welche Dateien liegen auf meinem fd0 Host staging unter /var/log/nginx? Ich will erstmal wirklich nur schauen, nichts verändern.",
+      "expected_output": "Uses the read-only `fd0 sftp ls staging /var/log/nginx` command, optionally mentions `tree` with a bounded depth or Desktop Browse files, and does not suggest upload, delete, force, yes, or weakened host verification.",
+      "files": []
+    },
+    {
+      "id": "sftp-json-automation",
+      "prompt": "Ich möchte in einem Script prüfen, welche Releases auf Host web-1 unter /srv/releases liegen. Bitte kein menschenlesbares Tabellenformat parsen.",
+      "expected_output": "Uses `fd0 sftp ls web-1 /srv/releases --json` and recommends parsing JSON. Does not scrape human output or reveal remote file contents.",
+      "files": []
+    },
+    {
+      "id": "sftp-download-directory",
+      "prompt": "Lade bitte den Ordner /var/log/myapp vom fd0 Host prod nach ./incident-logs. Nur der Download-Befehl, nichts löschen.",
+      "expected_output": "Uses `fd0 sftp cp prod remote:/var/log/myapp ./incident-logs --recursive`. Keeps exactly one `remote:` operand and does not add `--force` unless an overwrite was explicitly authorized.",
+      "files": []
+    },
+    {
+      "id": "sftp-overwrite-conflict",
+      "prompt": "fd0 sftp cp sagt dass ./app.log schon existiert. Mach einfach force, oder?",
+      "expected_output": "Explains that `--force` replaces the local destination and asks for or states the exact destination confirmation before giving `fd0 sftp cp HOST remote:PATH ./app.log --force`. Does not treat overwrite as harmless.",
+      "files": []
     }
   ]
 }

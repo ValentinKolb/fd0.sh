@@ -139,7 +139,7 @@ const OverviewBody = () => (
       <Tile href="/docs/concepts" title="Concepts" body="The small vocabulary used by every fd0 command." />
       <Tile href="/docs/cli" title="Daily use" body="One grammar for every module, plus scopes, sharing, and health checks." />
       <Tile href="/docs/pass" title="Passwords" body="Login items, TOTP, passkeys, attachments, and the interactive browser." />
-      <Tile href="/docs/ssh" title="SSH" body="Scope-shared SSH keys and host aliases through fd0-agent." />
+      <Tile href="/docs/ssh" title="SSH and files" body="Scope-shared SSH hosts, terminal sessions, and two-way SFTP transfers." />
       <Tile href="/docs/talos" title="Talos and Kube" body="Store, render, merge, and share Talos and Kubernetes configs." />
       <Tile href="/docs/sync" title="Sync" body="What sync sends, what it verifies, and how automatic refresh works." />
       <Tile href="/docs/server" title="Self-host" body="Run a primary, add a DR backup, and know where the full runbook lives." />
@@ -808,6 +808,39 @@ $ ssh prod-db`}</Box>
     <Cmd signature="fd0 ssh show <alias>" body="Show the host record and rendered ssh_config block." />
     <Cmd signature="fd0 ssh rm <alias>" body="Remove the host entry and re-render the config." />
 
+    <H2>Browse and transfer files</H2>
+    <P>
+      In fd0 Desktop, open an SSH host and choose <strong>Browse files</strong>.
+      The dedicated Files window supports navigation, drag-and-drop uploads,
+      downloads, folders, rename, delete, progress, and cancellation. It uses
+      the same host, key, jump host, and strict host verification as{" "}
+      <Code>fd0 ssh</Code>.
+    </P>
+    <Box>{`$ fd0 sftp prod-db
+$ fd0 sftp ls prod-db /var/log
+$ fd0 sftp tree prod-db /srv/app --depth 2
+$ fd0 sftp cp prod-db ./release.tar remote:/tmp/release.tar
+$ fd0 sftp cp prod-db remote:/var/log/app.log ./app.log`}</Box>
+    <Cmd signature="fd0 sftp <host>" body="Open the native interactive SFTP client with fd0's exact rendered SSH configuration." />
+    <Cmd signature="fd0 sftp ls <host> [path] [--json]" body="List a remote directory. Use --json for scripts." />
+    <Cmd signature="fd0 sftp tree <host> [path] [--depth N]" body="Print a bounded remote tree. The default depth is 3." />
+    <Cmd signature="fd0 sftp cp <host> <source> <dest>" body="Upload or download. Mark exactly one side with remote:, and add --recursive for directories." />
+    <Cmd signature="fd0 sftp mkdir|mv|rm …" body="Manage remote paths. Non-interactive recursive delete requires both --recursive and --yes." />
+    <Note>
+      Transfers do not weaken host verification and never follow remote
+      symlinks recursively. Existing destinations require an explicit{" "}
+      <Code>--force</Code>; existing directory trees are never replaced
+      implicitly.
+    </Note>
+    <P>
+      Desktop file sessions are non-interactive: unlock fd0 first and assign a
+      usable key to the host. If a host is new, open it in Terminal and verify
+      its fingerprint before browsing files. A server without an enabled SFTP
+      subsystem can still work in Terminal, but not in the Files window.
+      Transfers stop when that window closes; fd0 is a file browser, not a
+      background synchronization service.
+    </P>
+
     <H2>Team sharing</H2>
     <P>
       Keys and hosts belong to scopes. Add a teammate to the scope and their
@@ -1155,7 +1188,7 @@ export const DocsCli = ssr(async (c) => {
 export const DocsSsh = ssr(async (c) => {
   setPageSeo(c, "docsSsh");
   return () => (
-    <DocsLayout current="ssh" title="SSH keys and hosts" kicker="Integration">
+    <DocsLayout current="ssh" title="SSH keys, hosts, and files" kicker="Integration">
       <SshBody />
     </DocsLayout>
   );
