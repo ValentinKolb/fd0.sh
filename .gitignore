@@ -51,6 +51,9 @@ website/public/styles.css
 # Source of truth is @fontsource-variable/{geist,geist-mono}.
 website/public/fonts/
 
+# fd0 Browser generated state
+browser/node_modules/
+
 # fd0 Desktop generated state
 desktop/node_modules/
 desktop/out/

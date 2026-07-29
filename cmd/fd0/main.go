@@ -43,6 +43,7 @@ type rootCLI struct {
 	Ssh      sshCmd      `cmd:"" help:"Manage SSH hosts + connect. Without args opens a fuzzy picker."`
 	Sftp     sftpCmd     `cmd:"" help:"Browse and transfer files on fd0 SSH hosts."`
 	Pass     passCmd     `cmd:"" help:"Manage structured passwords, TOTP, passkeys, and small files."`
+	Browser  browserCmd  `cmd:"" help:"Connect fd0 to a web browser."`
 	Talos    talosCmd    `cmd:"" help:"Manage Talos Linux contexts + secrets.yaml DR bundles."`
 	Kube     kubeCmd     `cmd:"" help:"Manage Kubernetes kubeconfig clusters (Talos, EKS, GKE, AKS, …)."`
 	Version  versionCmd  `cmd:"" help:"Print version and exit."`
@@ -59,6 +60,17 @@ type rootCLI struct {
 	Rm   rmCmd   `cmd:"" hidden:"" help:"Deprecated spelling of 'fd0 secret rm'."`
 	List listCmd `cmd:"" aliases:"ls" hidden:"" help:"Deprecated spelling of 'fd0 secret list'."`
 }
+
+type browserCmd struct {
+	Enable  browserEnableCmd  `cmd:"" help:"Register the development Chrome Native Messaging host."`
+	Disable browserDisableCmd `cmd:"" help:"Remove the development Chrome Native Messaging host."`
+}
+
+type browserEnableCmd struct {
+	Host string `name:"host" type:"path" help:"Path to fd0-browser-host (development builds only)."`
+}
+
+type browserDisableCmd struct{}
 
 // stringListFlag is a repeatable string flag that also records whether it was
 // given at all — the list-valued half of the pointer-flag convention the edit
@@ -1196,6 +1208,10 @@ func dispatch(kctx *kong.Context, c *rootCLI) error {
 			Yes:              c.Update.Yes,
 			AllowDowngrade:   c.Update.AllowDowngrade,
 		})
+	case "browser enable":
+		return cli.RunBrowserEnable(c.Browser.Enable.Host)
+	case "browser disable":
+		return cli.RunBrowserDisable()
 
 	// ─── key ──────────────────────────────────────────────────────────
 	case "key add <name>":

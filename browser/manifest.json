@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "fd0 Development",
+  "version": "0.1.0",
+  "description": "Fill fd0 logins from HTTPS sign-in forms.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAmBfYx5iQq86xHEG1MZjtX811c9TRJyh2KrAtXRpaQ05FNxRBcqk0/JFNlgHb3hXl4MCx/3lnVje402aUUVsr+dQnEVDXIWhBamcWyRvyJBfXb3dFD5ux7uKIt/EURxP9rs03D4+YT6RYBnSno5TrV2xSw0mVrvleQihz2/HucJcUiz0P/hruoOvijpL2h9WewQSip3AWiLqnCbzokRyumBRYXg3Mb8HS0jtVafXSoB8fgw0WXI86ncZRne6n9tJ2P2fuf9bhuQ5TQyN+6buEH/y2rsT9rbeXoEya5Vu6PlStJuPzJ39E179QnlkXIEMOSr/UHxucK0BwST/kFdGY0wIDAQAB",
+  "permissions": ["nativeMessaging"],
+  "content_scripts": [
+    {
+      "matches": ["https://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Fill login with fd0"
+  },
+  "background": {
+    "service_worker": "service-worker.js"
+  }
+}
