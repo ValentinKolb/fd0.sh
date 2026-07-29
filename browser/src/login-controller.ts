@@ -1,4 +1,4 @@
-import { findLoginFields } from "./form";
+import { findCredentialFields } from "./form";
 import {
   mountLoginPicker,
   mountLoginPrompt,
@@ -16,13 +16,19 @@ export type LoginLookup = {
 
 export type LoginController = {
   open: () => Promise<boolean>;
+  invalidate: () => void;
   dispose: () => void;
 };
 
 export function installLoginController(
   document: Document,
   lookup: () => Promise<LoginLookup>,
-  select: (origin: string, credentialId: string) => Promise<void>,
+  select: (
+    origin: string,
+    credentialId: string,
+    anchor: HTMLInputElement,
+  ) => Promise<void>,
+  openTools?: (anchor: HTMLInputElement, lookup: LoginLookup) => void,
 ): LoginController {
   let cachedLookup: LoginLookup | undefined;
   let pendingLookup: Promise<LoginLookup> | undefined;
@@ -30,15 +36,19 @@ export function installLoginController(
   let prompt: LoginPrompt | undefined;
   let trigger: LoginTrigger | undefined;
   let anchor: HTMLInputElement | undefined;
+  let triggerKind: "login" | "tools" | undefined;
   let suppressFocus: HTMLInputElement | undefined;
   let disposed = false;
   let openSequence = 0;
+  let cachedAt = 0;
 
   async function credentials(): Promise<LoginLookup> {
-    if (cachedLookup) return cachedLookup;
+    if (cachedLookup && Date.now() - cachedAt < 5_000) return cachedLookup;
+    cachedLookup = undefined;
     pendingLookup ??= lookup();
     try {
       cachedLookup = await pendingLookup;
+      cachedAt = Date.now();
       return cachedLookup;
     } finally {
       pendingLookup = undefined;
@@ -46,21 +56,146 @@ export function installLoginController(
   }
 
   function loginAnchor(preferred?: EventTarget | null): HTMLInputElement | undefined {
-    const fields = findLoginFields(document);
-    if (!fields) return undefined;
-    if (preferred === fields.username) return fields.username;
-    if (preferred === fields.password) return fields.password;
+    const preferredElement =
+      preferred &&
+      typeof preferred === "object" &&
+      "tagName" in preferred
+        ? (preferred as Element)
+        : undefined;
+    const fields = findCredentialFields(document, preferredElement);
+    if (!fields.currentPassword) return undefined;
+    const candidates = [fields.username, fields.currentPassword].filter(
+      (field): field is HTMLInputElement => Boolean(field),
+    );
+    if (candidates.length === 0) return undefined;
+    if (
+      preferred &&
+      typeof preferred === "object" &&
+      "tagName" in preferred &&
+      (preferred as Element).tagName === "INPUT" &&
+      candidates.includes(preferred as HTMLInputElement)
+    ) {
+      return preferred as HTMLInputElement;
+    }
     if (preferred) return undefined;
-    return fields.username ?? fields.password;
+    return fields.username ?? fields.currentPassword;
   }
 
-  function mountTrigger(nextAnchor: HTMLInputElement): void {
-    if (anchor === nextAnchor && trigger?.host.isConnected) return;
+  function toolsAnchor(preferred?: EventTarget | null): HTMLInputElement | undefined {
+    if (!openTools) return undefined;
+    const preferredElement =
+      preferred &&
+      typeof preferred === "object" &&
+      "tagName" in preferred
+        ? (preferred as Element)
+        : undefined;
+    const fields = findCredentialFields(document, preferredElement);
+    if (!fields.newPassword) return undefined;
+    const candidates = [
+      fields.currentPassword ? undefined : fields.username,
+      fields.newPassword,
+      fields.confirmPassword,
+    ].filter((field): field is HTMLInputElement => Boolean(field));
+    if (
+      preferredElement instanceof HTMLInputElement &&
+      candidates.includes(preferredElement)
+    ) {
+      return preferredElement;
+    }
+    if (preferred) return undefined;
+    return fields.newPassword;
+  }
+
+  function mountTrigger(
+    nextAnchor: HTMLInputElement,
+    kind: "login" | "tools",
+  ): void {
+    if (
+      anchor === nextAnchor &&
+      triggerKind === kind &&
+      trigger?.host.isConnected
+    ) {
+      return;
+    }
     trigger?.close();
     anchor = nextAnchor;
+    triggerKind = kind;
     trigger = mountLoginTrigger(document, nextAnchor, () => {
-      void openFor(nextAnchor, true);
+      if (kind === "login") {
+        void openFor(nextAnchor, true);
+      } else {
+        void openToolsFor(nextAnchor, true);
+      }
     });
+  }
+
+  function showLookupError(
+    error: unknown,
+    nextAnchor: HTMLInputElement,
+    retry: () => void,
+  ): void {
+    picker?.close(false);
+    picker = undefined;
+    prompt?.close(false);
+    const code = errorCode(error);
+    const locked =
+      code === "locked" ||
+      (error instanceof Error &&
+        error.message.toLocaleLowerCase().includes("unlock fd0"));
+    const incompatible = code === "invalid_response";
+    prompt = mountLoginPrompt(
+      document,
+      nextAnchor,
+      locked
+        ? "Vault locked"
+        : incompatible
+          ? "Update fd0"
+          : "fd0 unavailable",
+      locked
+        ? "Unlock fd0 in the desktop app, then try again."
+        : incompatible
+          ? "The browser extension and fd0 need the same version."
+          : error instanceof Error && error.message
+            ? error.message
+            : "Open fd0 and try again.",
+      () => {
+        prompt = undefined;
+        retry();
+      },
+      () => {
+        prompt = undefined;
+        suppressFocus = nextAnchor;
+      },
+    );
+  }
+
+  async function openToolsFor(
+    nextAnchor: HTMLInputElement,
+    explicit = false,
+  ): Promise<boolean> {
+    if (!openTools) return false;
+    const sequence = ++openSequence;
+    mountTrigger(nextAnchor, "tools");
+    if (explicit) trigger?.setBusy(true);
+    try {
+      const result = await credentials();
+      if (disposed || sequence !== openSequence) return false;
+      picker?.close(false);
+      picker = undefined;
+      prompt?.close(false);
+      prompt = undefined;
+      openTools(nextAnchor, result);
+      return true;
+    } catch (error) {
+      if (!disposed && sequence === openSequence && explicit) {
+        showLookupError(error, nextAnchor, () => {
+          void openToolsFor(nextAnchor, true);
+        });
+      }
+      return false;
+    } finally {
+      if (explicit) trigger?.setBusy(false);
+    }
   }
 
   async function openFor(
@@ -68,7 +203,7 @@ export function installLoginController(
     explicit = false,
   ): Promise<boolean> {
     const sequence = ++openSequence;
-    mountTrigger(nextAnchor);
+    mountTrigger(nextAnchor, "login");
     if (explicit) trigger?.setBusy(true);
     let result: LoginLookup;
     try {
@@ -76,28 +211,9 @@ export function installLoginController(
     } catch (error) {
       if (disposed || sequence !== openSequence) return false;
       if (explicit) {
-        picker?.close(false);
-        picker = undefined;
-        prompt?.close(false);
-        const locked =
-          error instanceof Error &&
-          error.message.toLocaleLowerCase().includes("unlock fd0");
-        prompt = mountLoginPrompt(
-          document,
-          nextAnchor,
-          locked ? "Vault locked" : "fd0 unavailable",
-          locked
-            ? "Unlock fd0 in the desktop app, then try again."
-            : "Open fd0 and try again.",
-          () => {
-            prompt = undefined;
-            void openFor(nextAnchor, true);
-          },
-          () => {
-            prompt = undefined;
-            suppressFocus = nextAnchor;
-          },
-        );
+        showLookupError(error, nextAnchor, () => {
+          void openFor(nextAnchor, true);
+        });
       }
       return false;
     } finally {
@@ -107,9 +223,14 @@ export function installLoginController(
       return false;
     }
     if (result.credentials.length === 0) {
-      trigger?.close();
-      trigger = undefined;
-      anchor = undefined;
+      if (openTools) {
+        if (explicit) openTools(nextAnchor, result);
+      } else {
+        trigger?.close();
+        trigger = undefined;
+        anchor = undefined;
+        triggerKind = undefined;
+      }
       return false;
     }
 
@@ -120,28 +241,61 @@ export function installLoginController(
       document,
       nextAnchor,
       result.credentials,
-      (credentialId) => select(result.origin, credentialId),
+      (credentialId) => select(result.origin, credentialId, nextAnchor),
       () => {
         picker = undefined;
         suppressFocus = nextAnchor;
       },
+      openTools
+        ? () => {
+            picker = undefined;
+            openTools(nextAnchor, result);
+          }
+        : undefined,
     );
     return true;
   }
 
   function onFocus(event: FocusEvent): void {
-    const nextAnchor = loginAnchor(event.target);
+    const preferred = event.composedPath().find(
+      (target): target is HTMLInputElement =>
+        Boolean(
+          target &&
+            typeof target === "object" &&
+            "tagName" in target &&
+            (target as Element).tagName === "INPUT",
+        ),
+    );
+    const target = preferred ?? event.target;
+    const nextToolsAnchor = toolsAnchor(target);
+    const nextAnchor = nextToolsAnchor ?? loginAnchor(target);
     if (!nextAnchor) return;
     if (suppressFocus === nextAnchor) {
       suppressFocus = undefined;
       return;
     }
-    void openFor(nextAnchor);
+    if (nextToolsAnchor) {
+      void openToolsFor(nextToolsAnchor);
+    } else {
+      void openFor(nextAnchor);
+    }
   }
 
   async function open(): Promise<boolean> {
-    const nextAnchor = loginAnchor(document.activeElement) ?? loginAnchor();
-    return nextAnchor ? openFor(nextAnchor, true) : false;
+    const activeTools = toolsAnchor(document.activeElement);
+    if (activeTools) return openToolsFor(activeTools, true);
+    const activeLogin = loginAnchor(document.activeElement);
+    if (activeLogin) return openFor(activeLogin, true);
+    const nextLogin = loginAnchor();
+    if (nextLogin) return openFor(nextLogin, true);
+    const nextTools = toolsAnchor();
+    return nextTools ? openToolsFor(nextTools, true) : false;
+  }
+
+  function invalidate(): void {
+    cachedLookup = undefined;
+    cachedAt = 0;
+    pendingLookup = undefined;
   }
 
   function dispose(): void {
@@ -152,8 +306,14 @@ export function installLoginController(
     picker?.close(false);
     prompt?.close(false);
     trigger?.close();
+    triggerKind = undefined;
   }
 
   document.addEventListener("focusin", onFocus, true);
-  return { open, dispose };
+  return { open, invalidate, dispose };
+}
+
+function errorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== "object" || !("code" in error)) return undefined;
+  return typeof error.code === "string" ? error.code : undefined;
 }

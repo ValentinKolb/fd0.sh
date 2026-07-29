@@ -7,6 +7,7 @@ declare namespace chrome {
       documentId?: string;
       id?: string;
       frameId?: number;
+      origin?: string;
       url?: string;
       tab?: tabs.Tab;
     };
@@ -25,6 +26,17 @@ declare namespace chrome {
           sendResponse: (response: unknown) => void,
         ) => boolean | void,
       ): void;
+      removeListener(
+        callback: (
+          message: unknown,
+          sender: MessageSender,
+          sendResponse: (response: unknown) => void,
+        ) => boolean | void,
+      ): void;
+    };
+
+    const onInstalled: {
+      addListener(callback: () => void): void;
     };
   }
 
@@ -40,6 +52,7 @@ declare namespace chrome {
       message: unknown,
       options?: MessageSendOptions,
     ): Promise<T>;
+    function query(queryInfo: Record<string, unknown>): Promise<Tab[]>;
   }
 
   namespace action {
@@ -55,4 +68,43 @@ declare namespace chrome {
     function setTitle(details: { tabId: number; title: string }): Promise<void>;
   }
 
+  namespace scripting {
+    type InjectionResult<T = unknown> = {
+      documentId?: string;
+      frameId: number;
+      result?: T;
+    };
+
+    function executeScript<T = unknown>(details: {
+      target: {
+        tabId: number;
+        allFrames?: boolean;
+        frameIds?: number[];
+      };
+      files?: string[];
+      func?: () => T;
+    }): Promise<InjectionResult<T>[]>;
+  }
+
+  namespace storage {
+    const session: {
+      get(
+        keys?: string | string[] | null,
+      ): Promise<Record<string, unknown>>;
+      set(items: Record<string, unknown>): Promise<void>;
+      remove(keys: string | string[]): Promise<void>;
+    };
+  }
+
+  namespace alarms {
+    type Alarm = { name: string };
+    function create(
+      name: string,
+      alarmInfo: { when: number },
+    ): Promise<void>;
+    function clear(name: string): Promise<boolean>;
+    const onAlarm: {
+      addListener(callback: (alarm: Alarm) => void): void;
+    };
+  }
 }

@@ -1,6 +1,6 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js";
 import { IconCopy, IconDeviceFloppy, IconRefresh } from "@tabler/icons-solidjs";
-import { password } from "@valentinkolb/stdlib";
+import { password } from "@k2b/stdlib";
 import { errorText } from "../lib/errors";
 import { Button, IconButton } from "../ui/Button";
 import { Field, Select, Switch } from "../ui/Fields";

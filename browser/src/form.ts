@@ -10,6 +10,23 @@ export type LoginFields = {
   password: HTMLInputElement;
 };
 
+export type CredentialFields = {
+  username?: HTMLInputElement;
+  currentPassword?: HTMLInputElement;
+  newPassword?: HTMLInputElement;
+  confirmPassword?: HTMLInputElement;
+  otp?: HTMLInputElement;
+};
+
+export type LoginCandidate = {
+  username: string;
+  password: string;
+  kind: "login" | "signup" | "password-change";
+};
+
+type FormAnchor = Element | ShadowRoot | undefined;
+type InputRoot = Document | ShadowRoot | HTMLFormElement;
+
 export function usernameScore(field: InputMetadata): number {
   const autocomplete = field.autocomplete.toLowerCase();
   if (autocomplete === "username") return 120;
@@ -30,10 +47,11 @@ export function passwordScore(field: InputMetadata): number {
   return 60;
 }
 
-export function findLoginFields(document: Document): LoginFields | undefined {
-  const inputs = [...document.querySelectorAll<HTMLInputElement>("input")].filter(
-    isFillable,
-  );
+export function findLoginFields(
+  document: Document,
+  anchor?: FormAnchor,
+): LoginFields | undefined {
+  const inputs = collectInputs(inputRoot(document, anchor)).filter(isFillable);
   const password = bestInput(inputs, passwordScore);
   if (!password) return undefined;
 
@@ -49,11 +67,128 @@ export function findLoginFields(document: Document): LoginFields | undefined {
   return { username, password };
 }
 
+export function findCredentialFields(
+  document: Document,
+  anchor?: FormAnchor,
+): CredentialFields {
+  const inputs = collectInputs(inputRoot(document, anchor)).filter(isFillable);
+  const passwordInputs = inputs.filter((input) => input.type.toLowerCase() === "password");
+  const currentPassword = passwordInputs.find(
+    (input) => input.autocomplete.toLowerCase() === "current-password",
+  ) ??
+    (passwordInputs.length === 1 &&
+    passwordInputs[0].autocomplete.toLowerCase() !== "new-password"
+      ? passwordInputs[0]
+      : undefined);
+  const confirmationInputs = passwordInputs.filter((input) =>
+    /\b(confirm|confirmation|repeat)\b/i.test(
+      passwordIdentity(input),
+    ),
+  );
+  const explicitNewPasswords = passwordInputs.filter(
+    (input) => input.autocomplete.toLowerCase() === "new-password",
+  );
+  const namedNewPasswords = passwordInputs.filter(
+    (input) =>
+      !confirmationInputs.includes(input) &&
+      /\b(new|create|signup|register)\b/i.test(
+        passwordIdentity(input),
+      ),
+  );
+  const newPassword =
+    explicitNewPasswords.find((input) => !confirmationInputs.includes(input)) ??
+    namedNewPasswords[0] ??
+    (passwordInputs.length > 1
+      ? passwordInputs.find(
+          (input) => input !== currentPassword && !confirmationInputs.includes(input),
+        )
+      : undefined);
+  const confirmPassword =
+    confirmationInputs.find((input) => input !== newPassword) ??
+    explicitNewPasswords.find((input) => input !== newPassword);
+  const passwordAnchor = currentPassword ?? newPassword;
+  const beforePassword = passwordAnchor
+    ? inputs.filter(
+        (input) =>
+          input !== passwordAnchor &&
+          Boolean(input.compareDocumentPosition(passwordAnchor) & Node.DOCUMENT_POSITION_FOLLOWING),
+      )
+    : inputs;
+  const username = bestInput(beforePassword, usernameScore);
+  const otp = bestInput(inputs, otpScore);
+  return { username, currentPassword, newPassword, confirmPassword, otp };
+}
+
+function passwordIdentity(input: HTMLInputElement): string {
+  return `${input.name} ${input.id} ${input.getAttribute("aria-label") ?? ""}`.replace(
+    /[_-]+/g,
+    " ",
+  );
+}
+
+export function readLoginCandidate(
+  document: Document,
+  anchor?: FormAnchor,
+): LoginCandidate | undefined {
+  const fields = findCredentialFields(document, anchor);
+  const password = fields.newPassword?.value || fields.currentPassword?.value || "";
+  if (!password) return undefined;
+  const kind = fields.newPassword
+    ? fields.currentPassword
+      ? "password-change"
+      : "signup"
+    : "login";
+  return {
+    username: fields.username?.value.trim() ?? "",
+    password,
+    kind,
+  };
+}
+
+export function fillGeneratedPassword(
+  document: Document,
+  password: string,
+  anchor?: FormAnchor,
+): { passwordFilled: boolean; confirmationFilled: boolean } {
+  const fields = findCredentialFields(document, anchor);
+  const target = fields.newPassword ?? fields.currentPassword;
+  if (!target) return { passwordFilled: false, confirmationFilled: false };
+  setInputValue(target, password);
+  let confirmationFilled = false;
+  if (fields.confirmPassword && fields.confirmPassword !== target) {
+    setInputValue(fields.confirmPassword, password);
+    confirmationFilled = true;
+  }
+  return { passwordFilled: true, confirmationFilled };
+}
+
+export function fillOTP(
+  document: Document,
+  code: string,
+  anchor?: FormAnchor,
+): boolean {
+  const field = findCredentialFields(document, anchor).otp;
+  if (!field) return false;
+  setInputValue(field, code);
+  return true;
+}
+
+export function otpScore(field: InputMetadata): number {
+  const autocomplete = field.autocomplete.toLowerCase();
+  if (autocomplete === "one-time-code") return 140;
+  const identity = `${field.name} ${field.id}`.toLowerCase();
+  if (/\b(otp|totp|one.?time|verification.?code|auth.?code|2fa|mfa)\b/.test(identity)) {
+    return field.type === "text" || field.type === "tel" || field.type === "number" ? 100 : 0;
+  }
+  return 0;
+}
+
 export function fillLogin(
   document: Document,
   credential: { username?: string; password: string },
+  anchor?: FormAnchor,
 ): { usernameFilled: boolean; passwordFilled: boolean } {
-  const fields = findLoginFields(document);
+  const fields = findLoginFields(document, anchor);
   if (!fields) return { usernameFilled: false, passwordFilled: false };
 
   let usernameFilled = false;
@@ -84,7 +219,28 @@ function bestInput(
   return best?.input;
 }
 
-function isFillable(input: HTMLInputElement): boolean {
+export function collectInputs(root: InputRoot): HTMLInputElement[] {
+  const inputs = [...root.querySelectorAll<HTMLInputElement>("input")];
+  for (const element of root.querySelectorAll<HTMLElement>("*")) {
+    if (element.shadowRoot) {
+      inputs.push(...collectInputs(element.shadowRoot));
+    }
+  }
+  return inputs;
+}
+
+function inputRoot(document: Document, anchor: FormAnchor): InputRoot {
+  if (!anchor) return document;
+  if (anchor instanceof ShadowRoot) return anchor;
+  if (anchor instanceof HTMLFormElement) return anchor;
+  if (anchor instanceof HTMLInputElement && anchor.form) return anchor.form;
+  const form = anchor.closest("form");
+  if (form) return form;
+  const root = anchor.getRootNode();
+  return root instanceof ShadowRoot ? root : document;
+}
+
+export function isFillable(input: HTMLInputElement): boolean {
   if (input.disabled || input.readOnly || input.type === "hidden") return false;
   const style = getComputedStyle(input);
   if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) {

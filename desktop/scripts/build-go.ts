@@ -2,6 +2,7 @@ import { copyFileSync, existsSync, mkdirSync, realpathSync } from "node:fs";
 import { basename, join } from "node:path";
 import {
   agentBin,
+  browserHostBin,
   bridgeBin,
   buildDir,
   cliBin,
@@ -27,6 +28,7 @@ for (const [output, pkg, versioned, desktopManaged] of [
   [cliBin, "./cmd/fd0", true, true],
   [seedBin, "./cmd/fd0-desktop-dev-seed", false, false],
   [releaseVerifierBin, "./cmd/fd0-release-verify", false, false],
+  [browserHostBin, "./cmd/fd0-browser-host", false, false],
 ] as const) {
   const args = ["build", "-trimpath", `-tags=${tags}`];
   const ldflags = ["-s", "-w"];

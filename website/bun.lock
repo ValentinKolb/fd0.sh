@@ -7,8 +7,8 @@
       "dependencies": {
         "@fontsource-variable/geist": "^5.2.9",
         "@fontsource-variable/geist-mono": "^5.2.8",
+        "@k2b/stdlib": "0.17.1",
         "@valentinkolb/ssr": "^0.10.0",
-        "@valentinkolb/stdlib": "^0.10.0",
         "cbor-x": "^1.6.4",
         "hono": "^4.12.29",
         "seroval": "^1.0.0",
@@ -105,6 +105,8 @@
 
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
 
+    "@k2b/stdlib": ["@k2b/stdlib@0.17.1", "", { "dependencies": { "dayjs": "^1.11.0" }, "peerDependencies": { "lean-qr": "", "solid-js": "" }, "optionalPeers": ["lean-qr", "solid-js"] }, "sha512-sY9UKRNpQ7M5l6WKjnCcObLcg5EHdSlZDJb/a1jdlMR3cA6AVjHnBQQXbVIvQgwwuBEyRKM2bRJ5BLw7Ejm3Zw=="],
+
     "@oven/bun-darwin-aarch64": ["@oven/bun-darwin-aarch64@1.3.14", "", { "os": "darwin", "cpu": "arm64" }, "sha512-Omj20SuiHBOUjUBIyqtkNjSUIjOtEOJwmbix/ZyFH4BaQ6OZTaaRWIR4TjHVz0yadHgli6lLTiAh1uarnvD49A=="],
 
     "@oven/bun-darwin-x64": ["@oven/bun-darwin-x64@1.3.14", "", { "os": "darwin", "cpu": "x64" }, "sha512-FFj3QdU/OhlDyZOJ8CWfN5eWLpRlT4qjZg7lMQi7jA6GuoY5ajlO1zWLP/MuHYRSbXQUvV52RejNi8DVnAp13w=="],
@@ -150,8 +152,6 @@
     "@types/node": ["@types/node@25.9.1", "", { "dependencies": { "undici-types": ">=7.24.0 <7.24.7" } }, "sha512-xfrlY7UD5rMJk3ZVJP8BNzS28J36YJg+xp+LPXV1TdWxr8uMH5A860QNxYDGQe/ylDSgjxE52Q9VnO7p75tJxg=="],
 
     "@valentinkolb/ssr": ["@valentinkolb/ssr@0.10.0", "", { "dependencies": { "@babel/core": "^7.24.0", "@babel/preset-typescript": "^7.24.0", "@types/babel__core": "^7.20.5", "babel-preset-solid": "^1.8.0", "seroval": "^1.0.0" }, "peerDependencies": { "@elysiajs/static": "^1.0.0", "elysia": "^1.0.0", "hono": "^4.0.0", "solid-js": "^1.9.0" }, "optionalPeers": ["@elysiajs/static", "elysia", "hono"] }, "sha512-X+o39uWUmfoqwAT9NA1Gaag5yZ5EKSz9kzfxctWJY2frhOOGF2YVZN7Zauwua1TbpsYcpt9GwCsZqXmj6QpjMg=="],
-
-    "@valentinkolb/stdlib": ["@valentinkolb/stdlib@0.10.0", "", { "dependencies": { "dayjs": "^1.11.0" }, "peerDependencies": { "lean-qr": "", "solid-js": "" }, "optionalPeers": ["lean-qr", "solid-js"] }, "sha512-6toS7n4OgwMHvg6nl0WOSWR3nwJsHiMiFeHmHYt8C5ADbOZvcHID+j8li7VQwJFPRULbZZaErOOcyZyA6xbCMQ=="],
 
     "babel-plugin-jsx-dom-expressions": ["babel-plugin-jsx-dom-expressions@0.40.7", "", { "dependencies": { "@babel/helper-module-imports": "7.18.6", "@babel/plugin-syntax-jsx": "^7.18.6", "@babel/types": "^7.20.7", "html-entities": "2.3.3", "parse5": "^7.1.2" }, "peerDependencies": { "@babel/core": "^7.20.12" } }, "sha512-/O6JWUmjv03OI9lL2ry9bUjpD5S3PclM55RRJEyCdcFZ5W2SEA/59d+l2hNsk3gI6kiWRdRPdOtqZmsQzFN1pQ=="],
 

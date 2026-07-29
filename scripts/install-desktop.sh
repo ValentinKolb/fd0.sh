@@ -325,8 +325,10 @@ if [ "$UNINSTALL" = "1" ]; then
     fi
     remove_managed_wrapper "$CLI_DIR/fd0"
     remove_managed_wrapper "$CLI_DIR/fd0-agent"
+    remove_managed_wrapper "$CLI_DIR/fd0-browser-host"
     restore_preserved_wrapper "$CLI_DIR/fd0" fd0
     restore_preserved_wrapper "$CLI_DIR/fd0-agent" fd0-agent
+    restore_preserved_wrapper "$CLI_DIR/fd0-browser-host" fd0-browser-host
     remove_path "$TARGET"
     if [ "$OS" = "linux" ] && [ "$SYSTEM" != "1" ]; then
         remove_path "$HOME/.local/share/applications/sh.fd0.desktop.desktop"
@@ -489,9 +491,11 @@ export FD0_DESKTOP_APP=$APP_Q
 exec $AGENT_Q "\$@"
 EOF
 else
+    HOST_Q=$(shell_quote "$CLI_DIR/fd0-browser-host")
     cat > "$TMP/wrappers/fd0" <<EOF
 #!/bin/sh
 # fd0-desktop-managed-v1
+export FD0_BROWSER_HOST_BIN=$HOST_Q
 exec $APP_Q --fd0-cli-relay "\$@"
 EOF
     cat > "$TMP/wrappers/fd0-agent" <<EOF
@@ -499,14 +503,29 @@ EOF
 # fd0-desktop-managed-v1
 exec $APP_Q --fd0-agent-relay "\$@"
 EOF
+    cat > "$TMP/wrappers/fd0-browser-host" <<EOF
+#!/bin/sh
+# fd0-desktop-managed-v1
+exec $APP_Q --fd0-browser-host-relay "\$@"
+EOF
 fi
 preserve_existing_wrapper "$CLI_DIR/fd0" fd0
 preserve_existing_wrapper "$CLI_DIR/fd0-agent" fd0-agent
+if [ "$OS" = "linux" ]; then
+    preserve_existing_wrapper "$CLI_DIR/fd0-browser-host" fd0-browser-host
+fi
 install_executable "$TMP/wrappers/fd0" "$CLI_DIR/fd0"
 install_executable "$TMP/wrappers/fd0-agent" "$CLI_DIR/fd0-agent"
+if [ "$OS" = "linux" ]; then
+    install_executable "$TMP/wrappers/fd0-browser-host" "$CLI_DIR/fd0-browser-host"
+fi
 
 printf '✓ fd0 Desktop %s installed at %s\n' "$VERSION_NUM" "$TARGET"
-printf '✓ desktop-managed fd0 and fd0-agent installed at %s\n' "$CLI_DIR"
+if [ "$OS" = "linux" ]; then
+    printf '✓ desktop-managed fd0, fd0-agent, and fd0-browser-host installed at %s\n' "$CLI_DIR"
+else
+    printf '✓ desktop-managed fd0 and fd0-agent installed at %s\n' "$CLI_DIR"
+fi
 case ":$PATH:" in
     *":$CLI_DIR:"*) ;;
     *) printf '! add %s to PATH to use the bundled fd0 CLI\n' "$CLI_DIR" >&2 ;;

@@ -24,6 +24,7 @@ case "$1" in
     fi
     ;;
   --fd0-agent-relay) shift; printf 'linux agent %s\n' "$*" ;;
+  --fd0-browser-host-relay) shift; printf 'linux browser host %s\n' "$*" ;;
   *) printf 'desktop app\n' ;;
 esac
 EOF
@@ -73,7 +74,11 @@ EOF
 #!/bin/sh
 printf 'fd0-agent $version\\n'
 EOF
-  chmod +x "$staging/fd0" "$staging/fd0-agent"
+  cat > "$staging/fd0-browser-host" <<EOF
+#!/bin/sh
+printf 'fd0-browser-host $version\\n'
+EOF
+  chmod +x "$staging/fd0" "$staging/fd0-agent" "$staging/fd0-browser-host"
   cat > "$yubikey_staging/fd0" <<EOF
 #!/bin/sh
 if [ "\${1:-}" = version ]; then printf 'fd0 $version yubikey\\n'; fi
@@ -82,9 +87,18 @@ EOF
 #!/bin/sh
 printf 'fd0-agent $version yubikey\\n'
 EOF
-  chmod +x "$yubikey_staging/fd0" "$yubikey_staging/fd0-agent"
-  tar -czf "$release/fd0_linux_arm64.tar.gz" -C "$staging" fd0 fd0-agent
-  tar -czf "$release/fd0_yubikey_linux_arm64.tar.gz" -C "$yubikey_staging" fd0 fd0-agent
+  cat > "$yubikey_staging/fd0-browser-host" <<EOF
+#!/bin/sh
+printf 'fd0-browser-host $version yubikey\\n'
+EOF
+  chmod +x "$yubikey_staging/fd0" "$yubikey_staging/fd0-agent" "$yubikey_staging/fd0-browser-host"
+  if [ "$version" = 0.0.9 ]; then
+    tar -czf "$release/fd0_linux_arm64.tar.gz" -C "$staging" fd0 fd0-agent
+    tar -czf "$release/fd0_yubikey_linux_arm64.tar.gz" -C "$yubikey_staging" fd0 fd0-agent
+  else
+    tar -czf "$release/fd0_linux_arm64.tar.gz" -C "$staging" fd0 fd0-agent fd0-browser-host
+    tar -czf "$release/fd0_yubikey_linux_arm64.tar.gz" -C "$yubikey_staging" fd0 fd0-agent fd0-browser-host
+  fi
   (
     cd "$release"
     if command -v sha256sum >/dev/null 2>&1; then
@@ -111,16 +125,20 @@ EOF
 #!/bin/sh
 printf 'fd0-agent 0.1.1\n'
 EOF
+  cat > "$staging/fd0-browser-host" <<'EOF'
+#!/bin/sh
+printf 'fd0-browser-host 0.1.1\n'
+EOF
   printf 'must not escape\n' > "$staging/archive-escape-marker"
-  chmod +x "$staging/fd0" "$staging/fd0-agent"
+  chmod +x "$staging/fd0" "$staging/fd0-agent" "$staging/fd0-browser-host"
   if tar --version 2>/dev/null | grep -q GNU; then
     tar -czf "$release/fd0_linux_arm64.tar.gz" \
       --transform='s,^archive-escape-marker$,../../archive-escape-marker,' \
-      -C "$staging" fd0 fd0-agent archive-escape-marker
+      -C "$staging" fd0 fd0-agent fd0-browser-host archive-escape-marker
   else
     tar -czf "$release/fd0_linux_arm64.tar.gz" \
       -s ',^archive-escape-marker$,../../archive-escape-marker,' \
-      -C "$staging" fd0 fd0-agent archive-escape-marker
+      -C "$staging" fd0 fd0-agent fd0-browser-host archive-escape-marker
   fi
   (
     cd "$release"
@@ -276,6 +294,9 @@ LINUX_INSTALL_OUTPUT=$(run_installer "$LINUX_HOME" Linux 2>&1)
 test -x "$LINUX_HOME/.local/bin/fd0-desktop"
 test "$(HOME="$LINUX_HOME" "$LINUX_HOME/.local/bin/fd0" version)" = "fd0 0.1.0 standard"
 test "$(HOME="$LINUX_HOME" "$LINUX_HOME/.local/bin/fd0-agent" check)" = "linux agent check"
+test "$(HOME="$LINUX_HOME" "$LINUX_HOME/.local/bin/fd0-browser-host" chrome-extension://test/)" = \
+  "linux browser host chrome-extension://test/"
+test -x "$LINUX_HOME/.local/bin/fd0-browser-host"
 grep -Fq "Exec=$LINUX_HOME/.local/bin/fd0-desktop" \
   "$LINUX_HOME/.local/share/applications/sh.fd0.desktop.desktop"
 printf '%s\n' "$LINUX_INSTALL_OUTPUT" | grep -Fq "… Downloading fd0 Desktop"
@@ -404,6 +425,7 @@ if printf '%s\n' "$NONINTERACTIVE_OUTPUT" | grep -Fq "What would you like to ins
   exit 1
 fi
 test "$("$CLIENT_PREFIX/fd0" version)" = "fd0 0.1.0 standard"
+test "$("$CLIENT_PREFIX/fd0-browser-host")" = "fd0-browser-host 0.1.0"
 
 LATEST_HOME="$BASE/latest-client-home"
 HOME="$LATEST_HOME" \
@@ -447,6 +469,25 @@ FD0_RELEASE_BASE="file://$BASE/releases" \
 FD0_COSIGN_BIN="$FAKE_BIN/cosign" \
   sh "$ROOT/scripts/install.sh" --prefix="$CLIENT_PREFIX" --version=0.0.9 --allow-downgrade --yes >/dev/null
 test "$("$CLIENT_PREFIX/fd0" version)" = "fd0 0.0.9 standard"
+test ! -e "$CLIENT_PREFIX/fd0-browser-host"
+
+FRESH_OLD_HOME="$BASE/fresh-old-home"
+FRESH_OLD_PREFIX="$FRESH_OLD_HOME/bin"
+mkdir -p "$FRESH_OLD_PREFIX"
+cat > "$FRESH_OLD_PREFIX/fd0-browser-host" <<'EOF'
+#!/bin/sh
+printf 'foreign browser host\n'
+EOF
+chmod +x "$FRESH_OLD_PREFIX/fd0-browser-host"
+HOME="$FRESH_OLD_HOME" \
+TEST_UNAME_S=Linux \
+TEST_UNAME_M=arm64 \
+PATH="$FAKE_BIN:$PATH" \
+FD0_RELEASE_BASE="file://$BASE/releases" \
+FD0_COSIGN_BIN="$FAKE_BIN/cosign" \
+  sh "$ROOT/scripts/install.sh" --prefix="$FRESH_OLD_PREFIX" \
+    --version=0.0.9 --yes >/dev/null
+test "$("$FRESH_OLD_PREFIX/fd0-browser-host")" = "foreign browser host"
 
 REJECTED_CLIENT_HOME="$BASE/rejected-client-home"
 if HOME="$REJECTED_CLIENT_HOME" \
@@ -473,6 +514,7 @@ FD0_DESKTOP_ASSUME_YES=1 \
 test ! -e "$MAIN_HOME/.local/bin/fd0-desktop"
 test ! -e "$MAIN_HOME/.local/bin/fd0"
 test ! -e "$MAIN_HOME/.local/bin/fd0-agent"
+test ! -e "$MAIN_HOME/.local/bin/fd0-browser-host"
 test "$(cat "$MAIN_HOME/.fd0/vault.enc")" = "keep"
 
 OWNED_HOME="$BASE/owned-home"
@@ -485,7 +527,12 @@ cat > "$OWNED_HOME/.local/bin/fd0-agent" <<'EOF'
 #!/bin/sh
 printf 'standalone agent\n'
 EOF
-chmod +x "$OWNED_HOME/.local/bin/fd0" "$OWNED_HOME/.local/bin/fd0-agent"
+cat > "$OWNED_HOME/.local/bin/fd0-browser-host" <<'EOF'
+#!/bin/sh
+printf 'standalone browser host\n'
+EOF
+chmod +x "$OWNED_HOME/.local/bin/fd0" "$OWNED_HOME/.local/bin/fd0-agent" \
+  "$OWNED_HOME/.local/bin/fd0-browser-host"
 printf 'keep owned vault\n' > "$OWNED_HOME/.fd0/vault.enc"
 run_installer "$OWNED_HOME" Linux >/dev/null
 test "$(HOME="$OWNED_HOME" "$OWNED_HOME/.local/bin/fd0" version)" = "fd0 0.1.0 standard"
@@ -497,6 +544,8 @@ FD0_DESKTOP_ASSUME_YES=1 \
   sh "$ROOT/scripts/install-desktop.sh" --uninstall --yes >/dev/null
 test "$(HOME="$OWNED_HOME" "$OWNED_HOME/.local/bin/fd0")" = "standalone fd0"
 test "$(HOME="$OWNED_HOME" "$OWNED_HOME/.local/bin/fd0-agent")" = "standalone agent"
+test "$(HOME="$OWNED_HOME" "$OWNED_HOME/.local/bin/fd0-browser-host")" = \
+  "standalone browser host"
 test "$(cat "$OWNED_HOME/.fd0/vault.enc")" = "keep owned vault"
 
 printf 'tampered\n' >> "$RELEASE/fd0-desktop_0.1.0_linux_arm64.AppImage"

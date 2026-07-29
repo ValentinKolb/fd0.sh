@@ -37,6 +37,9 @@ function loginPage(): {
   Object.assign(globalThis, {
     Node: window.Node,
     getComputedStyle: window.getComputedStyle.bind(window),
+    HTMLInputElement: window.HTMLInputElement,
+    HTMLFormElement: window.HTMLFormElement,
+    ShadowRoot: window.ShadowRoot,
   });
   return { window, document, username, password };
 }
@@ -146,6 +149,79 @@ describe("login controller", () => {
 
     expect(document.querySelector("[data-fd0-login-prompt]")).toBeNull();
     expect(document.querySelector("[data-fd0-login-picker]")).not.toBeNull();
+    controller.dispose();
+    await window.close();
+  });
+
+  test("routes signup password fields to Password tools instead of the login picker", async () => {
+    const { window, document } = loginPage();
+    document.body.replaceChildren();
+    const form = document.createElement("form");
+    const username = document.createElement("input");
+    username.autocomplete = "username";
+    const password = document.createElement("input");
+    password.type = "password";
+    password.autocomplete = "new-password";
+    for (const input of [username, password]) {
+      input.style.display = "block";
+      input.style.visibility = "visible";
+      input.style.opacity = "1";
+      input.getBoundingClientRect = () =>
+        ({ width: 200, height: 40 }) as DOMRect;
+    }
+    form.append(username, password);
+    document.body.append(form);
+    let tools = 0;
+    const controller = installLoginController(
+      document,
+      async () => ({
+        origin: "https://example.com",
+        credentials: [{ id: "opaque", title: "Existing" }],
+      }),
+      async () => {},
+      () => {
+        tools += 1;
+      },
+    );
+
+    password.dispatchEvent(
+      new window.FocusEvent("focusin", { bubbles: true }) as unknown as Event,
+    );
+    await settle();
+
+    expect(tools).toBe(1);
+    expect(document.querySelector("[data-fd0-login-picker]")).toBeNull();
+    controller.dispose();
+    await window.close();
+  });
+
+  test("leaves OTP-only fields to the dedicated TOTP flow", async () => {
+    const { window, document } = loginPage();
+    document.body.replaceChildren();
+    const otp = document.createElement("input");
+    otp.autocomplete = "one-time-code";
+    otp.style.display = "block";
+    otp.getBoundingClientRect = () => ({ width: 200, height: 40 }) as DOMRect;
+    document.body.append(otp);
+    let lookups = 0;
+    const controller = installLoginController(
+      document,
+      async () => {
+        lookups += 1;
+        return { origin: "https://example.com", credentials: [] };
+      },
+      async () => {},
+      () => {},
+    );
+
+    otp.dispatchEvent(
+      new window.FocusEvent("focusin", { bubbles: true }) as unknown as Event,
+    );
+    await settle();
+
+    expect(lookups).toBe(0);
+    expect(document.querySelector("[data-fd0-login-picker]")).toBeNull();
+    expect(document.querySelector("[data-fd0-login-trigger]")).toBeNull();
     controller.dispose();
     await window.close();
   });

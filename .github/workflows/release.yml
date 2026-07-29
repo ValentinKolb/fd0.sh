@@ -1,6 +1,6 @@
 # Client binary release. Triggers on scoped `client-v*` tags and on
 # the coordinated `fd0-v*` tag. Goreleaser produces:
-#   - per-platform tar.gz of fd0 + fd0-agent + fd0-server + fd0-witness
+#   - per-platform tar.gz of fd0 + fd0-agent + fd0-browser-host + fd0-server + fd0-witness
 #   - checksums.txt with sha256 per archive
 #   - checksums.txt.sigstore.json for cosign verification (install.sh uses it)
 #   - a GitHub Release at the actual tag (e.g. client-v0.0.5)
@@ -131,6 +131,7 @@ jobs:
           ldflags="-s -w -X main.version=${semver}"
           go build -tags=netgo,yubikey -ldflags "$ldflags" -o "dist/yubikey-${GOOS}-${GOARCH}/fd0" ./cmd/fd0
           go build -tags=netgo,yubikey -ldflags "$ldflags" -o "dist/yubikey-${GOOS}-${GOARCH}/fd0-agent" ./cmd/fd0-agent
+          go build -tags=netgo,yubikey -ldflags "$ldflags" -o "dist/yubikey-${GOOS}-${GOARCH}/fd0-browser-host" ./cmd/fd0-browser-host
           cp README.md LICENSE "dist/yubikey-${GOOS}-${GOARCH}/"
           archive="fd0_yubikey_${GOOS}_${GOARCH}.tar.gz"
           tar -C "dist/yubikey-${GOOS}-${GOARCH}" -czf "dist/${archive}" .

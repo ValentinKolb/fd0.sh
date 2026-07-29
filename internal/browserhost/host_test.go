@@ -99,6 +99,10 @@ func TestHandleValidatesOperationShapeBeforeVaultAccess(t *testing.T) {
 		{name: "matches credential id", req: Request{ID: "1", Operation: "matches", CredentialID: "x"}, code: "invalid_request"},
 		{name: "reveal missing origin", req: Request{ID: "1", Operation: "reveal", CredentialID: "x"}, code: "invalid_request"},
 		{name: "reveal missing credential id", req: Request{ID: "1", Operation: "reveal"}, code: "invalid_request"},
+		{name: "totp missing credential id", req: Request{ID: "1", Operation: "totp", Origin: "https://example.com"}, code: "invalid_request"},
+		{name: "save missing password", req: Request{ID: "1", Operation: "save", Origin: "https://example.com", Title: "Login"}, code: "invalid_request"},
+		{name: "update missing revision", req: Request{ID: "1", Operation: "update", Origin: "https://example.com", CredentialID: "x", Password: "secret"}, code: "invalid_request"},
+		{name: "add totp missing uri", req: Request{ID: "1", Operation: "add_totp", Origin: "https://example.com", CredentialID: "x", Revision: "1"}, code: "invalid_request"},
 		{name: "long origin", req: Request{ID: "1", Operation: "matches", Origin: "https://" + strings.Repeat("a", maxOriginBytes)}, code: "invalid_request"},
 		{name: "long credential id", req: Request{ID: "1", Operation: "reveal", Origin: "https://example.com", CredentialID: strings.Repeat("a", maxCredentialID+1)}, code: "invalid_request"},
 	}

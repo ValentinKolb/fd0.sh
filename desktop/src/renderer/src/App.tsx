@@ -1,6 +1,6 @@
 import { Show, createEffect, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js";
 import { IconArrowLeft } from "@tabler/icons-solidjs";
-import { hotkeys } from "@valentinkolb/stdlib/solid";
+import { hotkeys } from "@k2b/stdlib/solid";
 import type { FieldView, ItemSummary, ScopeSummary } from "../../shared/contracts";
 import { PasswordGeneratorPanel } from "./components/PasswordGenerator";
 import { ShareVaultModal } from "./components/ShareVaultModal";

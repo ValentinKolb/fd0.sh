@@ -61,12 +61,24 @@ jobs:
         working-directory: browser
         run: bun install --frozen-lockfile
 
+      - name: install browser smoke runtime
+        working-directory: browser
+        run: bunx playwright install --with-deps chromium
+
       - name: test browser integration
         working-directory: browser
         run: |
           bun run typecheck
           bun test
-          bun run build
+          bun run test:smoke
+
+  installer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: test isolated client and desktop installers
+        run: bash tests/run_isolated_integration.sh tests/integration_desktop_installer.sh
 
   desktop-e2e:
     runs-on: macos-15
@@ -90,6 +102,7 @@ jobs:
         working-directory: desktop
         run: |
           bun run typecheck
+          bun test
           bun run test:e2e
 
       - name: upload desktop E2E diagnostics
@@ -158,6 +171,58 @@ jobs:
           }
           assert_output_line "terminal runtime smoke" "fd0 terminal runtime ok" xvfb-run -a "$app" --fd0-terminal-runtime-smoke
           assert_output_line "desktop CLI relay" "fd0 0.0.0 yubikey" "$app" --fd0-cli-relay version
+          browser_home=$(mktemp -d)
+          mkdir -p "$browser_home/bin"
+          browser_host="$browser_home/bin/fd0-browser-host"
+          cat >"$browser_host" <<EOF
+          #!/bin/sh
+          exec "$PWD/$app" --fd0-browser-host-relay "\$@"
+          EOF
+          chmod 755 "$browser_host"
+          HOME="$browser_home" FD0_BROWSER_HOST_BIN="$browser_host" \
+            "$app" --fd0-cli-relay browser enable
+          for manifest in \
+            "$browser_home/.config/google-chrome/NativeMessagingHosts/sh.fd0.browser.json" \
+            "$browser_home/.config/chromium/NativeMessagingHosts/sh.fd0.browser.json"; do
+            test "$(jq -r .path "$manifest")" = "$browser_host"
+          done
+          test -x "$browser_host"
+          rm -rf "$browser_home"
+          "$app" --appimage-extract >/dev/null
+          test -x squashfs-root/resources/bin/fd0-browser-host
+          rm -rf squashfs-root
+
+  website:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+
+      - name: install website dependencies
+        working-directory: website
+        run: bun install --frozen-lockfile
+
+      - name: build and smoke website
+        working-directory: website
+        run: |
+          bun run build
+          (
+            cd dist
+            PORT=5187 NODE_ENV=production bun server.js >"$RUNNER_TEMP/fd0-website.log" 2>&1 &
+            pid=$!
+            trap 'kill "$pid" 2>/dev/null || true' EXIT
+            for _ in {1..40}; do
+              if curl --fail --silent http://127.0.0.1:5187/ >/dev/null; then
+                exit 0
+              fi
+              sleep 0.25
+            done
+            cat "$RUNNER_TEMP/fd0-website.log"
+            exit 1
+          )
 
   yubikey-compile:
     # Compile-only job that exercises the `yubikey` build tag. We don't run

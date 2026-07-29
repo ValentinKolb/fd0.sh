@@ -7,7 +7,7 @@ import {
   IconPaperclip,
   IconTrash,
 } from "@tabler/icons-solidjs";
-import { dnd, type DndController } from "@valentinkolb/stdlib/solid";
+import { dnd, type DndController } from "@k2b/stdlib/solid";
 import type { PassField } from "../../../shared/contracts";
 import { errorText } from "../lib/errors";
 import { formatBytes } from "../lib/format";

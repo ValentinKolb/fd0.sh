@@ -12,7 +12,7 @@
  * scope new rules to their own root container.
  */
 
-import { highlight } from "@valentinkolb/stdlib";
+import { highlight } from "@k2b/stdlib";
 
 export const fd0Shell = highlight.compile([
   { kind: "comment", match: /#[^\n]*/ },

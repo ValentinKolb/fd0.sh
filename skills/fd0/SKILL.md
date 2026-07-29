@@ -248,16 +248,18 @@ Use `fd0 pass field set NAME PATH - --secret` for values that should not appear 
 
 ## Browser autofill preview
 
-Browser autofill is currently a source-only Google Chrome preview for macOS and
-Linux. Do not tell normal users that it ships in the installer or a browser
-store. Build and register it using `browser/README.md`.
+Browser autofill is currently an unpacked Chrome/Chromium preview for macOS and
+Linux. The matching Native Messaging host ships beside fd0 in current build
+artifacts, but the extension is not published in a browser store. Build and
+register it using `browser/README.md`.
 
-The preview is intentionally read-only: it lists matching item titles and
-usernames for the current top-level HTTPS origin, reveals the password only
-after explicit selection, checks the origin and browser document again, fills
-the fields, and never submits the form. It does not support HTTP pages,
-embedded frames, saving or updating logins, TOTP fill, Firefox, or packaged
-installation yet.
+The preview lists matching item titles and usernames for the concrete HTTPS
+frame, reveals a password only after explicit selection, checks origin and
+document again, and never submits the form. It also supports password
+generation, explicit save/revision-bound update, pasted `otpauth://` setup
+links, and TOTP fill after a recent selection. Submitted candidates are held
+only in browser session memory for up to 60 seconds. HTTP pages and Firefox are
+not supported yet.
 
 Remove only its development Native Messaging registration with the same built
 CLI:

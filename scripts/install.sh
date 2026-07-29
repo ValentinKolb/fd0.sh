@@ -16,7 +16,7 @@
 # %LOCALAPPDATA% path conventions have not been validated. Track at
 # https://github.com/k2b-dev/fd0.sh/issues.
 #
-# Installs `fd0` and `fd0-agent` into ~/.local/bin (default) or
+# Installs `fd0`, `fd0-agent`, and `fd0-browser-host` into ~/.local/bin (default) or
 # /usr/local/bin (--system), seeds ~/.fd0/config.toml if absent,
 # and prints a PATH hint when ~/.local/bin isn't on $PATH. Without an
 # explicit product or flavor, interactive runs offer Desktop or CLI.
@@ -40,7 +40,8 @@ SYSTEM=0
 VERSION="${FD0_VERSION:-latest}"
 ASSUME_YES=0
 ALLOW_DOWNGRADE=0
-BINARIES="fd0 fd0-agent"
+REQUIRED_BINARIES="fd0 fd0-agent"
+OPTIONAL_BINARIES="fd0-browser-host"
 FLAVOR_EXPLICIT=0
 if [ "${FD0_FLAVOR+x}" = x ]; then
     FLAVOR_EXPLICIT=1
@@ -63,7 +64,7 @@ while [ $# -gt 0 ]; do
             cat <<EOF
 Usage: install.sh [options]
 
-Installs or upgrades the fd0 client (fd0, fd0-agent).
+Installs or upgrades the fd0 client (fd0, fd0-agent, fd0-browser-host).
 
   --system            install into /usr/local/bin (needs sudo)
   --prefix=DIR        install into DIR (default: ~/.local/bin)
@@ -196,6 +197,15 @@ INSTALL_BIN() {
     else
         install -d -m 0755 "$dir"
         install -m 0755 "$src" "$dst"
+    fi
+}
+
+REMOVE_BIN() {
+    path="$1"
+    if [ "$SYSTEM" = "1" ] && [ "$(id -u)" != "0" ]; then
+        sudo rm -f "$path"
+    else
+        rm -f "$path"
     fi
 }
 
@@ -442,14 +452,31 @@ fi
 [ "$actual" = "$expected" ] || die "sha256 mismatch — tarball does not match manifest"
 
 # ─── install the client binaries ─────────────────────────────────────────
-for bin in $BINARIES; do
-    # Stream only the two exact archive members to caller-chosen files.
+for bin in $REQUIRED_BINARIES; do
+    # Stream only the exact expected archive members to caller-chosen files.
     # No archive member path is ever handed to tar as an extraction target.
     tar -xOzf "$TMP/${TARBALL}" "$bin" > "$TMP/$bin" \
         || die "binary $bin missing from release tarball"
     [ -s "$TMP/$bin" ] || die "binary $bin is empty in release tarball"
 done
-for bin in $BINARIES; do
+INSTALL_BINARIES="$REQUIRED_BINARIES"
+MISSING_OPTIONAL_BINARIES=""
+for bin in $OPTIONAL_BINARIES; do
+    if tar -xOzf "$TMP/${TARBALL}" "$bin" > "$TMP/$bin" 2>/dev/null &&
+       [ -s "$TMP/$bin" ]; then
+        INSTALL_BINARIES="$INSTALL_BINARIES $bin"
+    else
+        rm -f "$TMP/$bin"
+        MISSING_OPTIONAL_BINARIES="$MISSING_OPTIONAL_BINARIES $bin"
+    fi
+done
+for bin in $MISSING_OPTIONAL_BINARIES; do
+    if [ -n "$CURRENT" ] && { [ -e "$PREFIX/$bin" ] || [ -L "$PREFIX/$bin" ]; }; then
+        REMOVE_BIN "$PREFIX/$bin"
+        printf '✓ removed unavailable %s from %s\n' "$bin" "$PREFIX"
+    fi
+done
+for bin in $INSTALL_BINARIES; do
     INSTALL_BIN "$TMP/$bin" "$PREFIX/$bin"
     printf '✓ %s → %s\n' "$bin" "$PREFIX/$bin"
 done

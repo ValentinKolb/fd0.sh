@@ -143,6 +143,7 @@ jobs:
           test "$("$app/Contents/Resources/bin/fd0" version)" = "fd0 ${{ steps.version.outputs.version }} yubikey"
           test "$("$app/Contents/Resources/bin/fd0-agent" --version)" = "fd0-agent ${{ steps.version.outputs.version }} yubikey"
           test -x "$app/Contents/Resources/bin/fd0-sftp-bridge"
+          test -x "$app/Contents/Resources/bin/fd0-browser-host"
           test "$("$app/Contents/MacOS/fd0" --fd0-cli-relay version)" = "fd0 ${{ steps.version.outputs.version }} yubikey"
           if "$app/Contents/MacOS/fd0" --fd0-cli-relay update --check > update-check.txt 2>&1; then
             echo "::error::desktop-managed update --check unexpectedly succeeded"
@@ -254,6 +255,7 @@ jobs:
           "$app" --appimage-extract >/dev/null
           test -x squashfs-root/resources/bin/fd0-release-verify
           test -x squashfs-root/resources/bin/fd0-sftp-bridge
+          test -x squashfs-root/resources/bin/fd0-browser-host
           test -f squashfs-root/resources/runtime/libpcsclite.so.1
           test -f squashfs-root/resources/runtime/libpcsclite-LICENSE.txt
           LD_LIBRARY_PATH="$PWD/squashfs-root/resources/runtime" \

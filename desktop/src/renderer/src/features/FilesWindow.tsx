@@ -20,7 +20,7 @@ import {
   IconUpload,
   IconX,
 } from "@tabler/icons-solidjs";
-import { truncate } from "@valentinkolb/stdlib";
+import { truncate } from "@k2b/stdlib";
 import type { SFTPEntry, SFTPTransferEvent } from "../../../shared/contracts";
 import { MenuButton } from "../ui/Menu";
 import {

@@ -6,11 +6,16 @@
   "scripts": {
     "build": "bun run scripts/build.ts",
     "test": "bun test",
+    "test:smoke": "bun run build && bun run scripts/smoke-extension.ts",
     "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@k2b/stdlib": "0.17.1"
   },
   "devDependencies": {
     "@types/bun": "1.3.9",
     "happy-dom": "20.11.1",
+    "playwright": "1.62.0",
     "typescript": "7.0.2"
   }
 }

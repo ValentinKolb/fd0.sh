@@ -650,14 +650,15 @@ $ fd0 pass rm github`}</Box>
 const BrowserBody = () => (
   <>
     <Note>
-      This is a development preview for Google Chrome on macOS and Linux. It
-      is not included in the current fd0 installer or published in a browser
-      store.
+      This is an unpacked development preview for Chrome and Chromium on macOS
+      and Linux. The matching Native Messaging host ships with current fd0
+      builds, but the extension is not published in a browser store.
     </Note>
     <P>
-      The preview fills an existing fd0 login after you choose it beside a
-      username or password field. It works on top-level HTTPS pages, never
-      submits the form, and does not write to your vault.
+      Choose an fd0 login beside a credential field to fill it without
+      submitting the form. The preview also generates passwords, explicitly
+      saves or revision-updates logins, accepts pasted <Code>otpauth://</Code>
+      setup links, and fills a fresh TOTP code after a recent selection.
     </P>
 
     <H2>Build and register it</H2>
@@ -677,9 +678,10 @@ $ go build -o .build/browser/fd0-browser-host ./cmd/fd0-browser-host
 $ .build/browser/fd0 browser enable \\
     --host .build/browser/fd0-browser-host`}</Box>
     <P>
-      Open <Code>chrome://extensions</Code>, enable <strong>Developer
-      mode</strong>, choose <strong>Load unpacked</strong>, and select{" "}
-      <Code>browser/dist</Code>. Chrome must show extension id{" "}
+      Open <Code>chrome://extensions</Code> or{" "}
+      <Code>chromium://extensions</Code>, enable <strong>Developer mode</strong>,
+      choose <strong>Load unpacked</strong>, and select <Code>browser/dist</Code>.
+      The browser must show extension id{" "}
       <Code>flkmmllfacmjnhjgdfliahdkhfjmdoec</Code>.
     </P>
 
@@ -689,16 +691,17 @@ $ fd0 pass field set demo username ada@example.com
 $ fd0 pass field set demo password --secret --generate
 $ fd0 unlock`}</Box>
     <P>
-      Reload the HTTPS login page after rebuilding the extension. Focus its
-      username or password field, then choose the matching fd0 item. The field
-      button reopens the picker; Chrome's extension toolbar action is a
-      fallback.
+      Focus a username or password field on an HTTPS page, then choose the
+      matching fd0 item. The field button reopens the picker; the toolbar action
+      selects one concrete frame with a visible credential field. Existing
+      HTTPS tabs reconnect after an extension rebuild without a manual reload.
     </P>
     <P>
-      Only matching item titles and usernames cross into the extension before
-      selection. The password is requested from the local agent after
-      selection, and fd0 checks the HTTPS origin again before filling the same
-      browser document.
+      Only matching item metadata crosses into the extension before selection:
+      opaque references, titles, usernames, vault labels, revisions, and
+      whether a TOTP is available. The password is requested from the local
+      agent after selection, and fd0 checks the HTTPS origin again before
+      filling the same browser document.
     </P>
 
     <H2>Remove the development registration</H2>
@@ -711,10 +714,10 @@ $ fd0 unlock`}</Box>
 
     <H2>If the picker does not appear</H2>
     <P>
-      Unlock fd0, confirm the page uses HTTPS, reload the page after each
-      extension rebuild, and check that Chrome still shows the extension id
-      above. The preview deliberately ignores embedded frames and signup
-      fields marked <Code>new-password</Code>.
+      Unlock fd0, confirm the page uses HTTPS, and check that the browser still
+      shows the extension id above. If more than one saved account could be
+      updated, choose the intended login explicitly. HTTP pages remain
+      unsupported.
     </P>
   </>
 );

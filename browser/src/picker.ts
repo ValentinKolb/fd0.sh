@@ -2,6 +2,10 @@ export type LoginMatch = {
   id: string;
   title: string;
   username?: string;
+  revision?: string;
+  hasTotp?: boolean;
+  scopeId?: string;
+  scope?: string;
 };
 
 export type LoginPicker = {
@@ -233,6 +237,7 @@ export function mountLoginPicker(
   matches: LoginMatch[],
   select: (credentialId: string) => Promise<void>,
   onClose?: () => void,
+  openTools?: () => void,
 ): LoginPicker {
   if (matches.length === 0) throw new Error("A login picker requires at least one match.");
 
@@ -299,7 +304,18 @@ export function mountLoginPicker(
     return option;
   });
 
+  const toolsButton = document.createElement("button");
+  toolsButton.className = "tools";
+  toolsButton.type = "button";
+  toolsButton.textContent = "Password tools";
+  if (openTools) {
+    toolsButton.addEventListener("click", () => {
+      close(false);
+      openTools();
+    });
+  }
   panel.append(header, list, status);
+  if (openTools) panel.append(toolsButton);
   root.append(style, panel);
   document.documentElement.append(host);
 
@@ -346,6 +362,10 @@ export function mountLoginPicker(
 
   function position(): void {
     if (closed) return;
+    list.toggleAttribute(
+      "data-scrollable",
+      list.clientHeight > 0 && list.scrollHeight > list.clientHeight,
+    );
     const rect = anchor.getBoundingClientRect();
     const viewportWidth = view?.innerWidth ?? document.documentElement.clientWidth;
     const viewportHeight = view?.innerHeight ?? document.documentElement.clientHeight;
@@ -368,6 +388,12 @@ export function mountLoginPicker(
 
   function onKeyDown(event: KeyboardEvent): void {
     if (busy) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      close();
+      return;
+    }
+    if (!event.composedPath().includes(list)) return;
     switch (event.key) {
       case "ArrowDown":
         event.preventDefault();
@@ -388,10 +414,6 @@ export function mountLoginPicker(
       case "Enter":
         event.preventDefault();
         void choose(activeIndex);
-        break;
-      case "Escape":
-        event.preventDefault();
-        close();
         break;
     }
   }
@@ -519,6 +541,9 @@ const pickerStyles = `
     max-height: 280px;
     padding: 2px 8px 8px;
     overflow: auto;
+    scrollbar-gutter: auto;
+  }
+  .list[data-scrollable] {
     scrollbar-gutter: stable;
   }
   .option {
@@ -572,6 +597,20 @@ const pickerStyles = `
   }
   .status:not(:empty) { min-height: 24px; padding: 4px 0 7px; }
   .panel[data-busy] .status { color: var(--fd0-muted); }
+  .tools {
+    width: calc(100% - 16px);
+    min-height: 32px;
+    margin: 0 8px 8px;
+    color: var(--fd0-text-2);
+    background: var(--fd0-raised);
+    border: 0;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .tools:hover { background: var(--fd0-hover); color: var(--fd0-text); }
+  .tools:focus-visible { outline: 2px solid var(--fd0-accent); outline-offset: -2px; }
   .prompt-body {
     display: grid;
     gap: 12px;

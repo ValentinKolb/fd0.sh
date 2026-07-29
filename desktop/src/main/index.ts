@@ -248,6 +248,7 @@ function runPackagedRelay(): number | null {
   const relays = [
     { marker: "--fd0-cli-relay", binary: "fd0" },
     { marker: "--fd0-agent-relay", binary: "fd0-agent" },
+    { marker: "--fd0-browser-host-relay", binary: "fd0-browser-host" },
   ];
   const selected = relays
     .map((relay) => ({ ...relay, index: process.argv.indexOf(relay.marker) }))
@@ -264,6 +265,9 @@ function runPackagedRelay(): number | null {
       ...runtimeEnvironment(),
       FD0_DESKTOP_MANAGED: "1",
       FD0_DESKTOP_APP: process.env.APPIMAGE || process.execPath,
+      ...(relay.binary === "fd0" && process.env.FD0_BROWSER_HOST_BIN
+        ? { FD0_BROWSER_HOST_BIN: process.env.FD0_BROWSER_HOST_BIN }
+        : {}),
       // Only the agent relay — the systemd unit's ExecStart — is this app
       // starting a service of its own. An agent that `fd0 unlock` happens to
       // spawn through the CLI relay belongs to that shell session, and marking

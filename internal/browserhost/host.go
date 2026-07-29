@@ -1,6 +1,6 @@
 // Package browserhost implements fd0's narrow Chrome Native Messaging
-// protocol. It deliberately exposes only read-only login lookup and reveal
-// operations.
+// protocol. It exposes only the origin-bound login lifecycle used by the
+// extension; generic vault operations are deliberately unavailable.
 package browserhost
 
 import (
@@ -21,6 +21,7 @@ const (
 	maxRequestID    = 128
 	maxOriginBytes  = 2048
 	maxCredentialID = 1024
+	maxFieldBytes   = 32 * 1024
 )
 
 type Request struct {
@@ -28,6 +29,12 @@ type Request struct {
 	Operation    string `json:"operation"`
 	Origin       string `json:"origin,omitempty"`
 	CredentialID string `json:"credentialId,omitempty"`
+	Revision     string `json:"revision,omitempty"`
+	ScopeID      string `json:"scopeId,omitempty"`
+	Title        string `json:"title,omitempty"`
+	Username     string `json:"username,omitempty"`
+	Password     string `json:"password,omitempty"`
+	TOTPURI      string `json:"totpUri,omitempty"`
 }
 
 type Response struct {
@@ -48,6 +55,10 @@ type StatusResult struct {
 
 type MatchesResult struct {
 	Credentials []cli.BrowserCredential `json:"credentials"`
+}
+
+type ScopesResult struct {
+	Scopes []cli.BrowserScope `json:"scopes"`
 }
 
 // Run handles exactly one Native Messaging request. Chrome's
@@ -91,6 +102,15 @@ func handle(ctx context.Context, req Request) Response {
 			credentials = []cli.BrowserCredential{}
 		}
 		return Response{ID: req.ID, OK: true, Result: MatchesResult{Credentials: credentials}}
+	case "scopes":
+		scopes, err := cli.BrowserScopes(ctx)
+		if err != nil {
+			return mappedError(req.ID, err)
+		}
+		if scopes == nil {
+			scopes = []cli.BrowserScope{}
+		}
+		return Response{ID: req.ID, OK: true, Result: ScopesResult{Scopes: scopes}}
 	case "reveal":
 		if req.CredentialID == "" {
 			return errorResponse(req.ID, "invalid_request", "credentialId is required")
@@ -100,6 +120,39 @@ func handle(ctx context.Context, req Request) Response {
 			return mappedError(req.ID, err)
 		}
 		return Response{ID: req.ID, OK: true, Result: credential}
+	case "totp":
+		result, err := cli.BrowserTOTPForCredential(ctx, req.Origin, req.CredentialID)
+		if err != nil {
+			return mappedError(req.ID, err)
+		}
+		return Response{ID: req.ID, OK: true, Result: result}
+	case "save":
+		result, err := cli.SaveBrowserLogin(ctx, cli.BrowserSaveLoginInput{
+			Origin: req.Origin, ScopeID: req.ScopeID, Title: req.Title,
+			Username: req.Username, Password: req.Password,
+		})
+		if err != nil {
+			return mappedError(req.ID, err)
+		}
+		return Response{ID: req.ID, OK: true, Result: result}
+	case "update":
+		result, err := cli.UpdateBrowserLogin(ctx, cli.BrowserUpdateLoginInput{
+			Origin: req.Origin, CredentialID: req.CredentialID,
+			Revision: req.Revision, Title: req.Title,
+			Username: req.Username, Password: req.Password,
+		})
+		if err != nil {
+			return mappedError(req.ID, err)
+		}
+		return Response{ID: req.ID, OK: true, Result: result}
+	case "add_totp":
+		result, err := cli.AddBrowserTOTP(
+			ctx, req.Origin, req.CredentialID, req.Revision, req.TOTPURI,
+		)
+		if err != nil {
+			return mappedError(req.ID, err)
+		}
+		return Response{ID: req.ID, OK: true, Result: result}
 	default:
 		return errorResponse(req.ID, "unsupported_operation", "operation is not supported")
 	}
@@ -118,35 +171,86 @@ func validateRequest(req Request) string {
 	if len(req.CredentialID) > maxCredentialID {
 		return "credentialId is too long"
 	}
+	if len(req.Title) > 128 || len(req.Username) > maxFieldBytes ||
+		len(req.Password) > maxFieldBytes || len(req.TOTPURI) > 4096 ||
+		len(req.ScopeID) > 128 || len(req.Revision) > 64 {
+		return "request field is too long"
+	}
 	switch req.Operation {
 	case "status":
-		if req.Origin != "" || req.CredentialID != "" {
-			return "status does not accept origin or credentialId"
+		if hasBrowserPayload(req) {
+			return "status does not accept request fields"
 		}
 	case "matches":
 		if req.Origin == "" {
 			return "origin is required"
 		}
-		if req.CredentialID != "" {
-			return "credentialId is not allowed for matches"
+		if req.CredentialID != "" || hasMutationPayload(req) {
+			return "matches accepts only origin"
 		}
-	case "reveal":
+	case "scopes":
+		if hasBrowserPayload(req) {
+			return "scopes does not accept request fields"
+		}
+	case "reveal", "totp":
 		if req.Origin == "" {
 			return "origin is required"
 		}
 		if req.CredentialID == "" {
 			return "credentialId is required"
 		}
+		if hasMutationPayload(req) {
+			return req.Operation + " accepts only origin and credentialId"
+		}
+	case "save":
+		if req.Origin == "" || req.Title == "" || req.Password == "" {
+			return "origin, title, and password are required"
+		}
+		if req.CredentialID != "" || req.Revision != "" || req.TOTPURI != "" {
+			return "save request contains unsupported fields"
+		}
+	case "update":
+		if req.Origin == "" || req.CredentialID == "" || req.Revision == "" ||
+			req.Title == "" || req.Password == "" {
+			return "origin, credentialId, revision, title, and password are required"
+		}
+		if req.ScopeID != "" || req.TOTPURI != "" {
+			return "update request contains unsupported fields"
+		}
+	case "add_totp":
+		if req.Origin == "" || req.CredentialID == "" || req.Revision == "" || req.TOTPURI == "" {
+			return "origin, credentialId, revision, and totpUri are required"
+		}
+		if req.ScopeID != "" || req.Title != "" || req.Username != "" || req.Password != "" {
+			return "add_totp request contains unsupported fields"
+		}
 	}
 	return ""
+}
+
+func hasMutationPayload(req Request) bool {
+	return req.Revision != "" || req.ScopeID != "" || req.Title != "" ||
+		req.Username != "" || req.Password != "" || req.TOTPURI != ""
+}
+
+func hasBrowserPayload(req Request) bool {
+	return req.Origin != "" || req.CredentialID != "" || hasMutationPayload(req)
 }
 
 func mappedError(id string, err error) Response {
 	switch {
 	case errors.Is(err, cli.ErrAgentLocked):
-		return errorResponse(id, "locked", "Unlock fd0 to fill this login.")
+		return errorResponse(id, "locked", "Unlock fd0 in the desktop app, then try again.")
 	case errors.Is(err, cli.ErrAgentNotRunning):
-		return errorResponse(id, "unavailable", "Start and unlock fd0 to fill this login.")
+		return errorResponse(id, "unavailable", "Open fd0, unlock it, and try again.")
+	case strings.Contains(err.Error(), "changed; review"):
+		return errorResponse(id, "conflict", "This login changed in fd0. Review it and try again.")
+	case strings.Contains(err.Error(), "already exists"):
+		return errorResponse(id, "already_exists", "A login with this name already exists in that vault.")
+	case strings.Contains(err.Error(), "invalid browser") ||
+		strings.Contains(err.Error(), "must use https") ||
+		strings.Contains(err.Error(), "does not match this origin"):
+		return errorResponse(id, "invalid_request", "fd0 refused this browser request.")
 	default:
 		return errorResponse(id, "request_failed", "fd0 could not complete this request.")
 	}

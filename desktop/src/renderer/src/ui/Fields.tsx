@@ -1,7 +1,7 @@
 import { For, Show, createMemo, createSignal, createUniqueId, splitProps, type JSX } from "solid-js";
 import { IconCheck, IconChevronDown, IconEye, IconEyeOff } from "@tabler/icons-solidjs";
 import { Popover } from "./Popover";
-import { password } from "@valentinkolb/stdlib";
+import { password } from "@k2b/stdlib";
 import { IconButton } from "./Button";
 
 type FieldShellProps = {

@@ -226,7 +226,7 @@
 /* ─── shell syntax highlighting (root-scope) ──────────────────────
  *
  * Tokens emitted by the custom fd0 highlighter built with
- * highlight.compile from @valentinkolb/stdlib (src/lib/shell.tsx).
+ * highlight.compile from @k2b/stdlib (src/lib/shell.tsx).
  * Colours are literal so the rules apply in any page context — not
  * just inside the .term palette.
  *

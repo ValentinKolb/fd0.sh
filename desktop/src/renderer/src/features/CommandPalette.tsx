@@ -15,7 +15,7 @@ import {
   IconTrash,
   IconUsers,
 } from "@tabler/icons-solidjs";
-import { fuzzy } from "@valentinkolb/stdlib";
+import { fuzzy } from "@k2b/stdlib";
 import type { ItemSummary } from "../../../shared/contracts";
 import { kindIcon, kindMeta, kindTone, railKinds } from "../lib/items";
 import { initials, plural } from "../lib/format";

@@ -92,6 +92,28 @@ describe("login picker", () => {
     expect(picker.host.isConnected).toBe(false);
   });
 
+  test("reserves scrollbar space only when the login list overflows", () => {
+    const { window, document, anchor } = testPage();
+    const picker = mountLoginPicker(document, anchor, matches, async () => {});
+    const list = picker.root.querySelector<HTMLElement>(".list");
+    if (!list) throw new Error("login list not mounted");
+
+    Object.defineProperties(list, {
+      clientHeight: { configurable: true, value: 120 },
+      scrollHeight: { configurable: true, value: 100 },
+    });
+    window.dispatchEvent(new window.Event("resize"));
+    expect(list.hasAttribute("data-scrollable")).toBe(false);
+
+    Object.defineProperty(list, "scrollHeight", {
+      configurable: true,
+      value: 180,
+    });
+    window.dispatchEvent(new window.Event("resize"));
+    expect(list.hasAttribute("data-scrollable")).toBe(true);
+    picker.close();
+  });
+
   test("keeps the picker open and announces a friendly selection error", async () => {
     const { document, anchor } = testPage();
     const picker = mountLoginPicker(document, anchor, matches, async () => {
@@ -123,6 +145,37 @@ describe("login picker", () => {
 
     expect(picker.host.isConnected).toBe(false);
     expect(document.activeElement).toBe(anchor);
+  });
+
+  test("lets Password tools handle Enter without selecting a login", async () => {
+    const { window, document, anchor } = testPage();
+    let selected = 0;
+    let openedTools = 0;
+    const picker = mountLoginPicker(
+      document,
+      anchor,
+      matches,
+      async () => {
+        selected += 1;
+      },
+      undefined,
+      () => {
+        openedTools += 1;
+      },
+    );
+    const tools = picker.root.querySelector<HTMLButtonElement>(".tools");
+    tools?.focus();
+    tools?.dispatchEvent(
+      new window.KeyboardEvent("keydown", {
+        key: "Enter",
+        bubbles: true,
+      }) as unknown as Event,
+    );
+    tools?.click();
+    await Promise.resolve();
+
+    expect(openedTools).toBe(1);
+    expect(selected).toBe(0);
   });
 });
 
