@@ -1,7 +1,7 @@
 ---
 name: fd0
 description: >-
-  Use this skill whenever the user — or an agent acting on the user's behalf — needs to store, fetch, share, or organize secrets with the fd0 CLI (`fd0 init`, `fd0 secret set`, `fd0 secret get`, `fd0 sync`, `fd0 scope ...`, `fd0 card ...`), use fd0 as a password manager (`fd0 pass ...`), manage SSH keys, hosts, terminal sessions, or remote files (`fd0 key ...`, `fd0 ssh ...`, `fd0 sftp ...`), or manage Talos Linux / Kubernetes credentials (`fd0 talos ...`, `fd0 kube ...`). Trigger on any of these phrasings even when the user does not name fd0 explicitly — "store a deploy key", "save this API token", "fetch my DB password", "share a credential with bob", "add bob to the work scope", "rotate access", "set up my passphrase", "vault locked", "lock failed", "sync errored", "open my password manager", "store a login", "copy my GitHub password", "add a TOTP code", "attach a recovery key file", "generate an ssh key", "share ssh access with the team", "connect to the prod box", "browse files on the prod box", "upload this release to the server", "download a remote log", "store the talosconfig", "share the kubeconfig", "bootstrap a talos cluster". Also trigger when an agent in the middle of another task needs to inject a credential into a script or deploy step — `fd0 secret get NAME` or `fd0 pass field get ITEM FIELD --raw` is the canonical retrieval path. Do NOT trigger for hosting or operating the fd0-server; that is a separate concern documented in this project's docs/HOSTING.md.
+  Use this skill whenever the user — or an agent acting on the user's behalf — needs to store, fetch, share, or organize secrets with the fd0 CLI (`fd0 init`, `fd0 secret set`, `fd0 secret get`, `fd0 sync`, `fd0 scope ...`, `fd0 card ...`), use fd0 as a password manager (`fd0 pass ...`), manage SSH keys, hosts, terminal sessions, or remote files (`fd0 key ...`, `fd0 ssh ...`, `fd0 sftp ...`), or manage Talos Linux / Kubernetes credentials (`fd0 talos ...`, `fd0 kube ...`). Trigger on any of these phrasings even when the user does not name fd0 explicitly — "store a deploy key", "save this API token", "fetch my DB password", "share a credential with bob", "add bob to the work scope", "rotate access", "set up my passphrase", "vault locked", "lock failed", "sync errored", "open my password manager", "store a login", "copy my GitHub password", "fill a login in Chrome", "add a TOTP code", "attach a recovery key file", "generate an ssh key", "share ssh access with the team", "connect to the prod box", "browse files on the prod box", "upload this release to the server", "download a remote log", "store the talosconfig", "share the kubeconfig", "bootstrap a talos cluster". Also trigger when an agent in the middle of another task needs to inject a credential into a script or deploy step — `fd0 secret get NAME` or `fd0 pass field get ITEM FIELD --raw` is the canonical retrieval path. Do NOT trigger for hosting or operating the fd0-server; that is a separate concern documented in this project's docs/HOSTING.md.
 ---
 
 # fd0 — Zero-knowledge secrets CLI
@@ -27,6 +27,7 @@ Map the user's intent to the right command before typing anything:
 | Add username/password fields | `fd0 pass field set NAME username VALUE`; `fd0 pass field set NAME password --secret --generate` |
 | Copy a password-manager field | `fd0 pass copy NAME [FIELD] [--clear-after=30s]` |
 | Generate a password without storing | `fd0 pass generate [--length 32]` |
+| Test Chrome autofill from a source checkout | Follow `browser/README.md`, then register with the built `fd0 browser enable --host PATH` |
 | Show a pass item safely | `fd0 pass show NAME` (masked by default; `--reveal` only when explicitly needed) |
 | Store a passkey field | `fd0 pass field set NAME passkey VALUE --type passkey` |
 | Add or print TOTP | `fd0 pass totp add NAME 'otpauth://...'`; `fd0 pass totp code NAME` |
@@ -244,6 +245,26 @@ fd0 pass file export github SSH/recovery-key.pem --out ./recovery-key.pem
 ```
 
 Use `fd0 pass field set NAME PATH - --secret` for values that should not appear in shell history. A pass item is shared by sharing its scope; there is no separate per-item ACL. For browser/autofill-style lookup, use `fd0 pass find --url URL --json` and then retrieve the needed field explicitly.
+
+## Browser autofill preview
+
+Browser autofill is currently a source-only Google Chrome preview for macOS and
+Linux. Do not tell normal users that it ships in the installer or a browser
+store. Build and register it using `browser/README.md`.
+
+The preview is intentionally read-only: it lists matching item titles and
+usernames for the current top-level HTTPS origin, reveals the password only
+after explicit selection, checks the origin and browser document again, fills
+the fields, and never submits the form. It does not support HTTP pages,
+embedded frames, saving or updating logins, TOTP fill, Firefox, or packaged
+installation yet.
+
+Remove only its development Native Messaging registration with the same built
+CLI:
+
+```sh
+.build/browser/fd0 browser disable
+```
 
 ## Sharing a scope
 

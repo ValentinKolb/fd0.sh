@@ -89,6 +89,14 @@ export const SEO_ROUTE = {
       "Use fd0 pass for login items, secret and text fields, TOTP codes, passkeys, file attachments, sections, and the interactive browser.",
     section: "docs",
   },
+  docsBrowser: {
+    key: "docsBrowser",
+    path: "/docs/browser",
+    title: "fd0 browser autofill preview",
+    description:
+      "Build and test the fd0 Chrome autofill preview with the local native host, HTTPS origin matching, and explicit login selection.",
+    section: "docs",
+  },
   docsSsh: {
     key: "docsSsh",
     path: "/docs/ssh",
@@ -220,6 +228,7 @@ export const SEO_ROUTES = [
   SEO_ROUTE.docsDesktop,
   SEO_ROUTE.docsCli,
   SEO_ROUTE.docsPass,
+  SEO_ROUTE.docsBrowser,
   SEO_ROUTE.docsSsh,
   SEO_ROUTE.docsTalos,
   SEO_ROUTE.docsSync,

@@ -146,6 +146,7 @@ export type DocsKey =
   | "desktop"
   | "cli"
   | "pass"
+  | "browser"
   | "ssh"
   | "talos"
   | "server"
@@ -161,6 +162,7 @@ export const DOCS_NAV: { key: DocsKey; href: string; label: string; group: strin
   { key: "desktop", href: "/docs/desktop", label: "Desktop app", group: "Use" },
   { key: "cli", href: "/docs/cli", label: "CLI reference", group: "Use" },
   { key: "pass", href: "/docs/pass", label: "Passwords", group: "Use" },
+  { key: "browser", href: "/docs/browser", label: "Browser preview", group: "Use" },
   { key: "ssh", href: "/docs/ssh", label: "SSH", group: "Use" },
   { key: "talos", href: "/docs/talos", label: "Talos & Kube", group: "Use" },
   { key: "sync", href: "/docs/sync", label: "Sync", group: "Use" },

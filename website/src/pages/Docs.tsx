@@ -139,6 +139,7 @@ const OverviewBody = () => (
       <Tile href="/docs/concepts" title="Concepts" body="The small vocabulary used by every fd0 command." />
       <Tile href="/docs/cli" title="Daily use" body="One grammar for every module, plus scopes, sharing, and health checks." />
       <Tile href="/docs/pass" title="Passwords" body="Login items, TOTP, passkeys, attachments, and the interactive browser." />
+      <Tile href="/docs/browser" title="Browser preview" body="Build the Chrome development preview and fill an HTTPS login without submitting it." />
       <Tile href="/docs/ssh" title="SSH and files" body="Scope-shared SSH hosts, terminal sessions, and two-way SFTP transfers." />
       <Tile href="/docs/talos" title="Talos and Kube" body="Store, render, merge, and share Talos and Kubernetes configs." />
       <Tile href="/docs/sync" title="Sync" body="What sync sends, what it verifies, and how automatic refresh works." />
@@ -643,6 +644,78 @@ $ fd0 pass rm github`}</Box>
       <Code>file export</Code> put plaintext where your terminal, your history,
       and your logs can see it.
     </Note>
+  </>
+);
+
+const BrowserBody = () => (
+  <>
+    <Note>
+      This is a development preview for Google Chrome on macOS and Linux. It
+      is not included in the current fd0 installer or published in a browser
+      store.
+    </Note>
+    <P>
+      The preview fills an existing fd0 login after you choose it beside a
+      username or password field. It works on top-level HTTPS pages, never
+      submits the form, and does not write to your vault.
+    </P>
+
+    <H2>Build and register it</H2>
+    <P>
+      Clone the fd0 repository, then build the unpacked Manifest V3 extension,
+      the CLI, and its dedicated Native Messaging host.
+    </P>
+    <Box>{`$ cd browser
+$ bun install --frozen-lockfile
+$ bun run typecheck
+$ bun test
+$ bun run build
+
+$ cd ..
+$ go build -o .build/browser/fd0 ./cmd/fd0
+$ go build -o .build/browser/fd0-browser-host ./cmd/fd0-browser-host
+$ .build/browser/fd0 browser enable \\
+    --host .build/browser/fd0-browser-host`}</Box>
+    <P>
+      Open <Code>chrome://extensions</Code>, enable <strong>Developer
+      mode</strong>, choose <strong>Load unpacked</strong>, and select{" "}
+      <Code>browser/dist</Code>. Chrome must show extension id{" "}
+      <Code>flkmmllfacmjnhjgdfliahdkhfjmdoec</Code>.
+    </P>
+
+    <H2>Fill a login</H2>
+    <Box>{`$ fd0 pass add demo --url https://example.com
+$ fd0 pass field set demo username ada@example.com
+$ fd0 pass field set demo password --secret --generate
+$ fd0 unlock`}</Box>
+    <P>
+      Reload the HTTPS login page after rebuilding the extension. Focus its
+      username or password field, then choose the matching fd0 item. The field
+      button reopens the picker; Chrome's extension toolbar action is a
+      fallback.
+    </P>
+    <P>
+      Only matching item titles and usernames cross into the extension before
+      selection. The password is requested from the local agent after
+      selection, and fd0 checks the HTTPS origin again before filling the same
+      browser document.
+    </P>
+
+    <H2>Remove the development registration</H2>
+    <Box>{`$ .build/browser/fd0 browser disable`}</Box>
+    <P>
+      This removes only the Native Messaging manifest carrying fd0's
+      development marker. Remove the unpacked extension separately from{" "}
+      <Code>chrome://extensions</Code>. Neither action removes your vault.
+    </P>
+
+    <H2>If the picker does not appear</H2>
+    <P>
+      Unlock fd0, confirm the page uses HTTPS, reload the page after each
+      extension rebuild, and check that Chrome still shows the extension id
+      above. The preview deliberately ignores embedded frames and signup
+      fields marked <Code>new-password</Code>.
+    </P>
   </>
 );
 
@@ -1172,6 +1245,15 @@ export const DocsPass = ssr(async (c) => {
   return () => (
     <DocsLayout current="pass" title="Passwords" kicker="Password manager">
       <PassBody />
+    </DocsLayout>
+  );
+});
+
+export const DocsBrowser = ssr(async (c) => {
+  setPageSeo(c, "docsBrowser");
+  return () => (
+    <DocsLayout current="browser" title="Browser autofill preview" kicker="Development">
+      <BrowserBody />
     </DocsLayout>
   );
 });

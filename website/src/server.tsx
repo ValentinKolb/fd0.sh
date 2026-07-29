@@ -20,6 +20,7 @@ import {
   DocsDesktop,
   DocsCli,
   DocsPass,
+  DocsBrowser,
   DocsSsh,
   DocsTalos,
   DocsSync,
@@ -335,6 +336,7 @@ const app = new Hono()
   .get("/docs/desktop", ...DocsDesktop)
   .get("/docs/cli", ...DocsCli)
   .get("/docs/pass", ...DocsPass)
+  .get("/docs/browser", ...DocsBrowser)
   .get("/docs/ssh", ...DocsSsh)
   .get("/docs/talos", ...DocsTalos)
   .get("/docs/sync", ...DocsSync)

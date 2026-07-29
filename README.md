@@ -128,6 +128,8 @@ make all           # build and run all checks
 Build the website with `cd website && bun install && bun run build`. Desktop
 development commands and isolation requirements live in
 [`desktop/README.md`](./desktop/README.md).
+The read-only Chrome autofill preview and its reversible local registration
+live in [`browser/README.md`](./browser/README.md).
 
 Compatibility and security-sensitive changes should start with
 [`docs/PROTOCOL.md`](./docs/PROTOCOL.md),
