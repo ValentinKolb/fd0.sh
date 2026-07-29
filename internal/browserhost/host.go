@@ -68,7 +68,7 @@ func Run(ctx context.Context, callerOrigin string, in io.Reader, out io.Writer) 
 	if err != nil {
 		return writeResponse(out, errorResponse("", "invalid_request", err.Error()))
 	}
-	if callerOrigin != browserconfig.DevelopmentExtensionOrigin {
+	if !browserconfig.AllowsExtensionOrigin(callerOrigin) {
 		return writeResponse(out, errorResponse(req.ID, "forbidden", "browser extension is not allowed"))
 	}
 	return writeResponse(out, handle(ctx, req))

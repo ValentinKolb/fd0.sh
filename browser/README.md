@@ -21,7 +21,7 @@ The extension:
   Storage. Explicit save, update, and TOTP actions write to the encrypted fd0
   vault.
 
-The integration is not yet published in a browser store.
+The integration is not yet publicly listed in a browser store.
 
 ## Build and register
 
@@ -46,6 +46,25 @@ show extension id
 `flkmmllfacmjnhjgdfliahdkhfjmdoec`. A different id cannot use this development
 Native Messaging registration.
 
+`fd0 browser enable` registers both exact identities accepted by the native
+host: the unpacked development extension above and Chrome Web Store item
+`kcbjlgbkgoabcdflpnohkknfbegcigel`. No wildcard extension origin is accepted.
+
+## Build the Chrome Web Store package
+
+The store package is separate from the unpacked development build. It omits
+the development extension key and source maps, includes only the required
+runtime files and icons, and is checked before it is written:
+
+```sh
+cd browser
+bun run package:store
+```
+
+The verified ZIP is written to
+`.build/browser-store/fd0-chrome-<version>.zip`. Listing copy, privacy answers,
+reviewer instructions, and store graphics live under [`store/`](./store/).
+
 ## Use it
 
 Unlock fd0 and focus a credential field on an HTTPS page. The inline fd0 button
@@ -67,11 +86,11 @@ so a stale page cannot overwrite a newer change.
 
 ## Remove the registration
 
-Remove only the development Native Messaging registration with:
+Remove only the fd0 Native Messaging registration with:
 
 ```sh
 .build/browser/fd0 browser disable
 ```
 
-Remove the unpacked extension separately in `chrome://extensions`. Neither
-action removes the fd0 vault.
+Remove the unpacked or Store extension separately in `chrome://extensions`.
+Neither action removes the fd0 vault.

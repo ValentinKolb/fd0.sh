@@ -13,7 +13,10 @@ import (
 	"github.com/valentinkolb/fd0.sh/internal/browserconfig"
 )
 
-const developmentBrowserManifestDescription = "fd0 development browser host"
+const (
+	browserManifestDescription                  = "fd0 browser host"
+	legacyDevelopmentBrowserManifestDescription = "fd0 development browser host"
+)
 
 type nativeMessagingManifest struct {
 	Name           string   `json:"name"`
@@ -23,9 +26,8 @@ type nativeMessagingManifest struct {
 	AllowedOrigins []string `json:"allowed_origins"`
 }
 
-// RunBrowserEnable registers the development Native Messaging host for Chrome
-// and Chromium. The extension itself remains unpacked and visible in the
-// browser's extension manager.
+// RunBrowserEnable registers the Native Messaging host for the fd0 Chrome Web
+// Store and unpacked development extensions.
 func RunBrowserEnable(hostPath string) error {
 	manifestPaths, err := browserManifestPaths()
 	if err != nil {
@@ -55,8 +57,7 @@ func runBrowserEnableAll(hostPath string, manifestPaths []string, out io.Writer)
 		}
 	}
 	for _, manifestPath := range manifestPaths {
-		fmt.Fprintf(out, "✓ registered fd0 development browser host at %s\n", manifestPath)
-		fmt.Fprintf(out, "  Chrome extension id: %s\n", browserconfig.DevelopmentExtensionID)
+		printBrowserEnableResult(out, manifestPath)
 	}
 	return nil
 }
@@ -68,10 +69,10 @@ func runBrowserEnable(hostPath, manifestPath string, out io.Writer) error {
 	}
 	manifest := nativeMessagingManifest{
 		Name:           browserconfig.HostName,
-		Description:    developmentBrowserManifestDescription,
+		Description:    browserManifestDescription,
 		Path:           hostPath,
 		Type:           "stdio",
-		AllowedOrigins: []string{browserconfig.DevelopmentExtensionOrigin},
+		AllowedOrigins: browserconfig.AllowedExtensionOrigins(),
 	}
 	payload, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
@@ -81,22 +82,27 @@ func runBrowserEnable(hostPath, manifestPath string, out io.Writer) error {
 	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o700); err != nil {
 		return fmt.Errorf("browser enable: create native host directory: %w", err)
 	}
-	if err := writeDevelopmentBrowserManifest(manifestPath, payload); err != nil {
+	if err := writeBrowserManifest(manifestPath, payload); err != nil {
 		return fmt.Errorf("browser enable: write native host manifest: %w", err)
 	}
-	fmt.Fprintf(out, "✓ registered fd0 development browser host at %s\n", manifestPath)
-	fmt.Fprintf(out, "  Chrome extension id: %s\n", browserconfig.DevelopmentExtensionID)
+	printBrowserEnableResult(out, manifestPath)
 	return nil
 }
 
-func writeDevelopmentBrowserManifest(path string, payload []byte) error {
-	if _, err := inspectDevelopmentBrowserManifest(path, "replace"); err != nil {
+func printBrowserEnableResult(out io.Writer, manifestPath string) {
+	fmt.Fprintf(out, "✓ registered fd0 browser host at %s\n", manifestPath)
+	fmt.Fprintf(out, "  Chrome Web Store extension id: %s\n", browserconfig.StoreExtensionID)
+	fmt.Fprintf(out, "  Development extension id: %s\n", browserconfig.DevelopmentExtensionID)
+}
+
+func writeBrowserManifest(path string, payload []byte) error {
+	if _, err := inspectOwnedBrowserManifest(path, "replace"); err != nil {
 		return err
 	}
 	return writeFileAtomic(path, payload, 0o600)
 }
 
-// RunBrowserDisable removes only a manifest carrying fd0's development marker.
+// RunBrowserDisable removes only a manifest carrying fd0's ownership marker.
 func RunBrowserDisable() error {
 	manifestPaths, err := browserManifestPaths()
 	if err != nil {
@@ -129,31 +135,31 @@ func runBrowserDisableAll(manifestPaths []string, out io.Writer) error {
 	}
 	for _, snapshot := range snapshots {
 		if snapshot.exists {
-			fmt.Fprintf(out, "✓ removed fd0 development browser host from %s\n", snapshot.path)
+			fmt.Fprintf(out, "✓ removed fd0 browser host from %s\n", snapshot.path)
 		} else {
-			fmt.Fprintln(out, "(fd0 development browser host is not registered)")
+			fmt.Fprintln(out, "(fd0 browser host is not registered)")
 		}
 	}
 	return nil
 }
 
 func runBrowserDisable(manifestPath string, out io.Writer) error {
-	exists, err := inspectDevelopmentBrowserManifest(manifestPath, "remove")
+	exists, err := inspectOwnedBrowserManifest(manifestPath, "remove")
 	if err != nil {
 		return fmt.Errorf("browser disable: %w", err)
 	}
 	if !exists {
-		fmt.Fprintln(out, "(fd0 development browser host is not registered)")
+		fmt.Fprintln(out, "(fd0 browser host is not registered)")
 		return nil
 	}
 	if err := os.Remove(manifestPath); err != nil {
 		return fmt.Errorf("browser disable: remove manifest: %w", err)
 	}
-	fmt.Fprintf(out, "✓ removed fd0 development browser host from %s\n", manifestPath)
+	fmt.Fprintf(out, "✓ removed fd0 browser host from %s\n", manifestPath)
 	return nil
 }
 
-func inspectDevelopmentBrowserManifest(path, action string) (bool, error) {
+func inspectOwnedBrowserManifest(path, action string) (bool, error) {
 	payload, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -162,9 +168,9 @@ func inspectDevelopmentBrowserManifest(path, action string) (bool, error) {
 		return false, fmt.Errorf("read manifest at %s: %w", path, err)
 	}
 	var manifest nativeMessagingManifest
-	if json.Unmarshal(payload, &manifest) != nil || !isDevelopmentBrowserManifest(manifest) {
+	if json.Unmarshal(payload, &manifest) != nil || !isOwnedBrowserManifest(manifest) {
 		return false, fmt.Errorf(
-			"refusing to %s a Native Messaging manifest not owned by fd0 development at %s",
+			"refusing to %s a Native Messaging manifest not owned by fd0 at %s",
 			action,
 			path,
 		)
@@ -182,7 +188,7 @@ type browserManifestSnapshot struct {
 func snapshotBrowserManifests(paths []string, action string) ([]browserManifestSnapshot, error) {
 	snapshots := make([]browserManifestSnapshot, 0, len(paths))
 	for _, path := range paths {
-		exists, err := inspectDevelopmentBrowserManifest(path, action)
+		exists, err := inspectOwnedBrowserManifest(path, action)
 		if err != nil {
 			return nil, err
 		}
@@ -244,12 +250,25 @@ func restoreBrowserManifestSnapshots(snapshots []browserManifestSnapshot) error 
 	return firstErr
 }
 
-func isDevelopmentBrowserManifest(manifest nativeMessagingManifest) bool {
-	return manifest.Name == browserconfig.HostName &&
-		manifest.Description == developmentBrowserManifestDescription &&
-		manifest.Type == "stdio" &&
-		len(manifest.AllowedOrigins) == 1 &&
-		manifest.AllowedOrigins[0] == browserconfig.DevelopmentExtensionOrigin
+func isOwnedBrowserManifest(manifest nativeMessagingManifest) bool {
+	if manifest.Name != browserconfig.HostName || manifest.Type != "stdio" {
+		return false
+	}
+	if manifest.Description == legacyDevelopmentBrowserManifestDescription {
+		return len(manifest.AllowedOrigins) == 1 &&
+			manifest.AllowedOrigins[0] == browserconfig.DevelopmentExtensionOrigin
+	}
+	allowedOrigins := browserconfig.AllowedExtensionOrigins()
+	if manifest.Description != browserManifestDescription ||
+		len(manifest.AllowedOrigins) != len(allowedOrigins) {
+		return false
+	}
+	for index, origin := range allowedOrigins {
+		if manifest.AllowedOrigins[index] != origin {
+			return false
+		}
+	}
+	return true
 }
 
 func browserManifestPaths() ([]string, error) {

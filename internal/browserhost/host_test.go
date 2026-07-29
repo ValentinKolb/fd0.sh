@@ -52,21 +52,27 @@ func TestRunRejectsUnknownCallerBeforeVaultAccess(t *testing.T) {
 	}
 }
 
-func TestRunRejectsUnknownFields(t *testing.T) {
+func TestRunAcceptsOnlyFd0ExtensionOrigins(t *testing.T) {
 	t.Parallel()
-	input := frameJSON(t, map[string]any{
-		"id":        "1",
-		"operation": "matches",
-		"origin":    "https://example.com",
-		"secret":    "not allowed",
-	})
-	var output bytes.Buffer
-	if err := Run(context.Background(), browserconfig.DevelopmentExtensionOrigin, bytes.NewReader(input), &output); err != nil {
-		t.Fatal(err)
-	}
-	response := decodeResponse(t, output.Bytes())
-	if response.OK || response.Error == nil || response.Error.Code != "invalid_request" {
-		t.Fatalf("response = %+v", response)
+	for _, callerOrigin := range browserconfig.AllowedExtensionOrigins() {
+		callerOrigin := callerOrigin
+		t.Run(callerOrigin, func(t *testing.T) {
+			t.Parallel()
+			input := frameJSON(t, map[string]any{
+				"id":        "1",
+				"operation": "matches",
+				"origin":    "https://example.com",
+				"secret":    "not allowed",
+			})
+			var output bytes.Buffer
+			if err := Run(context.Background(), callerOrigin, bytes.NewReader(input), &output); err != nil {
+				t.Fatal(err)
+			}
+			response := decodeResponse(t, output.Bytes())
+			if response.OK || response.Error == nil || response.Error.Code != "invalid_request" {
+				t.Fatalf("response = %+v", response)
+			}
+		})
 	}
 }
 

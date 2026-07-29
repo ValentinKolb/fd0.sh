@@ -50,7 +50,7 @@ func TestBrowserManifestPathFor(t *testing.T) {
 	}
 }
 
-func TestWriteDevelopmentBrowserManifestPreservesForeignFile(t *testing.T) {
+func TestWriteBrowserManifestPreservesForeignFile(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sh.fd0.browser.json")
@@ -58,7 +58,7 @@ func TestWriteDevelopmentBrowserManifestPreservesForeignFile(t *testing.T) {
 	if err := os.WriteFile(path, foreign, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeDevelopmentBrowserManifest(path, []byte(`{"owned":true}`)); err == nil ||
+	if err := writeBrowserManifest(path, []byte(`{"owned":true}`)); err == nil ||
 		!strings.Contains(err.Error(), "refusing") {
 		t.Fatalf("err = %v", err)
 	}
@@ -99,8 +99,11 @@ func TestBrowserEnableDisableLifecycleIsIsolatedAndReversible(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !isDevelopmentBrowserManifest(manifest) || manifest.Path != absoluteHost {
+	if !isOwnedBrowserManifest(manifest) || manifest.Path != absoluteHost {
 		t.Fatalf("manifest = %+v", manifest)
+	}
+	if len(manifest.AllowedOrigins) != 2 {
+		t.Fatalf("allowed origins = %q, want store and development", manifest.AllowedOrigins)
 	}
 	info, err := os.Stat(manifestPath)
 	if err != nil {
@@ -144,7 +147,7 @@ func TestBrowserManifestUpdatesPreflightEveryBrowser(t *testing.T) {
 	secondPath := filepath.Join(dir, "chromium", "sh.fd0.browser.json")
 	owned, err := json.Marshal(nativeMessagingManifest{
 		Name:           "sh.fd0.browser",
-		Description:    developmentBrowserManifestDescription,
+		Description:    legacyDevelopmentBrowserManifestDescription,
 		Path:           oldHost,
 		Type:           "stdio",
 		AllowedOrigins: []string{"chrome-extension://flkmmllfacmjnhjgdfliahdkhfjmdoec/"},

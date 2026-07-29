@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "bun run scripts/build.ts",
+    "build:store": "bun run scripts/build.ts --store",
+    "package:store": "bun run build:store && bun run scripts/package-store.ts",
     "test": "bun test",
     "test:smoke": "bun run build && bun run scripts/smoke-extension.ts",
     "typecheck": "tsc --noEmit"

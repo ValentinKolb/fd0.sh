@@ -71,6 +71,7 @@ jobs:
           bun run typecheck
           bun test
           bun run test:smoke
+          bun run package:store
 
   installer:
     runs-on: ubuntu-latest

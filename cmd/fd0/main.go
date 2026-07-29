@@ -62,8 +62,8 @@ type rootCLI struct {
 }
 
 type browserCmd struct {
-	Enable  browserEnableCmd  `cmd:"" help:"Register the development Chrome Native Messaging host."`
-	Disable browserDisableCmd `cmd:"" help:"Remove the development Chrome Native Messaging host."`
+	Enable  browserEnableCmd  `cmd:"" help:"Register the Chrome Native Messaging host."`
+	Disable browserDisableCmd `cmd:"" help:"Remove the Chrome Native Messaging host."`
 }
 
 type browserEnableCmd struct {

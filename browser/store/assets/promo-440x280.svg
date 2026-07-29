@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="440" height="280" viewBox="0 0 440 280">
+  <rect width="440" height="280" rx="20" fill="#090d0b"/>
+  <circle cx="42" cy="42" r="7" fill="#ffad00"/>
+  <text x="62" y="50" fill="#f4f5f0" font-family="Inter, Arial, sans-serif" font-size="26" font-weight="700">fd0</text>
+  <text x="32" y="113" fill="#f4f5f0" font-family="Inter, Arial, sans-serif" font-size="34" font-weight="700">Your vault.</text>
+  <text x="32" y="153" fill="#f4f5f0" font-family="Inter, Arial, sans-serif" font-size="34" font-weight="700">Right where you log in.</text>
+  <rect x="32" y="194" width="376" height="58" rx="13" fill="#1e1c11"/>
+  <rect x="49" y="211" width="24" height="24" rx="7" fill="#ffad00"/>
+  <circle cx="61" cy="223" r="3.5" fill="#090d0b"/>
+  <text x="88" y="229" fill="#f4f5f0" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="650">Fill with fd0</text>
+  <path d="M371 218h14m-6-6 6 6-6 6" fill="none" stroke="#ffad00" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

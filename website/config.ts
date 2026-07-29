@@ -216,6 +216,13 @@ export const SEO_ROUTE = {
     description:
       "Live state of the official fd0 transparency-log witness: pubkey, observed chains, cosignatures, and equivocation status.",
   },
+  privacy: {
+    key: "privacy",
+    path: "/privacy",
+    title: "fd0 privacy policy",
+    description:
+      "How fd0 Desktop, the CLI and agent, browser extension, hosted sync service, and fd0.sh website handle data.",
+  },
 } satisfies Record<string, SeoRoute>;
 
 export type SeoRouteKey = keyof typeof SEO_ROUTE;
@@ -244,6 +251,7 @@ export const SEO_ROUTES = [
   SEO_ROUTE.specTranslog,
   SEO_ROUTE.specThreats,
   SEO_ROUTE.witness,
+  SEO_ROUTE.privacy,
 ] as const;
 
 export const sitemapLastmod = (route: SeoRoute) =>

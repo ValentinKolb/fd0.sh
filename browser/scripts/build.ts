@@ -1,9 +1,10 @@
-import { cp, mkdir, rm } from "node:fs/promises";
+import { cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const outdir = join(root, "dist");
+const storeBuild = Bun.argv.includes("--store");
+const outdir = join(root, storeBuild ? "dist-store" : "dist");
 
 await rm(outdir, { recursive: true, force: true });
 await mkdir(outdir, { recursive: true });
@@ -15,7 +16,7 @@ for (const entrypoint of ["src/service-worker.ts", "src/content.ts"]) {
     target: "browser",
     format: "iife",
     minify: false,
-    sourcemap: "external",
+    sourcemap: storeBuild ? "none" : "external",
     naming: "[dir]/[name].js",
   });
   if (!result.success) {
@@ -24,5 +25,26 @@ for (const entrypoint of ["src/service-worker.ts", "src/content.ts"]) {
   }
 }
 
-await cp(join(root, "manifest.json"), join(outdir, "manifest.json"));
-console.log(`built Chrome extension at ${outdir}`);
+const baseManifest = JSON.parse(
+  await readFile(join(root, "manifest.json"), "utf8"),
+) as Record<string, unknown>;
+const developmentManifest = storeBuild
+  ? {}
+  : (JSON.parse(
+      await readFile(join(root, "manifest.development.json"), "utf8"),
+    ) as Record<string, unknown>);
+await writeFile(
+  join(outdir, "manifest.json"),
+  `${JSON.stringify({ ...baseManifest, ...developmentManifest }, null, 2)}\n`,
+);
+
+const iconOut = join(outdir, "icons");
+await mkdir(iconOut, { recursive: true });
+for (const filename of await readdir(join(root, "icons"))) {
+  if (!filename.endsWith(".png")) continue;
+  await cp(join(root, "icons", filename), join(iconOut, filename));
+}
+
+console.log(
+  `built ${storeBuild ? "Chrome Web Store" : "development"} extension at ${outdir}`,
+);

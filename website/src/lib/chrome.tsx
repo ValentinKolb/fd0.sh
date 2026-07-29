@@ -554,6 +554,7 @@ export const Footer = () => (
           <a href="https://github.com/k2b-dev/fd0.sh/releases" class="hover:text-white">
             Releases
           </a>
+          <a href="/privacy" class="hover:text-white">Privacy</a>
           <a href="/impressum" class="hover:text-white">Impressum</a>
         </div>
       </div>

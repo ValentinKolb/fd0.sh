@@ -40,6 +40,7 @@ import {
   SpecThreats,
 } from "./pages/Spec";
 import Witness from "./pages/Witness";
+import Privacy from "./pages/Privacy";
 import { fetchStableDesktopReleases } from "./lib/desktop-releases";
 
 const VERSION = process.env.FD0_WEBSITE_VERSION ?? "dev";
@@ -352,6 +353,7 @@ const app = new Hono()
   .get("/spec/translog", ...SpecTranslog)
   .get("/spec/threats", ...SpecThreats)
   .get("/witness", ...Witness)
+  .get("/privacy", ...Privacy)
   // The legal notice is maintained in one place for every site the same
   // provider runs. Temporary (302) rather than permanent so the route can
   // come back here without fighting a cached redirect.

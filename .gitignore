@@ -53,6 +53,7 @@ website/public/fonts/
 
 # fd0 Browser generated state
 browser/node_modules/
+browser/dist-store/
 
 # fd0 Desktop generated state
 desktop/node_modules/
