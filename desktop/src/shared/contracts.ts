@@ -31,6 +31,7 @@ export type VaultStatus = {
   authMethods?: AuthMethodSummary[];
   readiness?: {
     firstSyncAt?: number;
+    lastSyncAt?: number;
     recoveryVerifiedAt?: number;
   };
 };

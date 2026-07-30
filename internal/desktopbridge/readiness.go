@@ -12,6 +12,7 @@ import (
 
 type ReadinessState struct {
 	FirstSyncAt        int64 `json:"firstSyncAt,omitempty"`
+	LastSyncAt         int64 `json:"lastSyncAt,omitempty"`
 	RecoveryVerifiedAt int64 `json:"recoveryVerifiedAt,omitempty"`
 }
 
@@ -50,11 +51,13 @@ func updateReadiness(paths fdhome.Paths, update func(*ReadinessState)) error {
 	return nil
 }
 
-func markFirstSync(paths fdhome.Paths) error {
+func markSyncComplete(paths fdhome.Paths) error {
 	return updateReadiness(paths, func(state *ReadinessState) {
+		now := time.Now().Unix()
 		if state.FirstSyncAt == 0 {
-			state.FirstSyncAt = time.Now().Unix()
+			state.FirstSyncAt = now
 		}
+		state.LastSyncAt = now
 	})
 }
 

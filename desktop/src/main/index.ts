@@ -31,7 +31,7 @@ import { DesktopAutoLock, type SecurityLockReason } from "./auto-lock";
 import { ManagedClipboard } from "./managed-clipboard";
 import { supportLink, trustedItemURL, type SupportLinkTarget } from "./external-links";
 import { OperationGrants, type OperationGrantKind } from "./operation-grants";
-import { DiagnosticsLog, redactDiagnosticText } from "./diagnostics";
+import { DiagnosticsLog, persistedSyncState, redactDiagnosticText } from "./diagnostics";
 import {
   checksumForAsset,
   compareSemver,
@@ -880,9 +880,7 @@ function displayPath(path: string): string {
 async function diagnosticSnapshot(): Promise<DiagnosticsSnapshot> {
   const serviceState = await agentLifecycle.status();
   const status = lastVaultStatus;
-  const effectiveSyncState = syncState.state === "never" && status?.readiness?.firstSyncAt
-    ? { state: "ok" as const, lastAttemptAt: new Date(status.readiness.firstSyncAt).toISOString() }
-    : syncState;
+  const effectiveSyncState = persistedSyncState(syncState, status?.readiness);
   const recentErrors = (diagnostics?.recent() ?? []).filter((entry) =>
     /error|failed|failure|stderr|exit|crash|rejected/i.test(`${entry.event} ${entry.message ?? ""}`),
   );

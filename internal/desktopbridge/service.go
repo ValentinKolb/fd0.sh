@@ -634,7 +634,7 @@ func (s *Service) Handle(ctx context.Context, method string, raw json.RawMessage
 		if err != nil {
 			return nil, err
 		}
-		if err := markFirstSync(paths); err != nil {
+		if err := markSyncComplete(paths); err != nil {
 			return nil, err
 		}
 		return map[string]bool{"ok": true}, nil

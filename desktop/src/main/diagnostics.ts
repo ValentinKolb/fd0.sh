@@ -10,6 +10,16 @@ export type DiagnosticEvent = {
   message?: string;
 };
 
+type SyncState = {
+  state: "never" | "ok" | "error";
+  lastAttemptAt?: string;
+};
+
+type SyncReadiness = {
+  firstSyncAt?: number;
+  lastSyncAt?: number;
+};
+
 const sensitiveAssignment = /\b(passphrase|password|pin|secret|token|authorization|cookie)\b\s*[:=]\s*([^\s,;]+)/gi;
 const bearer = /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi;
 const homePath = /\/Users\/[^/\s]+|\/home\/[^/\s]+/g;
@@ -22,6 +32,14 @@ export function redactDiagnosticText(value: unknown): string {
     .replace(homePath, "~")
     .replace(/[\r\n\t]+/g, " ")
     .slice(0, 500);
+}
+
+export function persistedSyncState(sync: SyncState, readiness?: SyncReadiness): SyncState {
+  if (sync.state !== "never") return sync;
+  const lastSyncAt = readiness?.lastSyncAt ?? readiness?.firstSyncAt;
+  return lastSyncAt
+    ? { state: "ok", lastAttemptAt: new Date(lastSyncAt * 1_000).toISOString() }
+    : sync;
 }
 
 export class DiagnosticsLog {
