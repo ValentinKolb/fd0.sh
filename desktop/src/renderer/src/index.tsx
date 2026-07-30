@@ -19,7 +19,7 @@ async function start(): Promise<void> {
     window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" as const : "light" as const
   );
   setSystemTheme(systemTheme);
-  if (!window.fd0.terminalMode) {
+  if (!window.fd0.terminalMode && !window.fd0.fileMode) {
     activateTheme(readTheme(localStorage, window.fd0.development));
   }
   render(

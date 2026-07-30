@@ -4,7 +4,12 @@ import { IconRefresh } from "@tabler/icons-solidjs";
 import "@xterm/xterm/css/xterm.css";
 import { Show, createSignal, onCleanup, onMount, type JSX } from "solid-js";
 import type { TerminalExit, TerminalTheme } from "../../../shared/contracts";
-import { cleanTerminalTitle, resolveTerminalTheme } from "../lib/terminal";
+import {
+  applyTerminalTheme,
+  cleanTerminalTitle,
+  resolveTerminalTheme,
+  terminalCursorOptions,
+} from "../lib/terminal";
 import { observeSystemTheme, systemThemeIsDark } from "../lib/theme";
 
 const darkTheme: ITheme = {
@@ -87,9 +92,7 @@ export function TerminalWindow(): JSX.Element {
   }
 
   function applyTheme(): void {
-    const resolved = resolveTerminalTheme(theme(), systemThemeIsDark());
-    document.documentElement.dataset.theme = resolved;
-    document.documentElement.style.colorScheme = resolved;
+    const resolved = applyTerminalTheme(theme(), systemThemeIsDark());
     if (terminal) terminal.options.theme = resolved === "dark" ? darkTheme : lightTheme;
   }
 
@@ -135,9 +138,7 @@ export function TerminalWindow(): JSX.Element {
         terminal = new Terminal({
           allowProposedApi: false,
           convertEol: false,
-          cursorBlink: true,
-          cursorInactiveStyle: "block",
-          cursorStyle: "block",
+          ...terminalCursorOptions,
           fontFamily: '"Geist Mono Variable", "SFMono-Regular", Consolas, monospace',
           fontSize: 14,
           fontWeight: 450,

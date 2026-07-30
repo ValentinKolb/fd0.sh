@@ -441,6 +441,7 @@ export type SFTPEntry = {
 export type SFTPSessionInfo = {
   host: string;
   workingDirectory: string;
+  terminalTheme: TerminalTheme;
 };
 
 export type SFTPPreview = {

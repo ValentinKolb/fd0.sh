@@ -106,6 +106,7 @@ type FileWindowState = {
   window: BrowserWindow;
   client: SFTPBridgeClient;
   host: string;
+  theme: TerminalTheme;
   alias: string;
   scopeId: string;
   environment: NodeJS.ProcessEnv;
@@ -1134,7 +1135,7 @@ function registerFileIPC(): void {
   ipcMain.handle("fd0:sftp-session", (event) => respond(async (): Promise<SFTPSessionInfo> => {
     const state = fileWindowForSender(event);
     const session = await state.client.request<{ workingDirectory: string }>("session.info", {});
-    return { host: state.host, workingDirectory: session.workingDirectory };
+    return { host: state.host, workingDirectory: session.workingDirectory, terminalTheme: state.theme };
   }));
   ipcMain.handle("fd0:sftp-reconnect", (event) => respond(async (): Promise<SFTPSessionInfo> => {
     const state = fileWindowForSender(event);
@@ -1150,7 +1151,7 @@ function registerFileIPC(): void {
       (diagnosticEvent) => diagnostics?.record("sftp", diagnosticEvent),
     );
     const session = await state.client.request<{ workingDirectory: string }>("session.info", {});
-    return { host: state.host, workingDirectory: session.workingDirectory };
+    return { host: state.host, workingDirectory: session.workingDirectory, terminalTheme: state.theme };
   }));
   ipcMain.handle("fd0:sftp-list", (event, path: string) => respond(async () => {
     const state = fileWindowForSender(event);
@@ -1822,10 +1823,15 @@ function registerIPC(client: BridgeSupervisor): void {
     if (detail.item.badge !== "SSH HOST" || !detail.item.recordName.startsWith("host:")) {
       throw new Error("Only fd0 SSH hosts can be opened in Files");
     }
+    const settings = await readTerminalLauncherSettings(
+      terminalLauncherSettingsPath(),
+      process.platform,
+    );
     openFileWindow({
       host: detail.item.recordName.slice("host:".length),
       scopeId: detail.item.scopeId,
       environment: runtimeEnvironment(),
+      theme: settings.terminalTheme,
     });
   });
   handle("fd0:open-item-url", async (ref: RecordRef) => {
@@ -2023,11 +2029,37 @@ function updateLiveTerminalWindows(
   }
 }
 
+function updateLiveFileWindows(
+  operation: (state: FileWindowState) => void,
+): void {
+  for (const [id, state] of fileWindows) {
+    if (state.window.isDestroyed()) {
+      fileWindows.delete(id);
+      continue;
+    }
+    try {
+      operation(state);
+    } catch (error) {
+      if (state.window.isDestroyed()) {
+        fileWindows.delete(id);
+      } else {
+        diagnostics?.record("sftp", "window-update-failed", error);
+      }
+    }
+  }
+}
+
 function updateTerminalThemes(theme: TerminalTheme): void {
   updateLiveTerminalWindows((state) => {
     state.theme = theme;
     state.window.setBackgroundColor(terminalBackgroundColor(theme));
     sendTerminalEvent(state, "fd0:terminal-theme", theme);
+  });
+  updateLiveFileWindows((state) => {
+    state.theme = theme;
+    state.window.setBackgroundColor(terminalBackgroundColor(theme));
+    const contents = state.window.webContents;
+    if (!contents.isDestroyed()) contents.send("fd0:terminal-theme", theme);
   });
 }
 
@@ -2035,13 +2067,9 @@ function updateWindowBackgrounds(): void {
   const background = windowBackgroundColor();
   mainWindow?.setBackgroundColor(background);
   largeTypeWindow?.setBackgroundColor(background);
-  for (const [id, state] of fileWindows) {
-    if (state.window.isDestroyed()) {
-      fileWindows.delete(id);
-    } else {
-      state.window.setBackgroundColor(background);
-    }
-  }
+  updateLiveFileWindows((state) => {
+    state.window.setBackgroundColor(terminalBackgroundColor(state.theme));
+  });
   updateLiveTerminalWindows((state) => {
     state.window.setBackgroundColor(terminalBackgroundColor(state.theme));
   });
@@ -2061,6 +2089,7 @@ function openFileWindow(options: {
   host: string;
   scopeId: string;
   environment: NodeJS.ProcessEnv;
+  theme: TerminalTheme;
 }): BrowserWindow {
   const mac = process.platform === "darwin";
   const displayHost = terminalTitlePart(options.host) || "SSH host";
@@ -2071,7 +2100,7 @@ function openFileWindow(options: {
     minHeight: 480,
     show: false,
     title: `${displayHost} — Files — fd0`,
-    backgroundColor: windowBackgroundColor(),
+    backgroundColor: terminalBackgroundColor(options.theme),
     ...(mac
       ? {
           titleBarStyle: "hiddenInset" as const,
@@ -2092,6 +2121,7 @@ function openFileWindow(options: {
     window,
     client,
     host: displayHost,
+    theme: options.theme,
     alias: options.host,
     scopeId: options.scopeId,
     environment: options.environment,

@@ -21,8 +21,10 @@ import {
   IconX,
 } from "@tabler/icons-solidjs";
 import { truncate } from "@k2b/stdlib";
-import type { SFTPEntry, SFTPTransferEvent } from "../../../shared/contracts";
+import type { SFTPEntry, SFTPTransferEvent, TerminalTheme } from "../../../shared/contracts";
 import { MenuButton } from "../ui/Menu";
+import { applyTerminalTheme } from "../lib/terminal";
+import { observeSystemTheme, systemThemeIsDark } from "../lib/theme";
 import {
   decodeSFTPPreview,
   remoteBreadcrumbs,
@@ -69,6 +71,7 @@ function dialogEntryName(value: DialogState): string {
 
 export function FilesWindow(): JSX.Element {
   const [host, setHost] = createSignal("SSH host");
+  const [theme, setTheme] = createSignal<TerminalTheme>("system");
   const [path, setPath] = createSignal("/");
   const [entries, setEntries] = createSignal<SFTPEntry[]>([]);
   const [loading, setLoading] = createSignal(true);
@@ -123,17 +126,33 @@ export function FilesWindow(): JSX.Element {
   }
 
   onMount(() => {
-    const stop = window.fd0.onSFTPTransfer((event) => {
+    const applyTheme = (): void => {
+      applyTerminalTheme(theme(), systemThemeIsDark());
+    };
+    const stopTransfer = window.fd0.onSFTPTransfer((event) => {
       setTransfers((current) => ({ ...current, [event.id]: event }));
       if (event.state === "completed") void load();
       if (event.state === "failed" && sftpErrorNeedsReconnect(event.error)) {
         showError(event.error, "The file session was interrupted.");
       }
     });
-    onCleanup(stop);
+    const stopTerminalTheme = window.fd0.onTerminalTheme((next) => {
+      setTheme(next);
+      applyTheme();
+    });
+    const stopSystemTheme = observeSystemTheme(() => {
+      if (theme() === "system") applyTheme();
+    });
+    onCleanup(() => {
+      stopTransfer();
+      stopTerminalTheme();
+      stopSystemTheme();
+    });
     void window.fd0.sftpSession()
       .then((session) => {
         setHost(session.host);
+        setTheme(session.terminalTheme);
+        applyTheme();
         document.title = `${session.host} — Files — fd0`;
         return load(session.workingDirectory);
       })
