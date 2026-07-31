@@ -128,6 +128,39 @@
         "zip"
       ]
     },
+    "dmg": {
+      "title": "fd0",
+      "background": "resources/dmg-background.png",
+      "icon": "resources/dmg-volume-icon.icns",
+      "iconSize": 112,
+      "contents": [
+        {
+          "x": 180,
+          "y": 252,
+          "type": "file"
+        },
+        {
+          "x": 480,
+          "y": 252,
+          "type": "link",
+          "path": "/Applications"
+        },
+        {
+          "x": 180,
+          "y": 520,
+          "type": "file",
+          "path": "resources/dmg-background.png",
+          "name": ".background.png"
+        },
+        {
+          "x": 480,
+          "y": 520,
+          "type": "file",
+          "path": "resources/dmg-volume-icon.icns",
+          "name": ".VolumeIcon.icns"
+        }
+      ]
+    },
     "linux": {
       "category": "Utility",
       "maintainer": "Valentin Kolb",

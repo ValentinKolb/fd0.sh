@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="660" height="420" viewBox="0 0 660 420">
+  <style>
+    @font-face {
+      font-family: "Geist";
+      font-style: normal;
+      font-weight: 100 900;
+      src: url("../../website/public/fonts/geist-latin-wght-normal.woff2") format("woff2");
+    }
+  </style>
+
+  <rect width="660" height="420" fill="#0b0d0c"/>
+
+  <text
+    x="62"
+    y="76"
+    fill="#e8e6e0"
+    font-family="Geist"
+    font-size="42"
+    font-weight="500"
+    letter-spacing="-1.3"
+  >Install <tspan fill="#ffb000">fd0.</tspan></text>
+  <text
+    x="64"
+    y="108"
+    fill="#7c7e7a"
+    font-family="Geist"
+    font-size="15"
+    font-weight="400"
+  >Drag the app into Applications.</text>
+
+  <path
+    d="M286 252H367M354 239L368 252L354 265"
+    fill="none"
+    stroke="#ffb000"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    stroke-width="4"
+  />
+</svg>
