@@ -2,6 +2,8 @@ import { For, Index, Show, createEffect, createMemo, createSignal, onCleanup, on
 import {
   IconAdjustmentsHorizontal,
   IconDotsVertical,
+  IconEye,
+  IconEyeOff,
   IconGripVertical,
   IconMinus,
   IconPaperclip,
@@ -463,6 +465,7 @@ function SecretRow(props: {
   gutter?: JSX.Element;
 }): JSX.Element {
   const [open, setOpen] = createSignal(false);
+  const [visible, setVisible] = createSignal(false);
   const [anchor, setAnchor] = createSignal<HTMLButtonElement>();
   return (
     <>
@@ -471,6 +474,15 @@ function SecretRow(props: {
         gutter={props.gutter}
         actions={
           <>
+            <IconButton
+              label={visible() ? "Hide value" : "Show value"}
+              aria-pressed={visible()}
+              size="sm"
+              tabIndex={-1}
+              onClick={() => setVisible((current) => !current)}
+            >
+              {visible() ? <IconEyeOff size={16} /> : <IconEye size={16} />}
+            </IconButton>
             <IconButton ref={setAnchor} label="Generate a value" size="sm" aria-expanded={open()} onClick={() => setOpen((value) => !value)}>
               <IconAdjustmentsHorizontal size={15} />
             </IconButton>
@@ -478,10 +490,11 @@ function SecretRow(props: {
           </>
         }
       >
-        <SecretInput
+        <Input
           class="editor-value"
-          what="value"
           aria-label={props.field.name}
+          type={visible() ? "text" : "password"}
+          spellcheck={false}
           value={stringValue(props.field)}
           onInput={(event) => props.onChange({ ...props.field, value: event.currentTarget.value })}
         />
