@@ -23,6 +23,7 @@ export class AgentLifecycle {
   readonly #home: string;
   readonly #run: typeof execFileAsync;
   readonly #linuxReadyTimeoutMs: number;
+  readonly #macReadyTimeoutMs: number;
 
   constructor(options?: {
     platform?: NodeJS.Platform;
@@ -31,6 +32,7 @@ export class AgentLifecycle {
     home?: string;
     run?: typeof execFileAsync;
     linuxReadyTimeoutMs?: number;
+    macReadyTimeoutMs?: number;
   }) {
     this.#platform = options?.platform ?? process.platform;
     this.#packaged = options?.packaged ?? app.isPackaged;
@@ -38,6 +40,7 @@ export class AgentLifecycle {
     this.#home = options?.home ?? homedir();
     this.#run = options?.run ?? execFileAsync;
     this.#linuxReadyTimeoutMs = options?.linuxReadyTimeoutMs ?? 5_000;
+    this.#macReadyTimeoutMs = options?.macReadyTimeoutMs ?? 5_000;
   }
 
   async ensureRunning(): Promise<AgentServiceStatus> {
@@ -48,10 +51,7 @@ export class AgentLifecycle {
       if (current.status === "not-registered" || current.status === "not-found") {
         app.setLoginItemSettings({ ...settings, openAtLogin: true });
       }
-      const status = app.getLoginItemSettings(settings).status;
-      return status === "enabled" ? "enabled"
-        : status === "requires-approval" ? "requires-approval"
-        : "not-registered";
+      return this.#waitForMacRegistration();
     }
     if (this.#platform === "linux") {
       await this.#installLinuxUnit();
@@ -109,6 +109,7 @@ export class AgentLifecycle {
       const status = app.getLoginItemSettings(settings).status;
       if (status !== "not-registered" && status !== "not-found") {
         app.setLoginItemSettings({ ...settings, openAtLogin: false });
+        await this.#waitForMacRemoval();
       }
       return;
     }
@@ -274,6 +275,33 @@ export class AgentLifecycle {
       // Keep the stable fallback; command errors may contain local paths.
     }
     throw new Error(`The fd0 background service did not become active (${detail})`);
+  }
+
+  async #waitForMacRegistration(): Promise<AgentServiceStatus> {
+    const deadline = Date.now() + this.#macReadyTimeoutMs;
+    do {
+      const status = app.getLoginItemSettings({
+        type: "agentService",
+        serviceName: macServiceName,
+      }).status;
+      if (status === "enabled") return "enabled";
+      if (status === "requires-approval") return "requires-approval";
+      if (Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+    } while (Date.now() < deadline);
+    return "not-registered";
+  }
+
+  async #waitForMacRemoval(): Promise<void> {
+    const deadline = Date.now() + this.#macReadyTimeoutMs;
+    do {
+      const status = app.getLoginItemSettings({
+        type: "agentService",
+        serviceName: macServiceName,
+      }).status;
+      if (status === "not-registered" || status === "not-found") return;
+      if (Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+    } while (Date.now() < deadline);
+    throw new Error("The fd0 background service did not stop");
   }
 }
 

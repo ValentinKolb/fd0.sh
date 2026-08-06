@@ -64,6 +64,7 @@ const api: DesktopAPI = {
   diagnostics: () => invoke<DiagnosticsSnapshot>("fd0:diagnostics"),
   copyDiagnostics: () => invoke("fd0:copy-diagnostics"),
   openLogs: () => invoke("fd0:open-logs"),
+  openLoginItems: () => invoke("fd0:open-login-items"),
   quit: () => invoke("fd0:quit"),
   status: () => invoke("fd0:status"),
   createVault: (passphrase: string, label: string) => invoke("fd0:create-vault", passphrase, label),

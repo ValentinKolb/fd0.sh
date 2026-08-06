@@ -946,7 +946,10 @@ function registerInfrastructureIPC(): void {
   handle("fd0:retry-startup", initializeServices);
   handle("fd0:repair-service", async () => {
     diagnostics?.record("agent", "repair-requested");
-    if (nativeAgentManaged) await agentLifecycle.restart();
+    if (nativeAgentManaged) {
+      if (bridge) await restartManagedAgent(bridge);
+      else await agentLifecycle.restart();
+    }
     return initializeServices();
   });
   handle("fd0:diagnostics", diagnosticSnapshot);
@@ -957,6 +960,10 @@ function registerInfrastructureIPC(): void {
   handle("fd0:open-logs", async () => {
     const error = await shell.openPath(dirname(diagnostics?.path ?? app.getPath("logs")));
     if (error) throw new Error(error);
+  });
+  handle("fd0:open-login-items", async () => {
+    if (process.platform !== "darwin") return;
+    await shell.openExternal("x-apple.systempreferences:com.apple.LoginItems-Settings.extension");
   });
   handle("fd0:quit", async () => {
     app.quit();
@@ -1341,8 +1348,7 @@ function registerIPC(client: BridgeSupervisor): void {
     });
     if (confirmation.response !== 1) return observeVaultStatus(await client.request<VaultStatus>("vault.status", {}));
     if (nativeAgentManaged) {
-      await agentLifecycle.restart();
-      return observeVaultStatus(await client.request<VaultStatus>("vault.status", {}));
+      return observeVaultStatus(await restartManagedAgent(client));
     }
     return observeVaultStatus(await client.request<VaultStatus>("agent.restart", {}, 15_000));
   });
@@ -1900,17 +1906,55 @@ async function ensureManagedAgent(client: BridgeSupervisor): Promise<void> {
   if (status.agentRunning) {
     // Running but unusable. Ours to restart — or someone else's to leave alone.
     if (status.agentStartedBy !== "desktop") throw new Error(agentBlockedMessage(status));
-    await agentLifecycle.restart();
+    status = await restartManagedAgent(client);
   } else {
     await agentLifecycle.assertReady(await agentLifecycle.ensureRunning());
   }
-  const deadline = Date.now() + 5_000;
-  while (Date.now() < deadline) {
-    status = await client.request<VaultStatus>("vault.status", {});
-    if (usableAgent(status)) return;
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
+  if (usableAgent(status)) return;
+  await waitForAgentStatus(client, usableAgent);
+}
+
+async function reconcileManagedAgent(): Promise<void> {
+  const client = bridge;
+  if (!nativeAgentManaged || !client) return;
+  try {
+    const serviceStatus = await agentLifecycle.ensureRunning();
+    diagnostics?.record("agent", `service:${serviceStatus}`);
+    if (serviceStatus === "enabled") await ensureManagedAgent(client);
+    else if (serviceStatus !== "requires-approval") await agentLifecycle.assertReady(serviceStatus);
+    await refreshSecurityStatus();
+    sendCommand("refresh");
+  } catch (error) {
+    diagnostics?.record("agent", "reconcile-failed", error);
   }
-  throw new Error(agentBlockedMessage(status));
+}
+
+async function restartManagedAgent(client: BridgeSupervisor): Promise<VaultStatus> {
+  const current = await client.request<VaultStatus>("vault.status", {});
+  if (current.agentRunning && current.agentStartedBy !== "desktop") {
+    throw new Error(agentBlockedMessage(current));
+  }
+  await agentLifecycle.stop();
+  if (current.agentRunning) {
+    await waitForAgentStatus(client, (status) => !status.agentRunning, "The fd0 background service did not stop");
+  }
+  await agentLifecycle.assertReady(await agentLifecycle.ensureRunning());
+  return waitForAgentStatus(client, usableAgent);
+}
+
+async function waitForAgentStatus(
+  client: BridgeSupervisor,
+  ready: (status: VaultStatus) => boolean,
+  failureMessage?: string,
+): Promise<VaultStatus> {
+  const deadline = Date.now() + 5_000;
+  let status = await client.request<VaultStatus>("vault.status", {});
+  while (!ready(status) && Date.now() < deadline) {
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
+    status = await client.request<VaultStatus>("vault.status", {});
+  }
+  if (ready(status)) return status;
+  throw new Error(failureMessage ?? agentBlockedMessage(status));
 }
 
 function usableAgent(status: VaultStatus): boolean {
@@ -2437,6 +2481,7 @@ async function initializeServices(): Promise<StartupStatus> {
         const serviceStatus = await agentLifecycle.ensureRunning();
         diagnostics?.record("agent", `service:${serviceStatus}`);
         if (serviceStatus === "enabled") await ensureManagedAgent(client);
+        else if (serviceStatus !== "requires-approval") await agentLifecycle.assertReady(serviceStatus);
         if (serviceStatus === "requires-approval") {
           void showAppMessageBox({
             type: "warning",
@@ -2526,6 +2571,7 @@ async function start(): Promise<void> {
   flushDesktopUpdateRequest();
   app.on("activate", () => {
     if (!mainWindow) mainWindow = createWindow();
+    void reconcileManagedAgent();
   });
 }
 

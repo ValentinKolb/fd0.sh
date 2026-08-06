@@ -487,6 +487,7 @@ export type DesktopAPI = {
   diagnostics(): Promise<DiagnosticsSnapshot>;
   copyDiagnostics(): Promise<{ copied: boolean }>;
   openLogs(): Promise<void>;
+  openLoginItems(): Promise<void>;
   quit(): Promise<void>;
   status(): Promise<VaultStatus>;
   createVault(passphrase: string, label: string): Promise<VaultStatus>;

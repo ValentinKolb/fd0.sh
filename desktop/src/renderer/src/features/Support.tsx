@@ -84,10 +84,26 @@ export function Support(props: Record<string, never>): JSX.Element {
     void refreshDiagnostics();
   }
 
+  function openLoginItems(): void {
+    void window.fd0.openLoginItems().catch((cause: unknown) => {
+      vault.fail(cause, "fd0 could not open Login Items");
+    });
+  }
+
   const problems = createMemo<Problem[]>(() => {
     const status = vault.status();
     if (!status) return [];
     const list: Problem[] = [];
+
+    if (diagnostics()?.service.state === "requires-approval") {
+      list.push({
+        short: "the local service needs permission",
+        title: "Allow the fd0 local service",
+        detail: "Allow fd0 under System Settings > General > Login Items. Return to fd0 afterwards; it will check and start the service automatically.",
+        actionLabel: "Open Login Items",
+        run: openLoginItems,
+      });
+    }
 
     // Only a service this app genuinely cannot talk to is a problem. A service
     // from another release is not: see the Background service section below.
@@ -153,6 +169,7 @@ export function Support(props: Record<string, never>): JSX.Element {
   });
 
   const serviceValue = createMemo(() => {
+    if (diagnostics()?.service.state === "requires-approval") return "Permission required";
     const status = vault.status();
     if (status?.agentIncompatible) return "Unusable";
     return status?.agentRunning ? "Running" : "Stopped";
@@ -167,6 +184,7 @@ export function Support(props: Record<string, never>): JSX.Element {
    * owner, the version it reports, and says plainly when a difference is fine.
    */
   const serviceHeadline = createMemo(() => {
+    if (diagnostics()?.service.state === "requires-approval") return "Permission required";
     const status = vault.status();
     if (!status?.agentRunning) return "Not running";
     if (status.agentIncompatible) return "Running, but this app cannot use it";
@@ -176,6 +194,9 @@ export function Support(props: Record<string, never>): JSX.Element {
   });
 
   const serviceDetail = createMemo(() => {
+    if (diagnostics()?.service.state === "requires-approval") {
+      return "macOS is waiting for permission to run fd0 in the background. Allow it under Login Items, then return here.";
+    }
     const status = vault.status();
     if (!status?.agentRunning) {
       return "fd0 starts the service when you unlock. It holds your keys while the vault is unlocked, and the fd0 command line uses the same one.";

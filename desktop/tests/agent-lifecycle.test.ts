@@ -1,17 +1,26 @@
-import { expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+type MacServiceStatus = "not-registered" | "enabled" | "requires-approval" | "not-found";
+let readMacStatus: () => MacServiceStatus = () => "not-registered";
+let changeMacService: (enabled: boolean) => void = () => undefined;
+
 mock.module("electron", () => ({
   app: {
     isPackaged: false,
-    getLoginItemSettings: () => ({ openAtLogin: false, status: "not-registered" }),
-    setLoginItemSettings: () => undefined,
+    getLoginItemSettings: () => ({ openAtLogin: false, status: readMacStatus() }),
+    setLoginItemSettings: (settings: { openAtLogin?: boolean }) => changeMacService(Boolean(settings.openAtLogin)),
   },
 }));
 
 const { AgentLifecycle } = await import("../src/main/agent-lifecycle");
+
+beforeEach(() => {
+  readMacStatus = () => "not-registered";
+  changeMacService = () => undefined;
+});
 
 test("macOS agent service keeps interactive crypto responsive", async () => {
   const plist = await readFile(
@@ -20,6 +29,65 @@ test("macOS agent service keeps interactive crypto responsive", async () => {
   );
   expect(plist).toContain("<string>Standard</string>");
   expect(plist).not.toContain("<string>Background</string>");
+});
+
+test("AgentLifecycle waits for delayed macOS service registration", async () => {
+  let enabled = false;
+  let readsAfterEnable = 0;
+  changeMacService = (next) => {
+    enabled = next;
+  };
+  readMacStatus = () => {
+    if (!enabled) return "not-registered";
+    readsAfterEnable += 1;
+    return readsAfterEnable < 2 ? "not-registered" : "enabled";
+  };
+  const lifecycle = new AgentLifecycle({
+    platform: "darwin",
+    packaged: true,
+    macReadyTimeoutMs: 250,
+  });
+
+  expect(await lifecycle.ensureRunning()).toBe("enabled");
+  expect(readsAfterEnable).toBe(2);
+});
+
+test("AgentLifecycle reports when macOS requires approval", async () => {
+  let status: MacServiceStatus = "not-registered";
+  changeMacService = (enabled) => {
+    if (enabled) status = "requires-approval";
+  };
+  readMacStatus = () => status;
+  const lifecycle = new AgentLifecycle({ platform: "darwin", packaged: true });
+
+  expect(await lifecycle.ensureRunning()).toBe("requires-approval");
+});
+
+test("AgentLifecycle waits for macOS removal before registering a restart", async () => {
+  let status: MacServiceStatus = "enabled";
+  let removalReads = 0;
+  const changes: boolean[] = [];
+  changeMacService = (enabled) => {
+    changes.push(enabled);
+    if (enabled) status = "enabled";
+    else removalReads = 0;
+  };
+  readMacStatus = () => {
+    if (changes.at(-1) === false) {
+      removalReads += 1;
+      status = removalReads < 2 ? "enabled" : "not-registered";
+    }
+    return status;
+  };
+  const lifecycle = new AgentLifecycle({
+    platform: "darwin",
+    packaged: true,
+    macReadyTimeoutMs: 250,
+  });
+
+  await lifecycle.restart();
+  expect(changes).toEqual([false, true]);
+  expect(removalReads).toBeGreaterThanOrEqual(2);
 });
 
 test("AgentLifecycle installs and starts an isolated systemd user service", async () => {
