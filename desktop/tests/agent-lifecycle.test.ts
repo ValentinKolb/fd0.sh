@@ -32,7 +32,7 @@ test("AgentLifecycle installs and starts an isolated systemd user service", asyn
     home,
     run: async (_file, args) => {
       calls.push(args as string[]);
-      return { stdout: "", stderr: "" };
+      return { stdout: (args as string[]).includes("is-active") ? "active\n" : "", stderr: "" };
     },
   });
 
@@ -46,7 +46,65 @@ test("AgentLifecycle installs and starts an isolated systemd user service", asyn
   expect(calls).toEqual([
     ["--user", "daemon-reload"],
     ["--user", "enable", "--now", "fd0-agent.service"],
+    ["--user", "is-active", "fd0-agent.service"],
   ]);
+});
+
+test("AgentLifecycle rejects a Linux service that exits during startup", async () => {
+  const home = await mkdtemp(join(tmpdir(), "fd0-agent-failed-"));
+  const lifecycle = new AgentLifecycle({
+    platform: "linux",
+    packaged: true,
+    appPath: "/opt/fd0",
+    home,
+    linuxReadyTimeoutMs: 25,
+    run: async (_file, args) => {
+      const values = args as string[];
+      if (values.includes("is-active")) throw new Error("inactive");
+      if (values.includes("show")) return { stdout: "ActiveState=failed\nSubState=failed\nResult=exit-code\n", stderr: "" };
+      return { stdout: "", stderr: "" };
+    },
+  });
+
+  await expect(lifecycle.ensureRunning()).rejects.toThrow("ActiveState=failed, SubState=failed, Result=exit-code");
+});
+
+test("AgentLifecycle waits for a Linux service that is still activating", async () => {
+  const home = await mkdtemp(join(tmpdir(), "fd0-agent-activating-"));
+  let probes = 0;
+  const lifecycle = new AgentLifecycle({
+    platform: "linux",
+    packaged: true,
+    appPath: "/opt/fd0",
+    home,
+    run: async (_file, args) => {
+      if ((args as string[]).includes("is-active")) {
+        probes += 1;
+        return { stdout: probes === 1 ? "activating\n" : "active\n", stderr: "" };
+      }
+      return { stdout: "", stderr: "" };
+    },
+  });
+
+  expect(await lifecycle.ensureRunning()).toBe("enabled");
+  expect(probes).toBe(2);
+});
+
+test("AgentLifecycle explains an unavailable systemd user session", async () => {
+  const home = await mkdtemp(join(tmpdir(), "fd0-agent-no-systemd-"));
+  const lifecycle = new AgentLifecycle({
+    platform: "linux",
+    packaged: true,
+    appPath: "/opt/fd0",
+    home,
+    run: async () => {
+      throw new Error("Failed to connect to bus");
+    },
+  });
+
+  await expect(lifecycle.ensureRunning()).rejects.toThrow(
+    "Could not manage the fd0 background service: Failed to connect to bus",
+  );
 });
 
 test("AgentLifecycle keeps GUI login separate from the agent service", async () => {

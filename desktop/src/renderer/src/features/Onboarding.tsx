@@ -20,6 +20,7 @@ export function Onboarding(props: { onCreated(status: VaultStatus): void }): JSX
   const [passphrase, setPassphrase] = createSignal("");
   const [confirmation, setConfirmation] = createSignal("");
   const [recoveryPassphrase, setRecoveryPassphrase] = createSignal("");
+  const [recoveryVersion, setRecoveryVersion] = createSignal<1 | 2 | null>(null);
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal<AppError | null>(null);
 
@@ -41,6 +42,7 @@ export function Onboarding(props: { onCreated(status: VaultStatus): void }): JSX
       setPassphrase("");
       setConfirmation("");
       setRecoveryPassphrase("");
+      setRecoveryVersion(null);
       setError(null);
     });
   }
@@ -90,7 +92,7 @@ export function Onboarding(props: { onCreated(status: VaultStatus): void }): JSX
 
   async function restore(event: SubmitEvent): Promise<void> {
     event.preventDefault();
-    if (passphrase() !== confirmation()) {
+    if (recoveryVersion() === 1 && passphrase() !== confirmation()) {
       setError(appWarning("The two passphrases do not match", "Retype the confirmation so both fields are identical."));
       return;
     }
@@ -101,6 +103,7 @@ export function Onboarding(props: { onCreated(status: VaultStatus): void }): JSX
       // No status means the file picker was cancelled; nothing to report.
       if (!status) return;
       setRecoveryPassphrase("");
+      setRecoveryVersion(null);
       setPassphrase("");
       setConfirmation("");
       props.onCreated(status);
@@ -108,6 +111,17 @@ export function Onboarding(props: { onCreated(status: VaultStatus): void }): JSX
       setError(toAppError(cause, "fd0 could not restore from that recovery file"));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function chooseRecoveryFile(): Promise<void> {
+    setError(null);
+    try {
+      const selected = await window.fd0.selectRecoveryFile();
+      setRecoveryVersion(selected?.version ?? null);
+    } catch (cause) {
+      setRecoveryVersion(null);
+      setError(toAppError(cause, "fd0 could not read that recovery file"));
     }
   }
 
@@ -158,6 +172,9 @@ export function Onboarding(props: { onCreated(status: VaultStatus): void }): JSX
               fallback={
                 <form class="auth-form" onSubmit={(event) => void restore(event)}>
                   <div class="field-stack">
+                    <Button type="button" onClick={() => void chooseRecoveryFile()}>
+                      {recoveryVersion() ? `Recovery file selected · v${recoveryVersion()}` : "Choose recovery file"}
+                    </Button>
                     <Field label="Recovery passphrase" hint="The passphrase you chose when you saved the recovery file.">
                       {(field) => (
                         <SecretInput
@@ -171,44 +188,51 @@ export function Onboarding(props: { onCreated(status: VaultStatus): void }): JSX
                         />
                       )}
                     </Field>
-                    <Field label="New passphrase for this device">
-                      {(field) => (
-                        <SecretInput
-                          id={field.id}
-                          aria-describedby={field.describedBy}
-                          what="passphrase"
-                          autocomplete="new-password"
-                          required
-                          minlength={MIN_LENGTH}
-                          value={passphrase()}
-                          onInput={(event) => setPassphrase(event.currentTarget.value)}
-                        />
-                      )}
-                    </Field>
-                    <StrengthMeter value={passphrase()} minLength={MIN_LENGTH} />
-                    <Field label="Confirm new passphrase" error={confirmError()} success={confirmSuccess()}>
-                      {(field) => (
-                        <SecretInput
-                          id={field.id}
-                          aria-describedby={field.describedBy}
-                          aria-invalid={mismatch()}
-                          what="passphrase"
-                          autocomplete="new-password"
-                          required
-                          value={confirmation()}
-                          onInput={(event) => setConfirmation(event.currentTarget.value)}
-                        />
-                      )}
-                    </Field>
+                    <Show when={recoveryVersion() === 1}>
+                      <Field label="New passphrase for this device" hint="Legacy recovery files need one new local unlock method.">
+                        {(field) => (
+                          <SecretInput
+                            id={field.id}
+                            aria-describedby={field.describedBy}
+                            what="passphrase"
+                            autocomplete="new-password"
+                            required
+                            minlength={MIN_LENGTH}
+                            value={passphrase()}
+                            onInput={(event) => setPassphrase(event.currentTarget.value)}
+                          />
+                        )}
+                      </Field>
+                      <StrengthMeter value={passphrase()} minLength={MIN_LENGTH} />
+                      <Field label="Confirm new passphrase" error={confirmError()} success={confirmSuccess()}>
+                        {(field) => (
+                          <SecretInput
+                            id={field.id}
+                            aria-describedby={field.describedBy}
+                            aria-invalid={mismatch()}
+                            what="passphrase"
+                            autocomplete="new-password"
+                            required
+                            value={confirmation()}
+                            onInput={(event) => setConfirmation(event.currentTarget.value)}
+                          />
+                        )}
+                      </Field>
+                    </Show>
                   </div>
                   <ErrorCallout error={error()} />
                   <Button
                     variant="primary"
                     block
                     type="submit"
-                    disabled={busy() || !longEnough() || !matches() || !recoveryPassphrase()}
+                    disabled={
+                      busy() ||
+                      !recoveryVersion() ||
+                      !recoveryPassphrase() ||
+                      (recoveryVersion() === 1 && (!longEnough() || !matches()))
+                    }
                   >
-                    {busy() ? "Restoring…" : "Choose recovery file and restore"}
+                    {busy() ? "Restoring…" : "Restore"}
                   </Button>
                 </form>
               }

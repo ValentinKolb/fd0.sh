@@ -20,14 +20,14 @@ func TestReadinessPersistsIndependentSafetySteps(t *testing.T) {
 	if state.FirstSyncAt == 0 || state.LastSyncAt != state.FirstSyncAt || state.RecoveryVerifiedAt != 0 {
 		t.Fatalf("state=%+v", state)
 	}
-	if err := markRecoveryVerified(paths); err != nil {
+	if err := markRecoveryVerified(paths, []byte{1, 2, 3}); err != nil {
 		t.Fatal(err)
 	}
 	state, err = loadReadiness(paths)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.FirstSyncAt == 0 || state.RecoveryVerifiedAt == 0 {
+	if state.FirstSyncAt == 0 || state.RecoveryVerifiedAt == 0 || state.RecoveryAuthTip != "010203" {
 		t.Fatalf("state=%+v", state)
 	}
 	info, err := os.Stat(filepath.Join(paths.Home, "desktop-state.json"))

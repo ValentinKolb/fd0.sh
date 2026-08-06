@@ -133,6 +133,7 @@ let startupStatus: StartupStatus = { state: "starting" };
 let domainIPCRegistered = false;
 let servicesStarting: Promise<StartupStatus> | null = null;
 let syncState: DiagnosticsSnapshot["sync"] = { state: "never" };
+let selectedRecoveryFile: { path: string; version: 1 | 2 } | null = null;
 const { autoUpdater } = electronUpdater;
 const desktopUpdateRequestArg = "--fd0-desktop-update";
 const terminalRuntimeSmokeArg = "--fd0-terminal-runtime-smoke";
@@ -1345,7 +1346,7 @@ function registerIPC(client: BridgeSupervisor): void {
     }
     return observeVaultStatus(await client.request<VaultStatus>("agent.restart", {}, 15_000));
   });
-  handle("fd0:restore-vault", async (recoveryPassphrase: string, newPassphrase: string) => {
+  handle("fd0:select-recovery-file", async () => {
     if (!mainWindow) throw new Error("fd0 window is unavailable");
     const selection = await dialog.showOpenDialog(mainWindow, {
       title: "Restore an fd0 vault",
@@ -1353,10 +1354,24 @@ function registerIPC(client: BridgeSupervisor): void {
       filters: [{ name: "fd0 recovery file", extensions: ["cbor", "fd0-recovery"] }, { name: "All files", extensions: ["*"] }],
     });
     const path = selection.filePaths[0];
-    if (selection.canceled || !path) return null;
+    if (selection.canceled || !path) {
+      selectedRecoveryFile = null;
+      return null;
+    }
     const info = await stat(path);
-    if (!info.isFile() || info.size > 128 * 1024) throw new Error("Recovery files must be smaller than 128 KB");
+    if (!info.isFile() || info.size > 4 * 1024 * 1024) throw new Error("Recovery files must be smaller than 4 MB");
     const data = await readFile(path);
+    const inspected = await client.request<{ version: 1 | 2 }>("recovery.inspect", { data: data.toString("base64") });
+    data.fill(0);
+    selectedRecoveryFile = { path, version: inspected.version };
+    return { version: inspected.version };
+  });
+  handle("fd0:restore-vault", async (recoveryPassphrase: string, newPassphrase: string) => {
+    const selection = selectedRecoveryFile;
+    if (!selection) throw new Error("Choose an fd0 recovery file first");
+    const info = await stat(selection.path);
+    if (!info.isFile() || info.size > 4 * 1024 * 1024) throw new Error("Recovery files must be smaller than 4 MB");
+    const data = await readFile(selection.path);
     const recovery = Buffer.from(recoveryPassphrase, "utf8");
     const local = Buffer.from(newPassphrase, "utf8");
     const params = {
@@ -1367,8 +1382,13 @@ function registerIPC(client: BridgeSupervisor): void {
     data.fill(0);
     recovery.fill(0);
     local.fill(0);
-    const status = await client.request<VaultStatus | null>("recovery.import", params, 2 * 60_000);
-    return status ? observeVaultStatus(status) : null;
+    await client.request<VaultStatus>("recovery.import", params, 2 * 60_000);
+    selectedRecoveryFile = null;
+    await ensureManagedAgent(client);
+    const status = selection.version === 1
+      ? await client.request<VaultStatus>("vault.unlock", { method: "passphrase", passphrase: params.newPassphrase, pin: "" }, 60_000)
+      : await client.request<VaultStatus>("vault.status", {});
+    return observeVaultStatus(status);
   });
   handle("fd0:export-recovery", async (passphrase: string) => {
     if (!mainWindow) throw new Error("fd0 window is unavailable");
@@ -2416,6 +2436,7 @@ async function initializeServices(): Promise<StartupStatus> {
       if (nativeAgentManaged) {
         const serviceStatus = await agentLifecycle.ensureRunning();
         diagnostics?.record("agent", `service:${serviceStatus}`);
+        if (serviceStatus === "enabled") await ensureManagedAgent(client);
         if (serviceStatus === "requires-approval") {
           void showAppMessageBox({
             type: "warning",

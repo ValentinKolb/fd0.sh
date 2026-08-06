@@ -155,9 +155,11 @@ Status legend:
 
 #### T08 — Recovery-file theft
 - **Adversary**: A3 + offline brute-force.
-- **Mitigation** 🤝: `RecoveryFile` is AEAD-sealed under K_recovery
-  (Argon2id over a separate recovery passphrase). Strength of
-  protection reduces to user's recovery-passphrase choice.
+- **Mitigation** 🤝: `RecoveryFile` key material is AEAD-sealed under
+  K_recovery (Argon2id over a separate recovery passphrase). Version 2 seals
+  the signed user chain and already-encrypted vault as a second domain-bound
+  AEAD payload. Strength of protection reduces to the user's recovery
+  passphrase choice; the bundle is never sent to the server.
 - **Spec ref**: `PROTOCOL.md` §6.3.
 
 ### 3.2 Cryptographic primitives plane

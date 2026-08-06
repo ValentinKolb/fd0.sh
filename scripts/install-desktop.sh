@@ -212,6 +212,22 @@ install_executable() {
     fi
 }
 
+install_data() {
+    src=$1
+    dst=$2
+    dir=$(dirname "$dst")
+    staged="$dir/.fd0.$(basename "$dst").installing.$$"
+    if [ "$SYSTEM" = "1" ] && [ "$(id -u)" != "0" ]; then
+        sudo install -d -m 0755 "$dir"
+        sudo install -m 0644 "$src" "$staged"
+        sudo mv -f "$staged" "$dst"
+    else
+        install -d -m 0755 "$dir"
+        install -m 0644 "$src" "$staged"
+        mv -f "$staged" "$dst"
+    fi
+}
+
 remove_path() {
     path=$1
     if [ "$SYSTEM" = "1" ] && [ "$(id -u)" != "0" ]; then
@@ -332,6 +348,10 @@ if [ "$UNINSTALL" = "1" ]; then
     remove_path "$TARGET"
     if [ "$OS" = "linux" ] && [ "$SYSTEM" != "1" ]; then
         remove_path "$HOME/.local/share/applications/sh.fd0.desktop.desktop"
+        remove_path "$HOME/.local/share/icons/hicolor/512x512/apps/sh.fd0.desktop.png"
+    elif [ "$OS" = "linux" ]; then
+        remove_path "/usr/local/share/applications/sh.fd0.desktop.desktop"
+        remove_path "/usr/local/share/icons/hicolor/512x512/apps/sh.fd0.desktop.png"
     fi
     if [ "$SYSTEM" = "1" ] && [ "$(id -u)" != "0" ]; then
         sudo rmdir "$OWNERSHIP_DIR" 2>/dev/null || true
@@ -405,6 +425,16 @@ expected=$(awk -v target="$ASSET" '$2 == target || $2 == "*"target {print $1}' "
 actual=$(sha256_file "$TMP/$ASSET")
 [ "$actual" = "$expected" ] || die "SHA-256 mismatch; refusing to install"
 
+if [ "$OS" = "linux" ]; then
+    ICON_ASSET="sh.fd0.desktop.png"
+    run_step "Downloading fd0 Desktop icon" \
+        curl -fsSL "$DL/$ICON_ASSET" -o "$TMP/$ICON_ASSET" || die "could not download $ICON_ASSET"
+    icon_expected=$(awk -v target="$ICON_ASSET" '$2 == target || $2 == "*"target {print $1}' "$TMP/checksums.txt")
+    [ -n "$icon_expected" ] || die "$ICON_ASSET is not listed in checksums.txt"
+    icon_actual=$(sha256_file "$TMP/$ICON_ASSET")
+    [ "$icon_actual" = "$icon_expected" ] || die "icon SHA-256 mismatch; refusing to install"
+fi
+
 run_step "Downloading release signature" \
     curl -fsSL "$DL/checksums.txt.sigstore.json" -o "$TMP/checksums.txt.sigstore.json" \
     || die "missing checksums.txt.sigstore.json"
@@ -452,19 +482,32 @@ if [ "$OS" = "darwin" ]; then
 else
     run_step "Installing fd0 Desktop" install_executable "$TMP/$ASSET" "$TARGET" \
         || die "could not install fd0 Desktop"
-    if [ "$SYSTEM" != "1" ]; then
+    if [ "$SYSTEM" = "1" ]; then
+        DESKTOP_DIR="/usr/local/share/applications"
+        ICON_DIR="/usr/local/share/icons/hicolor/512x512/apps"
+    else
         DESKTOP_DIR="$HOME/.local/share/applications"
-        mkdir -p "$DESKTOP_DIR"
-        cat > "$DESKTOP_DIR/sh.fd0.desktop.desktop" <<EOF
+        ICON_DIR="$HOME/.local/share/icons/hicolor/512x512/apps"
+    fi
+    cat > "$TMP/sh.fd0.desktop.desktop" <<EOF
 [Desktop Entry]
 Name=fd0
 Comment=Password and infrastructure credential manager
 Exec=$TARGET
+Icon=sh.fd0.desktop
 Terminal=false
 Type=Application
 Categories=Utility;Security;
 StartupWMClass=fd0
 EOF
+    install_data "$TMP/sh.fd0.desktop.desktop" "$DESKTOP_DIR/sh.fd0.desktop.desktop"
+    install_data "$TMP/$ICON_ASSET" "$ICON_DIR/sh.fd0.desktop.png"
+    if have update-desktop-database; then
+        if [ "$SYSTEM" = "1" ] && [ "$(id -u)" != "0" ]; then
+            sudo update-desktop-database "$DESKTOP_DIR" >/dev/null 2>&1 || true
+        else
+            update-desktop-database "$DESKTOP_DIR" >/dev/null 2>&1 || true
+        fi
     fi
 fi
 

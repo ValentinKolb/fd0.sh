@@ -438,7 +438,9 @@ type PinnedIdentity struct {
 
 // ---- Recovery export (PROTOCOL.md §6.3) ----
 
-// RecoveryFile is the offline-stored super_priv backup.
+// RecoveryFile is the offline-stored identity backup. Version 1 contains only
+// super_priv. Version 2 additionally carries an encrypted bootstrap snapshot
+// so the exported authentication methods keep working on a restored device.
 type RecoveryFile struct {
 	Magic              string       `cbor:"magic"`
 	Version            uint8        `cbor:"version"`
@@ -447,6 +449,15 @@ type RecoveryFile struct {
 	Argon2Params       Argon2Params `cbor:"argon2_params"`
 	Nonce              []byte       `cbor:"nonce"`
 	EncryptedSuperPriv []byte       `cbor:"encrypted_super_priv"`
+	PayloadNonce       []byte       `cbor:"payload_nonce,omitempty"`
+	EncryptedPayload   []byte       `cbor:"encrypted_payload,omitempty"`
+}
+
+// RecoveryPayloadV2 is encrypted as one unit under K_recovery. Both embedded
+// files remain encrypted/signed in their native formats as defence in depth.
+type RecoveryPayloadV2 struct {
+	UserChain []byte `cbor:"user_chain"`
+	Vault     []byte `cbor:"vault"`
 }
 
 // Argon2Params are the cost parameters used for passphrase-derived keys.

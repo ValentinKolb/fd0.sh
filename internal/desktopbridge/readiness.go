@@ -1,6 +1,7 @@
 package desktopbridge
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -11,9 +12,10 @@ import (
 )
 
 type ReadinessState struct {
-	FirstSyncAt        int64 `json:"firstSyncAt,omitempty"`
-	LastSyncAt         int64 `json:"lastSyncAt,omitempty"`
-	RecoveryVerifiedAt int64 `json:"recoveryVerifiedAt,omitempty"`
+	FirstSyncAt        int64  `json:"firstSyncAt,omitempty"`
+	LastSyncAt         int64  `json:"lastSyncAt,omitempty"`
+	RecoveryVerifiedAt int64  `json:"recoveryVerifiedAt,omitempty"`
+	RecoveryAuthTip    string `json:"recoveryAuthTip,omitempty"`
 }
 
 func loadReadiness(paths fdhome.Paths) (ReadinessState, error) {
@@ -61,10 +63,12 @@ func markSyncComplete(paths fdhome.Paths) error {
 	})
 }
 
-func markRecoveryVerified(paths fdhome.Paths) error {
+func markRecoveryVerified(paths fdhome.Paths, authTip []byte) error {
+	if len(authTip) == 0 {
+		return errors.New("cannot mark recovery without an authentication tip")
+	}
 	return updateReadiness(paths, func(state *ReadinessState) {
-		if state.RecoveryVerifiedAt == 0 {
-			state.RecoveryVerifiedAt = time.Now().Unix()
-		}
+		state.RecoveryVerifiedAt = time.Now().Unix()
+		state.RecoveryAuthTip = hex.EncodeToString(authTip)
 	})
 }

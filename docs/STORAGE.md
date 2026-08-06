@@ -419,7 +419,7 @@ Backup procedure:
 
 ### 8.3 Recovery scenarios
 
-- **Lost client artifacts, identity intact via recovery export:** restore `super_priv` from the recovery file (`PROTOCOL.md` §6.3), bootstrap a fresh vault, post a new `auth.set` with the new device's method, sync.
+- **Lost client artifacts, identity intact via recovery export:** a v2 export restores `super_priv`, the signed user chain, and the encrypted vault bootstrap, preserving every authentication method present at export; sync refreshes remote scope state. A legacy v1 export restores the identity and creates one new local passphrase method (`PROTOCOL.md` §6.3).
 - **Lost client artifacts, no recovery export:** install fd0 on a new device; from a still-trusted device append a fresh `auth.set` including the new method; sync on the new device.
 - **Lost vault.enc only:** equivalent to lost device.
 - **Lost server DB:** push events from any client back to a fresh server; the server rebuilds `chains`. Replay nonces are fresh by construction.

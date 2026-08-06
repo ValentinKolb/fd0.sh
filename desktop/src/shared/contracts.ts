@@ -33,6 +33,7 @@ export type VaultStatus = {
     firstSyncAt?: number;
     lastSyncAt?: number;
     recoveryVerifiedAt?: number;
+    recoveryAuthTip?: string;
   };
 };
 
@@ -492,7 +493,8 @@ export type DesktopAPI = {
   unlock(input: UnlockInput): Promise<VaultStatus>;
   lock(): Promise<VaultStatus>;
   restartAgent(): Promise<VaultStatus>;
-  restoreVault(recoveryPassphrase: string, newPassphrase: string): Promise<VaultStatus | null>;
+  selectRecoveryFile(): Promise<{ version: 1 | 2 } | null>;
+  restoreVault(recoveryPassphrase: string, newPassphrase?: string): Promise<VaultStatus | null>;
   exportRecovery(passphrase: string): Promise<{ saved: boolean }>;
   setDefaultAuthMethod(method: string): Promise<VaultStatus>;
   inventory(): Promise<Inventory>;

@@ -31,12 +31,13 @@ EOF
 chmod +x "$RELEASE/fd0-desktop_0.1.0_linux_arm64.AppImage"
 cp "$RELEASE/fd0-desktop_0.1.0_linux_arm64.AppImage" \
   "$RELEASE/fd0-desktop_0.1.0_linux_x86_64.AppImage"
+printf 'fd0 icon\n' > "$RELEASE/sh.fd0.desktop.png"
 (
   cd "$RELEASE"
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum fd0-desktop_*
+    sha256sum fd0-desktop_* sh.fd0.desktop.png
   else
-    shasum -a 256 fd0-desktop_* | awk '{print $1 "  " $2}'
+    shasum -a 256 fd0-desktop_* sh.fd0.desktop.png | awk '{print $1 "  " $2}'
   fi
 ) > "$RELEASE/checksums.txt"
 printf 'desktop-v0.1.0\n' > "$RELEASE/checksums.txt.sigstore.json"
@@ -299,6 +300,9 @@ test "$(HOME="$LINUX_HOME" "$LINUX_HOME/.local/bin/fd0-browser-host" chrome-exte
 test -x "$LINUX_HOME/.local/bin/fd0-browser-host"
 grep -Fq "Exec=$LINUX_HOME/.local/bin/fd0-desktop" \
   "$LINUX_HOME/.local/share/applications/sh.fd0.desktop.desktop"
+grep -Fq "Icon=sh.fd0.desktop" \
+  "$LINUX_HOME/.local/share/applications/sh.fd0.desktop.desktop"
+test "$(cat "$LINUX_HOME/.local/share/icons/hicolor/512x512/apps/sh.fd0.desktop.png")" = "fd0 icon"
 printf '%s\n' "$LINUX_INSTALL_OUTPUT" | grep -Fq "… Downloading fd0 Desktop"
 printf '%s\n' "$LINUX_INSTALL_OUTPUT" | grep -Fq "✓ Authenticating signed release"
 printf '%s\n' "$LINUX_INSTALL_OUTPUT" | grep -Fq "Next steps:"
@@ -515,6 +519,8 @@ test ! -e "$MAIN_HOME/.local/bin/fd0-desktop"
 test ! -e "$MAIN_HOME/.local/bin/fd0"
 test ! -e "$MAIN_HOME/.local/bin/fd0-agent"
 test ! -e "$MAIN_HOME/.local/bin/fd0-browser-host"
+test ! -e "$MAIN_HOME/.local/share/applications/sh.fd0.desktop.desktop"
+test ! -e "$MAIN_HOME/.local/share/icons/hicolor/512x512/apps/sh.fd0.desktop.png"
 test "$(cat "$MAIN_HOME/.fd0/vault.enc")" = "keep"
 
 OWNED_HOME="$BASE/owned-home"

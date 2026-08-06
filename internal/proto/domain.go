@@ -20,6 +20,7 @@ const (
 	DomainVaultBody          = "fd0-vault-body-v1"           // AAD: vault body
 	DomainVaultWrap          = "fd0-vault-wrap-v1"           // AAD: vault wrapped key
 	DomainRecoveryKey        = "fd0-recovery-key-v1"         // AAD: recovery export
+	DomainRecoveryBundle     = "fd0-recovery-bundle-v2"      // AAD: recovery bootstrap snapshot
 	DomainSafety             = "fd0-safety-v1"               // safety-number derivation prefix
 
 	// Transparency log (TRANSLOG.md §2). One domain per hash position so a

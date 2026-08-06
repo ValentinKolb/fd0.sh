@@ -412,6 +412,7 @@ jobs:
           SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+          cp desktop/resources/icon.png release/sh.fd0.desktop.png
           version="${RELEASE_TAG#desktop-v}"
           assets=$(find release -maxdepth 1 -type f -printf '%f\n' | sort | jq -R . | jq -s .)
           jq -n \

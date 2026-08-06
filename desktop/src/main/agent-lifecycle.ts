@@ -22,6 +22,7 @@ export class AgentLifecycle {
   readonly #appPath: string;
   readonly #home: string;
   readonly #run: typeof execFileAsync;
+  readonly #linuxReadyTimeoutMs: number;
 
   constructor(options?: {
     platform?: NodeJS.Platform;
@@ -29,12 +30,14 @@ export class AgentLifecycle {
     appPath?: string;
     home?: string;
     run?: typeof execFileAsync;
+    linuxReadyTimeoutMs?: number;
   }) {
     this.#platform = options?.platform ?? process.platform;
     this.#packaged = options?.packaged ?? app.isPackaged;
     this.#appPath = options?.appPath ?? (process.env.APPIMAGE || process.execPath);
     this.#home = options?.home ?? homedir();
     this.#run = options?.run ?? execFileAsync;
+    this.#linuxReadyTimeoutMs = options?.linuxReadyTimeoutMs ?? 5_000;
   }
 
   async ensureRunning(): Promise<AgentServiceStatus> {
@@ -53,6 +56,7 @@ export class AgentLifecycle {
     if (this.#platform === "linux") {
       await this.#installLinuxUnit();
       await this.#systemctl(["enable", "--now", linuxServiceName]);
+      await this.#waitForLinuxActive();
       return "enabled";
     }
     return "unsupported";
@@ -92,6 +96,7 @@ export class AgentLifecycle {
     if (this.#platform === "linux") {
       await this.#installLinuxUnit();
       await this.#systemctl(["restart", linuxServiceName]);
+      await this.#waitForLinuxActive();
       return;
     }
     throw new Error("Native agent supervision is unavailable on this platform");
@@ -240,6 +245,35 @@ export class AgentLifecycle {
       const detail = error instanceof Error ? error.message : String(error);
       throw new Error(`Could not manage the fd0 background service: ${detail}`);
     }
+  }
+
+  async #waitForLinuxActive(): Promise<void> {
+    const deadline = Date.now() + this.#linuxReadyTimeoutMs;
+    while (Date.now() < deadline) {
+      try {
+        const result = await this.#run(
+          "systemctl",
+          ["--user", "is-active", linuxServiceName],
+          { timeout: 5_000 },
+        );
+        if (result.stdout.trim() === "active") return;
+      } catch {
+        // A freshly enabled unit can briefly be activating or restarting.
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    let detail = "inactive";
+    try {
+      const result = await this.#run(
+        "systemctl",
+        ["--user", "show", linuxServiceName, "--property=ActiveState,SubState,Result", "--no-pager"],
+        { timeout: 5_000 },
+      );
+      detail = result.stdout.trim().replaceAll("\n", ", ") || detail;
+    } catch {
+      // Keep the stable fallback; command errors may contain local paths.
+    }
+    throw new Error(`The fd0 background service did not become active (${detail})`);
   }
 }
 

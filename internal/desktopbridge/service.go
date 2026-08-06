@@ -332,10 +332,14 @@ func (s *Service) Handle(ctx context.Context, method string, raw json.RawMessage
 		defer crypto.Wipe(params.Data)
 		defer crypto.Wipe(params.RecoveryPassphrase)
 		defer crypto.Wipe(params.NewPassphrase)
-		if len(params.Data) == 0 || len(params.Data) > 128*1024 {
-			return nil, fail("validation", "That recovery file is empty or too large.", "Choose an fd0 recovery file smaller than 128 KB.", false)
+		if len(params.Data) == 0 || len(params.Data) > 4*1024*1024 {
+			return nil, fail("validation", "That recovery file is empty or too large.", "Choose an fd0 recovery file smaller than 4 MB.", false)
 		}
-		if len(params.NewPassphrase) < 12 {
+		version, err := cli.RecoveryVersion(params.Data)
+		if err != nil {
+			return nil, mapRecoveryError(err)
+		}
+		if version == 1 && len(params.NewPassphrase) < 12 {
 			return nil, fail("validation", "Use a local passphrase with at least 12 characters.", "This passphrase protects the restored vault on this device.", false)
 		}
 		if _, err := cli.ImportRecoveryWithPassphrases(ctx, params.Data, params.RecoveryPassphrase, params.NewPassphrase); err != nil {
@@ -345,10 +349,32 @@ func (s *Service) Handle(ctx context.Context, method string, raw json.RawMessage
 		if err != nil {
 			return nil, err
 		}
-		if err := markRecoveryVerified(paths); err != nil {
+		state, err := chain.ReplayUser(paths.UserChain)
+		if err != nil || state == nil {
+			return nil, errors.New("restored user chain is unavailable")
+		}
+		if err := markRecoveryVerified(paths, state.TipHash); err != nil {
 			return nil, err
 		}
-		return s.unlock(ctx, proto.AuthPassphrase, params.NewPassphrase, nil)
+		return s.status()
+	case "recovery.inspect":
+		var params struct {
+			Data []byte `json:"data"`
+		}
+		if err := decodeParams(raw, &params); err != nil {
+			return nil, err
+		}
+		defer crypto.Wipe(params.Data)
+		if len(params.Data) == 0 || len(params.Data) > 4*1024*1024 {
+			return nil, fail("validation", "That recovery file is empty or too large.", "Choose an fd0 recovery file smaller than 4 MB.", false)
+		}
+		version, err := cli.RecoveryVersion(params.Data)
+		if err != nil {
+			return nil, mapRecoveryError(err)
+		}
+		return struct {
+			Version uint8 `json:"version"`
+		}{Version: version}, nil
 	case "auth.default":
 		var params struct {
 			Method string `json:"method"`
@@ -756,6 +782,13 @@ func (s *Service) status() (StatusResult, error) {
 		return StatusResult{}, err
 	}
 	if result.VaultExists {
+		state, err := chain.ReplayUser(paths.UserChain)
+		if err != nil {
+			return StatusResult{}, mapDomainError(err)
+		}
+		if state != nil && result.Readiness.RecoveryAuthTip != "" && result.Readiness.RecoveryAuthTip != hex.EncodeToString(state.TipHash) {
+			result.Readiness.RecoveryVerifiedAt = 0
+		}
 		methods, err := authMethodSummaries(paths)
 		if err != nil {
 			return StatusResult{}, mapDomainError(err)
@@ -801,6 +834,11 @@ func (s *Service) exportRecoveryFile(ctx context.Context, path string, passphras
 		return nil, mapDomainError(err)
 	}
 	expectedPub := append([]byte(nil), session.UserSuperPub...)
+	if session.UserState == nil {
+		session.Close()
+		return nil, errors.New("user chain is unavailable")
+	}
+	authTip := append([]byte(nil), session.UserState.TipHash...)
 	session.Close()
 	if err := cli.VerifyRecoveryWithPassphrase(data, passphrase, expectedPub); err != nil {
 		return nil, mapRecoveryError(err)
@@ -820,7 +858,7 @@ func (s *Service) exportRecoveryFile(ctx context.Context, path string, passphras
 	if err != nil {
 		return nil, err
 	}
-	if err := markRecoveryVerified(paths); err != nil {
+	if err := markRecoveryVerified(paths, authTip); err != nil {
 		return nil, err
 	}
 	return map[string]bool{"saved": true, "verified": true}, nil

@@ -455,10 +455,10 @@ If a crash leaves the vault behind the latest chain event, the next open self-he
 
 ### 6.3 Recovery export
 
-A user-initiated backup of `super_priv`, encrypted under a separate recovery passphrase. Stored offline (paper, password manager, etc.).
+A user-initiated offline backup encrypted under a separate recovery passphrase. Version 2 preserves the signed user authentication chain and encrypted vault bootstrap in addition to `super_priv`; version 1 remains importable for compatibility.
 
 ```
-RecoveryFile = {
+RecoveryFileV1 = {
     magic                : "FD0K",
     version              : uint .size 1,                 ; = 1
     user_super_pub       : bstr .size 32,
@@ -478,9 +478,32 @@ encrypted_super_priv = AEAD(
 )
 ```
 
-Restore: decrypt with the passphrase; verify `Ed25519_pub(super_priv) == user_super_pub`; bootstrap a fresh vault on the new device; post a new `auth.set` carrying at least one active method derived from a credential available on this device.
+Version 2 retains the v1 fields and adds:
 
-The recovery file is never sent to the server. The protocol does not track that an export exists.
+```
+RecoveryFileV2 = RecoveryFileV1(version = 2) + {
+    payload_nonce     : bstr .size 12,
+    encrypted_payload : bstr,
+}
+
+RecoveryPayloadV2 = {
+    user_chain : bstr,  ; byte-identical signed user.cbor
+    vault      : bstr,  ; byte-identical encrypted vault.enc
+}
+
+encrypted_payload = AEAD(
+    key   = K_recovery,
+    nonce = payload_nonce,
+    plain = cbor(RecoveryPayloadV2),
+    aad   = "fd0-recovery-bundle-v2" || user_super_pub || nonce || encrypted_super_priv,
+)
+```
+
+Restore v2: authenticate and decrypt both ciphertexts; verify `Ed25519_pub(super_priv) == user_super_pub`; replay the complete user chain; require its active methods to match the vault's wrapped payload keys; then install the two native files with no-overwrite commits, removing the first if the second commit fails. The methods present at export therefore remain usable, including YubiKey methods. An auth method added after the export is not present; Desktop records the exported auth tip and asks for a fresh export after the auth chain changes.
+
+Restore v1: decrypt and verify `super_priv`, then bootstrap a fresh vault with one new local passphrase method as before.
+
+The recovery file is never sent to the server. Export freshness is local Desktop metadata, not server or protocol state.
 
 ---
 
