@@ -1412,6 +1412,9 @@ test("restores an identity without contacting the production fd0 instance", asyn
     expect(await recoveryPassphrase.inputValue()).toBe("fd0-e2e-recovery-passphrase");
     await expect(page.getByLabel("New passphrase for this device", { exact: true })).toHaveCount(0);
     await page.getByRole("button", { name: "Restore", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Unlock fd0" })).toBeVisible();
+    await page.getByLabel("Passphrase", { exact: true }).fill("fd0-desktop-dev");
+    await page.getByRole("button", { name: "Unlock", exact: true }).click();
     await expect(page.getByRole("button", { name: "Passwords", exact: true })).toBeVisible();
     await expect(page.getByRole("navigation", { name: "Sections" })).toBeVisible();
     await expect(page.getByText("Your vault is ready", { exact: true })).toBeVisible();
