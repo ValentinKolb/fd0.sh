@@ -571,7 +571,7 @@ export type DesktopAPI = {
   closeSFTP(): Promise<void>;
   onSFTPTransfer(handler: (event: SFTPTransferEvent) => void): () => void;
   openItemURL(ref: RecordRef): Promise<void>;
-  openSupportLink(target: "docs" | "issues"): Promise<void>;
+  openSupportLink(target: "browser" | "browserDocs" | "docs" | "issues"): Promise<void>;
   showLargeType(label: string, value: string): Promise<LargeTypeWindowResult>;
   largeTypeValue(): Promise<LargeTypeValue | null>;
   copyLargeType(): Promise<{ clearAfterSeconds: number }>;

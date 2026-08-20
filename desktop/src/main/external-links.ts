@@ -1,6 +1,8 @@
-export type SupportLinkTarget = "docs" | "issues";
+export type SupportLinkTarget = "browser" | "browserDocs" | "docs" | "issues";
 
 const supportLinks: Record<SupportLinkTarget, string> = {
+  browser: "https://chromewebstore.google.com/detail/fd0/kcbjlgbkgoabcdflpnohkknfbegcigel",
+  browserDocs: "https://fd0.sh/docs/browser",
   docs: "https://fd0.sh/docs",
   issues: "https://github.com/k2b-dev/fd0.sh/issues",
 };

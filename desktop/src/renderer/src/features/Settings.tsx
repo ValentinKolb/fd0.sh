@@ -152,6 +152,12 @@ export function Settings(props: { onExportRecovery(): void; onShowShortcuts(): v
       });
   }
 
+  function openBrowserLink(target: "browser" | "browserDocs"): void {
+    void window.fd0.openSupportLink(target).catch((cause: unknown) => {
+      vault.fail(cause, "fd0 could not open the browser extension link");
+    });
+  }
+
   return (
     <section class="panel">
       <header class="panel-header">
@@ -271,6 +277,22 @@ export function Settings(props: { onExportRecovery(): void; onShowShortcuts(): v
               </div>
             </div>
           </Show>
+        </section>
+
+        <section class="setting-group">
+          <h2 class="eyebrow">Browser</h2>
+          <div class="setting-row">
+            <div>
+              <strong>Chrome extension</strong>
+              <small>Fill passwords and one-time codes from this fd0 vault in Chrome and Chromium browsers.</small>
+            </div>
+            <div class="support-actions">
+              <Button onClick={() => openBrowserLink("browserDocs")}>Setup guide</Button>
+              <Button variant="primary" onClick={() => openBrowserLink("browser")}>
+                Open Chrome Web Store
+              </Button>
+            </div>
+          </div>
         </section>
 
         <section class="setting-group">

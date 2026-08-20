@@ -177,7 +177,8 @@ const api: DesktopAPI = {
     return () => ipcRenderer.removeListener("fd0:sftp-transfer", listener);
   },
   openItemURL: (ref: RecordRef) => invoke("fd0:open-item-url", ref),
-  openSupportLink: (target: "docs" | "issues") => invoke("fd0:open-support-link", target),
+  openSupportLink: (target: "browser" | "browserDocs" | "docs" | "issues") =>
+    invoke("fd0:open-support-link", target),
   showLargeType: (label: string, value: string) => invoke<LargeTypeWindowResult>("fd0:show-large-type", label, value),
   largeTypeValue: () => invoke<LargeTypeValue | null>("fd0:large-type-value"),
   copyLargeType: () => invoke<{ clearAfterSeconds: number }>("fd0:large-type-copy"),
