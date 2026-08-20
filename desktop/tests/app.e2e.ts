@@ -1404,17 +1404,14 @@ test("restores an identity without contacting the production fd0 instance", asyn
         value: async () => ({ canceled: false, filePaths: [path] }),
       });
     }, recoveryPath);
+    await page.getByRole("button", { name: "Choose recovery file", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Recovery file selected · v2", exact: true })).toBeVisible();
     const recoveryPassphrase = page.getByLabel("Recovery passphrase", { exact: true });
-    const localPassphrase = page.getByLabel("New passphrase for this device", { exact: true });
-    const localConfirmation = page.getByLabel("Confirm new passphrase", { exact: true });
     await recoveryPassphrase.fill("fd0-e2e-recovery-passphrase");
-    await localPassphrase.fill("fd0-e2e-local-passphrase");
-    await localConfirmation.fill("fd0-e2e-local-passphrase");
     await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
     expect(await recoveryPassphrase.inputValue()).toBe("fd0-e2e-recovery-passphrase");
-    expect(await localPassphrase.inputValue()).toBe("fd0-e2e-local-passphrase");
-    expect(await localConfirmation.inputValue()).toBe("fd0-e2e-local-passphrase");
-    await page.getByRole("button", { name: "Choose recovery file and restore" }).click();
+    await expect(page.getByLabel("New passphrase for this device", { exact: true })).toHaveCount(0);
+    await page.getByRole("button", { name: "Restore", exact: true }).click();
     await expect(page.getByRole("button", { name: "Passwords", exact: true })).toBeVisible();
     await expect(page.getByRole("navigation", { name: "Sections" })).toBeVisible();
     await expect(page.getByText("Your vault is ready", { exact: true })).toBeVisible();
