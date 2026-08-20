@@ -92,9 +92,9 @@ export const SEO_ROUTE = {
   docsBrowser: {
     key: "docsBrowser",
     path: "/docs/browser",
-    title: "fd0 browser autofill preview",
+    title: "fd0 browser extension for Chrome",
     description:
-      "Build and test the fd0 Chrome autofill preview with the local native host, HTTPS origin matching, and explicit login selection.",
+      "Install the fd0 Chrome extension for password autofill, generation, save/update, and one-time passwords from your local encrypted vault.",
     section: "docs",
   },
   docsSsh: {

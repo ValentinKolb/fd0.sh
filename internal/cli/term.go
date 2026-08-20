@@ -31,6 +31,12 @@ func terminalSafe(s string) string {
 var (
 	stdinOnce   sync.Once
 	stdinReader *bufio.Reader
+
+	hiddenTTYState struct {
+		sync.Mutex
+		fd    int
+		state *term.State
+	}
 )
 
 func sharedStdin() *bufio.Reader {
@@ -38,14 +44,50 @@ func sharedStdin() *bufio.Reader {
 	return stdinReader
 }
 
+// readHiddenTTY reads one line without echo while keeping enough state for the
+// process-wide interrupt handler to repair the terminal before it exits. The
+// x/term helper restores the state when it returns normally; the explicit
+// snapshot covers SIGINT, where memguard exits the process from another
+// goroutine before ReadPassword's deferred restore can run.
+func readHiddenTTY(stdin, stderr *os.File, prompt string) ([]byte, error) {
+	fd := int(stdin.Fd())
+	state, err := term.GetState(fd)
+	if err != nil {
+		return nil, err
+	}
+	hiddenTTYState.Lock()
+	hiddenTTYState.fd = fd
+	hiddenTTYState.state = state
+	hiddenTTYState.Unlock()
+	defer RestoreTerminal()
+
+	fmt.Fprint(stderr, prompt)
+	b, err := term.ReadPassword(fd)
+	fmt.Fprintln(stderr)
+	return b, err
+}
+
+// RestoreTerminal repairs an active hidden-input terminal and reports whether
+// there was one to restore. It is safe to call from the process-wide interrupt
+// handler and is otherwise a no-op.
+func RestoreTerminal() bool {
+	hiddenTTYState.Lock()
+	defer hiddenTTYState.Unlock()
+	if hiddenTTYState.state == nil {
+		return false
+	}
+	err := term.Restore(hiddenTTYState.fd, hiddenTTYState.state)
+	hiddenTTYState.fd = 0
+	hiddenTTYState.state = nil
+	return err == nil
+}
+
 // ReadPassphrase prompts on stderr and reads a passphrase from stdin without
 // echo when stdin is a TTY. On a non-TTY (pipes, CI) it reads a single line
 // from a process-shared bufio reader.
 func ReadPassphrase(prompt string) ([]byte, error) {
 	if IsTTY(os.Stdin) {
-		fmt.Fprint(os.Stderr, prompt)
-		b, err := term.ReadPassword(int(os.Stdin.Fd()))
-		fmt.Fprintln(os.Stderr)
+		b, err := readHiddenTTY(os.Stdin, os.Stderr, prompt)
 		if err != nil {
 			return nil, err
 		}
@@ -75,9 +117,7 @@ func ReadPassphrase(prompt string) ([]byte, error) {
 // empty input so the caller can dispatch on len(pin) == 0.
 func ReadOptionalPIN(prompt string) ([]byte, error) {
 	if IsTTY(os.Stdin) {
-		fmt.Fprint(os.Stderr, prompt)
-		b, err := term.ReadPassword(int(os.Stdin.Fd()))
-		fmt.Fprintln(os.Stderr)
+		b, err := readHiddenTTY(os.Stdin, os.Stderr, prompt)
 		if err != nil {
 			return nil, err
 		}

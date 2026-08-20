@@ -127,10 +127,10 @@ make all           # build and run all checks
 
 Build the website with `cd website && bun install && bun run build`. Desktop
 development commands and isolation requirements live in
-[`desktop/README.md`](./desktop/README.md). The Chrome/Chromium autofill
-development preview, including save/update, password generation, TOTP, and
-reversible local registration, lives in
-[`browser/README.md`](./browser/README.md).
+[`desktop/README.md`](./desktop/README.md). Install the official
+[fd0 Chrome extension](https://chromewebstore.google.com/detail/fd0/kcbjlgbkgoabcdflpnohkknfbegcigel)
+for autofill, password generation, save/update, and TOTP. Development and
+Native Messaging details live in [`browser/README.md`](./browser/README.md).
 
 Compatibility and security-sensitive changes should start with
 [`docs/PROTOCOL.md`](./docs/PROTOCOL.md),

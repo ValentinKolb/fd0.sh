@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"errors"
 	"strings"
 	"testing"
@@ -103,6 +104,71 @@ func TestPickUnlockMethod_SingleMethodNoFlag(t *testing.T) {
 	}
 	if got.MethodID != "am_only" {
 		t.Fatalf("got method_id=%s, want am_only", got.MethodID)
+	}
+}
+
+func TestPromptUnlockMethod_SelectsSortedMethod(t *testing.T) {
+	t.Parallel()
+	active := []proto.AuthMethod{
+		{MethodID: "am_z", MethodType: proto.AuthYubikey},
+		{MethodID: "am_a", MethodType: proto.AuthPassphrase},
+	}
+	var output bytes.Buffer
+	got, err := promptUnlockMethod(active, strings.NewReader("2\n"), &output)
+	if err != nil {
+		t.Fatalf("promptUnlockMethod: %v", err)
+	}
+	if got.MethodID != "am_z" {
+		t.Fatalf("got method_id=%s, want am_z", got.MethodID)
+	}
+	text := output.String()
+	if !strings.Contains(text, "1) Passphrase") || !strings.Contains(text, "2) YubiKey") {
+		t.Fatalf("chooser did not render sorted methods:\n%s", text)
+	}
+}
+
+func TestPromptUnlockMethod_EnterUsesFirstSortedMethod(t *testing.T) {
+	t.Parallel()
+	active := []proto.AuthMethod{
+		{MethodID: "am_z", MethodType: proto.AuthYubikey},
+		{MethodID: "am_a", MethodType: proto.AuthPassphrase},
+	}
+	got, err := promptUnlockMethod(active, strings.NewReader("\n"), &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("promptUnlockMethod: %v", err)
+	}
+	if got.MethodID != "am_a" {
+		t.Fatalf("got method_id=%s, want am_a", got.MethodID)
+	}
+}
+
+func TestPromptUnlockMethod_RepromptsAfterInvalidSelection(t *testing.T) {
+	t.Parallel()
+	active := []proto.AuthMethod{
+		{MethodID: "am_a", MethodType: proto.AuthPassphrase},
+		{MethodID: "am_b", MethodType: proto.AuthYubikey},
+	}
+	var output bytes.Buffer
+	got, err := promptUnlockMethod(active, strings.NewReader("nope\n3\n2\n"), &output)
+	if err != nil {
+		t.Fatalf("promptUnlockMethod: %v", err)
+	}
+	if got.MethodID != "am_b" {
+		t.Fatalf("got method_id=%s, want am_b", got.MethodID)
+	}
+	if count := strings.Count(output.String(), "Enter a number between 1 and 2."); count != 2 {
+		t.Fatalf("invalid selection messages=%d, want 2:\n%s", count, output.String())
+	}
+}
+
+func TestPromptUnlockMethod_ClosedInputFails(t *testing.T) {
+	t.Parallel()
+	_, err := promptUnlockMethod([]proto.AuthMethod{
+		{MethodID: "am_a", MethodType: proto.AuthPassphrase},
+		{MethodID: "am_b", MethodType: proto.AuthYubikey},
+	}, strings.NewReader(""), &bytes.Buffer{})
+	if err == nil {
+		t.Fatal("expected closed input to fail")
 	}
 }
 

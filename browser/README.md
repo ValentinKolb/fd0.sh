@@ -1,7 +1,7 @@
 # fd0 browser integration
 
-This directory contains the plain-TypeScript Manifest V3 extension used to
-develop fd0 autofill on Chrome/Chromium for macOS and Linux.
+This directory contains the plain-TypeScript Manifest V3 extension that brings
+fd0 autofill to Chrome and Chromium on macOS and Linux.
 
 The extension:
 
@@ -21,9 +21,19 @@ The extension:
   Storage. Explicit save, update, and TOTP actions write to the encrypted fd0
   vault.
 
-The integration is not yet publicly listed in a browser store.
+## Install it
 
-## Build and register
+1. Install the current [fd0 Desktop or CLI](https://fd0.sh/#install). The
+   installer registers the local Native Messaging host used by the extension.
+2. Add [fd0 from the Chrome Web Store](https://chromewebstore.google.com/detail/fd0/kcbjlgbkgoabcdflpnohkknfbegcigel).
+3. Unlock fd0 and focus a username, password, or one-time-code field on an
+   HTTPS page.
+
+If fd0 was installed before automatic browser registration was available, run
+`fd0 browser enable` once. This writes only the browser's local Native
+Messaging manifest; it does not change the vault.
+
+## Build and register a development copy
 
 ```sh
 cd browser
@@ -65,7 +75,7 @@ The verified ZIP is written to
 `.build/browser-store/fd0-chrome-<version>.zip`. Listing copy, privacy answers,
 reviewer instructions, and store graphics live under [`store/`](./store/).
 
-## Use it
+## Use fd0 in Chrome
 
 Unlock fd0 and focus a credential field on an HTTPS page. The inline fd0 button
 opens matching logins. **Save login** keeps title, username, visible password,
@@ -93,4 +103,4 @@ Remove only the fd0 Native Messaging registration with:
 ```
 
 Remove the unpacked or Store extension separately in `chrome://extensions`.
-Neither action removes the fd0 vault.
+Neither action removes the fd0 vault. Firefox is not supported yet.

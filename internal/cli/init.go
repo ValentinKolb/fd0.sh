@@ -1,11 +1,15 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -163,9 +167,11 @@ func InitWithPassphrase(ctx context.Context, pass []byte) (*InitResult, error) {
 //
 // Method selection (in order):
 //  1. Explicit --method flag, if non-empty.
-//  2. Single-method auth.set: pick the only one.
-//  3. Multi-method auth.set: pick the first method (sorted by
-//     method_id) — deterministic so scripts can rely on the choice.
+//  2. Device-local auth default, if it still matches an enrolled method.
+//  3. Single-method auth.set: pick the only one.
+//  4. Multi-method auth.set on a TTY: ask the user.
+//  5. Multi-method auth.set without a TTY: pick the first method (sorted by
+//     method_id) so scripts remain deterministic.
 //
 // For passphrase methods we prompt "Passphrase: ". For YubiKey methods
 // we inspect public_params.pin_policy: touch-only methods skip the PIN
@@ -192,6 +198,7 @@ func RunUnlock(ctx context.Context, agentBin, method string) error {
 	activeMethods := uctx.LatestAuthSet.Payload.Active
 	chosen := proto.AuthMethod{}
 	usedConfiguredDefault := false
+	needsInteractiveChoice := false
 	if method == "" {
 		if cfg, err := fdhome.LoadConfig(paths.Config); err == nil {
 			if strings.TrimSpace(cfg.Auth.DefaultMethod) != "" {
@@ -207,10 +214,14 @@ func RunUnlock(ctx context.Context, agentBin, method string) error {
 		}
 	}
 	if chosen.MethodID == "" && chosen.MethodType == "" {
-		var err error
-		chosen, err = pickUnlockMethod(activeMethods, method)
-		if err != nil {
-			return err
+		if method != "" || len(activeMethods) <= 1 || !IsTTY(os.Stdin) || !IsTTY(os.Stderr) {
+			var err error
+			chosen, err = pickUnlockMethod(activeMethods, method)
+			if err != nil {
+				return err
+			}
+		} else {
+			needsInteractiveChoice = true
 		}
 	}
 	// When more than one method type is available and the user did
@@ -218,7 +229,7 @@ func RunUnlock(ctx context.Context, agentBin, method string) error {
 	// see which method was used. Silent picking is a footgun: a user
 	// who wants the YubiKey path could end up unlocked via passphrase
 	// and not realise.
-	if method == "" && !usedConfiguredDefault && len(distinctMethodTypes(activeMethods)) > 1 {
+	if method == "" && !usedConfiguredDefault && !needsInteractiveChoice && len(distinctMethodTypes(activeMethods)) > 1 {
 		fmt.Fprintf(os.Stderr, "ℹ multiple unlock methods available — picked %q (override with --method=...)\n", chosen.MethodType)
 	}
 
@@ -245,6 +256,12 @@ func RunUnlock(ctx context.Context, agentBin, method string) error {
 	if st, err := c.Status(); err == nil && st.Unlocked {
 		fmt.Fprintln(os.Stderr, "✓ vault already unlocked")
 		return nil
+	}
+	if needsInteractiveChoice {
+		chosen, err = promptUnlockMethod(activeMethods, os.Stdin, os.Stderr)
+		if err != nil {
+			return err
+		}
 	}
 
 	var cred agent.UnlockCredential
@@ -292,6 +309,70 @@ func RunUnlock(ctx context.Context, agentBin, method string) error {
 		}
 	}
 	return nil
+}
+
+func promptUnlockMethod(active []proto.AuthMethod, in io.Reader, out io.Writer) (proto.AuthMethod, error) {
+	if len(active) == 0 {
+		return proto.AuthMethod{}, errors.New("no active auth methods")
+	}
+	ordered := append([]proto.AuthMethod(nil), active...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return ordered[i].MethodID < ordered[j].MethodID
+	})
+	if len(ordered) == 1 {
+		return ordered[0], nil
+	}
+
+	fmt.Fprintln(out, "Choose unlock method:")
+	for i, method := range ordered {
+		fmt.Fprintf(out, "  %d) %s\n", i+1, unlockMethodLabel(method))
+	}
+
+	reader := bufio.NewReader(in)
+	for {
+		fmt.Fprint(out, "Select [1]: ")
+		line, readErr := reader.ReadString('\n')
+		line = strings.TrimSpace(line)
+		if line == "" {
+			if readErr != nil {
+				return proto.AuthMethod{}, fmt.Errorf("choose unlock method: %w", readErr)
+			}
+			return ordered[0], nil
+		}
+		selection, parseErr := strconv.Atoi(line)
+		if parseErr == nil && selection >= 1 && selection <= len(ordered) {
+			return ordered[selection-1], nil
+		}
+		fmt.Fprintf(out, "Enter a number between 1 and %d.\n", len(ordered))
+		if readErr != nil {
+			return proto.AuthMethod{}, fmt.Errorf("choose unlock method: %w", readErr)
+		}
+	}
+}
+
+func unlockMethodLabel(method proto.AuthMethod) string {
+	label := terminalSafe(method.MethodType)
+	switch method.MethodType {
+	case proto.AuthPassphrase:
+		label = "Passphrase"
+	case proto.AuthYubikey:
+		switch yubikeyPINPromptMode(method) {
+		case yubikeyPINPromptNever:
+			label = "YubiKey (touch only)"
+		case yubikeyPINPromptRequired:
+			label = "YubiKey (PIN)"
+		default:
+			label = "YubiKey"
+		}
+	}
+	if method.MethodID == "" {
+		return label
+	}
+	id := terminalSafe(method.MethodID)
+	if len(id) > 14 {
+		id = id[:14] + "…"
+	}
+	return label + " · " + id
 }
 
 func friendlyUnlockError(err error) error {

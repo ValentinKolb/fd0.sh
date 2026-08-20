@@ -27,6 +27,7 @@ Map the user's intent to the right command before typing anything:
 | Add username/password fields | `fd0 pass field set NAME username VALUE`; `fd0 pass field set NAME password --secret --generate` |
 | Copy a password-manager field | `fd0 pass copy NAME [FIELD] [--clear-after=30s]` |
 | Generate a password without storing | `fd0 pass generate [--length 32]` |
+| Install Chrome autofill | Install fd0 from the Chrome Web Store; current fd0 installers register its local host automatically |
 | Test Chrome autofill from a source checkout | Follow `browser/README.md`, then register with the built `fd0 browser enable --host PATH` |
 | Show a pass item safely | `fd0 pass show NAME` (masked by default; `--reveal` only when explicitly needed) |
 | Store a passkey field | `fd0 pass field set NAME passkey VALUE --type passkey` |
@@ -176,7 +177,7 @@ fd0 auth default              # show the current device default
 fd0 auth default --clear      # return to fd0's built-in selection
 ```
 
-The setting is local to the current device in `~/.fd0/config.toml` under `[auth].default_method`. It is not synced, does not add or remove auth methods, and does not change vault wraps. `fd0 unlock --method=...` still overrides the local default for that invocation.
+The setting is local to the current device in `~/.fd0/config.toml` under `[auth].default_method`. It is not synced, does not add or remove auth methods, and does not change vault wraps. `fd0 unlock --method=...` still overrides the local default for that invocation. Without either setting, interactive unlocks ask which enrolled method to use; non-interactive calls keep a deterministic fallback.
 
 ## Storing and fetching
 
@@ -246,14 +247,16 @@ fd0 pass file export github SSH/recovery-key.pem --out ./recovery-key.pem
 
 Use `fd0 pass field set NAME PATH - --secret` for values that should not appear in shell history. A pass item is shared by sharing its scope; there is no separate per-item ACL. For browser/autofill-style lookup, use `fd0 pass find --url URL --json` and then retrieve the needed field explicitly.
 
-## Browser autofill preview
+## Browser autofill
 
-Browser autofill is currently an unpacked Chrome/Chromium preview for macOS and
-Linux. The matching Native Messaging host ships beside fd0 in current build
-artifacts, but the extension is not published in a browser store. Build and
-register it using `browser/README.md`.
+The fd0 Chrome extension is published at
+`https://chromewebstore.google.com/detail/fd0/kcbjlgbkgoabcdflpnohkknfbegcigel`
+for Chrome and Chromium on macOS and Linux. Install fd0 Desktop or the CLI
+first; current installers register the matching local Native Messaging host.
+For an older install, run `fd0 browser enable` once. Source builds and unpacked
+development instructions live in `browser/README.md`.
 
-The preview lists matching item titles and usernames for the concrete HTTPS
+The extension lists matching item titles and usernames for the concrete HTTPS
 frame, reveals a password only after explicit selection, checks origin and
 document again, and never submits the form. It also supports password
 generation, explicit save/revision-bound update, pasted `otpauth://` setup
@@ -261,11 +264,10 @@ links, and TOTP fill after a recent selection. Submitted candidates are held
 only in browser session memory for up to 60 seconds. HTTP pages and Firefox are
 not supported yet.
 
-Remove only its development Native Messaging registration with the same built
-CLI:
+Remove only the Native Messaging registration with:
 
 ```sh
-.build/browser/fd0 browser disable
+fd0 browser disable
 ```
 
 ## Sharing a scope

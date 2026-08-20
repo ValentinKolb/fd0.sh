@@ -18,7 +18,10 @@ English
 
 ## Detailed description
 
-The fd0 browser extension brings the encrypted fd0 vault to Chrome.
+fd0 is an open-source, encrypted password manager for Desktop and CLI. Learn
+more and install fd0 at https://fd0.sh/.
+
+The fd0 browser extension brings your fd0 vault to Chrome.
 
 - Fill usernames and passwords after choosing a matching login.
 - Generate random, memorable, or PIN passwords.
@@ -31,8 +34,8 @@ requested only after an explicit action and only for the saved HTTPS origin.
 The extension communicates with the fd0 Desktop app or CLI through a narrow
 native messaging host on the same device.
 
-fd0 is open source and supports hosted or self-hosted ciphertext-only sync.
-Install fd0 Desktop or the fd0 CLI before using the extension.
+fd0 supports hosted or self-hosted ciphertext-only sync. Install fd0 Desktop
+or the fd0 CLI before using the extension.
 
 Source and documentation: https://github.com/k2b-dev/fd0.sh/tree/main/browser
 

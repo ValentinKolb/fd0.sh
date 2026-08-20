@@ -563,6 +563,15 @@ if [ "$OS" = "linux" ]; then
     install_executable "$TMP/wrappers/fd0-browser-host" "$CLI_DIR/fd0-browser-host"
 fi
 
+# The Store extension cannot discover a Native Messaging host by itself.
+# Register the bundled host now so a fresh Desktop install works immediately;
+# keep Desktop usable if the optional browser registration is unavailable.
+if "$CLI_DIR/fd0" browser enable >/dev/null 2>&1; then
+    printf '✓ Chrome browser integration enabled\n'
+else
+    printf '! could not enable Chrome browser integration; retry with: fd0 browser enable\n' >&2
+fi
+
 printf '✓ fd0 Desktop %s installed at %s\n' "$VERSION_NUM" "$TARGET"
 if [ "$OS" = "linux" ]; then
     printf '✓ desktop-managed fd0, fd0-agent, and fd0-browser-host installed at %s\n' "$CLI_DIR"

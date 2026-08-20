@@ -481,6 +481,19 @@ for bin in $INSTALL_BINARIES; do
     printf '✓ %s → %s\n' "$bin" "$PREFIX/$bin"
 done
 
+# Register the narrowly-scoped Native Messaging host when it ships in the
+# selected release. This is idempotent and keeps a fresh Chrome Web Store
+# install from requiring a hidden terminal setup step. Browser integration is
+# optional, so a registration failure must not roll back an otherwise valid
+# fd0 installation.
+if [ -x "$PREFIX/fd0-browser-host" ]; then
+    if "$PREFIX/fd0" browser enable >/dev/null 2>&1; then
+        printf '✓ Chrome browser integration enabled\n'
+    else
+        printf '! could not enable Chrome browser integration; retry with: fd0 browser enable\n' >&2
+    fi
+fi
+
 # ─── seed client config (fresh install only) ─────────────────────────────
 FD0_HOME="${FD0_HOME:-$HOME/.fd0}"
 if [ -z "$CURRENT" ]; then

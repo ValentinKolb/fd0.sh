@@ -305,6 +305,7 @@ grep -Fq "Icon=sh.fd0.desktop" \
 test "$(cat "$LINUX_HOME/.local/share/icons/hicolor/512x512/apps/sh.fd0.desktop.png")" = "fd0 icon"
 printf '%s\n' "$LINUX_INSTALL_OUTPUT" | grep -Fq "… Downloading fd0 Desktop"
 printf '%s\n' "$LINUX_INSTALL_OUTPUT" | grep -Fq "✓ Authenticating signed release"
+printf '%s\n' "$LINUX_INSTALL_OUTPUT" | grep -Fq "✓ Chrome browser integration enabled"
 printf '%s\n' "$LINUX_INSTALL_OUTPUT" | grep -Fq "Next steps:"
 printf '%s\n' "$LINUX_INSTALL_OUTPUT" | grep -Fq "\"$LINUX_HOME/.local/bin/fd0-desktop\""
 printf '%s\n' "$LINUX_INSTALL_OUTPUT" | grep -Fq "fd0 doctor"
@@ -430,6 +431,7 @@ if printf '%s\n' "$NONINTERACTIVE_OUTPUT" | grep -Fq "What would you like to ins
 fi
 test "$("$CLIENT_PREFIX/fd0" version)" = "fd0 0.1.0 standard"
 test "$("$CLIENT_PREFIX/fd0-browser-host")" = "fd0-browser-host 0.1.0"
+printf '%s\n' "$NONINTERACTIVE_OUTPUT" | grep -Fq "✓ Chrome browser integration enabled"
 
 LATEST_HOME="$BASE/latest-client-home"
 HOME="$LATEST_HOME" \

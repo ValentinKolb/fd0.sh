@@ -139,7 +139,7 @@ const OverviewBody = () => (
       <Tile href="/docs/concepts" title="Concepts" body="The small vocabulary used by every fd0 command." />
       <Tile href="/docs/cli" title="Daily use" body="One grammar for every module, plus scopes, sharing, and health checks." />
       <Tile href="/docs/pass" title="Passwords" body="Login items, TOTP, passkeys, attachments, and the interactive browser." />
-      <Tile href="/docs/browser" title="Browser preview" body="Build the Chrome development preview and fill an HTTPS login without submitting it." />
+      <Tile href="/docs/browser" title="Browser extension" body="Install fd0 for Chrome and fill HTTPS logins without submitting the form." />
       <Tile href="/docs/ssh" title="SSH and files" body="Scope-shared SSH hosts, terminal sessions, and two-way SFTP transfers." />
       <Tile href="/docs/talos" title="Talos and Kube" body="Store, render, merge, and share Talos and Kubernetes configs." />
       <Tile href="/docs/sync" title="Sync" body="What sync sends, what it verifies, and how automatic refresh works." />
@@ -650,18 +650,35 @@ $ fd0 pass rm github`}</Box>
 const BrowserBody = () => (
   <>
     <Note>
-      This is an unpacked development preview for Chrome and Chromium on macOS
-      and Linux. The matching Native Messaging host ships with current fd0
-      builds, but the extension is not published in a browser store.
+      Install fd0 from the{" "}
+      <Link href="https://chromewebstore.google.com/detail/fd0/kcbjlgbkgoabcdflpnohkknfbegcigel">
+        Chrome Web Store
+      </Link>
+      . It connects Chrome or Chromium on macOS and Linux to the encrypted fd0
+      vault on the same device.
     </Note>
     <P>
       Choose an fd0 login beside a credential field to fill it without
-      submitting the form. The preview also generates passwords, explicitly
+      submitting the form. The extension also generates passwords, explicitly
       saves or revision-updates logins, accepts pasted <Code>otpauth://</Code>
-      setup links, and fills a fresh TOTP code after a recent selection.
+      setup links, and fills fresh TOTP codes.
     </P>
 
-    <H2>Build and register it</H2>
+    <H2>Connect the extension to fd0</H2>
+    <P>
+      Install the current fd0 Desktop or CLI before adding the extension. New
+      installers register the local Native Messaging host automatically. If
+      fd0 was installed earlier, register it once:
+    </P>
+    <Box>{`$ fd0 browser enable`}</Box>
+    <P>
+      Unlock fd0, focus a username or password field on an HTTPS page, and
+      choose the matching fd0 item. The field button reopens the picker; the
+      toolbar action selects one concrete frame with a visible credential
+      field.
+    </P>
+
+    <H2>Build a development copy</H2>
     <P>
       Clone the fd0 repository, then build the unpacked Manifest V3 extension,
       the CLI, and its dedicated Native Messaging host.
@@ -685,16 +702,14 @@ $ .build/browser/fd0 browser enable \\
       <Code>flkmmllfacmjnhjgdfliahdkhfjmdoec</Code>.
     </P>
 
-    <H2>Fill a login</H2>
+    <H2>Create a login for testing</H2>
     <Box>{`$ fd0 pass add demo --url https://example.com
 $ fd0 pass field set demo username ada@example.com
 $ fd0 pass field set demo password --secret --generate
 $ fd0 unlock`}</Box>
     <P>
-      Focus a username or password field on an HTTPS page, then choose the
-      matching fd0 item. The field button reopens the picker; the toolbar action
-      selects one concrete frame with a visible credential field. Existing
-      HTTPS tabs reconnect after an extension rebuild without a manual reload.
+      Existing HTTPS tabs reconnect after an extension update without a manual
+      reload.
     </P>
     <P>
       Only matching item metadata crosses into the extension before selection:
@@ -704,12 +719,12 @@ $ fd0 unlock`}</Box>
       filling the same browser document.
     </P>
 
-    <H2>Remove the development registration</H2>
-    <Box>{`$ .build/browser/fd0 browser disable`}</Box>
+    <H2>Disconnect fd0 from Chrome</H2>
+    <Box>{`$ fd0 browser disable`}</Box>
     <P>
-      This removes only the Native Messaging manifest carrying fd0's
-      development marker. Remove the unpacked extension separately from{" "}
-      <Code>chrome://extensions</Code>. Neither action removes your vault.
+      This removes only fd0's Native Messaging manifest. Remove the Store or
+      unpacked extension separately from <Code>chrome://extensions</Code>.
+      Neither action removes your vault.
     </P>
 
     <H2>If the picker does not appear</H2>
@@ -717,7 +732,7 @@ $ fd0 unlock`}</Box>
       Unlock fd0, confirm the page uses HTTPS, and check that the browser still
       shows the extension id above. If more than one saved account could be
       updated, choose the intended login explicitly. HTTP pages remain
-      unsupported.
+      unsupported. Firefox is not supported yet.
     </P>
   </>
 );
@@ -832,12 +847,14 @@ $ fd0 secret list`}</Box>
     <P>
       Auth methods are stored in the vault. The default unlock method is a
       local device preference in <Code>~/.fd0/config.toml</Code>; it is not
-      synced to other machines.
+      synced to other machines. When several methods are available and no
+      default or <Code>--method</Code> override is set, an interactive unlock
+      asks which method to use.
     </P>
     <Cmd signature="fd0 auth ls" body="List enrolled unlock methods. The current session is marked with *, and the local default is marked with default." />
     <Cmd signature="fd0 auth default" body="Show the default unlock method for this device." />
     <Cmd signature="fd0 auth default yubikey" body="Use YubiKey unlock by default on this device. Use passphrase or a method_id instead when needed." />
-    <Cmd signature="fd0 auth default --clear" body="Clear the local default and return to fd0's deterministic fallback selection." />
+    <Cmd signature="fd0 auth default --clear" body="Clear the local default. Interactive unlocks ask which enrolled method to use; non-interactive commands retain a deterministic fallback." />
 
     <H2>Local health</H2>
     <Cmd signature="fd0 status" body="Show whether the agent is running and whether the vault is unlocked." />
@@ -1255,7 +1272,7 @@ export const DocsPass = ssr(async (c) => {
 export const DocsBrowser = ssr(async (c) => {
   setPageSeo(c, "docsBrowser");
   return () => (
-    <DocsLayout current="browser" title="Browser autofill preview" kicker="Development">
+    <DocsLayout current="browser" title="Browser extension" kicker="Chrome and Chromium">
       <BrowserBody />
     </DocsLayout>
   );

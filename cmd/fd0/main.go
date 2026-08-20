@@ -902,7 +902,11 @@ func main() {
 		return
 	}
 
-	memguard.CatchInterrupt()
+	memguard.CatchSignal(func(_ os.Signal) {
+		if cli.RestoreTerminal() {
+			fmt.Fprintln(os.Stderr)
+		}
+	}, os.Interrupt)
 	defer memguard.Purge()
 
 	var c rootCLI
